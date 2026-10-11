@@ -1,0 +1,80 @@
+# Dependencies and package-manager state
+node_modules/
+.pnpm-store/
+
+# Build and test output
+dist/
+build/
+coverage/
+.vite/
+*.tsbuildinfo
+playwright-report/
+test-results/
+
+# Runtime data and logs
+*.log
+logs/
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+/data/runs/*
+!/data/runs/.gitkeep
+
+# Local-only project material
+/AGENTS.md
+/docs/*
+!/docs/.gitkeep
+/notes/
+/private/
+/scratch/
+/data/raw/
+/data/provider-responses/
+/data/eval-results/
+/tests/eval-private/
+/apps/server/src/ai/prompts/private/
+*.local.md
+*.private.md
+
+# Local AI assistant state
+/.codex/
+/.claude/
+/.cursor/
+/.aider*
+
+# Environment files and secrets
+.env
+.env.*
+!.env.example
+.envrc
+/.direnv/
+
+# macOS metadata
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Windows metadata
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Editors and local tooling
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp
+*.swo
+*~
+.history/
+.cache/
+.eslintcache
+.turbo/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
