@@ -1,0 +1,61 @@
+# WayFinder CI baseline
+#
+# This workflow intentionally contains only deterministic, secret-free checks.
+# Provider calls and LLM evals remain explicit review steps because they add
+# network variability, cost, and access to protected credentials.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+# The job only needs to read the checked-out source. Keeping the token
+# read-only limits the impact of a compromised build step.
+permissions:
+  contents: read
+
+# A newer run for the same branch makes an older in-progress run obsolete.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: Install and quality gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        # actions/checkout v7.0.1; pinning the commit avoids mutable-tag drift.
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          # CI does not need a persisted Git credential after checkout.
+          persist-credentials: false
+
+      - name: Set up pinned Node.js
+        # actions/setup-node v7.1.0; .nvmrc is the shared version source.
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version-file: .nvmrc
+
+      - name: Enable pinned pnpm
+        # Corepack reads packageManager from package.json and activates exactly
+        # pnpm 11.25.0 instead of accepting the runner's global pnpm version.
+        run: corepack enable
+
+      - name: Show toolchain versions
+        run: |
+          node --version
+          pnpm --version
+
+      - name: Install dependencies from lockfile
+        run: pnpm install --frozen-lockfile
+
+      - name: Run available quality gates
+        # Package-level commands are added as each workspace gains real code.
+        # The root command keeps local and CI execution identical.
+        run: pnpm run ci

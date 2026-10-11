@@ -67,7 +67,7 @@ pnpm --version
    ```bash
    node --version
    pnpm --version
-   pnpm install
+   pnpm install --frozen-lockfile
    ```
 
 5. 创建本地环境文件：
@@ -101,7 +101,7 @@ pnpm --version
    ```powershell
    node --version
    pnpm --version
-   pnpm install
+   pnpm install --frozen-lockfile
    ```
 
 5. 创建本地环境文件：
@@ -135,8 +135,42 @@ pnpm install --frozen-lockfile
 | `pnpm lint` | 运行静态检查 |
 | `pnpm test` | 运行单元测试 |
 | `pnpm build` | 构建所有应用和 Package |
+| `pnpm run ci` | 按 CI 顺序运行 Lint、Typecheck、Tests 与 Build |
 
 在对应 Package 脚本尚未实现时，根命令可能不会执行实际任务；不能把这种空运行误认为验证通过。
+
+## Continuous integration
+
+GitHub Actions 会在以下情况运行 `.github/workflows/ci.yml`：
+
+- 创建或更新 Pull Request；
+- 向 `main` Push；
+- 人员从 GitHub Actions 页面手动触发。
+
+Pull Request 上的 CI 用于合并前检查；直接 Push 到 `main` 后运行的 CI 只能做事后兜底。只有未来经人员批准启用 GitHub Ruleset / Branch Protection，并将该 Job 设为 Required Check，才能在平台层阻止失败 PR 合并。
+
+当前 CI 使用只读仓库权限，并依次执行：
+
+```text
+Checkout
+  → 按 .nvmrc 安装 Node.js
+  → 按 package.json 启用固定版本 pnpm
+  → pnpm install --frozen-lockfile
+  → pnpm run ci
+```
+
+提交前可以在本地复现主要检查：
+
+```bash
+pnpm install --frozen-lockfile
+pnpm run ci
+```
+
+现阶段子 Package 尚未配置真实的 Lint、Typecheck、Test 和 Build 脚本，因此这些质量门禁只是接好统一入口，不能把空运行理解为应用已经通过验证。引入 TypeScript、测试和构建工具后，应在对应 Package 中补齐同名脚本，并同步扩展根 `pnpm run ci`；Workflow 可以继续调用统一入口，不需要复制第二套流程。Contracts 生成器完成后，必须加入 JSON Schema drift check。
+
+真实 Provider / LLM 调用、Golden Eval 与 Full Eval 不放在普通 CI 中，避免外部网络波动、凭据暴露和不受控成本。相关模块变更时仍须在受控环境运行相应 Eval。CI 失败时先修复第一个失败门禁，不能通过删测试或反复重跑等待偶然绿色；CI 绿色也不能替代人工 Diff 审核。
+
+当前 Job 运行在 Linux，不能单独证明 macOS 和 Windows 兼容。项目通过固定 Node.js、pnpm 与 lockfile 降低平台差异；出现真实平台问题后再评估 Runner Matrix。
 
 ## Cross-platform development
 
