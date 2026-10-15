@@ -2,5 +2,11 @@
   "name": "@wayfinder/contracts",
   "version": "0.1.0",
   "private": true,
-  "type": "module"
+  "type": "module",
+  "scripts": {
+    "build": "tsc --project tsconfig.build.json && node --input-type=module --eval \"await import('./dist/index.js')\"",
+    "lint": "eslint src --max-warnings=0",
+    "test": "vitest run",
+    "typecheck": "tsc --project tsconfig.build.json --noEmit && tsc --project tsconfig.json --noEmit"
+  }
 }

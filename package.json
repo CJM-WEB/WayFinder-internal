@@ -9,11 +9,20 @@
     "pnpm": "11.25.0"
   },
   "scripts": {
-    "build": "pnpm -r --if-present run build",
+    "build": "pnpm --filter @wayfinder/contracts --fail-if-no-match run build && pnpm --filter @wayfinder/web --fail-if-no-match run build && pnpm --filter @wayfinder/server --fail-if-no-match run build",
     "ci": "pnpm run lint && pnpm run typecheck && pnpm run test && pnpm run build",
     "dev": "pnpm -r --parallel --if-present run dev",
-    "lint": "pnpm -r --if-present run lint",
-    "test": "pnpm -r --if-present run test",
-    "typecheck": "pnpm -r --if-present run typecheck"
+    "lint": "eslint eslint.config.mjs tests/tooling --max-warnings=0 && pnpm --filter @wayfinder/contracts --fail-if-no-match run lint && pnpm --filter @wayfinder/web --fail-if-no-match run lint && pnpm --filter @wayfinder/server --fail-if-no-match run lint",
+    "test": "pnpm run test:tooling && pnpm --filter @wayfinder/contracts --fail-if-no-match run test && pnpm --filter @wayfinder/web --fail-if-no-match run test && pnpm --filter @wayfinder/server --fail-if-no-match run test",
+    "test:tooling": "vitest run tests/tooling/workspace-quality.test.mts",
+    "typecheck": "tsc --project tsconfig.json --noEmit && pnpm --filter @wayfinder/contracts --fail-if-no-match run typecheck && pnpm --filter @wayfinder/web --fail-if-no-match run typecheck && pnpm --filter @wayfinder/server --fail-if-no-match run typecheck"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@types/node": "24.19.2",
+    "eslint": "10.12.0",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.71.2",
+    "vitest": "5.0.4"
   }
 }

@@ -1,0 +1,14 @@
+{
+  // 仅构建生产源码；测试继续由完整检查配置校验。
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "outDir": "dist",
+    "rootDir": "src",
+    "lib": ["ES2023"],
+    // 覆盖测试配置继承的 Node 类型，避免生产源码误用环境全局。
+    "types": []
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["src/**/*.test.ts"]
+}
