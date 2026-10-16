@@ -1,5 +1,6 @@
 /**
- * 模块职责：提供 WayFinder 公共协议使用的搜索请求、查询分析、共享枚举与错误结构。
+ * 模块职责：提供 WayFinder 公共协议使用的请求、查询分析、共享枚举、
+ * 错误、Resource、SearchPlan 与 GraphNodeCore 结构。
  *
  * 关键约束：
  * - Zod Schema 是运行时校验与 TypeScript 类型的 Single Source of Truth（单一事实来源）。
@@ -158,3 +159,76 @@ export const AppErrorSchema = z.strictObject({
   retryable: z.boolean(),
 });
 export type AppError = z.infer<typeof AppErrorSchema>;
+
+/**
+ * 每个 Node 最多保留 8 个 Resource；同一常量同时约束单项 rank，
+ * 后续 WAY-21 将复用它约束最终结果数组，禁止维护第二个数字 8。
+ */
+export const MAX_RETAINED_RESOURCES_PER_NODE = 8;
+
+/**
+ * Resource URL 来自不可信外部输入：既要是合法绝对 URL，也只允许 HTTP(S)。
+ * URL scheme 不区分大小写；显式 pattern 使 WAY-25 可导出相同 JSON Schema 规则。
+ * 在同一字符串 Schema 上组合检查，避免 intersection 因 URL 规范化结果不同而抛异常。
+ */
+const httpResourceUrlSchema = z
+  .string()
+  .regex(/^[Hh][Tt][Tt][Pp][Ss]?:\/\//)
+  .check(z.url());
+
+/**
+ * Resource 是进入最终 Graph 的规范化互联网资源，不承载 Provider 私有字段。
+ * domain 与 searchProvider 的派生责任属于后续确定性 Pipeline，本层冻结字段形状。
+ */
+export const ResourceSchema = z.strictObject({
+  id: z.string().min(1),
+  title: z.string().min(1),
+  url: httpResourceUrlSchema,
+  canonicalUrl: httpResourceUrlSchema,
+  domain: z.string().min(1),
+  sourceType: z.string().min(1),
+  summary: z.string().min(1),
+  whySelected: z.string().min(1),
+  rank: z.number().int().min(1).max(MAX_RETAINED_RESOURCES_PER_NODE),
+  scores: z
+    .record(z.string(), z.number().min(0).max(1))
+    .optional(),
+  searchProvider: z.string().min(1),
+  publishedAt: z.iso.datetime({ offset: true }).nullable().optional(),
+});
+export type Resource = z.infer<typeof ResourceSchema>;
+
+/**
+ * Provider Hint（提供方能力提示）必须有 1～3 个且唯一。
+ * refine 负责运行时唯一性；meta 让 WAY-25 从同一 Schema 导出 uniqueItems。
+ */
+const providerHintsSchema = z
+  .array(SearchCapabilitySchema)
+  .min(1)
+  .max(3)
+  .refine(values => new Set(values).size === values.length, {
+    message: "providerHints must be unique",
+  })
+  .meta({ uniqueItems: true });
+
+/** SearchPlan 冻结单个 Node 的查询、排序侧重点与 Provider 能力提示。 */
+export const SearchPlanSchema = z.strictObject({
+  queries: z.array(z.string().min(1)).min(1).max(3),
+  rankingProfile: RankingProfileSchema,
+  providerHints: providerHintsSchema,
+});
+export type SearchPlan = z.infer<typeof SearchPlanSchema>;
+
+/**
+ * GraphNodeCore 是计划节点与最终节点共享的稳定结构。
+ * status、resources、warnings 与 error 由 WAY-20～21 的严格分支扩展，不能提前混入。
+ */
+export const GraphNodeCoreSchema = z.strictObject({
+  id: z.string().min(1),
+  title: z.string().min(1),
+  description: z.string().min(1),
+  nodeType: NodeTypeSchema,
+  layer: z.number().int().min(0),
+  searchPlan: SearchPlanSchema,
+});
+export type GraphNodeCore = z.infer<typeof GraphNodeCoreSchema>;
