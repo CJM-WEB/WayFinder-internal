@@ -1,5 +1,5 @@
 /**
- * 模块职责：提供 WayFinder 公共协议使用的共享枚举与错误结构。
+ * 模块职责：提供 WayFinder 公共协议使用的搜索请求、查询分析、共享枚举与错误结构。
  *
  * 关键约束：
  * - Zod Schema 是运行时校验与 TypeScript 类型的 Single Source of Truth（单一事实来源）。
@@ -7,6 +7,17 @@
  * - 这里仅描述跨模块稳定语义；Provider（提供方）私有字段必须留在 Adapter（适配器）边界。
  */
 import { z } from "zod";
+
+/**
+ * SearchRequest（搜索请求）只描述一次 Run（运行）的入口身份和有效查询内容。
+ * Query（查询）先 trim，再按 Unicode code point（码点）校验长度；语言和内容形式不受限制。
+ * runId 只要求非空并保留原值；严格对象使未知字段明确失败，防止未声明参数被误认为已生效。
+ */
+export const SearchRequestSchema = z.strictObject({
+  runId: z.string().min(1),
+  query: z.string().trim().min(1).max(2000),
+});
+export type SearchRequest = z.infer<typeof SearchRequestSchema>;
 
 /** Query（查询）分析阶段使用的稳定分类。 */
 export const IntentSchema = z.enum([
@@ -31,6 +42,36 @@ export type RetrievalStrategy = z.infer<typeof RetrievalStrategySchema>;
 /** Presentation Mode（展示模式）决定结果采用 Graph 或紧凑布局。 */
 export const PresentationModeSchema = z.enum(["graph", "compact"]);
 export type PresentationMode = z.infer<typeof PresentationModeSchema>;
+
+/** QueryAnalysis（查询分析）的两个 Strategy（策略）分支共享相同基础字段。 */
+const queryAnalysisCommonShape = {
+  intent: IntentSchema,
+  topic: z.string().min(1),
+  freshnessSensitive: z.boolean(),
+  ambiguityLevel: z.enum(["low", "medium", "high"]),
+  presentationMode: PresentationModeSchema,
+} as const;
+
+/** Broad Search Query（广泛搜索查询）当前只冻结非空与数量边界，不擅自增加 trim 或去重。 */
+const broadSearchQuerySchema = z.string().min(1);
+
+/**
+ * Strategy（策略）直接决定 Broad Query（广泛查询）数量；严格分支阻止未知字段被静默剥离。
+ * 使用判别联合而非自定义 refine（细化校验），使未来 JSON Schema 能保留相同数量约束。
+ */
+export const QueryAnalysisSchema = z.discriminatedUnion("strategy", [
+  z.strictObject({
+    ...queryAnalysisCommonShape,
+    broadSearchQueries: z.array(broadSearchQuerySchema).max(0),
+    strategy: z.literal(RetrievalStrategySchema.enum.plan_first),
+  }),
+  z.strictObject({
+    ...queryAnalysisCommonShape,
+    broadSearchQueries: z.array(broadSearchQuerySchema).min(1).max(3),
+    strategy: z.literal(RetrievalStrategySchema.enum.evidence_assisted),
+  }),
+]);
+export type QueryAnalysis = z.infer<typeof QueryAnalysisSchema>;
 
 /** Graph（图）结构词表由计划图与最终结果图共同使用。 */
 export const NodeTypeSchema = z.enum([
