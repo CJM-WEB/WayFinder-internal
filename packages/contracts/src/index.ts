@@ -1,6 +1,6 @@
 /**
  * 模块职责：提供 WayFinder 公共协议使用的请求、查询分析、共享枚举、
- * 错误、Resource、SearchPlan、Graph Node、Graph Edge 与 GraphPlan 结构。
+ * 错误、Resource、SearchPlan、Graph Node、Graph Edge、GraphPlan 与 ResultGraph 结构。
  *
  * 关键约束：
  * - Zod Schema 是运行时校验与 TypeScript 类型的 Single Source of Truth（单一事实来源）。
@@ -162,7 +162,7 @@ export type AppError = z.infer<typeof AppErrorSchema>;
 
 /**
  * 每个 Node 最多保留 8 个 Resource；同一常量同时约束单项 rank，
- * 后续 WAY-21 将复用它约束最终结果数组，禁止维护第二个数字 8。
+ * ResultGraphNodeSchema 复用它约束最终结果数组，禁止维护第二个数字 8。
  */
 export const MAX_RETAINED_RESOURCES_PER_NODE = 8;
 
@@ -266,3 +266,103 @@ export const GraphPlanSchema = z
   })
   .strict();
 export type GraphPlan = z.infer<typeof GraphPlanSchema>;
+
+/**
+ * 最终节点必须保留 1～8 个已通过 ResourceSchema 校验的资源。
+ * 复用统一上限，避免 Resource.rank 与最终数组分别维护数字 8。
+ */
+const retainedResultResourcesSchema = z
+  .array(ResourceSchema)
+  .min(1)
+  .max(MAX_RETAINED_RESOURCES_PER_NODE);
+
+/** 无 Resource 或 Warning 使用必填空数组表达，不能用缺失字段代替。 */
+const emptyResultResourcesSchema = z.array(ResourceSchema).max(0);
+const emptyNodeWarningsSchema = z.array(NodeWarningCodeSchema).max(0);
+
+/**
+ * partial 至少说明一个局部回退原因；运行时与 JSON Schema 都保留唯一性。
+ */
+const partialNodeWarningsSchema = z
+  .array(NodeWarningCodeSchema)
+  .min(1)
+  .max(NodeWarningCodeSchema.options.length)
+  .refine(values => new Set(values).size === values.length, {
+    message: "warnings must be unique",
+  })
+  .meta({ uniqueItems: true });
+
+const ReadyResultNodeSchema = GraphNodeCoreSchema.extend({
+  status: z.literal(ResultNodeStatusSchema.enum.ready),
+  resources: retainedResultResourcesSchema,
+  warnings: emptyNodeWarningsSchema,
+});
+
+const PartialResultNodeSchema = GraphNodeCoreSchema.extend({
+  status: z.literal(ResultNodeStatusSchema.enum.partial),
+  resources: retainedResultResourcesSchema,
+  warnings: partialNodeWarningsSchema,
+});
+
+const FailedResultNodeSchema = GraphNodeCoreSchema.extend({
+  status: z.literal(ResultNodeStatusSchema.enum.failed),
+  resources: emptyResultResourcesSchema,
+  warnings: emptyNodeWarningsSchema,
+  error: AppErrorSchema,
+});
+
+/**
+ * ResultGraphNode 只接受最终状态；status 同时决定 Resource、Warning 与 Error 的合法组合。
+ * 单 Node 内 Resource 唯一性需要观察整个数组，由 WAY-22 统一追加。
+ */
+export const ResultGraphNodeSchema = z.discriminatedUnion("status", [
+  ReadyResultNodeSchema,
+  PartialResultNodeSchema,
+  FailedResultNodeSchema,
+]);
+export type ResultGraphNode = z.infer<typeof ResultGraphNodeSchema>;
+
+/** ResultGraph 记录原始 Query、规范化结果与最小语言标识。 */
+const resultGraphQuerySchema = z.strictObject({
+  raw: z.string().min(1).max(2000),
+  normalized: z.string().min(1).max(2000),
+  language: z.string().min(2),
+});
+
+/** 最终图复用最终节点与共享 Edge；跨对象引用关系留给 WAY-22。 */
+const resultGraphDataSchema = z.strictObject({
+  nodes: z.array(ResultGraphNodeSchema).min(1).max(8),
+  edges: z.array(GraphEdgeSchema),
+});
+
+/** Provider ID 在运行时与后续 JSON Schema 中都必须唯一。 */
+const resultGraphProvidersUsedSchema = z
+  .array(z.string().min(1))
+  .refine(values => new Set(values).size === values.length, {
+    message: "providersUsed must be unique",
+  })
+  .meta({ uniqueItems: true });
+
+const resultGraphMetaSchema = z.strictObject({
+  createdAt: z.iso.datetime({ offset: true }),
+  providersUsed: resultGraphProvidersUsedSchema,
+  // 本步只冻结 boolean 形状；与 Node 最终状态的一致性由 WAY-22 派生校验。
+  partial: z.boolean(),
+  // V0 暂不冻结阶段名；所有已记录耗时都必须是非负毫秒值。
+  timingMs: z.record(z.string(), z.number().min(0)),
+  warnings: z.array(z.string()).optional(),
+});
+
+/**
+ * ResultGraph 是搜索结果页的完整公共快照。
+ * 本层冻结严格形状；需要同时观察多个对象的关系规则由 WAY-22 追加。
+ */
+export const ResultGraphSchema = z.strictObject({
+  version: z.literal("0.1"),
+  runId: z.string().min(1),
+  query: resultGraphQuerySchema,
+  analysis: QueryAnalysisSchema,
+  graph: resultGraphDataSchema,
+  meta: resultGraphMetaSchema,
+});
+export type ResultGraph = z.infer<typeof ResultGraphSchema>;
