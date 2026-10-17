@@ -1,6 +1,6 @@
 /**
  * 模块职责：提供 WayFinder 公共协议使用的请求、查询分析、共享枚举、
- * 错误、Resource、SearchPlan、Graph Node、Graph Edge、GraphPlan 与 ResultGraph 结构。
+ * 错误、Resource、SearchPlan、Graph Node、Graph Edge、GraphPlan、ResultGraph 与 StreamEvent 结构。
  *
  * 关键约束：
  * - Zod Schema 是运行时校验与 TypeScript 类型的 Single Source of Truth（单一事实来源）。
@@ -459,3 +459,108 @@ export const ResultGraphSchema = z
     }
   });
 export type ResultGraph = z.infer<typeof ResultGraphSchema>;
+
+/** 单条完整事件统一携带严格 Envelope；跨事件顺序由后续状态机负责。 */
+const streamEventEnvelopeShape = {
+  runId: z.string().min(1),
+  sequence: z.number().int().min(1),
+  protocolVersion: z.literal("0.1"),
+  timestamp: z.iso.datetime({ offset: true }),
+} as const;
+
+/** 计划阶段事件直接复用已冻结的查询分析与图计划 Contract。 */
+const QueryAnalysisStreamEventPayloadSchema = z.strictObject({
+  type: z.literal("query.analysis"),
+  data: QueryAnalysisSchema,
+});
+
+const GraphPlanStreamEventPayloadSchema = z.strictObject({
+  type: z.literal("graph.plan"),
+  data: GraphPlanSchema,
+});
+
+/** 处理中状态与三个 Node 终态分离，避免临时状态伪装成已交付结果。 */
+const NodeStatusStreamEventPayloadSchema = z.strictObject({
+  type: z.literal("node.status"),
+  nodeId: z.string().min(1),
+  status: ProcessingNodeStatusSchema,
+});
+
+const NodeReadyStreamEventPayloadSchema = z.strictObject({
+  type: z.literal("node.ready"),
+  nodeId: z.string().min(1),
+  resources: retainedResultResourcesSchema,
+  warnings: emptyNodeWarningsSchema,
+});
+
+const NodePartialStreamEventPayloadSchema = z.strictObject({
+  type: z.literal("node.partial"),
+  nodeId: z.string().min(1),
+  resources: retainedResultResourcesSchema,
+  warnings: partialNodeWarningsSchema,
+});
+
+const NodeFailedStreamEventPayloadSchema = z.strictObject({
+  type: z.literal("node.failed"),
+  nodeId: z.string().min(1),
+  error: AppErrorSchema,
+});
+
+/**
+ * complete 的关系规则放在 Payload 与完整 Event 共享的 data Schema，
+ * 避免两个公共入口对最终状态产生不同判定。
+ */
+const completeStreamEventDataSchema = z
+  .strictObject({
+    finalStatus: z.enum(["complete", "partial"]),
+    result: ResultGraphSchema,
+  })
+  .superRefine((data, context) => {
+    const expectedStatus = data.result.meta.partial
+      ? "partial"
+      : "complete";
+
+    if (data.finalStatus !== expectedStatus) {
+      context.addIssue({
+        code: "custom",
+        path: ["finalStatus"],
+        message: "finalStatus must match result.meta.partial",
+      });
+    }
+  });
+
+const CompleteStreamEventPayloadSchema = z.strictObject({
+  type: z.literal("complete"),
+  data: completeStreamEventDataSchema,
+});
+
+const RunFailedStreamEventPayloadSchema = z.strictObject({
+  type: z.literal("run.failed"),
+  error: AppErrorSchema,
+});
+
+/** Payload 只描述业务事件，调用方不能预填 Envelope。 */
+export const StreamEventPayloadSchema = z.discriminatedUnion("type", [
+  QueryAnalysisStreamEventPayloadSchema,
+  GraphPlanStreamEventPayloadSchema,
+  NodeStatusStreamEventPayloadSchema,
+  NodeReadyStreamEventPayloadSchema,
+  NodePartialStreamEventPayloadSchema,
+  NodeFailedStreamEventPayloadSchema,
+  CompleteStreamEventPayloadSchema,
+  RunFailedStreamEventPayloadSchema,
+]);
+export type StreamEventPayload = z.infer<typeof StreamEventPayloadSchema>;
+
+/** 完整 Event 在同一批严格 Payload 上统一增加受信 Envelope。 */
+export const StreamEventSchema = z.discriminatedUnion("type", [
+  QueryAnalysisStreamEventPayloadSchema.extend(streamEventEnvelopeShape),
+  GraphPlanStreamEventPayloadSchema.extend(streamEventEnvelopeShape),
+  NodeStatusStreamEventPayloadSchema.extend(streamEventEnvelopeShape),
+  NodeReadyStreamEventPayloadSchema.extend(streamEventEnvelopeShape),
+  NodePartialStreamEventPayloadSchema.extend(streamEventEnvelopeShape),
+  NodeFailedStreamEventPayloadSchema.extend(streamEventEnvelopeShape),
+  CompleteStreamEventPayloadSchema.extend(streamEventEnvelopeShape),
+  RunFailedStreamEventPayloadSchema.extend(streamEventEnvelopeShape),
+]);
+export type StreamEvent = z.infer<typeof StreamEventSchema>;
