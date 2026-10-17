@@ -1,6 +1,6 @@
 /**
  * 模块职责：提供 WayFinder 公共协议使用的请求、查询分析、共享枚举、
- * 错误、Resource、SearchPlan 与 GraphNodeCore 结构。
+ * 错误、Resource、SearchPlan、Graph Node、Graph Edge 与 GraphPlan 结构。
  *
  * 关键约束：
  * - Zod Schema 是运行时校验与 TypeScript 类型的 Single Source of Truth（单一事实来源）。
@@ -232,3 +232,37 @@ export const GraphNodeCoreSchema = z.strictObject({
   searchPlan: SearchPlanSchema,
 });
 export type GraphNodeCore = z.infer<typeof GraphNodeCoreSchema>;
+
+/**
+ * GraphPlan Node（图计划节点）只描述待执行计划；planned 是唯一合法状态，
+ * Resource、Warning 与 Error 等结果字段由后续 ResultGraph 分支负责。
+ */
+export const GraphPlanNodeSchema = GraphNodeCoreSchema.extend({
+  status: z.literal("planned"),
+});
+export type GraphPlanNode = z.infer<typeof GraphPlanNodeSchema>;
+
+/**
+ * Graph Edge（图边）是计划图与最终结果图共享的结构，并复用统一 Edge 类型词表。
+ * source 与 target 的存在性、唯一性和 DAG 等跨对象规则不属于局部 Schema。
+ */
+export const GraphEdgeSchema = z.strictObject({
+  id: z.string().min(1),
+  source: z.string().min(1),
+  target: z.string().min(1),
+  type: EdgeTypeSchema,
+});
+export type GraphEdge = z.infer<typeof GraphEdgeSchema>;
+
+/**
+ * GraphPlan（图计划）根对象只组合一次 Query 分析、计划节点和图边。
+ * Node 数量属于确定性 Contract；ID 唯一、Edge 端点存在、连通性与 DAG 由 Validator 负责。
+ */
+export const GraphPlanSchema = z
+  .object({
+    analysis: QueryAnalysisSchema,
+    nodes: z.array(GraphPlanNodeSchema).min(1).max(8),
+    edges: z.array(GraphEdgeSchema),
+  })
+  .strict();
+export type GraphPlan = z.infer<typeof GraphPlanSchema>;
