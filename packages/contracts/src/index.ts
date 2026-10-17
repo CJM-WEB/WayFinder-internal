@@ -1,11 +1,11 @@
 /**
- * 模块职责：提供 WayFinder 公共协议使用的请求、查询分析、共享枚举、
- * 错误、Resource、SearchPlan、Graph Node、Graph Edge、GraphPlan、ResultGraph 与 StreamEvent 结构。
+ * 模块职责：提供 WayFinder 公共 Wire Contract，以及 Provider Search、
+ * Resource Candidate 与 Node Job 使用的进程内 TypeScript 边界。
  *
  * 关键约束：
- * - Zod Schema 是运行时校验与 TypeScript 类型的 Single Source of Truth（单一事实来源）。
- * - 公共类型必须通过 `z.infer` 推导，禁止再维护手写 union 或 TypeScript enum。
- * - 这里仅描述跨模块稳定语义；Provider（提供方）私有字段必须留在 Adapter（适配器）边界。
+ * - 公共 Wire Contract 的 Zod Schema 是运行时校验与类型推导的单一事实来源。
+ * - WAY-24 内部对象不跨 Wire，不为了形式统一额外增加共享 Zod Schema。
+ * - 第三方原始数据必须以 unknown 进入 Adapter 私有 Schema；Provider 私有字段不能泄漏到业务层。
  */
 import { z } from "zod";
 
@@ -109,6 +109,80 @@ export const SearchCapabilitySchema = z.enum([
 export type SearchCapability = z.infer<typeof SearchCapabilitySchema>;
 
 /**
+ * Provider Search Request（提供方搜索请求）只描述一个 Node 的一次具体搜索。
+ * runId 属于整次搜索生命周期，不能泄漏到 Provider interface。
+ */
+export type ProviderSearchRequest = {
+  nodeId: string;
+  query: string;
+  maxResults: number;
+  capability: SearchCapability;
+  freshnessSensitive: boolean;
+  language?: string;
+};
+
+/**
+ * Normalized Search Hit（标准化搜索命中）是 Adapter 校验外部响应后的统一结果。
+ * rawMetadata 仅允许透传已校验的 Provider 私有 metadata，业务逻辑不得读取其 key。
+ */
+export type NormalizedSearchHit = {
+  provider: string;
+  query: string;
+  title: string;
+  url: string;
+  canonicalUrl: string;
+  domain: string;
+  snippet: string;
+  publishedAt?: string | null;
+  providerRank?: number;
+  providerScore?: number;
+  rawMetadata: Record<string, unknown>;
+};
+
+/**
+ * Extracted Page（抽取页面）只保存 Candidate canonicalUrl 与网页正文。
+ * content 的类型已由 Adapter 校验，但其语义仍是不可信网页输入。
+ */
+export type ExtractedPage = {
+  canonicalUrl: string;
+  content: string;
+};
+
+/**
+ * Candidate 只接收标准化 Hit 的正向白名单。
+ * Pick 只提供静态限制；后续构造代码仍必须逐项复制，不能直接塞入完整 Hit。
+ */
+type CandidateSearchHit = Pick<
+  NormalizedSearchHit,
+  | "provider"
+  | "query"
+  | "title"
+  | "url"
+  | "canonicalUrl"
+  | "domain"
+  | "snippet"
+  | "publishedAt"
+  | "providerRank"
+  | "providerScore"
+>;
+
+/**
+ * Resource Candidate（资源候选）连接确定性粗排、Extract、Reranker 与 Finalizer。
+ * candidateId 只在当前 Node/Rerank 批次内使用，不等于最终 Resource.id。
+ */
+export type ResourceCandidate = {
+  candidateId: string;
+  hit: CandidateSearchHit;
+  heuristicScore: number;
+  heuristicSignals: Record<string, number>;
+  scores?: Record<string, number>;
+  summary?: string;
+  whySelected?: string;
+  // 只能来自可信确定性分类或由 Finalizer 保守生成。
+  sourceType?: string;
+};
+
+/**
  * Node（节点）状态按生命周期分层：处理中事件不能伪装成最终结果，最终快照也不能残留处理中状态。
  */
 export const ProcessingNodeStatusSchema = z.enum([
@@ -137,6 +211,15 @@ export const NodeWarningCodeSchema = z.enum([
   "RERANK_FAILED",
 ]);
 export type NodeWarningCode = z.infer<typeof NodeWarningCodeSchema>;
+
+/**
+ * Node Search Outcome（节点搜索结果）只汇总已标准化 Hit 与局部 Warning。
+ * 没有可交付 Hit 的 Provider 失败必须抛错，不能伪装成 Warning。
+ */
+export type NodeSearchOutcome = {
+  hits: NormalizedSearchHit[];
+  warnings: NodeWarningCode[];
+};
 
 /** Error（错误）表示对应 Node 或 Run 没有可交付结果。 */
 export const AppErrorCodeSchema = z.enum([
@@ -321,6 +404,45 @@ export const ResultGraphNodeSchema = z.discriminatedUnion("status", [
   FailedResultNodeSchema,
 ]);
 export type ResultGraphNode = z.infer<typeof ResultGraphNodeSchema>;
+
+/** 普通 Node Job 失败明确排除 Deadline 与用户取消控制流。 */
+type NodeJobRejectedCode = Exclude<
+  AppErrorCode,
+  "RUN_DEADLINE_EXCEEDED" | "REQUEST_ABORTED"
+>;
+
+/**
+ * 服务端 NodeJobError 可结构化满足该类型，同时保留 Error stack/cause；
+ * 公共事件与最终结果只投影 code/retryable。
+ */
+type NodeJobFailure = Error & {
+  code: NodeJobRejectedCode;
+  retryable: boolean;
+};
+
+/**
+ * Node Job Outcome（节点任务结算）用判别字段隔离完整结果、普通失败和绝对超时。
+ * 用户取消不属于任何分支，必须由 Orchestrator 向上抛出。
+ */
+export type NodeJobOutcome =
+  | {
+      status: "fulfilled";
+      nodeId: string;
+      value: ResultGraphNode;
+    }
+  | {
+      status: "rejected";
+      nodeId: string;
+      error: NodeJobFailure;
+    }
+  | {
+      status: "timed_out";
+      nodeId: string;
+      error: {
+        code: "RUN_DEADLINE_EXCEEDED";
+        retryable: true;
+      };
+    };
 
 /** ResultGraph 记录原始 Query、规范化结果与最小语言标识。 */
 const resultGraphQuerySchema = z.strictObject({
