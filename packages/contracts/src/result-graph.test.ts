@@ -1,9 +1,9 @@
 /**
- * 测试职责：冻结 WAY-21 最终节点与 ResultGraph 根契约的局部结构边界。
+ * 测试职责：冻结 WAY-21 局部结构与 WAY-22 ResultGraph 跨对象关系边界。
  *
  * 关键约束：
  * - 最终节点只能是 ready、partial 或 failed，并由 status 决定合法字段组合。
- * - 本文件只测试单个对象可判定的规则；跨对象关系由 WAY-22 负责。
+ * - 根 Schema 负责跨 Node、Edge、Resource 与 meta 的确定性关系校验。
  * - Zod Schema 同时服务运行时校验、TypeScript 推导和后续 JSON Schema 生成。
  */
 import { describe, expect, expectTypeOf, it } from "vitest";
@@ -276,6 +276,25 @@ const validResultGraph = {
   },
 } as const;
 
+/** 关系测试只锁定自定义错误的字段位置，不把错误文本和顺序升级为公共 Contract。 */
+const expectCustomIssueAt = (
+  input: unknown,
+  expectedPath: (string | number)[],
+) => {
+  const result = ResultGraphSchema.safeParse(input);
+
+  expect(result.success).toBe(false);
+  if (result.success) {
+    throw new Error("预期 ResultGraphSchema 返回自定义关系错误");
+  }
+
+  expect(result.error.issues).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ code: "custom", path: expectedPath }),
+    ]),
+  );
+};
+
 describe("ResultGraph 严格根契约", () => {
   it("接受完整且严格的 ResultGraph", () => {
     expect(ResultGraphSchema.parse(validResultGraph)).toEqual(validResultGraph);
@@ -499,5 +518,176 @@ describe("ResultGraph 严格根契约", () => {
     expectTypeOf<ResultGraph>().toEqualTypeOf<
       z.infer<typeof ResultGraphSchema>
     >();
+  });
+});
+
+describe("ResultGraph 跨对象关系", () => {
+  it("拒绝重复 Node ID，并定位第二个重复项", () => {
+    expectCustomIssueAt(
+      {
+        ...validResultGraph,
+        graph: {
+          nodes: [
+            validReadyNode,
+            { ...validReadyNode, title: "重复 ID 的另一个节点" },
+          ],
+          edges: [],
+        },
+      },
+      ["graph", "nodes", 1, "id"],
+    );
+  });
+
+  it("拒绝重复 Edge ID，并定位第二个重复项", () => {
+    const secondNode = { ...validReadyNode, id: "node-002" };
+    const firstEdge = {
+      id: "edge-001",
+      source: "node-001",
+      target: "node-002",
+      type: "recommended_next",
+    } as const;
+
+    expectCustomIssueAt(
+      {
+        ...validResultGraph,
+        graph: {
+          nodes: [validReadyNode, secondNode],
+          edges: [
+            firstEdge,
+            { ...firstEdge, source: "node-002", target: "node-001" },
+          ],
+        },
+      },
+      ["graph", "edges", 1, "id"],
+    );
+  });
+
+  it.each([
+    ["source", "missing-source"],
+    ["target", "missing-target"],
+  ] as const)("拒绝引用不存在 Node 的 Edge %s", (field, missingNodeId) => {
+    const secondNode = { ...validReadyNode, id: "node-002" };
+
+    expectCustomIssueAt(
+      {
+        ...validResultGraph,
+        graph: {
+          nodes: [validReadyNode, secondNode],
+          edges: [
+            {
+              id: "edge-001",
+              source: field === "source" ? missingNodeId : "node-001",
+              target: field === "target" ? missingNodeId : "node-002",
+              type: "recommended_next",
+            },
+          ],
+        },
+      },
+      ["graph", "edges", 0, field],
+    );
+  });
+
+  it.each([
+    ["ready", "id", validReadyNode, "resource-1"],
+    [
+      "ready",
+      "canonicalUrl",
+      validReadyNode,
+      "https://example.com/source-1",
+    ],
+    ["ready", "rank", validReadyNode, 1],
+    ["partial", "id", validPartialNode, "resource-1"],
+    [
+      "partial",
+      "canonicalUrl",
+      validPartialNode,
+      "https://example.com/source-1",
+    ],
+    ["partial", "rank", validPartialNode, 1],
+  ] as const)(
+    "拒绝同一 %s Node 内重复的 Resource %s",
+    (_status, field, node, value) => {
+      const resources = [
+        createResource(1),
+        { ...createResource(2), [field]: value },
+      ];
+
+      expectCustomIssueAt(
+        {
+          ...validResultGraph,
+          graph: {
+            nodes: [{ ...node, resources }],
+            edges: [],
+          },
+          meta: {
+            ...validResultGraph.meta,
+            partial: node.status === "partial",
+          },
+        },
+        ["graph", "nodes", 0, "resources", 1, field],
+      );
+    },
+  );
+
+  it("允许不同 Node 复用 Resource 值，也允许同 Node 使用不连续但唯一的 rank", () => {
+    const resources = [createResource(1), createResource(8)];
+    const firstNode = { ...validReadyNode, resources };
+    const secondNode = { ...firstNode, id: "node-002" };
+
+    expect(
+      ResultGraphSchema.safeParse({
+        ...validResultGraph,
+        graph: { nodes: [firstNode, secondNode], edges: [] },
+      }).success,
+    ).toBe(true);
+  });
+
+  it.each([
+    ["仅 ready", [validReadyNode], false],
+    ["仅 partial", [validPartialNode], true],
+    ["仅 failed", [validFailedNode], true],
+    [
+      "ready + partial",
+      [validReadyNode, { ...validPartialNode, id: "node-002" }],
+      true,
+    ],
+    [
+      "ready + failed",
+      [validReadyNode, { ...validFailedNode, id: "node-002" }],
+      true,
+    ],
+  ] as const)("%s 接受派生一致的 meta.partial", (_name, nodes, partial) => {
+    expect(
+      ResultGraphSchema.safeParse({
+        ...validResultGraph,
+        graph: { nodes, edges: [] },
+        meta: { ...validResultGraph.meta, partial },
+      }).success,
+    ).toBe(true);
+  });
+
+  it.each([
+    ["仅 ready", [validReadyNode], true],
+    ["仅 partial", [validPartialNode], false],
+    ["仅 failed", [validFailedNode], false],
+    [
+      "ready + partial",
+      [validReadyNode, { ...validPartialNode, id: "node-002" }],
+      false,
+    ],
+    [
+      "ready + failed",
+      [validReadyNode, { ...validFailedNode, id: "node-002" }],
+      false,
+    ],
+  ] as const)("%s 拒绝派生不一致的 meta.partial", (_name, nodes, partial) => {
+    expectCustomIssueAt(
+      {
+        ...validResultGraph,
+        graph: { nodes, edges: [] },
+        meta: { ...validResultGraph.meta, partial },
+      },
+      ["meta", "partial"],
+    );
   });
 });

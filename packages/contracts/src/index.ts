@@ -313,7 +313,7 @@ const FailedResultNodeSchema = GraphNodeCoreSchema.extend({
 
 /**
  * ResultGraphNode 只接受最终状态；status 同时决定 Resource、Warning 与 Error 的合法组合。
- * 单 Node 内 Resource 唯一性需要观察整个数组，由 WAY-22 统一追加。
+ * 独立解析 Node 时只校验局部形状；Resource 数组关系由根 ResultGraphSchema 校验。
  */
 export const ResultGraphNodeSchema = z.discriminatedUnion("status", [
   ReadyResultNodeSchema,
@@ -329,7 +329,7 @@ const resultGraphQuerySchema = z.strictObject({
   language: z.string().min(2),
 });
 
-/** 最终图复用最终节点与共享 Edge；跨对象引用关系留给 WAY-22。 */
+/** 最终图复用最终节点与共享 Edge；根 Schema 统一校验跨对象引用关系。 */
 const resultGraphDataSchema = z.strictObject({
   nodes: z.array(ResultGraphNodeSchema).min(1).max(8),
   edges: z.array(GraphEdgeSchema),
@@ -346,7 +346,7 @@ const resultGraphProvidersUsedSchema = z
 const resultGraphMetaSchema = z.strictObject({
   createdAt: z.iso.datetime({ offset: true }),
   providersUsed: resultGraphProvidersUsedSchema,
-  // 本步只冻结 boolean 形状；与 Node 最终状态的一致性由 WAY-22 派生校验。
+  // 局部 Schema 只校验 boolean 形状；根 Schema 从所有 Node 最终状态派生校验。
   partial: z.boolean(),
   // V0 暂不冻结阶段名；所有已记录耗时都必须是非负毫秒值。
   timingMs: z.record(z.string(), z.number().min(0)),
@@ -354,15 +354,108 @@ const resultGraphMetaSchema = z.strictObject({
 });
 
 /**
- * ResultGraph 是搜索结果页的完整公共快照。
- * 本层冻结严格形状；需要同时观察多个对象的关系规则由 WAY-22 追加。
+ * 返回第二次及后续出现的索引，保留首项作为合法基准。
+ * 该函数只辅助生成精确 Zod issue，不修改或修复调用方输入。
  */
-export const ResultGraphSchema = z.strictObject({
-  version: z.literal("0.1"),
-  runId: z.string().min(1),
-  query: resultGraphQuerySchema,
-  analysis: QueryAnalysisSchema,
-  graph: resultGraphDataSchema,
-  meta: resultGraphMetaSchema,
-});
+const duplicateValueIndexes = (
+  values: readonly (string | number)[],
+): number[] => {
+  const seen = new Set<string | number>();
+  const duplicateIndexes: number[] = [];
+
+  values.forEach((value, index) => {
+    if (seen.has(value)) {
+      duplicateIndexes.push(index);
+      return;
+    }
+
+    seen.add(value);
+  });
+
+  return duplicateIndexes;
+};
+
+/**
+ * ResultGraph 是搜索结果页的完整公共快照。
+ * 根级校验同时观察 Node、Edge、Resource 与 meta；只拒绝非法关系，不自动修复输入。
+ */
+export const ResultGraphSchema = z
+  .strictObject({
+    version: z.literal("0.1"),
+    runId: z.string().min(1),
+    query: resultGraphQuerySchema,
+    analysis: QueryAnalysisSchema,
+    graph: resultGraphDataSchema,
+    meta: resultGraphMetaSchema,
+  })
+  .superRefine((result, context) => {
+    // 1. 全图 Node 与 Edge 标识必须稳定唯一，错误定位到第二个及后续重复项。
+    for (const nodeIndex of duplicateValueIndexes(
+      result.graph.nodes.map(node => node.id),
+    )) {
+      context.addIssue({
+        code: "custom",
+        path: ["graph", "nodes", nodeIndex, "id"],
+        message: "Node id must be unique",
+      });
+    }
+
+    for (const edgeIndex of duplicateValueIndexes(
+      result.graph.edges.map(edge => edge.id),
+    )) {
+      context.addIssue({
+        code: "custom",
+        path: ["graph", "edges", edgeIndex, "id"],
+        message: "Edge id must be unique",
+      });
+    }
+
+    // 2. Edge 两端必须引用当前最终图中真实存在的 Node。
+    const nodeIds = new Set(result.graph.nodes.map(node => node.id));
+    result.graph.edges.forEach((edge, edgeIndex) => {
+      for (const endpoint of ["source", "target"] as const) {
+        if (!nodeIds.has(edge[endpoint])) {
+          context.addIssue({
+            code: "custom",
+            path: ["graph", "edges", edgeIndex, endpoint],
+            message: `Edge ${endpoint} must reference an existing node`,
+          });
+        }
+      }
+    });
+
+    // 3. Resource 身份与展示顺序只要求在各自 Node 内唯一。
+    result.graph.nodes.forEach((node, nodeIndex) => {
+      for (const field of ["id", "canonicalUrl", "rank"] as const) {
+        for (const resourceIndex of duplicateValueIndexes(
+          node.resources.map(resource => resource[field]),
+        )) {
+          context.addIssue({
+            code: "custom",
+            path: [
+              "graph",
+              "nodes",
+              nodeIndex,
+              "resources",
+              resourceIndex,
+              field,
+            ],
+            message: `Resource ${field} must be unique within its node`,
+          });
+        }
+      }
+    });
+
+    // 4. partial 是最终 Node 状态的派生值，调用方不能独立覆盖。
+    const expectedPartial = result.graph.nodes.some(
+      node => node.status !== "ready",
+    );
+    if (result.meta.partial !== expectedPartial) {
+      context.addIssue({
+        code: "custom",
+        path: ["meta", "partial"],
+        message: "meta.partial must match final node statuses",
+      });
+    }
+  });
 export type ResultGraph = z.infer<typeof ResultGraphSchema>;
