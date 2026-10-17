@@ -133,11 +133,13 @@ pnpm install --frozen-lockfile
 | `pnpm dev` | 启动可用的开发服务 |
 | `pnpm typecheck` | 运行 TypeScript 类型检查 |
 | `pnpm lint` | 运行静态检查 |
+| `pnpm run schema:generate` | 从五个公共 Zod 根 Schema 显式更新 JSON Schema 产物 |
+| `pnpm run schema:check` | 只读检查 JSON Schema 是否缺失、变化或出现额外产物 |
 | `pnpm test` | 运行单元测试 |
 | `pnpm build` | 构建所有应用和 Package |
-| `pnpm run ci` | 按 CI 顺序运行 Lint、Typecheck、Tests 与 Build |
+| `pnpm run ci` | 按顺序运行 Lint、Typecheck、Schema Drift Check、Tests 与 Build |
 
-当前单元测试只验证各 Workspace 的工程链路和质量配置；真实 Contract、Web 与 Server 行为测试由对应后续 Issue 增加，不能把 smoke test 通过理解为产品功能已完成。
+当前单元测试已覆盖公共 Contract、JSON Schema 生成器和各 Workspace 工程链路；Web 与 Server 仍主要是 Smoke Test（冒烟测试），不能把工具链通过理解为产品功能已完成。
 
 ## Continuous integration
 
@@ -166,7 +168,9 @@ pnpm install --frozen-lockfile
 pnpm run ci
 ```
 
-三个生产 Workspace 均已配置真实的 Lint、Typecheck、Test 和 Build 脚本；根命令会显式执行每个 Workspace，并在缺包、缺脚本或失败时返回非零状态。当前 smoke test 只证明工具链可执行，不能替代后续产品行为测试。Contracts 生成器尚未实现，因此 JSON Schema drift check 仍属于 WAY-25，当前 CI 绿色不表示 Contract drift 已验证。
+三个生产 Workspace 均已配置真实的 Lint、Typecheck、Test 和 Build 脚本；根命令会显式执行每个 Workspace，并在缺包、缺脚本或失败时返回非零状态。根 CI 在类型检查后运行只读 `schema:check`，人工修改、遗漏或增加受检产物都会阻断后续 Test 与 Build。
+
+受跟踪的 JSON Schema 位于 `packages/contracts/json-schema/`，由 Zod 4 原生转换器生成。它们只表达 Zod 输入侧可表示的结构投影；`trim()` 后长度、`superRefine()` 和跨对象关系仍必须由运行时 Zod Schema 校验，不能用 JSON Schema 通过替代真实入口的 Zod parse。
 
 真实 Provider / LLM 调用、Golden Eval 与 Full Eval 不放在普通 CI 中，避免外部网络波动、凭据暴露和不受控成本。相关模块变更时仍须在受控环境运行相应 Eval。CI 失败时先修复第一个失败门禁，不能通过删测试或反复重跑等待偶然绿色；CI 绿色也不能替代人工 Diff 审核。
 

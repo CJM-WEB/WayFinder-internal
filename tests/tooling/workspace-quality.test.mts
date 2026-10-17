@@ -67,8 +67,8 @@ function formatDiagnostics(diagnostics: readonly ts.Diagnostic[]): string {
     .join("\n");
 }
 
-/** 使用 TypeScript 官方 API 解析 extends 之后真正生效的编译选项。 */
-function readCompilerOptions(configPath: string): ts.CompilerOptions {
+/** 使用 TypeScript 官方 API 解析 extends 之后真正生效的配置。 */
+function readCompilerConfiguration(configPath: string): ts.ParsedCommandLine {
   const configResult = ts.readConfigFile(configPath, ts.sys.readFile);
   if (configResult.error) {
     throw new Error(formatDiagnostics([configResult.error]));
@@ -91,7 +91,11 @@ function readCompilerOptions(configPath: string): ts.CompilerOptions {
     throw new Error(formatDiagnostics(relevantErrors));
   }
 
-  return parsed.options;
+  return parsed;
+}
+
+function readCompilerOptions(configPath: string): ts.CompilerOptions {
+  return readCompilerConfiguration(configPath).options;
 }
 
 function normalizedRuleSeverity(rule: unknown): unknown {
@@ -173,6 +177,78 @@ describe("Workspace TypeScript 配置", () => {
         ),
       ).toBe(true);
     }
+  });
+});
+
+describe("JSON Schema 工具链门禁", () => {
+  it("要求 Contracts 与根目录提供不可静默跳过的 Schema 命令", () => {
+    const contractsScripts = readScripts(path.join(
+      repositoryRoot,
+      "packages/contracts/package.json",
+    ));
+    const rootScripts = readScripts(path.join(repositoryRoot, "package.json"));
+
+    expect(contractsScripts["schema:generate"]).toBe(
+      "node scripts/generate-json-schema.mts --write",
+    );
+    expect(contractsScripts["schema:check"]).toBe(
+      "node scripts/generate-json-schema.mts --check",
+    );
+    expect(contractsScripts.lint).toContain("eslint src scripts");
+    expect(contractsScripts.typecheck).toContain(
+      "tsc --project tsconfig.tools.json --noEmit",
+    );
+    expect(contractsScripts.test).toBe("vitest run");
+
+    expect(rootScripts["schema:generate"]).toBe(
+      "pnpm --filter @wayfinder/contracts --fail-if-no-match run schema:generate",
+    );
+    expect(rootScripts["schema:check"]).toBe(
+      "pnpm --filter @wayfinder/contracts --fail-if-no-match run schema:check",
+    );
+    expect(rootScripts.ci).toBe(
+      "pnpm run lint && pnpm run typecheck && pnpm run schema:check && pnpm run test && pnpm run build",
+    );
+
+    for (const script of [
+      contractsScripts["schema:generate"],
+      contractsScripts["schema:check"],
+      rootScripts["schema:generate"],
+      rootScripts["schema:check"],
+      rootScripts.ci,
+    ]) {
+      expect(script).not.toContain("--if-present");
+    }
+  });
+
+  it("要求工具配置覆盖可执行脚本并冻结 Node 类型擦除边界", () => {
+    const configPath = path.join(
+      repositoryRoot,
+      "packages/contracts/tsconfig.tools.json",
+    );
+    const parsed = readCompilerConfiguration(configPath);
+    expect(parsed.options.noEmit).toBe(true);
+    expect(parsed.options.allowImportingTsExtensions).toBe(true);
+    expect(parsed.options.erasableSyntaxOnly).toBe(true);
+
+    const relativeFileNames = parsed.fileNames
+      .map(fileName => path
+        .relative(repositoryRoot, fileName)
+        .replaceAll("\\", "/"))
+      .sort();
+    expect(relativeFileNames).toEqual([
+      "packages/contracts/scripts/generate-json-schema.mts",
+      "packages/contracts/scripts/generate-json-schema.test.mts",
+    ].sort());
+  });
+
+  it("要求 MTS 工具源码在所有平台固定使用 LF", () => {
+    const attributes = fs.readFileSync(
+      path.join(repositoryRoot, ".gitattributes"),
+      "utf8",
+    );
+
+    expect(attributes.split(/\r?\n/u)).toContain("*.mts text eol=lf");
   });
 });
 
