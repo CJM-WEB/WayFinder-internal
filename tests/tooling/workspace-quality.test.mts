@@ -242,6 +242,29 @@ describe("JSON Schema 工具链门禁", () => {
     ].sort());
   });
 
+  it("要求编辑器通过脚本目录的标准配置识别 MTS 工具", () => {
+    const configPath = path.join(
+      repositoryRoot,
+      "packages/contracts/scripts/tsconfig.json",
+    );
+    const parsed = readCompilerConfiguration(configPath);
+
+    // 编辑器使用就近的标准配置；关键选项必须与 CLI 工具配置保持一致。
+    expect(parsed.options.allowImportingTsExtensions).toBe(true);
+    expect(parsed.options.erasableSyntaxOnly).toBe(true);
+    expect(parsed.options.types).toEqual(["node"]);
+
+    const relativeFileNames = parsed.fileNames
+      .map(fileName => path
+        .relative(repositoryRoot, fileName)
+        .replaceAll("\\", "/"))
+      .sort();
+    expect(relativeFileNames).toEqual([
+      "packages/contracts/scripts/generate-json-schema.mts",
+      "packages/contracts/scripts/generate-json-schema.test.mts",
+    ].sort());
+  });
+
   it("要求 MTS 工具源码在所有平台固定使用 LF", () => {
     const attributes = fs.readFileSync(
       path.join(repositoryRoot, ".gitattributes"),

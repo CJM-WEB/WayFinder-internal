@@ -1,0 +1,6 @@
+{
+  // 配置职责：让编辑器按标准文件名发现 JSON Schema 工具的 TypeScript 项目。
+  // 关键约束：编译规则仍由上层工具配置统一维护，避免 CLI 与编辑器产生两套语义。
+  "extends": "../tsconfig.tools.json",
+  "include": ["./**/*.mts"]
+}
