@@ -1,0 +1,337 @@
+[
+  {
+    "name": "empty-provider-hints",
+    "schema": "searchPlan",
+    "expectedIssue": {
+      "code": "too_small",
+      "path": ["providerHints"]
+    },
+    "input": {
+      "queries": ["TypeScript strict mode"],
+      "rankingProfile": "software",
+      "providerHints": []
+    }
+  },
+  {
+    "name": "unsafe-resource-url",
+    "schema": "resource",
+    "expectedIssue": {
+      "code": "invalid_format",
+      "path": ["url"]
+    },
+    "input": {
+      "id": "resource-unsafe",
+      "title": "不安全链接",
+      "url": "javascript:alert('unsafe')",
+      "canonicalUrl": "https://example.com/safe",
+      "domain": "example.com",
+      "sourceType": "webpage",
+      "summary": "用于验证 URL 协议白名单。",
+      "whySelected": "该负例必须在 Resource 边界失败。",
+      "rank": 1,
+      "searchProvider": "fixture"
+    }
+  },
+  {
+    "name": "duplicate-resource-id",
+    "schema": "resultGraph",
+    "expectedIssue": {
+      "code": "custom",
+      "path": ["graph", "nodes", 0, "resources", 1, "id"]
+    },
+    "input": {
+      "version": "0.1",
+      "runId": "run-duplicate-resource-id",
+      "query": {
+        "raw": "TypeScript resources",
+        "normalized": "TypeScript resources",
+        "language": "en"
+      },
+      "analysis": {
+        "intent": "learn",
+        "topic": "TypeScript resources",
+        "freshnessSensitive": false,
+        "ambiguityLevel": "low",
+        "broadSearchQueries": [],
+        "strategy": "plan_first",
+        "presentationMode": "graph"
+      },
+      "graph": {
+        "nodes": [
+          {
+            "id": "typescript-resources",
+            "title": "TypeScript 资源",
+            "description": "整理 TypeScript 官方学习资源。",
+            "nodeType": "primary",
+            "layer": 0,
+            "searchPlan": {
+              "queries": ["TypeScript official resources"],
+              "rankingProfile": "software",
+              "providerHints": ["code"]
+            },
+            "status": "ready",
+            "resources": [
+              {
+                "id": "duplicate-resource",
+                "title": "TypeScript Documentation",
+                "url": "https://www.typescriptlang.org/docs/",
+                "canonicalUrl": "https://www.typescriptlang.org/docs/",
+                "domain": "www.typescriptlang.org",
+                "sourceType": "official_docs",
+                "summary": "TypeScript 官方文档。",
+                "whySelected": "提供官方学习入口。",
+                "rank": 1,
+                "searchProvider": "fixture"
+              },
+              {
+                "id": "duplicate-resource",
+                "title": "TypeScript Handbook",
+                "url": "https://www.typescriptlang.org/docs/handbook/intro.html",
+                "canonicalUrl": "https://www.typescriptlang.org/docs/handbook/intro.html",
+                "domain": "www.typescriptlang.org",
+                "sourceType": "official_docs",
+                "summary": "TypeScript 官方手册。",
+                "whySelected": "提供系统学习材料。",
+                "rank": 2,
+                "searchProvider": "fixture"
+              }
+            ],
+            "warnings": []
+          }
+        ],
+        "edges": []
+      },
+      "meta": {
+        "createdAt": "2026-10-18T10:00:00Z",
+        "providersUsed": ["fixture"],
+        "partial": false,
+        "timingMs": {
+          "total": 10
+        }
+      }
+    }
+  },
+  {
+    "name": "duplicate-resource-rank",
+    "schema": "resultGraph",
+    "expectedIssue": {
+      "code": "custom",
+      "path": ["graph", "nodes", 0, "resources", 1, "rank"]
+    },
+    "input": {
+      "version": "0.1",
+      "runId": "run-duplicate-resource-rank",
+      "query": {
+        "raw": "TypeScript resources",
+        "normalized": "TypeScript resources",
+        "language": "en"
+      },
+      "analysis": {
+        "intent": "learn",
+        "topic": "TypeScript resources",
+        "freshnessSensitive": false,
+        "ambiguityLevel": "low",
+        "broadSearchQueries": [],
+        "strategy": "plan_first",
+        "presentationMode": "graph"
+      },
+      "graph": {
+        "nodes": [
+          {
+            "id": "typescript-resources",
+            "title": "TypeScript 资源",
+            "description": "整理 TypeScript 官方学习资源。",
+            "nodeType": "primary",
+            "layer": 0,
+            "searchPlan": {
+              "queries": ["TypeScript official resources"],
+              "rankingProfile": "software",
+              "providerHints": ["code"]
+            },
+            "status": "ready",
+            "resources": [
+              {
+                "id": "resource-docs",
+                "title": "TypeScript Documentation",
+                "url": "https://www.typescriptlang.org/docs/",
+                "canonicalUrl": "https://www.typescriptlang.org/docs/",
+                "domain": "www.typescriptlang.org",
+                "sourceType": "official_docs",
+                "summary": "TypeScript 官方文档。",
+                "whySelected": "提供官方学习入口。",
+                "rank": 1,
+                "searchProvider": "fixture"
+              },
+              {
+                "id": "resource-handbook",
+                "title": "TypeScript Handbook",
+                "url": "https://www.typescriptlang.org/docs/handbook/intro.html",
+                "canonicalUrl": "https://www.typescriptlang.org/docs/handbook/intro.html",
+                "domain": "www.typescriptlang.org",
+                "sourceType": "official_docs",
+                "summary": "TypeScript 官方手册。",
+                "whySelected": "提供系统学习材料。",
+                "rank": 1,
+                "searchProvider": "fixture"
+              }
+            ],
+            "warnings": []
+          }
+        ],
+        "edges": []
+      },
+      "meta": {
+        "createdAt": "2026-10-18T10:01:00Z",
+        "providersUsed": ["fixture"],
+        "partial": false,
+        "timingMs": {
+          "total": 10
+        }
+      }
+    }
+  },
+  {
+    "name": "bad-edge-target",
+    "schema": "resultGraph",
+    "expectedIssue": {
+      "code": "custom",
+      "path": ["graph", "edges", 0, "target"]
+    },
+    "input": {
+      "version": "0.1",
+      "runId": "run-bad-edge",
+      "query": {
+        "raw": "Unavailable topic",
+        "normalized": "Unavailable topic",
+        "language": "en"
+      },
+      "analysis": {
+        "intent": "learn",
+        "topic": "Unavailable topic",
+        "freshnessSensitive": false,
+        "ambiguityLevel": "low",
+        "broadSearchQueries": [],
+        "strategy": "plan_first",
+        "presentationMode": "graph"
+      },
+      "graph": {
+        "nodes": [
+          {
+            "id": "known-node",
+            "title": "已知节点",
+            "description": "用于验证 Edge 端点引用。",
+            "nodeType": "primary",
+            "layer": 0,
+            "searchPlan": {
+              "queries": ["Unavailable topic"],
+              "rankingProfile": "general",
+              "providerHints": ["general"]
+            },
+            "status": "failed",
+            "resources": [],
+            "warnings": [],
+            "error": {
+              "code": "SEARCH_PROVIDER_FAILED",
+              "retryable": true
+            }
+          }
+        ],
+        "edges": [
+          {
+            "id": "edge-to-missing-node",
+            "source": "known-node",
+            "target": "missing-node",
+            "type": "recommended_next"
+          }
+        ]
+      },
+      "meta": {
+        "createdAt": "2026-10-18T10:02:00Z",
+        "providersUsed": [],
+        "partial": true,
+        "timingMs": {
+          "total": 10
+        }
+      }
+    }
+  },
+  {
+    "name": "invalid-result-node-status",
+    "schema": "resultGraphNode",
+    "expectedIssue": {
+      "code": "invalid_union",
+      "path": ["status"]
+    },
+    "input": {
+      "id": "processing-node",
+      "title": "处理中节点",
+      "description": "最终结果不得残留处理中状态。",
+      "nodeType": "primary",
+      "layer": 0,
+      "searchPlan": {
+        "queries": ["processing node"],
+        "rankingProfile": "general",
+        "providerHints": ["general"]
+      },
+      "status": "searching"
+    }
+  },
+  {
+    "name": "wrong-meta-partial",
+    "schema": "resultGraph",
+    "expectedIssue": {
+      "code": "custom",
+      "path": ["meta", "partial"]
+    },
+    "input": {
+      "version": "0.1",
+      "runId": "run-wrong-meta-partial",
+      "query": {
+        "raw": "Unavailable topic",
+        "normalized": "Unavailable topic",
+        "language": "en"
+      },
+      "analysis": {
+        "intent": "learn",
+        "topic": "Unavailable topic",
+        "freshnessSensitive": false,
+        "ambiguityLevel": "low",
+        "broadSearchQueries": [],
+        "strategy": "plan_first",
+        "presentationMode": "graph"
+      },
+      "graph": {
+        "nodes": [
+          {
+            "id": "failed-node",
+            "title": "失败节点",
+            "description": "该节点没有可交付资源。",
+            "nodeType": "primary",
+            "layer": 0,
+            "searchPlan": {
+              "queries": ["Unavailable topic"],
+              "rankingProfile": "general",
+              "providerHints": ["general"]
+            },
+            "status": "failed",
+            "resources": [],
+            "warnings": [],
+            "error": {
+              "code": "SEARCH_PROVIDER_FAILED",
+              "retryable": true
+            }
+          }
+        ],
+        "edges": []
+      },
+      "meta": {
+        "createdAt": "2026-10-18T10:03:00Z",
+        "providersUsed": [],
+        "partial": false,
+        "timingMs": {
+          "total": 10
+        }
+      }
+    }
+  }
+]

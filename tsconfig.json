@@ -1,0 +1,10 @@
+{
+  // 根配置仅检查 Node.js 工具链测试，不生成产物或扫描本地私密文档。
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "lib": ["ES2023"],
+    "types": ["node"]
+  },
+  "include": ["tests/tooling/**/*.mts"]
+}

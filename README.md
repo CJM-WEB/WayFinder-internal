@@ -24,7 +24,7 @@ data/
 docs/                   预留的公开文档目录；本地资料不进入 Git
 ```
 
-项目使用 pnpm workspace 管理 Monorepo（单仓多包）。当前阶段只建立工程骨架；应用依赖、源码和运行命令将在 Contracts 阶段开始补充。
+项目使用 pnpm workspace 管理 Monorepo（单仓多包）。三个 Workspace 已接通严格 TypeScript 与真实质量门禁；产品依赖和功能由对应 D1 Issue 逐步补充。
 
 ## Pinned toolchain
 
@@ -126,18 +126,20 @@ pnpm install --frozen-lockfile
 
 ## Development commands
 
-根目录脚本会递归调用 Workspace 中已经存在的同名脚本：
+根质量脚本按固定包名逐个调用三个 Workspace，并使用 `--fail-if-no-match` 防止包名错误或 Workspace 缺失被静默跳过。`pnpm dev` 暂时只启动已经提供开发服务的 Workspace。
 
 | Command | Purpose |
 |---|---|
 | `pnpm dev` | 启动可用的开发服务 |
 | `pnpm typecheck` | 运行 TypeScript 类型检查 |
 | `pnpm lint` | 运行静态检查 |
+| `pnpm run schema:generate` | 从五个公共 Zod 根 Schema 显式更新 JSON Schema 产物 |
+| `pnpm run schema:check` | 只读检查 JSON Schema 是否缺失、变化或出现额外产物 |
 | `pnpm test` | 运行单元测试 |
 | `pnpm build` | 构建所有应用和 Package |
-| `pnpm run ci` | 按 CI 顺序运行 Lint、Typecheck、Tests 与 Build |
+| `pnpm run ci` | 按顺序运行 Lint、Typecheck、Schema Drift Check、Tests 与 Build |
 
-在对应 Package 脚本尚未实现时，根命令可能不会执行实际任务；不能把这种空运行误认为验证通过。
+当前单元测试已覆盖公共 Contract、JSON Schema 生成器和各 Workspace 工程链路；Web 与 Server 仍主要是 Smoke Test（冒烟测试），不能把工具链通过理解为产品功能已完成。
 
 ## Continuous integration
 
@@ -166,7 +168,9 @@ pnpm install --frozen-lockfile
 pnpm run ci
 ```
 
-现阶段子 Package 尚未配置真实的 Lint、Typecheck、Test 和 Build 脚本，因此这些质量门禁只是接好统一入口，不能把空运行理解为应用已经通过验证。引入 TypeScript、测试和构建工具后，应在对应 Package 中补齐同名脚本，并同步扩展根 `pnpm run ci`；Workflow 可以继续调用统一入口，不需要复制第二套流程。Contracts 生成器完成后，必须加入 JSON Schema drift check。
+三个生产 Workspace 均已配置真实的 Lint、Typecheck、Test 和 Build 脚本；根命令会显式执行每个 Workspace，并在缺包、缺脚本或失败时返回非零状态。根 CI 在类型检查后运行只读 `schema:check`，人工修改、遗漏或增加受检产物都会阻断后续 Test 与 Build。
+
+受跟踪的 JSON Schema 位于 `packages/contracts/json-schema/`，由 Zod 4 原生转换器生成。它们只表达 Zod 输入侧可表示的结构投影；`trim()` 后长度、`superRefine()` 和跨对象关系仍必须由运行时 Zod Schema 校验，不能用 JSON Schema 通过替代真实入口的 Zod parse。
 
 真实 Provider / LLM 调用、Golden Eval 与 Full Eval 不放在普通 CI 中，避免外部网络波动、凭据暴露和不受控成本。相关模块变更时仍须在受控环境运行相应 Eval。CI 失败时先修复第一个失败门禁，不能通过删测试或反复重跑等待偶然绿色；CI 绿色也不能替代人工 Diff 审核。
 

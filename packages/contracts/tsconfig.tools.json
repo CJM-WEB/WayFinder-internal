@@ -1,0 +1,10 @@
+{
+  // Node.js 24 直接执行 .mts；这里只允许可擦除 TypeScript 语法并验证显式 .ts 导入。
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "erasableSyntaxOnly": true
+  },
+  "include": ["scripts/**/*.mts"]
+}

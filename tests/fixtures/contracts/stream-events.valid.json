@@ -1,0 +1,199 @@
+[
+  {
+    "runId": "run-stream-fixture",
+    "sequence": 1,
+    "protocolVersion": "0.1",
+    "timestamp": "2026-10-18T09:00:01Z",
+    "type": "query.analysis",
+    "data": {
+      "intent": "learn",
+      "topic": "TypeScript strict mode",
+      "freshnessSensitive": false,
+      "ambiguityLevel": "low",
+      "broadSearchQueries": [],
+      "strategy": "plan_first",
+      "presentationMode": "graph"
+    }
+  },
+  {
+    "runId": "run-stream-fixture",
+    "sequence": 2,
+    "protocolVersion": "0.1",
+    "timestamp": "2026-10-18T09:00:02Z",
+    "type": "graph.plan",
+    "data": {
+      "analysis": {
+        "intent": "learn",
+        "topic": "TypeScript strict mode",
+        "freshnessSensitive": false,
+        "ambiguityLevel": "low",
+        "broadSearchQueries": [],
+        "strategy": "plan_first",
+        "presentationMode": "graph"
+      },
+      "nodes": [
+        {
+          "id": "typescript-strict",
+          "title": "TypeScript strict mode",
+          "description": "理解 TypeScript 严格模式的核心检查。",
+          "nodeType": "primary",
+          "layer": 0,
+          "searchPlan": {
+            "queries": ["TypeScript strict mode official docs"],
+            "rankingProfile": "software",
+            "providerHints": ["code"]
+          },
+          "status": "planned"
+        }
+      ],
+      "edges": []
+    }
+  },
+  {
+    "runId": "run-stream-fixture",
+    "sequence": 3,
+    "protocolVersion": "0.1",
+    "timestamp": "2026-10-18T09:00:03Z",
+    "type": "node.status",
+    "nodeId": "typescript-strict",
+    "status": "searching"
+  },
+  {
+    "runId": "run-stream-fixture",
+    "sequence": 4,
+    "protocolVersion": "0.1",
+    "timestamp": "2026-10-18T09:00:04Z",
+    "type": "node.ready",
+    "nodeId": "typescript-strict",
+    "resources": [
+      {
+        "id": "resource-tsconfig-strict",
+        "title": "TSConfig strict",
+        "url": "https://www.typescriptlang.org/tsconfig/strict.html",
+        "canonicalUrl": "https://www.typescriptlang.org/tsconfig/strict.html",
+        "domain": "www.typescriptlang.org",
+        "sourceType": "official_docs",
+        "summary": "TypeScript strict 编译选项的官方说明。",
+        "whySelected": "官方资料直接解释严格模式。",
+        "rank": 1,
+        "searchProvider": "tavily"
+      }
+    ],
+    "warnings": []
+  },
+  {
+    "runId": "run-stream-fixture",
+    "sequence": 5,
+    "protocolVersion": "0.1",
+    "timestamp": "2026-10-18T09:00:05Z",
+    "type": "node.partial",
+    "nodeId": "typescript-strict",
+    "resources": [
+      {
+        "id": "resource-tsconfig-options",
+        "title": "TSConfig Reference",
+        "url": "https://www.typescriptlang.org/tsconfig/",
+        "canonicalUrl": "https://www.typescriptlang.org/tsconfig/",
+        "domain": "www.typescriptlang.org",
+        "sourceType": "official_docs",
+        "summary": "TypeScript 编译选项参考。",
+        "whySelected": "可补充查询各项严格检查。",
+        "rank": 1,
+        "searchProvider": "tavily"
+      }
+    ],
+    "warnings": ["EXTRACTION_FAILED"]
+  },
+  {
+    "runId": "run-stream-fixture",
+    "sequence": 6,
+    "protocolVersion": "0.1",
+    "timestamp": "2026-10-18T09:00:06Z",
+    "type": "node.failed",
+    "nodeId": "typescript-strict",
+    "error": {
+      "code": "SEARCH_PROVIDER_FAILED",
+      "retryable": true
+    }
+  },
+  {
+    "runId": "run-stream-fixture",
+    "sequence": 7,
+    "protocolVersion": "0.1",
+    "timestamp": "2026-10-18T09:00:07Z",
+    "type": "complete",
+    "data": {
+      "finalStatus": "complete",
+      "result": {
+        "version": "0.1",
+        "runId": "run-stream-fixture",
+        "query": {
+          "raw": "TypeScript strict mode",
+          "normalized": "TypeScript strict mode",
+          "language": "en"
+        },
+        "analysis": {
+          "intent": "learn",
+          "topic": "TypeScript strict mode",
+          "freshnessSensitive": false,
+          "ambiguityLevel": "low",
+          "broadSearchQueries": [],
+          "strategy": "plan_first",
+          "presentationMode": "graph"
+        },
+        "graph": {
+          "nodes": [
+            {
+              "id": "typescript-strict",
+              "title": "TypeScript strict mode",
+              "description": "理解 TypeScript 严格模式的核心检查。",
+              "nodeType": "primary",
+              "layer": 0,
+              "searchPlan": {
+                "queries": ["TypeScript strict mode official docs"],
+                "rankingProfile": "software",
+                "providerHints": ["code"]
+              },
+              "status": "ready",
+              "resources": [
+                {
+                  "id": "resource-tsconfig-strict",
+                  "title": "TSConfig strict",
+                  "url": "https://www.typescriptlang.org/tsconfig/strict.html",
+                  "canonicalUrl": "https://www.typescriptlang.org/tsconfig/strict.html",
+                  "domain": "www.typescriptlang.org",
+                  "sourceType": "official_docs",
+                  "summary": "TypeScript strict 编译选项的官方说明。",
+                  "whySelected": "官方资料直接解释严格模式。",
+                  "rank": 1,
+                  "searchProvider": "tavily"
+                }
+              ],
+              "warnings": []
+            }
+          ],
+          "edges": []
+        },
+        "meta": {
+          "createdAt": "2026-10-18T09:00:07Z",
+          "providersUsed": ["tavily"],
+          "partial": false,
+          "timingMs": {
+            "total": 420
+          }
+        }
+      }
+    }
+  },
+  {
+    "runId": "run-stream-fixture",
+    "sequence": 8,
+    "protocolVersion": "0.1",
+    "timestamp": "2026-10-18T09:00:08Z",
+    "type": "run.failed",
+    "error": {
+      "code": "PLANNER_FAILED",
+      "retryable": true
+    }
+  }
+]

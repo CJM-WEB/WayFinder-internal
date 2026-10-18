@@ -1,0 +1,130 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "intent": {
+          "type": "string",
+          "enum": [
+            "learn",
+            "understand",
+            "news",
+            "compare",
+            "shop",
+            "navigate",
+            "how_to",
+            "mixed"
+          ]
+        },
+        "topic": {
+          "type": "string",
+          "minLength": 1
+        },
+        "freshnessSensitive": {
+          "type": "boolean"
+        },
+        "ambiguityLevel": {
+          "type": "string",
+          "enum": [
+            "low",
+            "medium",
+            "high"
+          ]
+        },
+        "presentationMode": {
+          "type": "string",
+          "enum": [
+            "graph",
+            "compact"
+          ]
+        },
+        "broadSearchQueries": {
+          "maxItems": 0,
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "strategy": {
+          "type": "string",
+          "const": "plan_first"
+        }
+      },
+      "required": [
+        "intent",
+        "topic",
+        "freshnessSensitive",
+        "ambiguityLevel",
+        "presentationMode",
+        "broadSearchQueries",
+        "strategy"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "intent": {
+          "type": "string",
+          "enum": [
+            "learn",
+            "understand",
+            "news",
+            "compare",
+            "shop",
+            "navigate",
+            "how_to",
+            "mixed"
+          ]
+        },
+        "topic": {
+          "type": "string",
+          "minLength": 1
+        },
+        "freshnessSensitive": {
+          "type": "boolean"
+        },
+        "ambiguityLevel": {
+          "type": "string",
+          "enum": [
+            "low",
+            "medium",
+            "high"
+          ]
+        },
+        "presentationMode": {
+          "type": "string",
+          "enum": [
+            "graph",
+            "compact"
+          ]
+        },
+        "broadSearchQueries": {
+          "minItems": 1,
+          "maxItems": 3,
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "strategy": {
+          "type": "string",
+          "const": "evidence_assisted"
+        }
+      },
+      "required": [
+        "intent",
+        "topic",
+        "freshnessSensitive",
+        "ambiguityLevel",
+        "presentationMode",
+        "broadSearchQueries",
+        "strategy"
+      ],
+      "additionalProperties": false
+    }
+  ]
+}

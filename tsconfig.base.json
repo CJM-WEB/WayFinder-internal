@@ -1,0 +1,16 @@
+{
+  // 统一严格类型检查与 NodeNext 模块规则；环境类型由各 Workspace 显式声明。
+  "compilerOptions": {
+    "target": "ES2023",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    // 防止 Windows 不区分大小写而 CI/Linux 区分大小写造成导入失败。
+    "forceConsistentCasingInFileNames": true,
+    "moduleDetection": "force",
+    "noEmitOnError": true,
+    "verbatimModuleSyntax": true
+  }
+}

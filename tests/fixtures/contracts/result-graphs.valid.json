@@ -1,0 +1,170 @@
+{
+  "ready": {
+    "version": "0.1",
+    "runId": "run-fixture-ready",
+    "query": {
+      "raw": "VS Code download",
+      "normalized": "VS Code download",
+      "language": "en"
+    },
+    "analysis": {
+      "intent": "navigate",
+      "topic": "VS Code download",
+      "freshnessSensitive": false,
+      "ambiguityLevel": "low",
+      "broadSearchQueries": [],
+      "strategy": "plan_first",
+      "presentationMode": "compact"
+    },
+    "graph": {
+      "nodes": [
+        {
+          "id": "vscode-download",
+          "title": "VS Code 官方下载",
+          "description": "找到适合当前系统的 Visual Studio Code 官方下载入口。",
+          "nodeType": "primary",
+          "layer": 0,
+          "searchPlan": {
+            "queries": ["Visual Studio Code official download"],
+            "rankingProfile": "software",
+            "providerHints": ["general"]
+          },
+          "status": "ready",
+          "resources": [
+            {
+              "id": "resource-vscode-download",
+              "title": "Download Visual Studio Code",
+              "url": "https://code.visualstudio.com/download",
+              "canonicalUrl": "https://code.visualstudio.com/download",
+              "domain": "code.visualstudio.com",
+              "sourceType": "official_download",
+              "summary": "Visual Studio Code 官方下载页面。",
+              "whySelected": "官方一手来源，直接满足下载意图。",
+              "rank": 1,
+              "searchProvider": "tavily"
+            }
+          ],
+          "warnings": []
+        }
+      ],
+      "edges": []
+    },
+    "meta": {
+      "createdAt": "2026-10-18T08:00:00Z",
+      "providersUsed": ["tavily"],
+      "partial": false,
+      "timingMs": {
+        "total": 120
+      }
+    }
+  },
+  "partial": {
+    "version": "0.1",
+    "runId": "run-fixture-partial",
+    "query": {
+      "raw": "Python tutorial",
+      "normalized": "Python tutorial",
+      "language": "en"
+    },
+    "analysis": {
+      "intent": "learn",
+      "topic": "Python tutorial",
+      "freshnessSensitive": false,
+      "ambiguityLevel": "low",
+      "broadSearchQueries": [],
+      "strategy": "plan_first",
+      "presentationMode": "graph"
+    },
+    "graph": {
+      "nodes": [
+        {
+          "id": "python-tutorial",
+          "title": "Python 官方教程",
+          "description": "从官方教程开始学习 Python。",
+          "nodeType": "primary",
+          "layer": 0,
+          "searchPlan": {
+            "queries": ["Python official tutorial"],
+            "rankingProfile": "knowledge",
+            "providerHints": ["general"]
+          },
+          "status": "partial",
+          "resources": [
+            {
+              "id": "resource-python-tutorial",
+              "title": "The Python Tutorial",
+              "url": "https://docs.python.org/3/tutorial/",
+              "canonicalUrl": "https://docs.python.org/3/tutorial/",
+              "domain": "docs.python.org",
+              "sourceType": "official_docs",
+              "summary": "Python 官方入门教程。",
+              "whySelected": "官方资料完整覆盖基础学习路径。",
+              "rank": 1,
+              "searchProvider": "tavily"
+            }
+          ],
+          "warnings": ["EXTRACTION_FAILED"]
+        }
+      ],
+      "edges": []
+    },
+    "meta": {
+      "createdAt": "2026-10-18T08:01:00Z",
+      "providersUsed": ["tavily"],
+      "partial": true,
+      "timingMs": {
+        "total": 240
+      }
+    }
+  },
+  "failed": {
+    "version": "0.1",
+    "runId": "run-fixture-failed",
+    "query": {
+      "raw": "Unavailable topic",
+      "normalized": "Unavailable topic",
+      "language": "en"
+    },
+    "analysis": {
+      "intent": "learn",
+      "topic": "Unavailable topic",
+      "freshnessSensitive": false,
+      "ambiguityLevel": "low",
+      "broadSearchQueries": [],
+      "strategy": "plan_first",
+      "presentationMode": "graph"
+    },
+    "graph": {
+      "nodes": [
+        {
+          "id": "unavailable-topic",
+          "title": "暂无可用结果",
+          "description": "该节点未能获得可交付资源。",
+          "nodeType": "primary",
+          "layer": 0,
+          "searchPlan": {
+            "queries": ["Unavailable topic"],
+            "rankingProfile": "general",
+            "providerHints": ["general"]
+          },
+          "status": "failed",
+          "resources": [],
+          "warnings": [],
+          "error": {
+            "code": "SEARCH_PROVIDER_FAILED",
+            "retryable": true
+          }
+        }
+      ],
+      "edges": []
+    },
+    "meta": {
+      "createdAt": "2026-10-18T08:02:00Z",
+      "providersUsed": [],
+      "partial": true,
+      "timingMs": {
+        "total": 300
+      }
+    }
+  }
+}
