@@ -16,7 +16,8 @@ export default defineConfig(
     extends: [js.configs.recommended],
   },
   {
-    files: ["**/*.{ts,mts}"],
+    // React 源码使用 TSX；必须进入与普通 TypeScript 相同的严格规则集。
+    files: ["**/*.{ts,tsx,mts}"],
     extends: [js.configs.recommended, tseslint.configs.recommended],
     rules: {
       // strict 只能阻止隐式 any；这条规则额外阻止开发者主动写显式 any。
