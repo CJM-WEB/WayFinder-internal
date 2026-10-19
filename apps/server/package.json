@@ -6,7 +6,12 @@
   "scripts": {
     "build": "tsc --project tsconfig.build.json && node --input-type=module --eval \"await import('./dist/index.js')\"",
     "lint": "eslint src --max-warnings=0",
+    "start": "node dist/main.js",
     "test": "vitest run",
     "typecheck": "tsc --project tsconfig.build.json --noEmit && tsc --project tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "fastify": "5.12.7",
+    "zod": "4.6.7"
   }
 }
