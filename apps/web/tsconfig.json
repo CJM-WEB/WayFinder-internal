@@ -3,6 +3,9 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "noEmit": true,
+    // React Flow 与 Dagre 的发布声明暂不兼容本项目的严格 NodeNext 检查；仅跳过依赖声明内部检查，
+    // 本应用源码仍继承 strict 与 exactOptionalPropertyTypes，Contract Workspace 也继续独立检查。
+    "skipLibCheck": true,
     "lib": ["ES2023", "DOM", "DOM.Iterable"],
     "types": ["node", "vite/client"],
     "jsx": "react-jsx",

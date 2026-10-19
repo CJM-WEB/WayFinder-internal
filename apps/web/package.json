@@ -11,7 +11,9 @@
     "typecheck": "tsc --project tsconfig.build.json --noEmit && tsc --project tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@dagrejs/dagre": "3.1.1",
     "@wayfinder/contracts": "workspace:*",
+    "@xyflow/react": "12.12.0",
     "react": "19.3.1",
     "react-dom": "19.3.1",
     "zustand": "5.0.15"

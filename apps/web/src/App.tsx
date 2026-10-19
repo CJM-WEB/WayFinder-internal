@@ -1,30 +1,24 @@
-/**
- * 组件职责：提供 WAY-27 的最小 React UI shell，并证明组件能够订阅 Graph store。
- *
- * 范围边界：Graph 绘制、Mock 数据、Node 交互和 Resource Panel 由后续 Issue 实现。
- */
+/** 组件职责：组合 WAY-30 的页面标题、运行摘要与 Graph 结果画布。 */
 import { useStore } from "zustand";
 
-import { graphStore, selectSelectedNode } from "./stores/graph-store.js";
+import { GraphView } from "./components/Graph/GraphView.js";
+import { graphStore } from "./stores/graph-store.js";
 
 export function App() {
   const query = useStore(graphStore, state => state.query);
   const nodeCount = useStore(graphStore, state => state.nodes.length);
   const isSearching = useStore(graphStore, state => state.isSearching);
-  const selectedNode = useStore(graphStore, selectSelectedNode);
-
-  const searchStateLabel = isSearching ? "搜索中" : "空闲";
+  const searchStateLabel = isSearching ? "搜索中" : "已完成";
 
   return (
-    <main>
-      <header>
-        <h1>WayFinder</h1>
-        <p>Graph is the search result page.</p>
-      </header>
+    <main className="app-shell">
+      <header className="app-header">
+        <div className="app-header__intro">
+          <p>Graph is the search result page</p>
+          <h1>WayFinder</h1>
+        </div>
 
-      <section aria-labelledby="graph-shell-title">
-        <h2 id="graph-shell-title">Graph Shell</h2>
-        <dl>
+        <dl className="app-summary" aria-label="搜索摘要">
           <div>
             <dt>当前查询</dt>
             <dd>{query || "尚未开始"}</dd>
@@ -37,11 +31,15 @@ export function App() {
             <dt>节点数量</dt>
             <dd>{nodeCount}</dd>
           </div>
-          <div>
-            <dt>选中节点</dt>
-            <dd>{selectedNode?.title ?? "未选择"}</dd>
-          </div>
         </dl>
+      </header>
+
+      <section className="graph-section" aria-labelledby="graph-title">
+        <div className="graph-section__header">
+          <h2 id="graph-title">Python 学习路径</h2>
+          <p>滚轮缩放 · 拖动画布 · 控件复位</p>
+        </div>
+        <GraphView />
       </section>
     </main>
   );
