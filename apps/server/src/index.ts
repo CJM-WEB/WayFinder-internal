@@ -1,8 +1,13 @@
 /**
- * 模块职责：提供 WAY-16 所需的最小可编译入口。
+ * 模块职责：暴露无启动副作用的 Server 公共构建能力。
  *
- * 关键约束：
- * - 本标识没有 API、路由或 Provider（提供方）语义，也不是服务启动入口。
- * - WAY-28 建立真实 Fastify 入口时，应删除本标识及对应 smoke test。
+ * 构建流程会动态导入本入口，因此这里不能读取环境变量、校验 Secret、
+ * 监听端口或输出日志；真实进程入口固定为 `main.ts`。
  */
-export const workspaceId = "@wayfinder/server" as const;
+export { buildServer } from "./app.js";
+export {
+  RUN_DEADLINE_MS,
+  ServerConfigError,
+  parseServerConfig,
+} from "./config.js";
+export type { ServerConfig } from "./config.js";
