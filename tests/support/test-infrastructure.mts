@@ -179,7 +179,8 @@ export type FakeSearchProviderOptions = {
  */
 export class FakeSearchProvider {
   readonly id = "fake-search";
-  readonly capabilities: readonly SearchCapability[] = ["general"];
+  // 数组本身保留可变类型，以结构兼容批准架构中的 SearchProvider Port。
+  readonly capabilities: SearchCapability[] = ["general"];
   readonly searchCalls: Array<{
     request: ProviderSearchRequest;
     signal: AbortSignal | undefined;
