@@ -12,11 +12,11 @@
     "build": "pnpm --filter @wayfinder/contracts --fail-if-no-match run build && pnpm --filter @wayfinder/web --fail-if-no-match run build && pnpm --filter @wayfinder/server --fail-if-no-match run build",
     "ci": "pnpm run lint && pnpm run typecheck && pnpm run schema:check && pnpm run test && pnpm run build",
     "dev": "pnpm -r --parallel --if-present run dev",
-    "lint": "eslint eslint.config.mjs tests/tooling --max-warnings=0 && pnpm --filter @wayfinder/contracts --fail-if-no-match run lint && pnpm --filter @wayfinder/web --fail-if-no-match run lint && pnpm --filter @wayfinder/server --fail-if-no-match run lint",
+    "lint": "eslint eslint.config.mjs tests --max-warnings=0 && pnpm --filter @wayfinder/contracts --fail-if-no-match run lint && pnpm --filter @wayfinder/web --fail-if-no-match run lint && pnpm --filter @wayfinder/server --fail-if-no-match run lint",
     "schema:check": "pnpm --filter @wayfinder/contracts --fail-if-no-match run schema:check",
     "schema:generate": "pnpm --filter @wayfinder/contracts --fail-if-no-match run schema:generate",
     "test": "pnpm run test:tooling && pnpm --filter @wayfinder/contracts --fail-if-no-match run test && pnpm --filter @wayfinder/web --fail-if-no-match run test && pnpm --filter @wayfinder/server --fail-if-no-match run test",
-    "test:tooling": "vitest run tests/tooling/workspace-quality.test.mts",
+    "test:tooling": "vitest run tests",
     "typecheck": "tsc --project tsconfig.json --noEmit && pnpm --filter @wayfinder/contracts --fail-if-no-match run typecheck && pnpm --filter @wayfinder/web --fail-if-no-match run typecheck && pnpm --filter @wayfinder/server --fail-if-no-match run typecheck"
   },
   "devDependencies": {
