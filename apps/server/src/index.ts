@@ -11,3 +11,10 @@ export {
   parseServerConfig,
 } from "./config.js";
 export type { ServerConfig } from "./config.js";
+export type { SearchProvider } from "./search/provider.js";
+export {
+  selectSearchProvider,
+} from "./search/router.js";
+export type {
+  SelectSearchProviderInput,
+} from "./search/router.js";
