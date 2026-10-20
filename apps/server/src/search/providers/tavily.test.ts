@@ -30,12 +30,19 @@ function jsonResponse(body: unknown, status = 200): Response {
 
 function createProvider(
   fetchImplementation: typeof fetch,
-  timeouts: { searchMs?: number; extractMs?: number } = {},
+  timeouts: {
+    searchMs?: number;
+    extractMs?: number;
+    searchRetryMs?: number;
+    extractRetryMs?: number;
+  } = {},
 ): TavilySearchProvider {
   return new TavilySearchProvider({
     apiKey: "test-tavily-key",
     searchTimeoutMs: timeouts.searchMs ?? 1_000,
     extractTimeoutMs: timeouts.extractMs ?? 1_000,
+    searchRetryTimeoutMs: timeouts.searchRetryMs ?? 10,
+    extractRetryTimeoutMs: timeouts.extractRetryMs ?? 10,
     fetchImplementation,
   });
 }
@@ -205,7 +212,7 @@ describe("TavilySearchProvider.search", () => {
     expect(fetchImplementation).not.toHaveBeenCalled();
   });
 
-  it("单次调用 Timeout 可中止等待中的外部请求", async () => {
+  it("两次 Timeout 后停止且返回可重试的 Provider 错误", async () => {
     const fetchImplementation = vi.fn<typeof fetch>((_url, init) =>
       new Promise((_resolve, reject) => {
         const signal = init?.signal;
@@ -221,13 +228,19 @@ describe("TavilySearchProvider.search", () => {
     );
 
     await expect(
-      createProvider(fetchImplementation, { searchMs: 5 }).search(
-        SEARCH_REQUEST,
-      ),
-    ).rejects.toMatchObject({ name: "TimeoutError" });
+      createProvider(fetchImplementation, {
+        searchMs: 5,
+        searchRetryMs: 5,
+      }).search(SEARCH_REQUEST),
+    ).rejects.toMatchObject({
+      name: "TavilyProviderError",
+      code: "SEARCH_PROVIDER_FAILED",
+      retryable: true,
+    });
+    expect(fetchImplementation).toHaveBeenCalledTimes(2);
   });
 
-  it("读取响应正文期间超时仍保留 Timeout 取消语义", async () => {
+  it("读取响应正文期间的 Provider Timeout 同样最多重试一次", async () => {
     const fetchImplementation = vi.fn<typeof fetch>((_url, init) => {
       const signal = init?.signal;
       if (signal === null || signal === undefined) {
@@ -247,10 +260,16 @@ describe("TavilySearchProvider.search", () => {
     });
 
     await expect(
-      createProvider(fetchImplementation, { searchMs: 5 }).search(
-        SEARCH_REQUEST,
-      ),
-    ).rejects.toMatchObject({ name: "TimeoutError" });
+      createProvider(fetchImplementation, {
+        searchMs: 5,
+        searchRetryMs: 5,
+      }).search(SEARCH_REQUEST),
+    ).rejects.toMatchObject({
+      name: "TavilyProviderError",
+      code: "SEARCH_PROVIDER_FAILED",
+      retryable: true,
+    });
+    expect(fetchImplementation).toHaveBeenCalledTimes(2);
   });
 });
 

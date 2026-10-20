@@ -8,6 +8,7 @@
  * - 每次外部调用同时组合调用方 AbortSignal 与单次 Timeout，且 Timeout 不得突破全局 Run Deadline。
  */
 import type {
+  AppErrorCode,
   ExtractedPage,
   NormalizedSearchHit,
   ProviderSearchRequest,
@@ -22,6 +23,34 @@ const TAVILY_SEARCH_URL = "https://api.tavily.com/search";
 const TAVILY_EXTRACT_URL = "https://api.tavily.com/extract";
 const TAVILY_MAX_RESULTS = 20;
 const TAVILY_MAX_EXTRACT_URLS = 20;
+const MAX_ATTEMPTS = 2;
+
+/*
+ * WAY-46 在 2026-10-20 使用 6 条 Golden Queries 顺序执行 4 轮真实调用：
+ * Search 24 个成功样本的平均值/P95 为 722/2035ms，Extract 为 1192/3051ms。
+ * 按 max(平均值×1.5, P95×1.2) 向上取整至 100ms，得到短重试预算。
+ */
+const DEFAULT_SEARCH_RETRY_TIMEOUT_MS = 2_500;
+const DEFAULT_EXTRACT_RETRY_TIMEOUT_MS = 3_700;
+
+const RETRYABLE_HTTP_STATUSES = new Set([408, 429, 500, 502, 503, 504]);
+const NETWORK_ERROR_CODES = new Set([
+  "EAI_AGAIN",
+  "ECONNABORTED",
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "EHOSTDOWN",
+  "EHOSTUNREACH",
+  "ENETDOWN",
+  "ENETRESET",
+  "ENETUNREACH",
+  "ENOTFOUND",
+  "EPIPE",
+  "EPROTO",
+  "ETIMEDOUT",
+  "ERR_NETWORK",
+  "ERR_SOCKET_CONNECTION_TIMEOUT",
+]);
 
 const HttpUrlSchema = z
   .string()
@@ -63,6 +92,8 @@ export type TavilySearchProviderOptions = {
   apiKey: string;
   searchTimeoutMs: number;
   extractTimeoutMs: number;
+  searchRetryTimeoutMs?: number;
+  extractRetryTimeoutMs?: number;
   fetchImplementation?: typeof fetch;
 };
 
@@ -70,7 +101,13 @@ export type TavilySearchProviderOptions = {
  * Adapter 错误只保存稳定的分类信息，不附带 Secret、请求头、响应正文或完整原始对象。
  */
 export class TavilyProviderError extends Error {
-  public constructor(message: string) {
+  public readonly code: Extract<AppErrorCode, "SEARCH_PROVIDER_FAILED"> =
+    "SEARCH_PROVIDER_FAILED";
+
+  public constructor(
+    message: string,
+    public readonly retryable = false,
+  ) {
     super(message);
     this.name = "TavilyProviderError";
   }
@@ -83,6 +120,8 @@ export class TavilySearchProvider implements SearchProvider {
   private readonly apiKey: string;
   private readonly searchTimeoutMs: number;
   private readonly extractTimeoutMs: number;
+  private readonly searchRetryTimeoutMs: number;
+  private readonly extractRetryTimeoutMs: number;
   private readonly fetchImplementation: typeof fetch;
 
   public constructor(options: TavilySearchProviderOptions) {
@@ -97,6 +136,18 @@ export class TavilySearchProvider implements SearchProvider {
     this.apiKey = apiKey;
     this.searchTimeoutMs = options.searchTimeoutMs;
     this.extractTimeoutMs = options.extractTimeoutMs;
+    this.searchRetryTimeoutMs = resolveRetryTimeout(
+      "Search",
+      options.searchTimeoutMs,
+      options.searchRetryTimeoutMs,
+      DEFAULT_SEARCH_RETRY_TIMEOUT_MS,
+    );
+    this.extractRetryTimeoutMs = resolveRetryTimeout(
+      "Extract",
+      options.extractTimeoutMs,
+      options.extractRetryTimeoutMs,
+      DEFAULT_EXTRACT_RETRY_TIMEOUT_MS,
+    );
     this.fetchImplementation = options.fetchImplementation ?? fetch;
   }
 
@@ -124,6 +175,7 @@ export class TavilySearchProvider implements SearchProvider {
       },
       "Search",
       this.searchTimeoutMs,
+      this.searchRetryTimeoutMs,
       signal,
     );
     const parsedResponse = TavilySearchResponseSchema.safeParse(rawResponse);
@@ -186,6 +238,7 @@ export class TavilySearchProvider implements SearchProvider {
       },
       "Extract",
       this.extractTimeoutMs,
+      this.extractRetryTimeoutMs,
       signal,
     );
     const parsedResponse = TavilyExtractResponseSchema.safeParse(rawResponse);
@@ -222,44 +275,261 @@ export class TavilySearchProvider implements SearchProvider {
     body: Readonly<Record<string, unknown>>,
     operation: "Search" | "Extract",
     timeoutMs: number,
+    retryTimeoutMs: number,
     callerSignal?: AbortSignal,
   ): Promise<unknown> {
+    let lastRetryableMessage = `Tavily ${operation} 网络请求失败`;
+
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
+      const attemptTimeoutMs = attempt === 0 ? timeoutMs : retryTimeoutMs;
+      const outcome = await this.runAttempt(
+        url,
+        body,
+        operation,
+        attemptTimeoutMs,
+        callerSignal,
+      );
+
+      if (outcome.kind === "success") {
+        return outcome.rawResponse;
+      }
+      if (outcome.kind === "terminal") {
+        throw outcome.error;
+      }
+
+      lastRetryableMessage = outcome.message;
+    }
+
+    throw new TavilyProviderError(lastRetryableMessage, true);
+  }
+
+  /**
+   * 单次尝试只负责分类，不在此处递归重试；外层固定两轮循环从结构上保证
+   * 错误类型不会叠加成第三次调用。调用方 Signal 永远优先于本地 Timeout。
+   */
+  private async runAttempt(
+    url: string,
+    body: Readonly<Record<string, unknown>>,
+    operation: "Search" | "Extract",
+    timeoutMs: number,
+    callerSignal?: AbortSignal,
+  ): Promise<AttemptOutcome> {
     const timeoutSignal = AbortSignal.timeout(timeoutMs);
     const requestSignal = callerSignal
       ? AbortSignal.any([callerSignal, timeoutSignal])
       : timeoutSignal;
 
-    // 已取消的 Run 必须在任何网络副作用前终止。
+    // 已取消的 Run 必须在任何网络副作用前终止，并保留其原始 reason。
+    callerSignal?.throwIfAborted();
     requestSignal.throwIfAborted();
 
-    const response = await this.fetchImplementation(url, {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${this.apiKey}`,
-        "content-type": "application/json",
-      },
-      body: JSON.stringify(body),
-      signal: requestSignal,
-    });
+    let response: Response;
+    try {
+      response = await this.fetchImplementation(url, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${this.apiKey}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify(body),
+        signal: requestSignal,
+      });
+    } catch (error) {
+      return classifyAttemptError(
+        error,
+        operation,
+        timeoutSignal,
+        callerSignal,
+      );
+    }
+
+    callerSignal?.throwIfAborted();
+    if (timeoutSignal.aborted) {
+      return {
+        kind: "retryable",
+        message: `Tavily ${operation} 请求超时`,
+      };
+    }
 
     if (!response.ok) {
-      throw new TavilyProviderError(
-        `Tavily ${operation} 请求失败（HTTP ${response.status}）`,
-      );
+      // HTTP 错误也可能携带未读完的流。重试前先释放正文，避免首个请求继续
+      // 占用 undici 连接；清理失败不暴露底层错误，但 Run 取消仍拥有最高优先级。
+      try {
+        await cancelResponseBody(response, requestSignal);
+      } catch (error) {
+        return classifyAttemptError(
+          error,
+          operation,
+          timeoutSignal,
+          callerSignal,
+        );
+      }
+      callerSignal?.throwIfAborted();
+      if (timeoutSignal.aborted) {
+        return {
+          kind: "retryable",
+          message: `Tavily ${operation} 请求超时`,
+        };
+      }
+      const message = `Tavily ${operation} 请求失败（HTTP ${response.status}）`;
+      return RETRYABLE_HTTP_STATUSES.has(response.status)
+        ? { kind: "retryable", message }
+        : {
+            kind: "terminal",
+            error: new TavilyProviderError(message),
+          };
     }
 
     try {
       const rawResponse: unknown = await response.json();
-      return rawResponse;
-    } catch {
-      // Body 读取同样受组合信号约束；取消原因必须原样交给上层状态机处理。
-      requestSignal.throwIfAborted();
-      throw new TavilyProviderError(`Tavily ${operation} 响应不是有效 JSON`);
+      callerSignal?.throwIfAborted();
+      timeoutSignal.throwIfAborted();
+      return { kind: "success", rawResponse };
+    } catch (error) {
+      const classified = classifyAttemptError(
+        error,
+        operation,
+        timeoutSignal,
+        callerSignal,
+      );
+      if (classified.kind === "terminal") {
+        return {
+          kind: "terminal",
+          error: new TavilyProviderError(
+            `Tavily ${operation} 响应不是有效 JSON`,
+          ),
+        };
+      }
+      return classified;
     }
   }
 }
 
-function assertTimeout(operation: "Search" | "Extract", timeoutMs: number): void {
+/**
+ * 尽力释放 HTTP 错误响应正文，保证后续重试能够复用连接。
+ *
+ * 正文取消属于资源清理：失败时继续沿用已经确定的 HTTP 分类，既不泄漏第三方
+ * 错误细节，也不把清理失败误判成新的网络故障；但调用方 Run Signal 的原始
+ * reason 必须在清理前后直接传播，交由 Orchestrator 统一映射。
+ */
+async function cancelResponseBody(
+  response: Response,
+  requestSignal: AbortSignal,
+): Promise<void> {
+  requestSignal.throwIfAborted();
+  if (response.body === null) {
+    return;
+  }
+
+  try {
+    await awaitWithAbortSignal(response.body.cancel(), requestSignal);
+  } catch {
+    requestSignal.throwIfAborted();
+  }
+  requestSignal.throwIfAborted();
+}
+
+/**
+ * 将可能永不结束的资源清理与当前尝试 Signal 竞速。
+ *
+ * 即使 Signal 在注册监听器的极短窗口内已经触发，注册后的二次检查也会立即
+ * 拒绝；原 Promise 始终保留成功/失败处理器，避免竞速结束后出现未处理拒绝。
+ */
+function awaitWithAbortSignal<T>(
+  operation: Promise<T>,
+  signal: AbortSignal,
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => {
+      signal.removeEventListener("abort", onAbort);
+      reject(signal.reason);
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+
+    operation.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      },
+    );
+
+    if (signal.aborted) {
+      onAbort();
+    }
+  });
+}
+
+type AttemptOutcome =
+  | { kind: "success"; rawResponse: unknown }
+  | { kind: "retryable"; message: string }
+  | { kind: "terminal"; error: TavilyProviderError };
+
+function classifyAttemptError(
+  error: unknown,
+  operation: "Search" | "Extract",
+  timeoutSignal: AbortSignal,
+  callerSignal?: AbortSignal,
+): Exclude<AttemptOutcome, { kind: "success" }> {
+  // Run Deadline 与用户取消优先，Adapter 不改写、不记录也不重试。
+  callerSignal?.throwIfAborted();
+
+  if (timeoutSignal.aborted) {
+    return {
+      kind: "retryable",
+      message: `Tavily ${operation} 请求超时`,
+    };
+  }
+  if (isNetworkConnectionError(error)) {
+    return {
+      kind: "retryable",
+      message: `Tavily ${operation} 网络请求失败`,
+    };
+  }
+
+  return {
+    kind: "terminal",
+    error: new TavilyProviderError(`Tavily ${operation} 请求失败`),
+  };
+}
+
+/**
+ * Node 原生 fetch 将 DNS/TCP/TLS/Socket 失败包装为 TypeError；同时检查 cause
+ * 中常见系统错误码，兼容测试替身与后续底层实现，且不依赖可能含 URL 的 message。
+ */
+function isNetworkConnectionError(error: unknown): boolean {
+  if (error instanceof TypeError) {
+    return true;
+  }
+  if (error instanceof DOMException && error.name === "NetworkError") {
+    return true;
+  }
+
+  let current: unknown = error;
+  for (let depth = 0; depth < 4; depth += 1) {
+    if (typeof current !== "object" || current === null) {
+      return false;
+    }
+    const code = Reflect.get(current, "code");
+    if (
+      typeof code === "string" &&
+      (NETWORK_ERROR_CODES.has(code) || code.startsWith("UND_ERR_"))
+    ) {
+      return true;
+    }
+    current = Reflect.get(current, "cause");
+  }
+
+  return false;
+}
+
+function assertTimeout(
+  operation: "Search" | "Extract" | "Search Retry" | "Extract Retry",
+  timeoutMs: number,
+): void {
   if (
     !Number.isInteger(timeoutMs) ||
     timeoutMs < 1 ||
@@ -269,4 +539,22 @@ function assertTimeout(operation: "Search" | "Extract", timeoutMs: number): void
       `Tavily ${operation} Timeout 必须为 1-${RUN_DEADLINE_MS} 毫秒的整数`,
     );
   }
+}
+
+function resolveRetryTimeout(
+  operation: "Search" | "Extract",
+  configuredTimeoutMs: number,
+  requestedRetryTimeoutMs: number | undefined,
+  measuredDefaultMs: number,
+): number {
+  const retryTimeoutMs =
+    requestedRetryTimeoutMs ?? Math.min(measuredDefaultMs, configuredTimeoutMs);
+  assertTimeout(`${operation} Retry`, retryTimeoutMs);
+
+  if (retryTimeoutMs > configuredTimeoutMs) {
+    throw new TavilyProviderError(
+      `Tavily ${operation} Retry Timeout 不能超过首次调用 Timeout`,
+    );
+  }
+  return retryTimeoutMs;
 }
