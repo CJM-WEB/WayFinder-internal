@@ -1,14 +1,16 @@
 {
-  // 仅构建生产源码；测试继续由完整检查配置校验。
+  // Vite 负责生成浏览器产物；本配置只对生产源码执行严格类型检查。
   "extends": "./tsconfig.json",
   "compilerOptions": {
-    "noEmit": false,
-    "outDir": "dist",
-    "rootDir": "src",
-    "lib": ["ES2023"],
+    "noEmit": true,
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
     // 覆盖测试配置继承的 Node 类型，避免生产源码误用环境全局。
     "types": []
   },
-  "include": ["src/**/*.ts"],
-  "exclude": ["src/**/*.test.ts"]
+  "include": ["src/**/*.ts", "src/**/*.tsx"],
+  "exclude": [
+    "src/**/*.test.ts",
+    "src/**/*.test.tsx",
+    "src/testing/**/*.ts"
+  ]
 }

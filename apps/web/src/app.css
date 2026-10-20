@@ -1,0 +1,526 @@
+:root {
+  color: #15271f;
+  background: #f4f8f4;
+  font-family:
+    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+.app-shell {
+  width: min(1180px, calc(100% - 32px));
+  margin: 0 auto;
+  padding: 32px 0;
+}
+
+.app-header {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 24px;
+  margin-bottom: 20px;
+}
+
+.app-header__intro p,
+.app-header__intro h1,
+.graph-node__content p,
+.graph-node__content h3 {
+  margin: 0;
+}
+
+.app-header__intro p {
+  margin-bottom: 6px;
+  color: #4c695b;
+  font-size: 0.82rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.app-header__intro h1 {
+  font-size: clamp(2rem, 5vw, 3.5rem);
+  letter-spacing: -0.055em;
+}
+
+.app-summary {
+  display: flex;
+  gap: 10px;
+  margin: 0;
+}
+
+.app-summary div {
+  min-width: 110px;
+  padding: 10px 14px;
+  border: 1px solid #d7e2da;
+  border-radius: 14px;
+  background: rgb(255 255 255 / 78%);
+}
+
+.app-summary dt {
+  color: #61786c;
+  font-size: 0.72rem;
+}
+
+.app-summary dd {
+  margin: 3px 0 0;
+  font-weight: 700;
+}
+
+.graph-section {
+  overflow: hidden;
+  border: 1px solid #d4e0d7;
+  border-radius: 24px;
+  background: #fff;
+  box-shadow: 0 18px 45px rgb(37 71 52 / 10%);
+}
+
+.graph-section__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 18px 22px;
+  border-bottom: 1px solid #e3ebe5;
+}
+
+.graph-section__header h2,
+.graph-section__header p {
+  margin: 0;
+}
+
+.graph-section__header h2 {
+  font-size: 1.05rem;
+}
+
+.graph-section__header p {
+  color: #687d72;
+  font-size: 0.86rem;
+}
+
+.graph-canvas {
+  width: 100%;
+  height: clamp(520px, calc(100vh - 210px), 760px);
+  min-height: 520px;
+}
+
+/* Graph 与 Resource Panel 共享结果页高度；画布保持可缩放，面板独立滚动。 */
+.graph-workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(300px, 360px);
+}
+
+.resource-panel {
+  height: clamp(520px, calc(100vh - 210px), 760px);
+  min-height: 520px;
+  overflow-y: auto;
+  padding: 22px;
+  border-left: 1px solid #e3ebe5;
+  background: #fbfdfb;
+}
+
+.resource-panel--empty {
+  display: grid;
+  align-items: center;
+}
+
+.resource-panel--empty h2,
+.resource-panel--empty p,
+.resource-panel__header h2,
+.resource-panel__header p,
+.resource-card h3,
+.resource-card h4,
+.resource-card p {
+  margin: 0;
+}
+
+.resource-panel--empty > div {
+  padding: 22px;
+  border: 1px dashed #c9d8ce;
+  border-radius: 18px;
+  color: #60776a;
+  background: #fff;
+}
+
+.resource-panel--empty h2 {
+  margin-bottom: 8px;
+  color: #1b3125;
+  font-size: 1.2rem;
+}
+
+.resource-panel__eyebrow {
+  margin: 0 0 7px;
+  color: #648071;
+  font-size: 0.7rem;
+  font-weight: 800;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+}
+
+.resource-panel__header {
+  padding-bottom: 18px;
+  border-bottom: 1px solid #e0e9e3;
+}
+
+.resource-panel__title-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.resource-panel__title-row h2 {
+  color: #17291f;
+  font-size: 1.25rem;
+  line-height: 1.25;
+}
+
+.resource-panel__header > p:last-child {
+  margin-top: 8px;
+  color: #63796d;
+  font-size: 0.8rem;
+}
+
+.resource-panel__status {
+  flex: none;
+  padding: 4px 9px;
+  border-radius: 999px;
+  background: #e7efe9;
+  color: #315441;
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.resource-panel__status--partial {
+  background: #fff1c9;
+  color: #71520b;
+}
+
+.resource-panel__status--failed {
+  background: #ffe2de;
+  color: #8a3129;
+}
+
+.resource-panel__status--searching,
+.resource-panel__status--filtering {
+  background: #dcecff;
+  color: #285578;
+}
+
+.resource-panel__notice {
+  margin: 18px 0 0;
+  padding: 14px;
+  border-radius: 12px;
+  color: #6d403b;
+  background: #fff0ed;
+  line-height: 1.55;
+}
+
+.resource-list {
+  display: grid;
+  gap: 14px;
+  padding-top: 16px;
+}
+
+.resource-card {
+  padding: 16px;
+  border: 1px solid #d9e4dc;
+  border-radius: 16px;
+  background: #fff;
+  box-shadow: 0 7px 18px rgb(37 71 52 / 7%);
+}
+
+.resource-card__header {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 9px;
+}
+
+.resource-card__rank {
+  display: inline-grid;
+  min-width: 28px;
+  height: 28px;
+  place-items: center;
+  border-radius: 9px;
+  color: #315441;
+  background: #e8f1eb;
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+
+.resource-card h3 {
+  color: #1c3025;
+  font-size: 0.98rem;
+  line-height: 1.35;
+}
+
+.resource-card__meta {
+  display: grid;
+  gap: 6px;
+  margin: 13px 0;
+}
+
+.resource-card__meta div {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr);
+  gap: 8px;
+}
+
+.resource-card__meta dt {
+  color: #71867a;
+  font-size: 0.72rem;
+}
+
+.resource-card__meta dd {
+  overflow: hidden;
+  margin: 0;
+  color: #344f40;
+  font-size: 0.76rem;
+  text-overflow: ellipsis;
+  text-transform: lowercase;
+  white-space: nowrap;
+}
+
+.resource-card section + section {
+  margin-top: 12px;
+}
+
+.resource-card h4 {
+  margin-bottom: 4px;
+  color: #547062;
+  font-size: 0.72rem;
+}
+
+.resource-card p {
+  color: #3f574a;
+  font-size: 0.8rem;
+  line-height: 1.55;
+}
+
+/* Open 是唯一外跳入口；按钮与错误说明共用动作区，避免把 URL 暴露为可绕过校验的链接。 */
+.resource-card__actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 15px;
+  padding-top: 13px;
+  border-top: 1px solid #e6ede8;
+}
+
+.resource-card__actions button {
+  padding: 7px 13px;
+  border: 1px solid #315f47;
+  border-radius: 9px;
+  color: #fff;
+  background: #315f47;
+  cursor: pointer;
+  font-size: 0.78rem;
+  font-weight: 750;
+}
+
+.resource-card__actions button:hover:not(:disabled) {
+  background: #244b37;
+}
+
+.resource-card__actions button:focus-visible {
+  outline: 3px solid rgb(49 95 71 / 24%);
+  outline-offset: 2px;
+}
+
+.resource-card__actions button:disabled {
+  border-color: #aab9b0;
+  color: #62746a;
+  background: #e8eeea;
+  cursor: not-allowed;
+}
+
+.resource-card__actions p {
+  color: #8a3129;
+}
+
+.react-flow__node.selected .graph-node__content {
+  border-color: #315f47;
+  box-shadow:
+    0 0 0 3px rgb(72 125 94 / 16%),
+    0 12px 28px rgb(37 71 52 / 18%);
+}
+
+.graph-empty {
+  display: grid;
+  min-height: 520px;
+  margin: 0;
+  place-items: center;
+  color: #61786c;
+}
+
+.graph-node {
+  width: 240px;
+  height: 112px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.graph-node__content {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  flex-direction: column;
+  justify-content: center;
+  padding: 15px 17px;
+  border: 1px solid #bdd0c3;
+  border-radius: 16px;
+  background: #fff;
+  box-shadow: 0 8px 22px rgb(37 71 52 / 12%);
+}
+
+.graph-node--related .graph-node__content {
+  border-style: dashed;
+  background: #f7faf8;
+}
+
+.graph-node__eyebrow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 9px;
+  color: #587064;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.graph-node__status {
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: #e7efe9;
+  color: #315441;
+  letter-spacing: 0;
+}
+
+.graph-node__status--partial {
+  background: #fff1c9;
+  color: #71520b;
+}
+
+.graph-node__status--failed {
+  background: #ffe2de;
+  color: #8a3129;
+}
+
+.graph-node__status--searching,
+.graph-node__status--filtering {
+  background: #dcecff;
+  color: #285578;
+}
+
+.graph-node__content h3 {
+  overflow: hidden;
+  color: #17291f;
+  font-size: 1rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.graph-node__content p {
+  margin-top: 6px;
+  color: #63796d;
+  font-size: 0.78rem;
+}
+
+.graph-node__handle {
+  width: 8px;
+  height: 8px;
+  border: 2px solid #fff;
+  background: #759783;
+  pointer-events: none;
+}
+
+.react-flow__edge.graph-edge--recommended .react-flow__edge-path {
+  stroke: #4c745e;
+  stroke-width: 2;
+}
+
+.react-flow__edge.graph-edge--related .react-flow__edge-path {
+  stroke: #82968b;
+  stroke-width: 1.6;
+  stroke-dasharray: 6 5;
+}
+
+.react-flow__edge-text {
+  fill: #526a5d;
+  font-size: 11px;
+}
+
+.react-flow__controls {
+  overflow: hidden;
+  border: 1px solid #d2ded6;
+  border-radius: 12px;
+  box-shadow: 0 8px 20px rgb(37 71 52 / 12%);
+}
+
+.react-flow__controls-button {
+  border-bottom-color: #e0e9e2;
+  background: #fff;
+}
+
+@media (max-width: 720px) {
+  .app-shell {
+    width: min(100% - 20px, 1180px);
+    padding: 20px 0;
+  }
+
+  .app-header,
+  .graph-section__header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .app-summary {
+    width: 100%;
+  }
+
+  .app-summary div {
+    min-width: 0;
+    flex: 1;
+  }
+
+  .graph-canvas,
+  .graph-empty {
+    min-height: 500px;
+    height: calc(100vh - 280px);
+  }
+
+  .graph-workspace {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .resource-panel {
+    height: auto;
+    min-height: 320px;
+    border-top: 1px solid #e3ebe5;
+    border-left: 0;
+  }
+}
