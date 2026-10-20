@@ -1,7 +1,7 @@
 /**
  * 组件职责：展示当前选中 Node 的状态和可交付 Resource（资源）。
  *
- * 范围边界：WAY-31 只负责选择与信息展示；URL 校验及打开新页面属于 WAY-32。
+ * WAY-32 边界：只有用户点击 Open 后才允许打开已重新校验的 HTTP(S) URL。
  */
 import type { Resource, StreamNodeStatus } from "@wayfinder/contracts";
 import { useStore } from "zustand";
@@ -12,6 +12,11 @@ import {
   selectSelectedNode,
   type GraphStoreNode,
 } from "../../stores/graph-store.js";
+import {
+  requestResourceOpen,
+  resolveSafeResourceUrl,
+  type ResourceUrlOpener,
+} from "./resource-url.js";
 
 type UnselectedPanelModel = {
   kind: "unselected";
@@ -63,8 +68,18 @@ export const buildResourcePanelModel = (
 const formatSourceType = (sourceType: string): string =>
   sourceType.replaceAll("_", " ");
 
-/** 纯展示组件便于在无 DOM 的测试环境中验证所有字段确实进入最终 HTML。 */
-export function ResourcePanelView({ model }: { model: ResourcePanelModel }) {
+/** window 只在点击回调执行时读取，服务端渲染与初始渲染不会自动打开页面。 */
+const openBrowserTab: ResourceUrlOpener = (url, target, features) =>
+  window.open(url, target, features);
+
+/** 纯展示组件支持注入 opener，便于验证渲染不会产生浏览器副作用。 */
+export function ResourcePanelView({
+  model,
+  openResource = openBrowserTab,
+}: {
+  model: ResourcePanelModel;
+  openResource?: ResourceUrlOpener;
+}) {
   if (model.kind === "unselected") {
     return (
       <aside className="resource-panel resource-panel--empty" aria-live="polite">
@@ -100,35 +115,59 @@ export function ResourcePanelView({ model }: { model: ResourcePanelModel }) {
         <p className="resource-panel__notice">{model.emptyMessage}</p>
       ) : (
         <div className="resource-list" role="list" aria-label="节点资源">
-          {model.resources.map(resource => (
-            <article className="resource-card" role="listitem" key={resource.id}>
-              <header className="resource-card__header">
-                <span className="resource-card__rank">#{resource.rank}</span>
-                <h3>{resource.title}</h3>
-              </header>
+          {model.resources.map(resource => {
+            const safeUrl = resolveSafeResourceUrl(resource.url);
 
-              <dl className="resource-card__meta">
-                <div>
-                  <dt>域名</dt>
-                  <dd>{resource.domain}</dd>
-                </div>
-                <div>
-                  <dt>来源类型</dt>
-                  <dd>{formatSourceType(resource.sourceType)}</dd>
-                </div>
-              </dl>
+            return (
+              <article
+                className="resource-card"
+                role="listitem"
+                key={resource.id}
+              >
+                <header className="resource-card__header">
+                  <span className="resource-card__rank">#{resource.rank}</span>
+                  <h3>{resource.title}</h3>
+                </header>
 
-              <section aria-labelledby={`${resource.id}-summary`}>
-                <h4 id={`${resource.id}-summary`}>AI 摘要</h4>
-                <p>{resource.summary}</p>
-              </section>
+                <dl className="resource-card__meta">
+                  <div>
+                    <dt>域名</dt>
+                    <dd>{resource.domain}</dd>
+                  </div>
+                  <div>
+                    <dt>来源类型</dt>
+                    <dd>{formatSourceType(resource.sourceType)}</dd>
+                  </div>
+                </dl>
 
-              <section aria-labelledby={`${resource.id}-why-selected`}>
-                <h4 id={`${resource.id}-why-selected`}>入选原因</h4>
-                <p>{resource.whySelected}</p>
-              </section>
-            </article>
-          ))}
+                <section aria-labelledby={`${resource.id}-summary`}>
+                  <h4 id={`${resource.id}-summary`}>AI 摘要</h4>
+                  <p>{resource.summary}</p>
+                </section>
+
+                <section aria-labelledby={`${resource.id}-why-selected`}>
+                  <h4 id={`${resource.id}-why-selected`}>入选原因</h4>
+                  <p>{resource.whySelected}</p>
+                </section>
+
+                <footer className="resource-card__actions">
+                  <button
+                    type="button"
+                    disabled={safeUrl === null}
+                    aria-label={`在新标签页打开 ${resource.title}`}
+                    onClick={() =>
+                      requestResourceOpen(resource.url, openResource)
+                    }
+                  >
+                    Open
+                  </button>
+                  {safeUrl === null ? (
+                    <p role="status">链接不可用：仅支持有效的 HTTP(S) 地址。</p>
+                  ) : null}
+                </footer>
+              </article>
+            );
+          })}
         </div>
       )}
     </aside>

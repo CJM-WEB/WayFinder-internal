@@ -5,7 +5,7 @@
  */
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { pythonResultGraphFixture } from "../../fixtures/python-result-graph.js";
 import {
@@ -64,7 +64,7 @@ describe("Resource Panel model", () => {
       }
 
       const markup = renderToStaticMarkup(
-        createElement(ResourcePanelView, { model }),
+        createElement(ResourcePanelView, { model, openResource: vi.fn() }),
       );
 
       expect(markup).toContain(node.title);
@@ -74,8 +74,24 @@ describe("Resource Panel model", () => {
       expect(markup).toContain(resource.sourceType.replaceAll("_", " "));
       expect(markup).toContain(resource.summary);
       expect(markup).toContain(resource.whySelected);
+      expect(markup).toContain('type="button"');
+      expect(markup).toContain(
+        `aria-label="在新标签页打开 ${resource.title}"`,
+      );
+      expect(markup).toContain(">Open</button>");
     },
   );
+
+  it("初始渲染不会自动打开 Resource", () => {
+    const model = buildResourcePanelModel(fixtureNodeByStatus("ready"));
+    const openResource = vi.fn(() => null);
+
+    renderToStaticMarkup(
+      createElement(ResourcePanelView, { model, openResource }),
+    );
+
+    expect(openResource).not.toHaveBeenCalled();
+  });
 
   it("为 failed 节点保留失败状态并提供无资源说明", () => {
     const node = fixtureNodeByStatus("failed");
@@ -90,9 +106,12 @@ describe("Resource Panel model", () => {
       emptyMessage: "该节点检索失败，暂无可展示的资源。",
     });
 
-    expect(
-      renderToStaticMarkup(createElement(ResourcePanelView, { model })),
-    ).toContain("该节点检索失败，暂无可展示的资源。");
+    const markup = renderToStaticMarkup(
+      createElement(ResourcePanelView, { model }),
+    );
+
+    expect(markup).toContain("该节点检索失败，暂无可展示的资源。");
+    expect(markup).not.toContain(">Open</button>");
   });
 
   it("按非箭头顺序选择任意节点并保持三种最终状态", () => {

@@ -317,6 +317,48 @@ input {
   line-height: 1.55;
 }
 
+/* Open 是唯一外跳入口；按钮与错误说明共用动作区，避免把 URL 暴露为可绕过校验的链接。 */
+.resource-card__actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 15px;
+  padding-top: 13px;
+  border-top: 1px solid #e6ede8;
+}
+
+.resource-card__actions button {
+  padding: 7px 13px;
+  border: 1px solid #315f47;
+  border-radius: 9px;
+  color: #fff;
+  background: #315f47;
+  cursor: pointer;
+  font-size: 0.78rem;
+  font-weight: 750;
+}
+
+.resource-card__actions button:hover:not(:disabled) {
+  background: #244b37;
+}
+
+.resource-card__actions button:focus-visible {
+  outline: 3px solid rgb(49 95 71 / 24%);
+  outline-offset: 2px;
+}
+
+.resource-card__actions button:disabled {
+  border-color: #aab9b0;
+  color: #62746a;
+  background: #e8eeea;
+  cursor: not-allowed;
+}
+
+.resource-card__actions p {
+  color: #8a3129;
+}
+
 .react-flow__node.selected .graph-node__content {
   border-color: #315f47;
   box-shadow:
