@@ -92,7 +92,13 @@ export const createGraphStore = () =>
     },
 
     selectNode: selectedNodeId => {
-      set({ selectedNodeId });
+      // React Flow 的 click 与 selection 事件可能为同一 Node 连续到达；
+      // 相同选择直接复用当前状态，避免无意义通知形成受控组件更新环。
+      set(state =>
+        state.selectedNodeId === selectedNodeId
+          ? state
+          : { selectedNodeId },
+      );
     },
 
     setLastSequence: lastSequence => {

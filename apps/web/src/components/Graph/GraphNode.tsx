@@ -7,21 +7,7 @@ import { Handle, Position } from "@xyflow/react";
 import type { NodeProps } from "@xyflow/react";
 
 import type { GraphFlowNode } from "./graph-layout.js";
-
-const STATUS_LABELS: Record<GraphFlowNode["data"]["status"], string> = {
-  planned: "等待检索",
-  searching: "检索中",
-  filtering: "筛选中",
-  ready: "已就绪",
-  partial: "部分完成",
-  failed: "失败",
-};
-
-const NODE_TYPE_LABELS: Record<GraphFlowNode["data"]["nodeType"], string> = {
-  primary: "主路径",
-  related: "相关主题",
-  disambiguation: "消歧分支",
-};
+import { NODE_STATUS_LABELS, NODE_TYPE_LABELS } from "./graph-labels.js";
 
 export function GraphNode({ data }: NodeProps<GraphFlowNode>) {
   return (
@@ -43,7 +29,7 @@ export function GraphNode({ data }: NodeProps<GraphFlowNode>) {
       <div className="graph-node__eyebrow">
         <span>{NODE_TYPE_LABELS[data.nodeType]}</span>
         <span className={`graph-node__status graph-node__status--${data.status}`}>
-          {STATUS_LABELS[data.status]}
+          {NODE_STATUS_LABELS[data.status]}
         </span>
       </div>
       <h3>{data.title}</h3>

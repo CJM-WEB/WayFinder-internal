@@ -1,7 +1,8 @@
-/** 组件职责：组合 WAY-30 的页面标题、运行摘要与 Graph 结果画布。 */
+/** 组件职责：组合运行摘要、Graph 结果画布与当前节点的 Resource Panel。 */
 import { useStore } from "zustand";
 
 import { GraphView } from "./components/Graph/GraphView.js";
+import { ResourcePanel } from "./components/ResourcePanel/ResourcePanel.js";
 import { graphStore } from "./stores/graph-store.js";
 
 export function App() {
@@ -39,7 +40,10 @@ export function App() {
           <h2 id="graph-title">Python 学习路径</h2>
           <p>滚轮缩放 · 拖动画布 · 控件复位</p>
         </div>
-        <GraphView />
+        <div className="graph-workspace">
+          <GraphView />
+          <ResourcePanel />
+        </div>
       </section>
     </main>
   );
