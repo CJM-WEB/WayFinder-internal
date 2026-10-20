@@ -13,6 +13,13 @@ export {
 export type { ServerConfig } from "./config.js";
 export type { SearchProvider } from "./search/provider.js";
 export {
+  TavilyProviderError,
+  TavilySearchProvider,
+} from "./search/providers/tavily.js";
+export type {
+  TavilySearchProviderOptions,
+} from "./search/providers/tavily.js";
+export {
   selectSearchProvider,
 } from "./search/router.js";
 export type {
