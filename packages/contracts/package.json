@@ -3,6 +3,12 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
   "scripts": {
     "build": "tsc --project tsconfig.build.json && node --input-type=module --eval \"await import('./dist/index.js')\"",
     "lint": "eslint src scripts --max-warnings=0",

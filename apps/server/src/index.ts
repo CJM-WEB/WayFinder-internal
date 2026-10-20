@@ -23,6 +23,17 @@ export type {
   StructuredLLMInput,
 } from "./ai/llm-provider.js";
 export {
+  GraphPlanValidationError,
+  MAX_GRAPH_PLAN_VALIDATION_ISSUES,
+  MAX_GRAPH_PLAN_VALIDATION_PATH_SEGMENT_LENGTH,
+  MAX_GRAPH_PLAN_VALIDATION_PATH_SEGMENTS,
+  parseGraphPlanOutput,
+} from "./ai/graph-plan-parser.js";
+export type {
+  GraphPlanValidationDiagnostic,
+  GraphPlanValidationIssueDiagnostic,
+} from "./ai/graph-plan-parser.js";
+export {
   DEEPSEEK_LLM_MODEL,
   DEEPSEEK_LLM_PROVIDER_ID,
   DEEPSEEK_RESPONSES_BASE_URL,

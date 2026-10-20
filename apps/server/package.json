@@ -4,13 +4,14 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "tsc --project tsconfig.build.json && node --input-type=module --eval \"await import('./dist/index.js')\"",
+    "build": "pnpm --filter @wayfinder/contracts --fail-if-no-match run build && tsc --project tsconfig.build.json && node --input-type=module --eval \"await import('./dist/index.js')\"",
     "lint": "eslint src --max-warnings=0",
     "start": "node dist/main.js",
     "test": "vitest run",
-    "typecheck": "tsc --project tsconfig.build.json --noEmit && tsc --project tsconfig.json --noEmit"
+    "typecheck": "pnpm --filter @wayfinder/contracts --fail-if-no-match run build && tsc --project tsconfig.build.json --noEmit && tsc --project tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@wayfinder/contracts": "workspace:*",
     "fastify": "5.12.7",
     "openai": "7.32.0",
     "zod": "4.6.7"
