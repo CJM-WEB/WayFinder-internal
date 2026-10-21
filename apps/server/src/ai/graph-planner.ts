@@ -23,6 +23,7 @@ import {
   GraphPlanValidationError,
   parseGraphPlanOutput,
 } from "./graph-plan-parser.js";
+import type { GraphPlanValidationDiagnostic } from "./graph-plan-parser.js";
 import {
   assertBoundedLLMTimeout,
   LLMProviderError,
@@ -60,6 +61,13 @@ export type PlanOrCompactFallbackInput = Readonly<{
   timeoutMs: number;
   /** 轻量时钟注入只用于确定性预算测试；生产默认使用单调时钟。 */
   now?: () => number;
+  /**
+   * 必填的内部诊断出口；调用方负责写入当前 Run 上下文，Planner 不直接持久化日志。
+   * 回调异常属于程序错误并向上传播，不能被降级流程吞掉。
+   */
+  onValidationDiagnostic: (
+    diagnostic: GraphPlanValidationDiagnostic,
+  ) => void;
 }>;
 
 function throwIfAborted(signal: AbortSignal): void {
@@ -148,6 +156,9 @@ async function runPlannerAttempt(
   deadlineAt: number,
   maximumTimeoutMs: number,
   now: () => number,
+  onValidationDiagnostic: (
+    diagnostic: GraphPlanValidationDiagnostic,
+  ) => void,
 ): Promise<PlannerAttemptOutcome> {
   throwIfAborted(signal);
   const timeoutMs = readRemainingTimeoutMs(
@@ -196,6 +207,7 @@ async function runPlannerAttempt(
     plan = parseGraphPlanOutput(output);
   } catch (error: unknown) {
     if (error instanceof GraphPlanValidationError) {
+      onValidationDiagnostic(error.diagnostic);
       return { kind: "structural_failure" };
     }
     throw error;
@@ -234,6 +246,7 @@ export async function planOrCompactFallback(
     deadlineAt,
     input.timeoutMs,
     now,
+    input.onValidationDiagnostic,
   );
 
   if (first.kind === "success") {
@@ -248,6 +261,7 @@ export async function planOrCompactFallback(
       deadlineAt,
       input.timeoutMs,
       now,
+      input.onValidationDiagnostic,
     );
     if (second.kind === "success") {
       return second.plan;

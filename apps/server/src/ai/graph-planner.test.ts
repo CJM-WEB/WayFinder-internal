@@ -21,6 +21,7 @@ import {
   type LLMProvider,
   type StructuredLLMInput,
 } from "./llm-provider.js";
+import type { GraphPlanValidationDiagnostic } from "./graph-plan-parser.js";
 import { planOrCompactFallback } from "./graph-planner.js";
 import { GRAPH_PLANNER_SYSTEM_PROMPT } from "./prompts/graph-planner.v1.js";
 
@@ -94,6 +95,9 @@ function createPlannerArgs(
     signal: AbortSignal;
     timeoutMs: number;
     now: () => number;
+    onValidationDiagnostic: (
+      diagnostic: GraphPlanValidationDiagnostic,
+    ) => void;
   }> = {},
 ) {
   const base = {
@@ -101,6 +105,8 @@ function createPlannerArgs(
     query: QUERY,
     signal: overrides.signal ?? new AbortController().signal,
     timeoutMs: overrides.timeoutMs ?? 15_000,
+    onValidationDiagnostic:
+      overrides.onValidationDiagnostic ?? (() => undefined),
   };
 
   return overrides.now === undefined
@@ -171,43 +177,86 @@ describe("Graph Planner retry 与 compact fallback", () => {
 
   it("invalid_response 即使 retryable=false 也只重试一次", async () => {
     const plan = createValidPlan();
+    const diagnostics: GraphPlanValidationDiagnostic[] = [];
     const provider = new FakeLLMProvider([
       new LLMProviderError("invalid_response", false),
       plan,
     ]);
 
     await expect(
-      planOrCompactFallback(createPlannerArgs(provider)),
+      planOrCompactFallback(
+        createPlannerArgs(provider, {
+          onValidationDiagnostic: diagnostic => diagnostics.push(diagnostic),
+        }),
+      ),
     ).resolves.toEqual(plan);
     expect(provider.calls).toHaveLength(2);
+    expect(diagnostics).toEqual([]);
   });
 
   it("Schema 结构失败后以完全相同输入重试，不回灌输出或诊断", async () => {
     const plan = createValidPlan();
-    const provider = new FakeLLMProvider([{ invalid: "first-output" }, plan]);
+    const sensitiveOutput = "first-output-secret";
+    const diagnostics: GraphPlanValidationDiagnostic[] = [];
+    const provider = new FakeLLMProvider([{ invalid: sensitiveOutput }, plan]);
 
     await expect(
-      planOrCompactFallback(createPlannerArgs(provider)),
+      planOrCompactFallback(
+        createPlannerArgs(provider, {
+          onValidationDiagnostic: diagnostic => diagnostics.push(diagnostic),
+        }),
+      ),
     ).resolves.toEqual(plan);
 
     expect(provider.calls).toHaveLength(2);
+    expect(diagnostics).toHaveLength(1);
+    expect(diagnostics[0]).toMatchObject({
+      stage: "graph_plan_schema_validation",
+    });
+    expect(JSON.stringify(diagnostics)).not.toContain(sensitiveOutput);
     expect(provider.calls[1]?.input).toEqual(provider.calls[0]?.input);
     expect(JSON.stringify(provider.calls[1]?.input)).not.toContain(
-      "first-output",
+      sensitiveOutput,
     );
   });
 
   it("连续两次结构失败后返回 fallback，绝不启动第三次调用", async () => {
+    const diagnostics: GraphPlanValidationDiagnostic[] = [];
     const provider = new FakeLLMProvider([
       { invalid: "first-output" },
-      new LLMProviderError("invalid_response", false),
+      { invalid: "second-output" },
     ]);
 
-    const result = await planOrCompactFallback(createPlannerArgs(provider));
+    const result = await planOrCompactFallback(
+      createPlannerArgs(provider, {
+        onValidationDiagnostic: diagnostic => diagnostics.push(diagnostic),
+      }),
+    );
 
     expect(provider.calls).toHaveLength(2);
+    expect(diagnostics).toHaveLength(2);
+    expect(diagnostics.map(diagnostic => diagnostic.stage)).toEqual([
+      "graph_plan_schema_validation",
+      "graph_plan_schema_validation",
+    ]);
     expect(result).toEqual(createExpectedFallback());
     expect(JSON.stringify(result)).not.toContain("first-output");
+  });
+
+  it("诊断观察器异常作为程序错误原样传播，不伪装成 fallback", async () => {
+    const observerError = new Error("Run 上下文拒绝诊断");
+    const provider = new FakeLLMProvider([{ invalid: "first-output" }]);
+
+    await expect(
+      planOrCompactFallback(
+        createPlannerArgs(provider, {
+          onValidationDiagnostic: () => {
+            throw observerError;
+          },
+        }),
+      ),
+    ).rejects.toBe(observerError);
+    expect(provider.calls).toHaveLength(1);
   });
 
   it("第二次 Schema-valid 语义错误也执行确定性 Repair", async () => {
