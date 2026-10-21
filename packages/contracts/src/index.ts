@@ -152,7 +152,7 @@ export type ExtractedPage = {
  * Candidate 只接收标准化 Hit 的正向白名单。
  * Pick 只提供静态限制；后续构造代码仍必须逐项复制，不能直接塞入完整 Hit。
  */
-type CandidateSearchHit = Pick<
+export type CandidateSearchHit = Pick<
   NormalizedSearchHit,
   | "provider"
   | "query"

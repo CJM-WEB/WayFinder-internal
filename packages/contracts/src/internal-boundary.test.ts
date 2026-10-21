@@ -11,6 +11,7 @@ import { describe, expectTypeOf, it } from "vitest";
 
 import type {
   AppErrorCode,
+  CandidateSearchHit,
   ExtractedPage,
   NodeJobOutcome,
   NodeSearchOutcome,
@@ -47,25 +48,11 @@ const readUnknownProviderScore = (hit: NormalizedSearchHit): number => {
 };
 void readUnknownProviderScore;
 
-type ExpectedCandidateSearchHit = Pick<
-  NormalizedSearchHit,
-  | "provider"
-  | "query"
-  | "title"
-  | "url"
-  | "canonicalUrl"
-  | "domain"
-  | "snippet"
-  | "publishedAt"
-  | "providerRank"
-  | "providerScore"
->;
-
 const readCandidateRawMetadata = (
-  candidate: ResourceCandidate,
+  candidate: CandidateSearchHit,
 ): unknown => {
   // @ts-expect-error Candidate Hit 的白名单必须排除 rawMetadata。
-  return candidate.hit.rawMetadata;
+  return candidate.rawMetadata;
 };
 void readCandidateRawMetadata;
 
@@ -114,10 +101,28 @@ describe("WAY-24 Extract 与 Candidate 边界", () => {
     }>();
   });
 
+  it("冻结 CandidateSearchHit 的搜索事实白名单", () => {
+    expectTypeOf<CandidateSearchHit>().toEqualTypeOf<
+      Pick<
+        NormalizedSearchHit,
+        | "provider"
+        | "query"
+        | "title"
+        | "url"
+        | "canonicalUrl"
+        | "domain"
+        | "snippet"
+        | "publishedAt"
+        | "providerRank"
+        | "providerScore"
+      >
+    >();
+  });
+
   it("冻结 ResourceCandidate 的搜索事实与决策字段", () => {
     expectTypeOf<ResourceCandidate>().toEqualTypeOf<{
       candidateId: string;
-      hit: ExpectedCandidateSearchHit;
+      hit: CandidateSearchHit;
       heuristicScore: number;
       heuristicSignals: Record<string, number>;
       scores?: Record<string, number>;
