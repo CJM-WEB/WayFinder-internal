@@ -8,8 +8,8 @@ import type {
   ExtractedPage,
   NormalizedSearchHit,
   ProviderSearchRequest,
-  SearchCapability,
 } from "../packages/contracts/src/index.js";
+import type { SearchProvider } from "../apps/server/src/search/provider.js";
 import type { LLMProvider } from "../apps/server/src/ai/llm-provider.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -46,20 +46,6 @@ const searchHit: NormalizedSearchHit = {
 const extractedPage: ExtractedPage = {
   canonicalUrl: searchHit.canonicalUrl,
   content: "Python is a programming language.",
-};
-
-/** WAY-44 正式 Port 落地前，以批准架构的结构冻结 Fake 的可注入性。 */
-type ApprovedSearchProviderShape = {
-  id: string;
-  capabilities: SearchCapability[];
-  search: (
-    request: ProviderSearchRequest,
-    signal?: AbortSignal,
-  ) => Promise<NormalizedSearchHit[]>;
-  extract?: (
-    canonicalUrls: string[],
-    signal?: AbortSignal,
-  ) => Promise<ExtractedPage[]>;
 };
 
 afterEach(() => {
@@ -203,7 +189,7 @@ describe("FakeLLMProvider", () => {
 describe("FakeSearchProvider", () => {
   it("结构上兼容批准架构中的 SearchProvider Port", () => {
     const provider = new FakeSearchProvider({ searchResponses: {} });
-    const compatibleProvider: ApprovedSearchProviderShape = provider;
+    const compatibleProvider: SearchProvider = provider;
 
     expect(compatibleProvider.capabilities).toEqual(["general"]);
   });

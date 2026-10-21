@@ -55,6 +55,7 @@ The graph organizes independently browsable information needs so the user can de
 - Every node must include a complete searchPlan in this same response.
 - Tailor queries to the node's purpose; do not merely repeat the original query or node title.
 - Normally provide two focused search queries. Use at most three when freshness, ambiguity, comparison, or source diversity requires it.
+- [deterministic_search_budget] maxResults mirrors the deterministic query budget and is not a model-selected value: use 20 for one query, 10 for two queries, and 6 for three queries.
 - Select knowledge for stable explanatory or learning needs, news for current events, shopping for product selection, software for code, documentation, or downloads, and general only when no specialized rankingProfile fits.
 - [general_provider_only] V0 has only the general search capability available for routing. Set every node's providerHints to exactly ["general"].
 </search_plan_policy>`;

@@ -11,6 +11,27 @@ export {
   parseServerConfig,
 } from "./config.js";
 export type { ServerConfig } from "./config.js";
+export type { SearchProvider } from "./search/provider.js";
+export {
+  TavilyProviderError,
+  TavilySearchProvider,
+} from "./search/providers/tavily.js";
+export type {
+  TavilySearchProviderOptions,
+} from "./search/providers/tavily.js";
+export {
+  selectSearchProvider,
+} from "./search/router.js";
+export type {
+  SelectSearchProviderInput,
+} from "./search/router.js";
+export {
+  NodeSearchError,
+  runNodeSearches,
+} from "./search/run-node-searches.js";
+export type {
+  RunNodeSearchesInput,
+} from "./search/run-node-searches.js";
 export {
   assertBoundedLLMTimeout,
   LLMProviderError,

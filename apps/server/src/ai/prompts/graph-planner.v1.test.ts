@@ -23,6 +23,7 @@ const REQUIRED_RULE_IDS = [
   "compact_graph",
   "graph_integrity",
   "compact_single_node",
+  "deterministic_search_budget",
   "general_provider_only",
 ] as const;
 
@@ -69,5 +70,8 @@ describe("Graph Planner v1 Prompt", () => {
     expect(GRAPH_PLANNER_SYSTEM_PROMPT).toContain("rankingProfile");
     expect(GRAPH_PLANNER_SYSTEM_PROMPT).toContain("providerHints");
     expect(GRAPH_PLANNER_SYSTEM_PROMPT).toContain('["general"]');
+    expect(GRAPH_PLANNER_SYSTEM_PROMPT).toMatch(
+      /maxResults[\s\S]*20 for one query, 10 for two queries, and 6 for three queries/i,
+    );
   });
 });

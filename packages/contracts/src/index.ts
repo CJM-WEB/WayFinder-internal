@@ -152,7 +152,7 @@ export type ExtractedPage = {
  * Candidate 只接收标准化 Hit 的正向白名单。
  * Pick 只提供静态限制；后续构造代码仍必须逐项复制，不能直接塞入完整 Hit。
  */
-type CandidateSearchHit = Pick<
+export type CandidateSearchHit = Pick<
   NormalizedSearchHit,
   | "provider"
   | "query"
@@ -213,12 +213,23 @@ export const NodeWarningCodeSchema = z.enum([
 export type NodeWarningCode = z.infer<typeof NodeWarningCodeSchema>;
 
 /**
- * Node Search Outcome（节点搜索结果）只汇总已标准化 Hit 与局部 Warning。
+ * Query Search Outcome（查询搜索结果）按原 Query 顺序保留局部结算，
+ * 使调用方能定位具体失败，而不必从 Node 级 Warning 反向猜测。
+ */
+export type QuerySearchOutcome = {
+  query: string;
+  hits: NormalizedSearchHit[];
+  warnings: NodeWarningCode[];
+};
+
+/**
+ * Node Search Outcome（节点搜索结果）同时保留 Node 汇总与逐 Query 明细。
  * 没有可交付 Hit 的 Provider 失败必须抛错，不能伪装成 Warning。
  */
 export type NodeSearchOutcome = {
   hits: NormalizedSearchHit[];
   warnings: NodeWarningCode[];
+  queryOutcomes: QuerySearchOutcome[];
 };
 
 /** Error（错误）表示对应 Node 或 Run 没有可交付结果。 */
@@ -294,12 +305,48 @@ const providerHintsSchema = z
   })
   .meta({ uniqueItems: true });
 
-/** SearchPlan 冻结单个 Node 的查询、排序侧重点与 Provider 能力提示。 */
-export const SearchPlanSchema = z.strictObject({
-  queries: z.array(z.string().min(1)).min(1).max(3),
-  rankingProfile: RankingProfileSchema,
-  providerHints: providerHintsSchema,
-});
+/** 每个 Node 的 Provider 原始候选总预算；多 Query 只切分预算，不扩大总量。 */
+export const MAX_PROVIDER_RESULTS_PER_NODE = 20;
+
+/**
+ * 按 Query 数量确定性切分 Provider 配额，避免 Planner 或调用方自由选择执行预算。
+ * 向下取整使 3 条 Query 的总上限为 18，不会突破每 Node 的 20 条总预算。
+ */
+export function calculateSearchPlanMaxResults(queryCount: number): number {
+  if (!Number.isInteger(queryCount) || queryCount < 1 || queryCount > 3) {
+    throw new RangeError("queryCount 必须为 1-3 的整数");
+  }
+
+  return Math.floor(MAX_PROVIDER_RESULTS_PER_NODE / queryCount);
+}
+
+/**
+ * SearchPlan 冻结单个 Node 的查询、确定性执行配额、排序侧重点与 Provider 能力提示。
+ * 跨字段检查保证 maxResults 只能取 20 / 10 / 6，不能由 Planner 任意改写。
+ */
+export const SearchPlanSchema = z
+  .strictObject({
+    queries: z.array(z.string().min(1)).min(1).max(3),
+    maxResults: z.number().int().min(6).max(MAX_PROVIDER_RESULTS_PER_NODE),
+    rankingProfile: RankingProfileSchema,
+    providerHints: providerHintsSchema,
+  })
+  .superRefine((plan, context) => {
+    // 基础数组检查失败时不重复计算，确保 safeParse 对非法数量仍返回结构化 Issue。
+    if (plan.queries.length < 1 || plan.queries.length > 3) {
+      return;
+    }
+
+    if (
+      plan.maxResults !== calculateSearchPlanMaxResults(plan.queries.length)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["maxResults"],
+        message: "maxResults 必须由 Query 数量确定性计算",
+      });
+    }
+  });
 export type SearchPlan = z.infer<typeof SearchPlanSchema>;
 
 /**

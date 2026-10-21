@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "build": "pnpm --filter @wayfinder/contracts --fail-if-no-match run build && tsc --project tsconfig.build.json && node --input-type=module --eval \"await import('./dist/index.js')\"",
-    "lint": "eslint src --max-warnings=0",
+    "lint": "eslint src vitest.config.mjs --max-warnings=0",
     "start": "node dist/main.js",
     "test": "vitest run",
     "typecheck": "pnpm --filter @wayfinder/contracts --fail-if-no-match run build && tsc --project tsconfig.build.json --noEmit && tsc --project tsconfig.json --noEmit"

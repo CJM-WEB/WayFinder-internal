@@ -24,6 +24,7 @@ function makeNode(id: string, nodeType: NodeType = "primary"): GraphPlanNode {
     layer: 0,
     searchPlan: {
       queries: [`查询 ${id}`],
+      maxResults: 20,
       rankingProfile: "knowledge",
       providerHints: ["general"],
     },

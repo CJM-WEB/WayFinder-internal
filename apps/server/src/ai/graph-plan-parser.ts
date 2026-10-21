@@ -32,6 +32,7 @@ const GRAPH_PLAN_PATH_FIELDS = new Set([
   "searchPlan",
   "status",
   "queries",
+  "maxResults",
   "rankingProfile",
   "providerHints",
   "source",

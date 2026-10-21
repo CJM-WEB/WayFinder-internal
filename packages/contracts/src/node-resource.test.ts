@@ -10,7 +10,9 @@ import { describe, expect, expectTypeOf, it } from "vitest";
 import { z } from "zod";
 
 import {
+  calculateSearchPlanMaxResults,
   GraphNodeCoreSchema,
+  MAX_PROVIDER_RESULTS_PER_NODE,
   MAX_RETAINED_RESOURCES_PER_NODE,
   ResourceSchema,
   SearchPlanSchema,
@@ -210,6 +212,7 @@ describe("Resource 公共资源边界", () => {
 
 const validSearchPlan = {
   queries: ["typescript strict mode"],
+  maxResults: 20,
   rankingProfile: "software",
   providerHints: ["code"],
 } as const;
@@ -220,6 +223,7 @@ describe("SearchPlan 节点搜索计划边界", () => {
       "最小数量",
       {
         queries: ["typescript"],
+        maxResults: 20,
         rankingProfile: "software",
         providerHints: ["code"],
       },
@@ -228,6 +232,7 @@ describe("SearchPlan 节点搜索计划边界", () => {
       "最大数量",
       {
         queries: ["typescript", "typescript docs", "typescript examples"],
+        maxResults: 6,
         rankingProfile: "knowledge",
         providerHints: ["general", "code", "community"],
       },
@@ -253,6 +258,7 @@ describe("SearchPlan 节点搜索计划边界", () => {
     ],
     ["未知 Provider Hint", { ...validSearchPlan, providerHints: ["web"] }],
     ["未知 Ranking Profile", { ...validSearchPlan, rankingProfile: "latest" }],
+    ["与 Query 数量不匹配的配额", { ...validSearchPlan, maxResults: 10 }],
   ])("拒绝%s", (_name, input) => {
     expect(SearchPlanSchema.safeParse(input).success).toBe(false);
   });
@@ -260,6 +266,7 @@ describe("SearchPlan 节点搜索计划边界", () => {
   it("拒绝缺少任一必填字段", () => {
     for (const field of [
       "queries",
+      "maxResults",
       "rankingProfile",
       "providerHints",
     ] as const) {
@@ -288,9 +295,23 @@ describe("SearchPlan 节点搜索计划边界", () => {
     expect(
       SearchPlanSchema.safeParse({
         ...validSearchPlan,
-        maxResults: 8,
+        nodeId: "node-001",
       }).success,
     ).toBe(false);
+  });
+
+  it.each([
+    [1, 20],
+    [2, 10],
+    [3, 6],
+  ])("按 %i 条 Query 确定性计算每次调用配额 %i", (queryCount, expected) => {
+    expect(calculateSearchPlanMaxResults(queryCount)).toBe(expected);
+  });
+
+  it.each([0, 4, 1.5])("拒绝非法 Query 数量：%s", queryCount => {
+    expect(() => calculateSearchPlanMaxResults(queryCount)).toThrow(
+      "queryCount 必须为 1-3 的整数",
+    );
   });
 
   it("JSON Schema 保留 Provider Hint 数量和唯一性", () => {
@@ -298,6 +319,11 @@ describe("SearchPlan 节点搜索计划边界", () => {
       type: "object",
       additionalProperties: false,
       properties: {
+        maxResults: {
+          type: "integer",
+          minimum: 6,
+          maximum: MAX_PROVIDER_RESULTS_PER_NODE,
+        },
         providerHints: {
           type: "array",
           minItems: 1,

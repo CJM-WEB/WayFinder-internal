@@ -26,6 +26,7 @@
           "layer": 0,
           "searchPlan": {
             "queries": ["Visual Studio Code official download"],
+            "maxResults": 20,
             "rankingProfile": "software",
             "providerHints": ["general"]
           },
@@ -85,6 +86,7 @@
           "layer": 0,
           "searchPlan": {
             "queries": ["Python official tutorial"],
+            "maxResults": 20,
             "rankingProfile": "knowledge",
             "providerHints": ["general"]
           },
@@ -144,6 +146,7 @@
           "layer": 0,
           "searchPlan": {
             "queries": ["Unavailable topic"],
+            "maxResults": 20,
             "rankingProfile": "general",
             "providerHints": ["general"]
           },

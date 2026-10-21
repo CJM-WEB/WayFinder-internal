@@ -8,6 +8,7 @@
     },
     "input": {
       "queries": ["TypeScript strict mode"],
+      "maxResults": 20,
       "rankingProfile": "software",
       "providerHints": []
     }
@@ -66,6 +67,7 @@
             "layer": 0,
             "searchPlan": {
               "queries": ["TypeScript official resources"],
+              "maxResults": 20,
               "rankingProfile": "software",
               "providerHints": ["code"]
             },
@@ -145,6 +147,7 @@
             "layer": 0,
             "searchPlan": {
               "queries": ["TypeScript official resources"],
+              "maxResults": 20,
               "rankingProfile": "software",
               "providerHints": ["code"]
             },
@@ -224,6 +227,7 @@
             "layer": 0,
             "searchPlan": {
               "queries": ["Unavailable topic"],
+              "maxResults": 20,
               "rankingProfile": "general",
               "providerHints": ["general"]
             },
@@ -270,6 +274,7 @@
       "layer": 0,
       "searchPlan": {
         "queries": ["processing node"],
+        "maxResults": 20,
         "rankingProfile": "general",
         "providerHints": ["general"]
       },
@@ -310,6 +315,7 @@
             "layer": 0,
             "searchPlan": {
               "queries": ["Unavailable topic"],
+              "maxResults": 20,
               "rankingProfile": "general",
               "providerHints": ["general"]
             },

@@ -79,6 +79,31 @@ describe("GraphPlan Provider 输出解析", () => {
     );
   });
 
+  it("为不匹配 Query 数量的 maxResults 保留安全诊断路径", async () => {
+    const validPlan = parseGraphPlanOutput(await readValidGraphPlanFixture());
+    const firstNode = validPlan.nodes[0];
+    expect(firstNode).toBeDefined();
+    if (firstNode === undefined) {
+      return;
+    }
+
+    const error = captureValidationError({
+      ...validPlan,
+      nodes: [
+        {
+          ...firstNode,
+          searchPlan: { ...firstNode.searchPlan, maxResults: 20 },
+        },
+      ],
+    });
+
+    expect(error.diagnostic.issues).toContainEqual({
+      code: "custom",
+      path: ["nodes", "0", "searchPlan", "maxResults"],
+      pathTruncated: false,
+    });
+  });
+
   it("只公开有界、脱敏且可序列化的验证诊断", async () => {
     const sensitiveValue = `private-value-${"v".repeat(200)}`;
     const sensitiveKey = `private-key-${"k".repeat(200)}`;

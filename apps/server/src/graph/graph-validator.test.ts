@@ -28,6 +28,7 @@ function makeNode(
     layer: 0,
     searchPlan: {
       queries: [`查询 ${id}`],
+      maxResults: 20,
       rankingProfile: "knowledge",
       providerHints: ["general"],
     },
@@ -218,6 +219,7 @@ describe("GraphPlan 确定性 Validator", () => {
       title: " \n ",
       searchPlan: {
         queries: ["\t"],
+        maxResults: 20,
         rankingProfile: "knowledge",
         providerHints: ["news"],
       },

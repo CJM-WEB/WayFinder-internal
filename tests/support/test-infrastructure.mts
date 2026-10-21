@@ -12,6 +12,7 @@ import type {
   ProviderSearchRequest,
   SearchCapability,
 } from "../../packages/contracts/src/index.js";
+import type { SearchProvider } from "../../apps/server/src/search/provider.js";
 import {
   assertBoundedLLMTimeout,
   type LLMCallOptions,
@@ -177,7 +178,7 @@ export type FakeSearchProviderOptions = {
  * 使用 Query（查询）索引固定结果的 Search Provider 测试替身。
  * 同一 Query 可重复读取隔离副本，便于测试重试、缓存和变异隔离。
  */
-export class FakeSearchProvider {
+export class FakeSearchProvider implements SearchProvider {
   readonly id = "fake-search";
   // 数组本身保留可变类型，以结构兼容批准架构中的 SearchProvider Port。
   readonly capabilities: SearchCapability[] = ["general"];

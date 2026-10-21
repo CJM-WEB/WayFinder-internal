@@ -40,6 +40,7 @@
           "layer": 0,
           "searchPlan": {
             "queries": ["TypeScript strict mode official docs"],
+            "maxResults": 20,
             "rankingProfile": "software",
             "providerHints": ["code"]
           },
@@ -151,6 +152,7 @@
               "layer": 0,
               "searchPlan": {
                 "queries": ["TypeScript strict mode official docs"],
+                "maxResults": 20,
                 "rankingProfile": "software",
                 "providerHints": ["code"]
               },
