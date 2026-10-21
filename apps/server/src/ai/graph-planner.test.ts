@@ -1,9 +1,13 @@
 /**
- * 测试职责：冻结 WAY-39 Planner 的单次重试、共享预算、取消传播与 compact fallback。
+ * 测试职责：冻结 WAY-39 Planner 的失败边界，并验证 WAY-40 plan_first 的典型计划。
  *
  * 测试全部使用本地 Fake（测试替身），不得访问真实 LLM、读取 Secret 或依赖墙钟等待。
  */
-import { GraphPlanSchema } from "@wayfinder/contracts";
+import {
+  calculateSearchPlanMaxResults,
+  GraphPlanSchema,
+  SearchPlanSchema,
+} from "@wayfinder/contracts";
 import type { GraphPlan } from "@wayfinder/contracts";
 import { z } from "zod";
 import { describe, expect, it } from "vitest";
@@ -26,6 +30,137 @@ import { planOrCompactFallback } from "./graph-planner.js";
 import { GRAPH_PLANNER_SYSTEM_PROMPT } from "./prompts/graph-planner.v1.js";
 
 const QUERY = "TypeScript 官方文档";
+
+type PlanNode = GraphPlan["nodes"][number];
+
+/** 测试 Node 统一复用 Contract 的配额计算，避免 Fixture 另行维护 20 / 10 / 6。 */
+function createPlanNode(
+  input: Readonly<{
+    id: string;
+    title: string;
+    description: string;
+    layer: number;
+    queries: readonly string[];
+    rankingProfile: PlanNode["searchPlan"]["rankingProfile"];
+  }>,
+): PlanNode {
+  const queries = [...input.queries];
+  return {
+    id: input.id,
+    title: input.title,
+    description: input.description,
+    nodeType: "primary",
+    layer: input.layer,
+    searchPlan: {
+      queries,
+      maxResults: calculateSearchPlanMaxResults(queries.length),
+      rankingProfile: input.rankingProfile,
+      providerHints: ["general"],
+    },
+    status: "planned",
+  };
+}
+
+/**
+ * knowledge Graph Fixture（知识图计划夹具）只表达已选择 plan_first 后的合法输出；
+ * Query 到 Strategy 的主观分类质量留给 WAY-43 Golden Eval，不在测试中实现关键词规则。
+ */
+function createKnowledgeGraphPlan(): GraphPlan {
+  return {
+    analysis: {
+      intent: "learn",
+      topic: "Python",
+      freshnessSensitive: false,
+      ambiguityLevel: "low",
+      broadSearchQueries: [],
+      strategy: "plan_first",
+      presentationMode: "graph",
+    },
+    nodes: [
+      createPlanNode({
+        id: "python-overview",
+        title: "Python 概览",
+        description: "理解 Python 的定位与常见用途",
+        layer: 0,
+        queries: ["Python language overview", "Python common uses"],
+        rankingProfile: "knowledge",
+      }),
+      createPlanNode({
+        id: "python-installation",
+        title: "安装与环境",
+        description: "查找 Python 的官方安装与环境配置说明",
+        layer: 1,
+        queries: [
+          "Python official installation guide",
+          "Python virtual environment guide",
+        ],
+        rankingProfile: "software",
+      }),
+      createPlanNode({
+        id: "python-basics",
+        title: "基础语法",
+        description: "学习 Python 的核心语法与数据结构",
+        layer: 1,
+        queries: ["Python syntax tutorial", "Python data structures guide"],
+        rankingProfile: "knowledge",
+      }),
+      createPlanNode({
+        id: "python-practice",
+        title: "练习与项目",
+        description: "通过练习和小项目巩固 Python 基础",
+        layer: 2,
+        queries: ["Python beginner exercises", "Python beginner project ideas"],
+        rankingProfile: "knowledge",
+      }),
+    ],
+    edges: [
+      {
+        id: "overview-to-installation",
+        source: "python-overview",
+        target: "python-installation",
+        type: "recommended_next",
+      },
+      {
+        id: "overview-to-basics",
+        source: "python-overview",
+        target: "python-basics",
+        type: "recommended_next",
+      },
+      {
+        id: "basics-to-practice",
+        source: "python-basics",
+        target: "python-practice",
+        type: "recommended_next",
+      },
+    ],
+  };
+}
+
+/** 明确且稳定的 how-to 使用 compact，覆盖单 Node 必须没有 Edge 的硬约束。 */
+function createHowToCompactPlan(): GraphPlan {
+  return {
+    analysis: {
+      intent: "how_to",
+      topic: "如何安装 pnpm",
+      freshnessSensitive: false,
+      ambiguityLevel: "low",
+      broadSearchQueries: [],
+      strategy: "plan_first",
+      presentationMode: "compact",
+    },
+    nodes: [
+      createPlanNode({
+        id: "install-pnpm",
+        title: "安装 pnpm",
+        description: "查找 pnpm 官方安装步骤与前置要求",
+        layer: 0,
+        queries: ["pnpm official installation guide"],
+        rankingProfile: "software",
+      }),
+    ],
+    edges: [],
+  };
+}
 
 function createValidPlan(query = QUERY): GraphPlan {
   return {
@@ -92,6 +227,7 @@ function createExpectedFallback(query = QUERY): GraphPlan {
 function createPlannerArgs(
   provider: LLMProvider,
   overrides: Partial<{
+    query: string;
     signal: AbortSignal;
     timeoutMs: number;
     now: () => number;
@@ -102,7 +238,7 @@ function createPlannerArgs(
 ) {
   const base = {
     provider,
-    query: QUERY,
+    query: overrides.query ?? QUERY,
     signal: overrides.signal ?? new AbortController().signal,
     timeoutMs: overrides.timeoutMs ?? 15_000,
     onValidationDiagnostic:
@@ -113,6 +249,48 @@ function createPlannerArgs(
     ? base
     : { ...base, now: overrides.now };
 }
+
+describe("plan_first 典型计划", () => {
+  it.each([
+    {
+      name: "knowledge Graph",
+      query: "Python",
+      presentationMode: "graph" as const,
+      createPlan: createKnowledgeGraphPlan,
+    },
+    {
+      name: "明确 how-to compact",
+      query: "如何安装 pnpm",
+      presentationMode: "compact" as const,
+      createPlan: createHowToCompactPlan,
+    },
+  ])(
+    "$name 由 Planner 一次返回合法 SearchPlans",
+    async ({ query, presentationMode, createPlan }) => {
+      const plan = createPlan();
+      const provider = new FakeLLMProvider([plan]);
+
+      const result = await planOrCompactFallback(
+        createPlannerArgs(provider, { query }),
+      );
+
+      // plan_first 在 Planner 边界直接成为最终计划；本模块不依赖 SearchProvider 或 Broad Search。
+      expect(provider.calls).toHaveLength(1);
+      expect(provider.calls[0]?.input.user).toBe(query);
+      expect(result).toEqual(plan);
+      expect(result.analysis).toMatchObject({
+        strategy: "plan_first",
+        broadSearchQueries: [],
+        presentationMode,
+      });
+      expect(GraphPlanSchema.safeParse(result).success).toBe(true);
+      expect(validateGraphPlan(result)).toEqual({ valid: true, findings: [] });
+      for (const node of result.nodes) {
+        expect(SearchPlanSchema.safeParse(node.searchPlan).success).toBe(true);
+      }
+    },
+  );
+});
 
 describe("Graph Planner retry 与 compact fallback", () => {
   it("首次合法输出直接返回，并传入现有 Prompt、Schema、父 Signal 与完整预算", async () => {
