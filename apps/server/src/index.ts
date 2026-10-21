@@ -33,6 +33,15 @@ export type {
   RunNodeSearchesInput,
 } from "./search/run-node-searches.js";
 export {
+  BROAD_DISCOVERY_RESULTS_PER_QUERY,
+  BroadDiscoveryError,
+  discoverBroadEvidence,
+} from "./search/broad-discovery.js";
+export type {
+  DiscoverBroadEvidenceInput,
+  EvidenceAssistedAnalysis,
+} from "./search/broad-discovery.js";
+export {
   assertBoundedLLMTimeout,
   LLMProviderError,
   MAX_LLM_CALL_TIMEOUT_MS,

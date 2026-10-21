@@ -25,6 +25,7 @@ import type {
 } from "./index.js";
 
 const validProviderRequest: ProviderSearchRequest = {
+  kind: "node",
   nodeId: "node-001",
   query: "typescript strict mode",
   maxResults: 8,
@@ -60,9 +61,33 @@ void readCandidateRawMetadata;
 const invalidUndefinedLanguage: ProviderSearchRequest = { ...validProviderRequest, language: undefined };
 void invalidUndefinedLanguage;
 
+// @ts-expect-error Node Search 必须携带真实 Graph Node ID。
+const invalidNodeRequest: ProviderSearchRequest = {
+  kind: "node",
+  query: "missing node id",
+  maxResults: 5,
+  capability: "general",
+  freshnessSensitive: false,
+};
+void invalidNodeRequest;
+
+const invalidBroadRequest: ProviderSearchRequest = {
+  kind: "broad_discovery",
+  // @ts-expect-error Broad Discovery 不得伪造 Node ID。
+  nodeId: "broad-discovery",
+  query: "latest framework release",
+  maxResults: 5,
+  capability: "general",
+  freshnessSensitive: true,
+};
+void invalidBroadRequest;
+
 describe("WAY-24 Provider Search 边界", () => {
   it("冻结 ProviderSearchRequest 字段", () => {
-    expectTypeOf<ProviderSearchRequest>().toEqualTypeOf<{
+    expectTypeOf<
+      Extract<ProviderSearchRequest, { kind: "node" }>
+    >().toMatchTypeOf<{
+      kind: "node";
       nodeId: string;
       query: string;
       maxResults: number;
@@ -70,6 +95,37 @@ describe("WAY-24 Provider Search 边界", () => {
       freshnessSensitive: boolean;
       language?: string;
     }>();
+    expectTypeOf<{
+      kind: "node";
+      nodeId: string;
+      query: string;
+      maxResults: number;
+      capability: SearchCapability;
+      freshnessSensitive: boolean;
+      language?: string;
+    }>().toMatchTypeOf<
+      Extract<ProviderSearchRequest, { kind: "node" }>
+    >();
+    expectTypeOf<
+      Extract<ProviderSearchRequest, { kind: "broad_discovery" }>
+    >().toMatchTypeOf<{
+      kind: "broad_discovery";
+      query: string;
+      maxResults: number;
+      capability: SearchCapability;
+      freshnessSensitive: boolean;
+      language?: string;
+    }>();
+    expectTypeOf<{
+      kind: "broad_discovery";
+      query: string;
+      maxResults: number;
+      capability: SearchCapability;
+      freshnessSensitive: boolean;
+      language?: string;
+    }>().toMatchTypeOf<
+      Extract<ProviderSearchRequest, { kind: "broad_discovery" }>
+    >();
   });
 
   it("冻结 NormalizedSearchHit 与 opaque metadata", () => {

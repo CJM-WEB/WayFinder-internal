@@ -108,18 +108,28 @@ export const SearchCapabilitySchema = z.enum([
 ]);
 export type SearchCapability = z.infer<typeof SearchCapabilitySchema>;
 
-/**
- * Provider Search Request（提供方搜索请求）只描述一个 Node 的一次具体搜索。
- * runId 属于整次搜索生命周期，不能泄漏到 Provider interface。
- */
-export type ProviderSearchRequest = {
-  nodeId: string;
+/** Provider 调用的共享字段；不包含 Graph 生命周期或 Run 身份。 */
+type ProviderSearchRequestCommon = {
   query: string;
   maxResults: number;
   capability: SearchCapability;
   freshnessSensitive: boolean;
   language?: string;
 };
+
+/**
+ * Provider Search Request（提供方搜索请求）区分 Node Search 与 Revision 前的 Broad Discovery。
+ * Node 分支必须携带真实 Graph Node ID；Broad Discovery 发生在修订前，不能伪造 Node ID。
+ * runId 与 deadlineAt 属于整次搜索生命周期，不能泄漏到 Provider interface。
+ */
+export type ProviderSearchRequest =
+  | (ProviderSearchRequestCommon & {
+      kind: "node";
+      nodeId: string;
+    })
+  | (ProviderSearchRequestCommon & {
+      kind: "broad_discovery";
+    });
 
 /**
  * Normalized Search Hit（标准化搜索命中）是 Adapter 校验外部响应后的统一结果。

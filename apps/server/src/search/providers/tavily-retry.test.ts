@@ -13,6 +13,7 @@ import {
 } from "./tavily.js";
 
 const SEARCH_REQUEST: ProviderSearchRequest = {
+  kind: "node",
   nodeId: "node-way-46",
   query: "deadline aware retry",
   maxResults: 1,

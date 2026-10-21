@@ -13,6 +13,7 @@ import {
 } from "./tavily.js";
 
 const SEARCH_REQUEST: ProviderSearchRequest = {
+  kind: "node",
   nodeId: "node-typescript",
   query: "TypeScript strict mode",
   maxResults: 2,

@@ -22,6 +22,7 @@ import {
 } from "./support/test-infrastructure.mjs";
 
 const searchRequest: ProviderSearchRequest = {
+  kind: "node",
   nodeId: "python-introduction",
   query: "Python official overview",
   maxResults: 3,

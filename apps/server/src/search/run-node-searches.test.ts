@@ -97,6 +97,7 @@ describe("runNodeSearches", () => {
     expect(provider.calls).toHaveLength(2);
     expect(provider.calls.map(call => call.request)).toEqual([
       {
+        kind: "node",
         nodeId: "node-001",
         query: "query-a",
         maxResults: 10,
@@ -105,6 +106,7 @@ describe("runNodeSearches", () => {
         language: "zh-CN",
       },
       {
+        kind: "node",
         nodeId: "node-001",
         query: "query-b",
         maxResults: 10,

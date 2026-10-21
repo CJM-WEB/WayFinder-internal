@@ -52,6 +52,7 @@ function createProviderRequest(
   query: string,
 ): ProviderSearchRequest {
   return {
+    kind: "node",
     nodeId: input.node.id,
     query,
     // 即使内部调用方绕过 Zod，也不能用任意字段值改变 Provider 调用预算。
