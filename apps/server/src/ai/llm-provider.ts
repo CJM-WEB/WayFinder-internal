@@ -6,7 +6,7 @@
  * - 每次调用必须同时携带父 AbortSignal（取消信号）与有界 timeout（超时）。
  * - Adapter 只能抛出这里定义的脱敏错误，不能把 Provider 响应正文带入业务层。
  */
-/** Planner 阶段批准的单次 LLM 调用硬上限。 */
+/** 当前所有 LLM Structured Output 阶段共用的单次调用硬上限。 */
 export const MAX_LLM_CALL_TIMEOUT_MS = 15_000 as const;
 
 /** Provider Structured Output 所需的最小、SDK 无关输入。 */
@@ -19,14 +19,14 @@ export type StructuredLLMInput = Readonly<{
 
 /**
  * timeoutMs 由调用方按阶段剩余预算与 Run 剩余预算的最小值计算；
- * Port 只冻结单次调用不能超过 Planner 硬上限。
+ * Port 只冻结单次调用不能超过共享 LLM 硬上限。
  */
 export type LLMCallOptions = Readonly<{
   signal: AbortSignal;
   timeoutMs: number;
 }>;
 
-/** Planner 与 Reranker 只依赖此端口，不接触具体 Provider SDK。 */
+/** Planner、Reviser 与 Reranker 只依赖此端口，不接触具体 Provider SDK。 */
 export interface LLMProvider {
   readonly id: string;
 

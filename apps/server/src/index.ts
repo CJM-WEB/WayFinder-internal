@@ -66,6 +66,21 @@ export type {
 export { planOrCompactFallback } from "./ai/graph-planner.js";
 export type { PlanOrCompactFallbackInput } from "./ai/graph-planner.js";
 export {
+  GRAPH_REVISER_MAX_DOMAIN_CODE_POINTS,
+  GRAPH_REVISER_MAX_EVIDENCE_QUERY_CODE_POINTS,
+  GRAPH_REVISER_MAX_PAYLOAD_CODE_POINTS,
+  GRAPH_REVISER_MAX_PUBLISHED_AT_CODE_POINTS,
+  GRAPH_REVISER_MAX_SNIPPET_CODE_POINTS,
+  GRAPH_REVISER_MAX_TITLE_CODE_POINTS,
+  GraphRevisionError,
+  reviseGraphPlan,
+} from "./ai/graph-reviser.js";
+export type {
+  GraphRevisionErrorKind,
+  GraphRevisionValidationDiagnostic,
+  ReviseGraphPlanInput,
+} from "./ai/graph-reviser.js";
+export {
   DEEPSEEK_LLM_MODEL,
   DEEPSEEK_LLM_PROVIDER_ID,
   DEEPSEEK_RESPONSES_BASE_URL,
