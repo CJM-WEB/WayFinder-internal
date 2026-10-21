@@ -75,10 +75,22 @@ export type DeepSeekResponseTransport = (
   options: DeepSeekRequestOptions,
 ) => PromiseLike<unknown>;
 
+/**
+ * 仅暴露计费所需的聚合 Token（词元）数量；Provider 的明细、请求标识与原始响应
+ * 仍停留在 Adapter 边界内，避免 Eval 可观测性扩大敏感数据面。
+ */
+export type DeepSeekTokenUsage = Readonly<{
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+}>;
+
 export type DeepSeekLLMProviderOptions = Readonly<{
   apiKey: string;
   /** 测试只注入同形 transport；生产默认使用固定配置的 OpenAI SDK Client。 */
   transport?: DeepSeekResponseTransport;
+  /** 可选脱敏出口；缺失或非法 usage 不调用，调用方据此标记不可用。 */
+  onTokenUsage?: (usage: DeepSeekTokenUsage) => void;
 }>;
 
 function createAbortError(): Error {
@@ -105,6 +117,38 @@ function readCompletedOutputText(response: unknown): string {
   }
 
   return response.output_text;
+}
+
+/** 第三方 usage 同样是不可信输入，只接受三个非负安全整数。 */
+function readTokenUsage(response: unknown): DeepSeekTokenUsage | null {
+  if (typeof response !== "object" || response === null) {
+    return null;
+  }
+
+  const usage = Reflect.get(response, "usage");
+  if (typeof usage !== "object" || usage === null) {
+    return null;
+  }
+
+  const inputTokens = Reflect.get(usage, "input_tokens");
+  const outputTokens = Reflect.get(usage, "output_tokens");
+  const totalTokens = Reflect.get(usage, "total_tokens");
+  if (
+    !Number.isSafeInteger(inputTokens) ||
+    !Number.isSafeInteger(outputTokens) ||
+    !Number.isSafeInteger(totalTokens) ||
+    (inputTokens as number) < 0 ||
+    (outputTokens as number) < 0 ||
+    (totalTokens as number) < 0
+  ) {
+    return null;
+  }
+
+  return {
+    inputTokens: inputTokens as number,
+    outputTokens: outputTokens as number,
+    totalTokens: totalTokens as number,
+  };
 }
 
 /**
@@ -140,11 +184,14 @@ function mapSDKError(error: unknown): LLMProviderError {
 export class DeepSeekLLMProvider implements LLMProvider {
   public readonly id = DEEPSEEK_LLM_PROVIDER_ID;
   readonly #transport: DeepSeekResponseTransport;
+  readonly #onTokenUsage: ((usage: DeepSeekTokenUsage) => void) | undefined;
 
   public constructor(options: DeepSeekLLMProviderOptions) {
     if (options.apiKey.trim().length === 0) {
       throw new Error("DeepSeek API Key 不能为空");
     }
+
+    this.#onTokenUsage = options.onTokenUsage;
 
     if (options.transport !== undefined) {
       this.#transport = options.transport;
@@ -203,6 +250,10 @@ export class DeepSeekLLMProvider implements LLMProvider {
     }
 
     const outputText = readCompletedOutputText(response);
+    const usage = readTokenUsage(response);
+    if (usage !== null) {
+      this.#onTokenUsage?.(usage);
+    }
     try {
       // Structured Output 保证 JSON 形状，但业务 Schema 校验仍由 WAY-36 负责。
       const value: unknown = JSON.parse(outputText);

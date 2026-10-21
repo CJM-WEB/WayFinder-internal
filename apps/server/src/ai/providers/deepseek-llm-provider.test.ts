@@ -25,6 +25,7 @@ import {
 import type {
   DeepSeekRequestOptions,
   DeepSeekStructuredRequest,
+  DeepSeekTokenUsage,
 } from "./deepseek-llm-provider.js";
 
 const INPUT = {
@@ -97,6 +98,59 @@ describe("DeepSeekLLMProvider Structured Output", () => {
         maxRetries: 0,
       },
     );
+  });
+
+  it("只把合法聚合 Token 数量交给脱敏观察器", async () => {
+    const usages: DeepSeekTokenUsage[] = [];
+    const provider = new DeepSeekLLMProvider({
+      apiKey: "test-key",
+      onTokenUsage: usage => usages.push(usage),
+      transport: async () => ({
+        status: "completed",
+        output_text: '{"topic":"Python"}',
+        usage: {
+          input_tokens: 120,
+          output_tokens: 30,
+          total_tokens: 150,
+          provider_private_details: "不得越过 Adapter",
+        },
+      }),
+    });
+
+    await provider.structured(INPUT, {
+      signal: new AbortController().signal,
+      timeoutMs: 8_000,
+    });
+
+    expect(usages).toEqual([
+      { inputTokens: 120, outputTokens: 30, totalTokens: 150 },
+    ]);
+    expect(JSON.stringify(usages)).not.toContain("provider_private_details");
+  });
+
+  it.each([
+    ["缺少 usage", undefined],
+    ["字段类型非法", { input_tokens: "120", output_tokens: 30, total_tokens: 150 }],
+    ["字段为负数", { input_tokens: 120, output_tokens: -1, total_tokens: 119 }],
+  ])("%s 时不伪造 Token 数量", async (_name, usage) => {
+    const onTokenUsage = vi.fn();
+    const provider = new DeepSeekLLMProvider({
+      apiKey: "test-key",
+      onTokenUsage,
+      transport: async () => ({
+        status: "completed",
+        output_text: '{"topic":"Python"}',
+        ...(usage === undefined ? {} : { usage }),
+      }),
+    });
+
+    await expect(
+      provider.structured(INPUT, {
+        signal: new AbortController().signal,
+        timeoutMs: 8_000,
+      }),
+    ).resolves.toEqual({ topic: "Python" });
+    expect(onTokenUsage).not.toHaveBeenCalled();
   });
 
   it("调用前取消或非法 timeout 都不会触发 transport", async () => {

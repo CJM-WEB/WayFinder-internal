@@ -51,6 +51,14 @@ type PlannerAttemptOutcome =
         | "structural_failure";
     }>;
 
+export type GraphPlannerOutcome =
+  | Readonly<{ kind: "success"; attempts: 1 | 2 }>
+  | Readonly<{
+      kind: "compact_fallback";
+      attempts: 1 | 2;
+      reason: Exclude<PlannerAttemptOutcome["kind"], "success">;
+    }>;
+
 export type PlanOrCompactFallbackInput = Readonly<{
   /** 已由 SearchRequestSchema trim 并校验的原始 Query。 */
   query: string;
@@ -68,6 +76,11 @@ export type PlanOrCompactFallbackInput = Readonly<{
   onValidationDiagnostic: (
     diagnostic: GraphPlanValidationDiagnostic,
   ) => void;
+  /**
+   * Eval/Run Log 使用的可选脱敏结果出口；不包含 Query、模型输出或 Validator 文案。
+   * 回调异常属于程序错误并向上传播，避免静默丢失基线证据。
+   */
+  onOutcome?: (outcome: GraphPlannerOutcome) => void;
 }>;
 
 function throwIfAborted(signal: AbortSignal): void {
@@ -250,6 +263,7 @@ export async function planOrCompactFallback(
   );
 
   if (first.kind === "success") {
+    input.onOutcome?.({ kind: "success", attempts: 1 });
     return first.plan;
   }
 
@@ -264,11 +278,24 @@ export async function planOrCompactFallback(
       input.onValidationDiagnostic,
     );
     if (second.kind === "success") {
+      input.onOutcome?.({ kind: "success", attempts: 2 });
       return second.plan;
     }
+    throwIfAborted(input.signal);
+    input.onOutcome?.({
+      kind: "compact_fallback",
+      attempts: 2,
+      reason: second.kind,
+    });
+    return createCompactFallback(input.query);
   }
 
   // fallback 虽然不发外部请求，仍不得在用户取消或 Run deadline 后启动新工作。
   throwIfAborted(input.signal);
+  input.onOutcome?.({
+    kind: "compact_fallback",
+    attempts: 1,
+    reason: first.kind,
+  });
   return createCompactFallback(input.query);
 }

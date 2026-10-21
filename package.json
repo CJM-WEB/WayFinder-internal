@@ -12,6 +12,7 @@
     "build": "pnpm --filter @wayfinder/contracts --fail-if-no-match run build && pnpm --filter @wayfinder/web --fail-if-no-match run build && pnpm --filter @wayfinder/server --fail-if-no-match run build",
     "ci": "pnpm run lint && pnpm run typecheck && pnpm run schema:check && pnpm run test && pnpm run build",
     "dev": "pnpm -r --parallel --if-present run dev",
+    "eval:golden": "pnpm --filter @wayfinder/server --fail-if-no-match run eval:golden",
     "lint": "eslint eslint.config.mjs tests --max-warnings=0 && pnpm --filter @wayfinder/contracts --fail-if-no-match run lint && pnpm --filter @wayfinder/web --fail-if-no-match run lint && pnpm --filter @wayfinder/server --fail-if-no-match run lint",
     "schema:check": "pnpm --filter @wayfinder/contracts --fail-if-no-match run schema:check",
     "schema:generate": "pnpm --filter @wayfinder/contracts --fail-if-no-match run schema:generate",

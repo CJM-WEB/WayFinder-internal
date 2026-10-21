@@ -99,7 +99,14 @@ export type TavilySearchProviderOptions = {
   searchRetryTimeoutMs?: number;
   extractRetryTimeoutMs?: number;
   fetchImplementation?: typeof fetch;
+  /** 只记录脱敏 HTTP 尝试序号；不得在观察器中传递 Query、URL 或响应。 */
+  onAttempt?: (observation: TavilyAttemptObservation) => void;
 };
+
+export type TavilyAttemptObservation = Readonly<{
+  operation: "extract" | "search";
+  attempt: 1 | 2;
+}>;
 
 /**
  * Adapter 错误只保存稳定的分类信息，不附带 Secret、请求头、响应正文或完整原始对象。
@@ -127,6 +134,9 @@ export class TavilySearchProvider implements SearchProvider {
   private readonly searchRetryTimeoutMs: number;
   private readonly extractRetryTimeoutMs: number;
   private readonly fetchImplementation: typeof fetch;
+  private readonly onAttempt:
+    | ((observation: TavilyAttemptObservation) => void)
+    | undefined;
 
   public constructor(options: TavilySearchProviderOptions) {
     const apiKey = options.apiKey.trim();
@@ -153,6 +163,7 @@ export class TavilySearchProvider implements SearchProvider {
       DEFAULT_EXTRACT_RETRY_TIMEOUT_MS,
     );
     this.fetchImplementation = options.fetchImplementation ?? fetch;
+    this.onAttempt = options.onAttempt;
   }
 
   public async search(
@@ -292,6 +303,7 @@ export class TavilySearchProvider implements SearchProvider {
         operation,
         attemptTimeoutMs,
         callerSignal,
+        attempt === 0 ? 1 : 2,
       );
 
       if (outcome.kind === "success") {
@@ -317,6 +329,7 @@ export class TavilySearchProvider implements SearchProvider {
     operation: "Search" | "Extract",
     timeoutMs: number,
     callerSignal: AbortSignal,
+    attempt: 1 | 2,
   ): Promise<AttemptOutcome> {
     const timeoutSignal = AbortSignal.timeout(timeoutMs);
     const requestSignal = AbortSignal.any([callerSignal, timeoutSignal]);
@@ -327,6 +340,11 @@ export class TavilySearchProvider implements SearchProvider {
 
     let response: Response;
     try {
+      // 只有通过取消检查、即将调用 fetch 的尝试才计入实际 HTTP 次数。
+      this.onAttempt?.({
+        operation: operation === "Search" ? "search" : "extract",
+        attempt,
+      });
       response = await this.fetchImplementation(url, {
         method: "POST",
         headers: {

@@ -234,6 +234,9 @@ function createPlannerArgs(
     onValidationDiagnostic: (
       diagnostic: GraphPlanValidationDiagnostic,
     ) => void;
+    onOutcome: NonNullable<
+      Parameters<typeof planOrCompactFallback>[0]["onOutcome"]
+    >;
   }> = {},
 ) {
   const base = {
@@ -243,6 +246,9 @@ function createPlannerArgs(
     timeoutMs: overrides.timeoutMs ?? 15_000,
     onValidationDiagnostic:
       overrides.onValidationDiagnostic ?? (() => undefined),
+    ...(overrides.onOutcome === undefined
+      ? {}
+      : { onOutcome: overrides.onOutcome }),
   };
 
   return overrides.now === undefined
@@ -293,6 +299,42 @@ describe("plan_first 典型计划", () => {
 });
 
 describe("Graph Planner retry 与 compact fallback", () => {
+  it("通过脱敏观察器区分首次成功、重试成功与 fallback 原因", async () => {
+    const outcomes: Parameters<
+      NonNullable<Parameters<typeof planOrCompactFallback>[0]["onOutcome"]>
+    >[0][] = [];
+
+    await planOrCompactFallback(
+      createPlannerArgs(new FakeLLMProvider([createValidPlan()]), {
+        onOutcome: outcome => outcomes.push(outcome),
+      }),
+    );
+    await planOrCompactFallback(
+      createPlannerArgs(
+        new FakeLLMProvider([{ invalid: true }, createValidPlan()]),
+        { onOutcome: outcome => outcomes.push(outcome) },
+      ),
+    );
+    await planOrCompactFallback(
+      createPlannerArgs(
+        new FakeLLMProvider([
+          new LLMProviderError("provider_failure", false),
+        ]),
+        { onOutcome: outcome => outcomes.push(outcome) },
+      ),
+    );
+
+    expect(outcomes).toEqual([
+      { kind: "success", attempts: 1 },
+      { kind: "success", attempts: 2 },
+      {
+        kind: "compact_fallback",
+        attempts: 1,
+        reason: "provider_failure",
+      },
+    ]);
+  });
+
   it("首次合法输出直接返回，并传入现有 Prompt、Schema、父 Signal 与完整预算", async () => {
     const plan = createValidPlan();
     const provider = new FakeLLMProvider([plan]);

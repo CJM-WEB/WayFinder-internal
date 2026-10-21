@@ -101,6 +101,60 @@ function waitUntilAborted(init?: RequestInit): Promise<Response> {
 }
 
 describe("TavilySearchProvider 有界重试", () => {
+  it("通过脱敏观察器记录每次实际 HTTP 尝试", async () => {
+    const attempts: Array<{
+      operation: "extract" | "search";
+      attempt: 1 | 2;
+    }> = [];
+    const fetchImplementation = vi
+      .fn<typeof fetch>()
+      .mockRejectedValueOnce(createFetchNetworkError("ECONNRESET"))
+      .mockResolvedValueOnce(successfulSearchResponse());
+    const provider = new TavilySearchProvider({
+      apiKey: "test-tavily-key",
+      searchTimeoutMs: 1_000,
+      extractTimeoutMs: 1_000,
+      searchRetryTimeoutMs: 10,
+      extractRetryTimeoutMs: 10,
+      fetchImplementation,
+      onAttempt: observation => attempts.push(observation),
+    });
+
+    await expect(
+      provider.search(SEARCH_REQUEST, createRunSignal()),
+    ).resolves.toHaveLength(1);
+    expect(attempts).toEqual([
+      { operation: "search", attempt: 1 },
+      { operation: "search", attempt: 2 },
+    ]);
+  });
+
+  it("调用前已取消时不记录不存在的 HTTP 尝试", async () => {
+    const attempts: Array<{
+      operation: "extract" | "search";
+      attempt: 1 | 2;
+    }> = [];
+    const fetchImplementation = vi.fn<typeof fetch>();
+    const controller = new AbortController();
+    const abortReason = new Error("Run 已取消");
+    controller.abort(abortReason);
+    const provider = new TavilySearchProvider({
+      apiKey: "test-tavily-key",
+      searchTimeoutMs: 1_000,
+      extractTimeoutMs: 1_000,
+      searchRetryTimeoutMs: 10,
+      extractRetryTimeoutMs: 10,
+      fetchImplementation,
+      onAttempt: observation => attempts.push(observation),
+    });
+
+    await expect(
+      provider.search(SEARCH_REQUEST, controller.signal),
+    ).rejects.toBe(abortReason);
+    expect(attempts).toEqual([]);
+    expect(fetchImplementation).not.toHaveBeenCalled();
+  });
+
   it("网络连接失败后只重试一次并可恢复", async () => {
     const fetchImplementation = vi
       .fn<typeof fetch>()

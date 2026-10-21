@@ -17,6 +17,7 @@ export {
   TavilySearchProvider,
 } from "./search/providers/tavily.js";
 export type {
+  TavilyAttemptObservation,
   TavilySearchProviderOptions,
 } from "./search/providers/tavily.js";
 export {
@@ -64,7 +65,10 @@ export type {
   GraphPlanValidationIssueDiagnostic,
 } from "./ai/graph-plan-parser.js";
 export { planOrCompactFallback } from "./ai/graph-planner.js";
-export type { PlanOrCompactFallbackInput } from "./ai/graph-planner.js";
+export type {
+  GraphPlannerOutcome,
+  PlanOrCompactFallbackInput,
+} from "./ai/graph-planner.js";
 export {
   GRAPH_REVISER_MAX_DOMAIN_CODE_POINTS,
   GRAPH_REVISER_MAX_EVIDENCE_QUERY_CODE_POINTS,
@@ -88,4 +92,5 @@ export {
 } from "./ai/providers/deepseek-llm-provider.js";
 export type {
   DeepSeekLLMProviderOptions,
+  DeepSeekTokenUsage,
 } from "./ai/providers/deepseek-llm-provider.js";
