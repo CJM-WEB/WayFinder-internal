@@ -13,16 +13,15 @@ import type {
   SearchCapability,
 } from "../../packages/contracts/src/index.js";
 import type { SearchProvider } from "../../apps/server/src/search/provider.js";
+import {
+  assertBoundedLLMTimeout,
+  type LLMCallOptions,
+  type LLMProvider,
+  type StructuredLLMInput,
+} from "../../apps/server/src/ai/llm-provider.js";
 
 /** 可同步返回、异步返回或显式失败的单步脚本。 */
 type ScriptedResponse<T> = T | PromiseLike<T> | Error;
-
-/** LLM 结构化调用的最小输入形状，不预先绑定未来生产 Provider 接口。 */
-export type StructuredLLMInput = {
-  system: string;
-  user: string;
-  schema: unknown;
-};
 
 /** 手动控制 Promise（承诺）的测试夹具，用于稳定覆盖等待中取消。 */
 export type Deferred<T> = {
@@ -136,11 +135,11 @@ function cloneValue<T>(value: T): T {
 }
 
 /** 按顺序消费预设响应的 LLM 测试替身。 */
-export class FakeLLMProvider {
+export class FakeLLMProvider implements LLMProvider {
   readonly id = "fake-llm";
   readonly calls: Array<{
     input: StructuredLLMInput;
-    signal: AbortSignal | undefined;
+    options: LLMCallOptions;
   }> = [];
 
   readonly #responses: Array<ScriptedResponse<unknown>>;
@@ -149,20 +148,21 @@ export class FakeLLMProvider {
     this.#responses = [...responses];
   }
 
-  async structured<T>(
+  async structured(
     input: StructuredLLMInput,
-    signal?: AbortSignal,
-  ): Promise<T> {
+    options: LLMCallOptions,
+  ): Promise<unknown> {
+    assertBoundedLLMTimeout(options.timeoutMs);
     // 调用前取消不得消费脚本，否则一次失败会污染后续断言。
-    throwIfAborted(signal);
+    throwIfAborted(options.signal);
     const response = this.#responses.shift();
     if (response === undefined) {
       throw new Error("FakeLLMProvider 脚本已耗尽");
     }
 
-    // 顶层字段保存调用瞬间的快照；schema 可能是不可克隆的 Zod 实例，只保留其身份引用。
-    this.calls.push({ input: { ...input }, signal });
-    return cloneValue((await waitForScript(response, signal)) as T);
+    // 顶层字段保存调用瞬间的快照；JSON Schema 可能较大，只保留其只读身份引用。
+    this.calls.push({ input: { ...input }, options: { ...options } });
+    return cloneValue(await waitForScript(response, options.signal));
   }
 }
 
