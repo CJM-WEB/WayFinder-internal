@@ -54,6 +54,8 @@ export type {
   GraphPlanValidationDiagnostic,
   GraphPlanValidationIssueDiagnostic,
 } from "./ai/graph-plan-parser.js";
+export { planOrCompactFallback } from "./ai/graph-planner.js";
+export type { PlanOrCompactFallbackInput } from "./ai/graph-planner.js";
 export {
   DEEPSEEK_LLM_MODEL,
   DEEPSEEK_LLM_PROVIDER_ID,
