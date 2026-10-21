@@ -97,10 +97,8 @@ export function createAbortFixture(message = "测试请求已取消"): AbortFixt
   };
 }
 
-function throwIfAborted(signal: AbortSignal | undefined): void {
-  if (signal?.aborted === true) {
-    throw signal.reason;
-  }
+function throwIfAborted(signal: AbortSignal): void {
+  signal.throwIfAborted();
 }
 
 /**
@@ -109,17 +107,13 @@ function throwIfAborted(signal: AbortSignal | undefined): void {
  */
 function waitForScript<T>(
   response: ScriptedResponse<T>,
-  signal: AbortSignal | undefined,
+  signal: AbortSignal,
 ): Promise<T> {
   if (response instanceof Error) {
     return Promise.reject(response);
   }
 
   const responsePromise = Promise.resolve(response);
-  if (signal === undefined) {
-    return responsePromise;
-  }
-
   return new Promise<T>((resolve, reject) => {
     const handleAbort = (): void => reject(signal.reason);
     signal.addEventListener("abort", handleAbort, { once: true });
@@ -184,11 +178,11 @@ export class FakeSearchProvider implements SearchProvider {
   readonly capabilities: SearchCapability[] = ["general"];
   readonly searchCalls: Array<{
     request: ProviderSearchRequest;
-    signal: AbortSignal | undefined;
+    signal: AbortSignal;
   }> = [];
   readonly extractCalls: Array<{
     canonicalUrls: readonly string[];
-    signal: AbortSignal | undefined;
+    signal: AbortSignal;
   }> = [];
 
   readonly #options: FakeSearchProviderOptions;
@@ -199,7 +193,7 @@ export class FakeSearchProvider implements SearchProvider {
 
   async search(
     request: ProviderSearchRequest,
-    signal?: AbortSignal,
+    signal: AbortSignal,
   ): Promise<NormalizedSearchHit[]> {
     throwIfAborted(signal);
     const response = this.#options.searchResponses[request.query];
@@ -213,7 +207,7 @@ export class FakeSearchProvider implements SearchProvider {
 
   async extract(
     canonicalUrls: readonly string[],
-    signal?: AbortSignal,
+    signal: AbortSignal,
   ): Promise<ExtractedPage[]> {
     throwIfAborted(signal);
     const response = this.#options.extractResponse;

@@ -21,11 +21,11 @@ describe("SearchProvider Port", () => {
       capabilities: SearchCapability[];
       search: (
         request: ProviderSearchRequest,
-        signal?: AbortSignal,
+        signal: AbortSignal,
       ) => Promise<NormalizedSearchHit[]>;
       extract?: (
         canonicalUrls: string[],
-        signal?: AbortSignal,
+        signal: AbortSignal,
       ) => Promise<ExtractedPage[]>;
     }>();
   });

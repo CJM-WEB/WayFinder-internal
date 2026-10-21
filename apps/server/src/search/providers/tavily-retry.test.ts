@@ -20,6 +20,11 @@ const SEARCH_REQUEST: ProviderSearchRequest = {
   freshnessSensitive: false,
 };
 
+/** 每个非取消测试都使用独立的未取消 Run Signal，冻结 Port 的必填边界。 */
+function createRunSignal(): AbortSignal {
+  return new AbortController().signal;
+}
+
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -38,6 +43,21 @@ function successfulSearchResponse(): Response {
       },
     ],
   });
+}
+
+/**
+ * Node fetch 会把底层连接故障包装进 TypeError.cause；测试只使用稳定错误码，
+ * 不依赖可能包含 URL 或平台文本的 message。
+ */
+function createFetchNetworkError(code: string): TypeError {
+  return new TypeError("模拟 fetch 网络失败", {
+    cause: Object.assign(new Error("模拟底层网络失败"), { code }),
+  });
+}
+
+/** 构造带稳定 code 的底层错误，覆盖响应流等不经过 fetch 包装的路径。 */
+function createCodedError(code: string): Error {
+  return Object.assign(new Error("模拟带码错误"), { code });
 }
 
 function createProvider(
@@ -83,11 +103,14 @@ describe("TavilySearchProvider 有界重试", () => {
   it("网络连接失败后只重试一次并可恢复", async () => {
     const fetchImplementation = vi
       .fn<typeof fetch>()
-      .mockRejectedValueOnce(new TypeError("fetch failed"))
+      .mockRejectedValueOnce(createFetchNetworkError("ECONNRESET"))
       .mockResolvedValueOnce(successfulSearchResponse());
 
     await expect(
-      createProvider(fetchImplementation).search(SEARCH_REQUEST),
+      createProvider(fetchImplementation).search(
+        SEARCH_REQUEST,
+        createRunSignal(),
+      ),
     ).resolves.toHaveLength(1);
     expect(fetchImplementation).toHaveBeenCalledTimes(2);
   });
@@ -95,7 +118,7 @@ describe("TavilySearchProvider 有界重试", () => {
   it("响应正文读取期间的网络断开也允许一次重试", async () => {
     const disconnectedBody = new ReadableStream({
       start(controller) {
-        controller.error(new TypeError("socket disconnected"));
+        controller.error(createCodedError("UND_ERR_SOCKET"));
       },
     });
     const fetchImplementation = vi
@@ -104,7 +127,10 @@ describe("TavilySearchProvider 有界重试", () => {
       .mockResolvedValueOnce(successfulSearchResponse());
 
     await expect(
-      createProvider(fetchImplementation).search(SEARCH_REQUEST),
+      createProvider(fetchImplementation).search(
+        SEARCH_REQUEST,
+        createRunSignal(),
+      ),
     ).resolves.toHaveLength(1);
     expect(fetchImplementation).toHaveBeenCalledTimes(2);
   });
@@ -118,7 +144,10 @@ describe("TavilySearchProvider 有界重试", () => {
         .mockResolvedValueOnce(successfulSearchResponse());
 
       await expect(
-        createProvider(fetchImplementation).search(SEARCH_REQUEST),
+        createProvider(fetchImplementation).search(
+          SEARCH_REQUEST,
+          createRunSignal(),
+        ),
       ).resolves.toHaveLength(1);
       expect(fetchImplementation).toHaveBeenCalledTimes(2);
     },
@@ -146,7 +175,10 @@ describe("TavilySearchProvider 有界重试", () => {
     });
 
     await expect(
-      createProvider(fetchImplementation).search(SEARCH_REQUEST),
+      createProvider(fetchImplementation).search(
+        SEARCH_REQUEST,
+        createRunSignal(),
+      ),
     ).resolves.toHaveLength(1);
     expect(bodyCanceled).toBe(true);
     expect(fetchImplementation).toHaveBeenCalledTimes(2);
@@ -165,7 +197,7 @@ describe("TavilySearchProvider 有界重试", () => {
     const operation = createProvider(fetchImplementation, {
       searchMs: 10,
       searchRetryMs: 10,
-    }).search(SEARCH_REQUEST);
+    }).search(SEARCH_REQUEST, createRunSignal());
 
     await expect(
       Promise.race([
@@ -191,7 +223,7 @@ describe("TavilySearchProvider 有界重试", () => {
       createProvider(fetchImplementation, {
         searchMs: 5,
         searchRetryMs: 5,
-      }).search(SEARCH_REQUEST),
+      }).search(SEARCH_REQUEST, createRunSignal()),
     ).resolves.toHaveLength(1);
     expect(fetchImplementation).toHaveBeenCalledTimes(2);
   });
@@ -199,10 +231,13 @@ describe("TavilySearchProvider 有界重试", () => {
   it("连续网络失败时总尝试次数严格限制为 2", async () => {
     const fetchImplementation = vi
       .fn<typeof fetch>()
-      .mockRejectedValue(new TypeError("fetch failed"));
+      .mockRejectedValue(createFetchNetworkError("ECONNRESET"));
 
     await expect(
-      createProvider(fetchImplementation).search(SEARCH_REQUEST),
+      createProvider(fetchImplementation).search(
+        SEARCH_REQUEST,
+        createRunSignal(),
+      ),
     ).rejects.toMatchObject({
       name: "TavilyProviderError",
       code: "SEARCH_PROVIDER_FAILED",
@@ -219,7 +254,10 @@ describe("TavilySearchProvider 有界重试", () => {
         .mockResolvedValue(new Response("deterministic", { status }));
 
       await expect(
-        createProvider(fetchImplementation).search(SEARCH_REQUEST),
+        createProvider(fetchImplementation).search(
+          SEARCH_REQUEST,
+          createRunSignal(),
+        ),
       ).rejects.toMatchObject({
         name: "TavilyProviderError",
         code: "SEARCH_PROVIDER_FAILED",
@@ -240,10 +278,16 @@ describe("TavilySearchProvider 有界重试", () => {
     );
 
     await expect(
-      createProvider(invalidJsonFetch).search(SEARCH_REQUEST),
+      createProvider(invalidJsonFetch).search(
+        SEARCH_REQUEST,
+        createRunSignal(),
+      ),
     ).rejects.toBeInstanceOf(TavilyProviderError);
     await expect(
-      createProvider(invalidSchemaFetch).search(SEARCH_REQUEST),
+      createProvider(invalidSchemaFetch).search(
+        SEARCH_REQUEST,
+        createRunSignal(),
+      ),
     ).rejects.toBeInstanceOf(TavilyProviderError);
     expect(invalidJsonFetch).toHaveBeenCalledTimes(1);
     expect(invalidSchemaFetch).toHaveBeenCalledTimes(1);
@@ -255,12 +299,56 @@ describe("TavilySearchProvider 有界重试", () => {
       .mockRejectedValue(new Error("programming failure"));
 
     await expect(
-      createProvider(fetchImplementation).search(SEARCH_REQUEST),
+      createProvider(fetchImplementation).search(
+        SEARCH_REQUEST,
+        createRunSignal(),
+      ),
     ).rejects.toMatchObject({
       name: "TavilyProviderError",
       retryable: false,
     });
     expect(fetchImplementation).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["裸 TypeError", new TypeError("programming failure")],
+    ["Undici 参数错误", createCodedError("UND_ERR_INVALID_ARG")],
+    ["Undici 不支持错误", createCodedError("UND_ERR_NOT_SUPPORTED")],
+    ["未知 Undici 前缀错误", createCodedError("UND_ERR_FUTURE_UNKNOWN")],
+  ])("%s 不得被宽泛分类为网络瞬时故障", async (_name, error) => {
+    const fetchImplementation = vi.fn<typeof fetch>().mockRejectedValue(error);
+
+    await expect(
+      createProvider(fetchImplementation).search(
+        SEARCH_REQUEST,
+        createRunSignal(),
+      ),
+    ).rejects.toMatchObject({
+      name: "TavilyProviderError",
+      code: "SEARCH_PROVIDER_FAILED",
+      retryable: false,
+    });
+    expect(fetchImplementation).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    "UND_ERR_CONNECT_TIMEOUT",
+    "UND_ERR_HEADERS_TIMEOUT",
+    "UND_ERR_BODY_TIMEOUT",
+    "UND_ERR_SOCKET",
+  ])("精确网络/Timeout 错误码 %s 仍允许唯一一次重试", async code => {
+    const fetchImplementation = vi
+      .fn<typeof fetch>()
+      .mockRejectedValueOnce(createCodedError(code))
+      .mockResolvedValueOnce(successfulSearchResponse());
+
+    await expect(
+      createProvider(fetchImplementation).search(
+        SEARCH_REQUEST,
+        createRunSignal(),
+      ),
+    ).resolves.toHaveLength(1);
+    expect(fetchImplementation).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -347,7 +435,7 @@ describe("TavilySearchProvider Run Signal", () => {
     });
     const fetchImplementation = vi
       .fn<typeof fetch>()
-      .mockRejectedValueOnce(new TypeError("fetch failed"))
+      .mockRejectedValueOnce(createFetchNetworkError("ECONNRESET"))
       .mockImplementationOnce((_input, init) => waitUntilAborted(init));
     const operation = createProvider(fetchImplementation, {
       searchRetryMs: 1_000,
@@ -367,7 +455,7 @@ describe("TavilySearchProvider Run Signal", () => {
     const canonicalUrl = "https://example.com/page";
     const fetchImplementation = vi
       .fn<typeof fetch>()
-      .mockRejectedValueOnce(new TypeError("fetch failed"))
+      .mockRejectedValueOnce(createFetchNetworkError("ECONNRESET"))
       .mockResolvedValueOnce(
         jsonResponse({
           results: [{ url: canonicalUrl, raw_content: "page content" }],
@@ -375,7 +463,10 @@ describe("TavilySearchProvider Run Signal", () => {
       );
 
     await expect(
-      createProvider(fetchImplementation).extract([canonicalUrl]),
+      createProvider(fetchImplementation).extract(
+        [canonicalUrl],
+        createRunSignal(),
+      ),
     ).resolves.toEqual([
       { canonicalUrl, content: "page content" },
     ]);

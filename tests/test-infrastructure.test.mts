@@ -222,7 +222,9 @@ describe("FakeSearchProvider", () => {
         signal: abortFixture.signal,
       },
     ]);
-    await expect(provider.search(searchRequest)).resolves.toEqual([searchHit]);
+    await expect(
+      provider.search(searchRequest, new AbortController().signal),
+    ).resolves.toEqual([searchHit]);
     expect(pages).toEqual([extractedPage]);
   });
 
@@ -241,7 +243,10 @@ describe("FakeSearchProvider", () => {
 
     await expect(pending).rejects.toBe(abortFixture.signal.reason);
     await expect(
-      provider.search({ ...searchRequest, query: "未配置 Query" }),
+      provider.search(
+        { ...searchRequest, query: "未配置 Query" },
+        new AbortController().signal,
+      ),
     ).rejects.toThrow("FakeSearchProvider 未配置 Query");
     expect(fetchSpy).not.toHaveBeenCalled();
     deferred.resolve([searchHit]);

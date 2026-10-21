@@ -50,6 +50,10 @@ const NETWORK_ERROR_CODES = new Set([
   "ETIMEDOUT",
   "ERR_NETWORK",
   "ERR_SOCKET_CONNECTION_TIMEOUT",
+  "UND_ERR_BODY_TIMEOUT",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_HEADERS_TIMEOUT",
+  "UND_ERR_SOCKET",
 ]);
 
 const HttpUrlSchema = z
@@ -153,7 +157,7 @@ export class TavilySearchProvider implements SearchProvider {
 
   public async search(
     request: ProviderSearchRequest,
-    signal?: AbortSignal,
+    signal: AbortSignal,
   ): Promise<NormalizedSearchHit[]> {
     if (
       !Number.isInteger(request.maxResults) ||
@@ -206,7 +210,7 @@ export class TavilySearchProvider implements SearchProvider {
 
   public async extract(
     canonicalUrls: string[],
-    signal?: AbortSignal,
+    signal: AbortSignal,
   ): Promise<ExtractedPage[]> {
     if (canonicalUrls.length === 0) {
       return [];
@@ -276,7 +280,7 @@ export class TavilySearchProvider implements SearchProvider {
     operation: "Search" | "Extract",
     timeoutMs: number,
     retryTimeoutMs: number,
-    callerSignal?: AbortSignal,
+    callerSignal: AbortSignal,
   ): Promise<unknown> {
     let lastRetryableMessage = `Tavily ${operation} 网络请求失败`;
 
@@ -312,15 +316,13 @@ export class TavilySearchProvider implements SearchProvider {
     body: Readonly<Record<string, unknown>>,
     operation: "Search" | "Extract",
     timeoutMs: number,
-    callerSignal?: AbortSignal,
+    callerSignal: AbortSignal,
   ): Promise<AttemptOutcome> {
     const timeoutSignal = AbortSignal.timeout(timeoutMs);
-    const requestSignal = callerSignal
-      ? AbortSignal.any([callerSignal, timeoutSignal])
-      : timeoutSignal;
+    const requestSignal = AbortSignal.any([callerSignal, timeoutSignal]);
 
     // 已取消的 Run 必须在任何网络副作用前终止，并保留其原始 reason。
-    callerSignal?.throwIfAborted();
+    callerSignal.throwIfAborted();
     requestSignal.throwIfAborted();
 
     let response: Response;
@@ -343,7 +345,7 @@ export class TavilySearchProvider implements SearchProvider {
       );
     }
 
-    callerSignal?.throwIfAborted();
+    callerSignal.throwIfAborted();
     if (timeoutSignal.aborted) {
       return {
         kind: "retryable",
@@ -364,7 +366,7 @@ export class TavilySearchProvider implements SearchProvider {
           callerSignal,
         );
       }
-      callerSignal?.throwIfAborted();
+      callerSignal.throwIfAborted();
       if (timeoutSignal.aborted) {
         return {
           kind: "retryable",
@@ -382,7 +384,7 @@ export class TavilySearchProvider implements SearchProvider {
 
     try {
       const rawResponse: unknown = await response.json();
-      callerSignal?.throwIfAborted();
+      callerSignal.throwIfAborted();
       timeoutSignal.throwIfAborted();
       return { kind: "success", rawResponse };
     } catch (error) {
@@ -472,10 +474,10 @@ function classifyAttemptError(
   error: unknown,
   operation: "Search" | "Extract",
   timeoutSignal: AbortSignal,
-  callerSignal?: AbortSignal,
+  callerSignal: AbortSignal,
 ): Exclude<AttemptOutcome, { kind: "success" }> {
   // Run Deadline 与用户取消优先，Adapter 不改写、不记录也不重试。
-  callerSignal?.throwIfAborted();
+  callerSignal.throwIfAborted();
 
   if (timeoutSignal.aborted) {
     return {
@@ -497,13 +499,11 @@ function classifyAttemptError(
 }
 
 /**
- * Node 原生 fetch 将 DNS/TCP/TLS/Socket 失败包装为 TypeError；同时检查 cause
- * 中常见系统错误码，兼容测试替身与后续底层实现，且不依赖可能含 URL 的 message。
+ * Node 原生 fetch 会把底层故障包装为 TypeError，但 TypeError 同时也表示参数与程序
+ * 错误，因此不能仅凭错误类型或 `UND_ERR_` 前缀决定重试。这里只接受冻结的网络/
+ * Timeout 错误码白名单，并沿 cause 有界查找；分类不依赖可能含 URL 的 message。
  */
 function isNetworkConnectionError(error: unknown): boolean {
-  if (error instanceof TypeError) {
-    return true;
-  }
   if (error instanceof DOMException && error.name === "NetworkError") {
     return true;
   }
@@ -514,10 +514,7 @@ function isNetworkConnectionError(error: unknown): boolean {
       return false;
     }
     const code = Reflect.get(current, "code");
-    if (
-      typeof code === "string" &&
-      (NETWORK_ERROR_CODES.has(code) || code.startsWith("UND_ERR_"))
-    ) {
+    if (typeof code === "string" && NETWORK_ERROR_CODES.has(code)) {
       return true;
     }
     current = Reflect.get(current, "cause");

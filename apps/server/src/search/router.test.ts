@@ -6,6 +6,7 @@
  */
 import type {
   NormalizedSearchHit,
+  ProviderSearchRequest,
   SearchCapability,
 } from "@wayfinder/contracts";
 import { describe, expect, it } from "vitest";
@@ -17,7 +18,11 @@ function createTavilyProvider(): SearchProvider {
   return {
     id: "tavily",
     capabilities: ["general"],
-    async search(): Promise<NormalizedSearchHit[]> {
+    async search(
+      _request: ProviderSearchRequest,
+      signal: AbortSignal,
+    ): Promise<NormalizedSearchHit[]> {
+      signal.throwIfAborted();
       return [];
     },
   };

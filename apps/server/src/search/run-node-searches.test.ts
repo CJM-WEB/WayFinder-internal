@@ -41,12 +41,12 @@ function createRecordingProvider(
 ): SearchProvider & {
   calls: Array<{
     request: ProviderSearchRequest;
-    signal: AbortSignal | undefined;
+    signal: AbortSignal;
   }>;
 } {
   const calls: Array<{
     request: ProviderSearchRequest;
-    signal: AbortSignal | undefined;
+    signal: AbortSignal;
   }> = [];
 
   return {
@@ -54,7 +54,7 @@ function createRecordingProvider(
     capabilities: ["general"] satisfies SearchCapability[],
     calls,
     async search(request, signal) {
-      signal?.throwIfAborted();
+      signal.throwIfAborted();
       calls.push({ request: structuredClone(request), signal });
       const response = responses[request.query];
       if (response === undefined) {

@@ -21,6 +21,11 @@ const SEARCH_REQUEST: ProviderSearchRequest = {
   language: "en",
 };
 
+/** 每次 Adapter 调用都显式携带独立的未取消 Run Signal。 */
+function createRunSignal(): AbortSignal {
+  return new AbortController().signal;
+}
+
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -76,7 +81,7 @@ describe("TavilySearchProvider.search", () => {
     );
     const provider = createProvider(fetchImplementation);
 
-    const hits = await provider.search(SEARCH_REQUEST);
+    const hits = await provider.search(SEARCH_REQUEST, createRunSignal());
 
     expect(hits).toEqual([
       {
@@ -137,7 +142,10 @@ describe("TavilySearchProvider.search", () => {
     );
 
     await expect(
-      createProvider(fetchImplementation).search(SEARCH_REQUEST),
+      createProvider(fetchImplementation).search(
+        SEARCH_REQUEST,
+        createRunSignal(),
+      ),
     ).rejects.toMatchObject({
       name: "TavilyProviderError",
       message: "Tavily Search 响应结构无效",
@@ -159,7 +167,10 @@ describe("TavilySearchProvider.search", () => {
     );
 
     await expect(
-      createProvider(fetchImplementation).search(SEARCH_REQUEST),
+      createProvider(fetchImplementation).search(
+        SEARCH_REQUEST,
+        createRunSignal(),
+      ),
     ).rejects.toMatchObject({
       name: "TavilyProviderError",
       message: "Tavily Search 响应结构无效",
@@ -177,7 +188,10 @@ describe("TavilySearchProvider.search", () => {
       jsonResponse({ results }),
     );
 
-    const hits = await createProvider(fetchImplementation).search(SEARCH_REQUEST);
+    const hits = await createProvider(fetchImplementation).search(
+      SEARCH_REQUEST,
+      createRunSignal(),
+    );
 
     expect(hits.map((hit) => hit.title)).toEqual(["first", "second"]);
     expect(hits.map((hit) => hit.providerRank)).toEqual([1, 2]);
@@ -188,7 +202,10 @@ describe("TavilySearchProvider.search", () => {
       new Response("provider-secret-body", { status: 401 }),
     );
 
-    const operation = createProvider(fetchImplementation).search(SEARCH_REQUEST);
+    const operation = createProvider(fetchImplementation).search(
+      SEARCH_REQUEST,
+      createRunSignal(),
+    );
 
     await expect(operation).rejects.toBeInstanceOf(TavilyProviderError);
     await expect(operation).rejects.toMatchObject({
@@ -231,7 +248,7 @@ describe("TavilySearchProvider.search", () => {
       createProvider(fetchImplementation, {
         searchMs: 5,
         searchRetryMs: 5,
-      }).search(SEARCH_REQUEST),
+      }).search(SEARCH_REQUEST, createRunSignal()),
     ).rejects.toMatchObject({
       name: "TavilyProviderError",
       code: "SEARCH_PROVIDER_FAILED",
@@ -263,7 +280,7 @@ describe("TavilySearchProvider.search", () => {
       createProvider(fetchImplementation, {
         searchMs: 5,
         searchRetryMs: 5,
-      }).search(SEARCH_REQUEST),
+      }).search(SEARCH_REQUEST, createRunSignal()),
     ).rejects.toMatchObject({
       name: "TavilyProviderError",
       code: "SEARCH_PROVIDER_FAILED",
@@ -302,7 +319,10 @@ describe("TavilySearchProvider.extract", () => {
     );
     const provider = createProvider(fetchImplementation);
 
-    const pages = await provider.extract([firstUrl, secondUrl, emptyUrl]);
+    const pages = await provider.extract(
+      [firstUrl, secondUrl, emptyUrl],
+      createRunSignal(),
+    );
 
     expect(pages).toEqual([
       { canonicalUrl: firstUrl, content: "First page content." },
@@ -332,7 +352,10 @@ describe("TavilySearchProvider.extract", () => {
       );
 
       await expect(
-        createProvider(fetchImplementation).extract([requestedUrl]),
+        createProvider(fetchImplementation).extract(
+          [requestedUrl],
+          createRunSignal(),
+        ),
       ).rejects.toThrow("Tavily Extract 响应关联无效");
     }
   });
@@ -348,7 +371,10 @@ describe("TavilySearchProvider.extract", () => {
     );
 
     await expect(
-      createProvider(fetchImplementation).extract([requestedUrl]),
+      createProvider(fetchImplementation).extract(
+        [requestedUrl],
+        createRunSignal(),
+      ),
     ).rejects.toMatchObject({
       name: "TavilyProviderError",
       message: "Tavily Extract 响应结构无效",
@@ -359,7 +385,10 @@ describe("TavilySearchProvider.extract", () => {
     const fetchImplementation = vi.fn<typeof fetch>();
 
     await expect(
-      createProvider(fetchImplementation).extract(["not-a-url"]),
+      createProvider(fetchImplementation).extract(
+        ["not-a-url"],
+        createRunSignal(),
+      ),
     ).rejects.toMatchObject({
       name: "TavilyProviderError",
       message: "Tavily Extract 输入 URL 无效",
@@ -371,7 +400,7 @@ describe("TavilySearchProvider.extract", () => {
     const fetchImplementation = vi.fn<typeof fetch>();
 
     await expect(
-      createProvider(fetchImplementation).extract([]),
+      createProvider(fetchImplementation).extract([], createRunSignal()),
     ).resolves.toEqual([]);
     expect(fetchImplementation).not.toHaveBeenCalled();
   });
