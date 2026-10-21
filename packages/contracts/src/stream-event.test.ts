@@ -27,6 +27,7 @@ const validAnalysis = {
 
 const validSearchPlan = {
   queries: ["typescript strict mode"],
+  maxResults: 20,
   rankingProfile: "software",
   providerHints: ["code"],
 } as const;

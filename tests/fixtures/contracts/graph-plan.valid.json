@@ -20,6 +20,7 @@
           "Visual Studio Code official download",
           "site:code.visualstudio.com download VS Code"
         ],
+        "maxResults": 10,
         "rankingProfile": "software",
         "providerHints": ["general"]
       },

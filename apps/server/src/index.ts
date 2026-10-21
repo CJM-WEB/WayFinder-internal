@@ -25,3 +25,10 @@ export {
 export type {
   SelectSearchProviderInput,
 } from "./search/router.js";
+export {
+  NodeSearchError,
+  runNodeSearches,
+} from "./search/run-node-searches.js";
+export type {
+  RunNodeSearchesInput,
+} from "./search/run-node-searches.js";

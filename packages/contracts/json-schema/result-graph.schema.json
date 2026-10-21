@@ -213,6 +213,11 @@
                           "minLength": 1
                         }
                       },
+                      "maxResults": {
+                        "type": "integer",
+                        "minimum": 6,
+                        "maximum": 20
+                      },
                       "rankingProfile": {
                         "type": "string",
                         "enum": [
@@ -245,6 +250,7 @@
                     },
                     "required": [
                       "queries",
+                      "maxResults",
                       "rankingProfile",
                       "providerHints"
                     ],
@@ -409,6 +415,11 @@
                           "minLength": 1
                         }
                       },
+                      "maxResults": {
+                        "type": "integer",
+                        "minimum": 6,
+                        "maximum": 20
+                      },
                       "rankingProfile": {
                         "type": "string",
                         "enum": [
@@ -441,6 +452,7 @@
                     },
                     "required": [
                       "queries",
+                      "maxResults",
                       "rankingProfile",
                       "providerHints"
                     ],
@@ -607,6 +619,11 @@
                           "minLength": 1
                         }
                       },
+                      "maxResults": {
+                        "type": "integer",
+                        "minimum": 6,
+                        "maximum": 20
+                      },
                       "rankingProfile": {
                         "type": "string",
                         "enum": [
@@ -639,6 +656,7 @@
                     },
                     "required": [
                       "queries",
+                      "maxResults",
                       "rankingProfile",
                       "providerHints"
                     ],

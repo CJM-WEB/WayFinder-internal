@@ -17,6 +17,7 @@ import type {
   NodeWarningCode,
   NormalizedSearchHit,
   ProviderSearchRequest,
+  QuerySearchOutcome,
   ResourceCandidate,
   ResultGraphNode,
   SearchCapability,
@@ -179,6 +180,15 @@ void verifyNodeJobOutcomeNarrowing;
 describe("WAY-24 Node 结果边界", () => {
   it("冻结 NodeSearchOutcome", () => {
     expectTypeOf<NodeSearchOutcome>().toEqualTypeOf<{
+      hits: NormalizedSearchHit[];
+      warnings: NodeWarningCode[];
+      queryOutcomes: QuerySearchOutcome[];
+    }>();
+  });
+
+  it("冻结逐 Query 搜索结果", () => {
+    expectTypeOf<QuerySearchOutcome>().toEqualTypeOf<{
+      query: string;
       hits: NormalizedSearchHit[];
       warnings: NodeWarningCode[];
     }>();
