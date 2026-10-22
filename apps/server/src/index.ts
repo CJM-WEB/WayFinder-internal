@@ -49,6 +49,11 @@ export {
 export type {
   RunNodeSearchesInput,
 } from "./search/run-node-searches.js";
+export { registerSearchRoute } from "./routes/search.js";
+export type {
+  SearchStreamHandler,
+  SearchStreamHandlerInput,
+} from "./routes/search.js";
 export {
   BROAD_DISCOVERY_RESULTS_PER_QUERY,
   BroadDiscoveryError,
