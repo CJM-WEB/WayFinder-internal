@@ -7,6 +7,7 @@
     "build": "pnpm --filter @wayfinder/contracts --fail-if-no-match run build && tsc --project tsconfig.build.json && node --input-type=module --eval \"await import('./dist/index.js')\"",
     "eval:golden": "pnpm run build && node dist/eval/run-planner-golden.js",
     "eval:reranker-golden": "pnpm run build && node dist/eval/run-resource-reranker-golden.js",
+    "eval:single-node-smoke": "pnpm run build && node dist/eval/run-single-node-smoke.js",
     "lint": "eslint src vitest.config.mjs --max-warnings=0",
     "start": "node dist/main.js",
     "test": "vitest run",
