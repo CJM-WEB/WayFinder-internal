@@ -84,6 +84,50 @@ function createActivityGate<T>(): ActivityGate<T> {
 }
 
 describe("createConcurrencyLimitedProviders", () => {
+  it("向 Search、Extract 与 LLM 原始 Provider 保持同一 Run Signal", async () => {
+    const receivedSearchSignals: AbortSignal[] = [];
+    const receivedExtractSignals: AbortSignal[] = [];
+    const receivedLlmSignals: AbortSignal[] = [];
+    const searchProvider: SearchProvider = {
+      id: "signal-search",
+      capabilities: ["general"],
+      search: async (_request, signal) => {
+        receivedSearchSignals.push(signal);
+        return [];
+      },
+      extract: async (_canonicalUrls, signal) => {
+        receivedExtractSignals.push(signal);
+        return [];
+      },
+    };
+    const llmProvider: LLMProvider = {
+      id: "signal-llm",
+      structured: async (_input, options) => {
+        receivedLlmSignals.push(options.signal);
+        return {};
+      },
+    };
+    const limited = createConcurrencyLimitedProviders({
+      searchProvider,
+      llmProvider,
+      concurrency: { search: 1, extract: 1, llm: 1 },
+    });
+    const signal = new AbortController().signal;
+
+    await Promise.all([
+      limited.searchProvider.search(REQUEST, signal),
+      limited.searchProvider.extract?.(["https://example.com"], signal),
+      limited.llmProvider.structured(STRUCTURED_INPUT, {
+        signal,
+        timeoutMs: 1_000,
+      }),
+    ]);
+
+    expect(receivedSearchSignals).toEqual([signal]);
+    expect(receivedExtractSignals).toEqual([signal]);
+    expect(receivedLlmSignals).toEqual([signal]);
+  });
+
   it("Search、Extract、LLM 分别饱和 6/3/3，且互不占用彼此槽位", async () => {
     const searchGate = createActivityGate<NormalizedSearchHit[]>();
     const extractGate = createActivityGate<ExtractedPage[]>();
