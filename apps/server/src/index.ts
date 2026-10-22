@@ -59,6 +59,8 @@ export type {
   CreateRunEventWriterInput,
   RunEventWriter,
 } from "./streaming/run-event-writer.js";
+export { emitValidatedPlanEvents } from "./orchestrator/emit-validated-plan-events.js";
+export type { EmitValidatedPlanEventsInput } from "./orchestrator/emit-validated-plan-events.js";
 export {
   BROAD_DISCOVERY_RESULTS_PER_QUERY,
   BroadDiscoveryError,
