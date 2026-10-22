@@ -4,13 +4,18 @@
  * 范围边界：只使用确定性 Mock Stream，不挂载真实 DOM、不启动 Server、不读取 Secret、
  * 不调用网络；真实 Reader、乱序、断连、Deadline 等由完整跨层矩阵覆盖。
  */
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { StreamEventSchema } from "@wayfinder/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createFixedClock } from "../../../tests/support/test-infrastructure.mjs";
 import { buildGraphFlowElements } from "./components/Graph/graph-layout.js";
 import { applySelectedNodeId } from "./components/Graph/graph-selection.js";
-import { buildResourcePanelModel } from "./components/ResourcePanel/ResourcePanel.js";
+import {
+  buildResourcePanelModel,
+  ResourcePanelView,
+} from "./components/ResourcePanel/ResourcePanel.js";
 import { requestSafeUrlOpen } from "./lib/url.js";
 import {
   createGraphStore,
@@ -23,6 +28,45 @@ afterEach(() => {
 });
 
 describe("Mock Product 前端纵切", () => {
+  it("compact 首个可用 Node 只展开 Resource Panel，不自动打开网页", () => {
+    const events = createPythonMockStream(
+      createFixedClock("2026-01-01T00:00:00.000Z"),
+    );
+    const plan = events.find(event => event.type === "graph.plan");
+    const ready = events.find(event => event.type === "node.ready");
+    if (plan?.type !== "graph.plan" || ready?.type !== "node.ready") {
+      throw new Error("Python Mock Stream 缺少 Compact 自动选择测试事件");
+    }
+    const compactPlan = StreamEventSchema.parse({
+      ...plan,
+      data: {
+        ...plan.data,
+        analysis: { ...plan.data.analysis, presentationMode: "compact" },
+      },
+    });
+    if (compactPlan.type !== "graph.plan") {
+      throw new Error("测试事件必须保持 graph.plan 类型");
+    }
+    const store = createGraphStore();
+    const opener = vi.fn(() => null);
+
+    store.getState().startRun({ runId: plan.runId, query: "Python" });
+    store.getState().applyStreamEvent(compactPlan);
+    store.getState().applyStreamEvent(ready);
+
+    const panel = buildResourcePanelModel(selectSelectedNode(store.getState()));
+    expect(panel).toMatchObject({
+      kind: "selected",
+      nodeId: ready.nodeId,
+      nodeStatus: "ready",
+    });
+    const markup = renderToStaticMarkup(
+      createElement(ResourcePanelView, { model: panel, openResource: opener }),
+    );
+    expect(markup).toContain(">Open</button>");
+    expect(opener).not.toHaveBeenCalled();
+  });
+
   it("plan 后立即显示 Draft，并让单 Node 失败不阻塞其他 Node", () => {
     const events = createPythonMockStream(
       createFixedClock("2026-01-01T00:00:00.000Z"),

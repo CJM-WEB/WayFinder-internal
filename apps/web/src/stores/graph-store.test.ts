@@ -69,6 +69,7 @@ describe("Graph store", () => {
     expect(state.nodes).toEqual([]);
     expect(state.edges).toEqual([]);
     expect(state.selectedNodeId).toBeNull();
+    expect(state.hasResolvedInitialCompactSelection).toBe(false);
     expect(state.isSearching).toBe(false);
     expect(state.lastSequence).toBe(0);
     expect(selectSelectedNode(state)).toBeNull();
@@ -91,6 +92,7 @@ describe("Graph store", () => {
       nodes: [],
       edges: [],
       selectedNodeId: null,
+      hasResolvedInitialCompactSelection: false,
       isSearching: true,
       lastSequence: 0,
     });
@@ -160,6 +162,7 @@ describe("Graph store", () => {
       nodes: [],
       edges: [],
       selectedNodeId: null,
+      hasResolvedInitialCompactSelection: false,
       isSearching: false,
       lastSequence: 0,
     });
