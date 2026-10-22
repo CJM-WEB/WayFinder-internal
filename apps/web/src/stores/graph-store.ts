@@ -4,7 +4,7 @@
  * 关键约束：
  * - Node、Edge、Run 与 sequence 的字段类型直接来自 @wayfinder/contracts，不能在 Web 内复制协议。
  * - selected Node 只保存 ID，具体对象由 selector 派生，避免图更新后保留陈旧对象。
- * - 本模块只提供显式状态动作；旧 Run、乱序事件和终态封闭属于 WAY-72。
+ * - 所有 StreamEvent 必须经过同一个原子 Reducer，旧 Run、乱序事件和终态后事件均静默丢弃。
  */
 import type {
   GraphEdge,
@@ -42,14 +42,59 @@ type GraphStoreData = {
 
 type GraphStoreActions = {
   startRun: (request: SearchRequest) => void;
+  applyStreamEvent: (event: StreamEvent) => void;
   setGraph: (graph: GraphSnapshot) => void;
   selectNode: (nodeId: GraphNodeCore["id"] | null) => void;
-  setLastSequence: (sequence: StreamEvent["sequence"]) => void;
   finishRun: () => void;
   reset: () => void;
 };
 
 export type GraphStoreState = GraphStoreData & GraphStoreActions;
+
+/** 终态 Node 不再接受增量状态，避免留下 status 与旧结果字段互相矛盾的对象。 */
+const isProcessingGraphNode = (
+  node: GraphStoreNode,
+): node is ProcessingGraphNode =>
+  node.status === "planned" ||
+  node.status === "searching" ||
+  node.status === "filtering";
+
+/**
+ * 只更新 GraphPlan 中仍处于处理阶段的目标 Node。
+ * 未知 nodeId 与迟到的第二个终态只消费 sequence，不能凭事件猜造 Node Core。
+ */
+const updateProcessingNode = (
+  nodes: GraphStoreNode[],
+  nodeId: GraphNodeCore["id"],
+  update: (node: ProcessingGraphNode) => GraphStoreNode,
+): GraphStoreNode[] => {
+  let didUpdate = false;
+  const nextNodes = nodes.map(node => {
+    if (node.id !== nodeId || !isProcessingGraphNode(node)) return node;
+
+    didUpdate = true;
+    return update(node);
+  });
+
+  return didUpdate ? nextNodes : nodes;
+};
+
+/** 图快照替换与选择修复必须一起提交，不能短暂暴露悬空 selectedNodeId。 */
+const createGraphPatch = (
+  state: GraphStoreData,
+  graph: GraphSnapshot,
+): Pick<GraphStoreData, "nodes" | "edges" | "selectedNodeId"> => ({
+  nodes: graph.nodes,
+  edges: graph.edges,
+  selectedNodeId: graph.nodes.some(node => node.id === state.selectedNodeId)
+    ? state.selectedNodeId
+    : null,
+});
+
+/** 编译期穷尽检查：公共事件新增分支时，Store 必须显式决定归并语义。 */
+const assertNeverStreamEvent = (event: never): never => {
+  throw new Error(`未处理的 StreamEvent：${JSON.stringify(event)}`);
+};
 
 /** 每次 reset 都创建新数组，避免多个 store 实例共享可变容器。 */
 const createInitialGraphState = (): GraphStoreData => ({
@@ -78,17 +123,119 @@ export const createGraphStore = () =>
       });
     },
 
+    applyStreamEvent: event => {
+      set(state => {
+        /**
+         * 三道门禁在读取 payload 前完成；被丢弃事件返回同一对象，因此不会推进
+         * sequence、关闭新 Run 或触发订阅者。sequence 允许跳号，只拒绝非递增值。
+         */
+        if (
+          event.runId !== state.activeRunId ||
+          !state.isSearching ||
+          event.sequence <= state.lastSequence
+        ) {
+          return state;
+        }
+
+        // 最终快照自带 Run 身份；内外不一致时不能绕过 Envelope 门禁污染当前 Graph。
+        if (
+          event.type === "complete" &&
+          event.data.result.runId !== event.runId
+        ) {
+          return state;
+        }
+
+        const sequencePatch = { lastSequence: event.sequence };
+
+        switch (event.type) {
+          case "query.analysis":
+            // 当前 Store 不展示 Analysis；仍消费事件以维持全局 sequence 单调。
+            return sequencePatch;
+
+          case "graph.plan":
+            // 服务端只应发布一次计划；重复计划不能把已收敛的 Node 退回 planned。
+            return state.nodes.length > 0
+              ? sequencePatch
+              : {
+                  ...createGraphPatch(state, event.data),
+                  ...sequencePatch,
+                };
+
+          case "node.status":
+            return {
+              nodes: updateProcessingNode(
+                state.nodes,
+                event.nodeId,
+                node => ({ ...node, status: event.status }),
+              ),
+              ...sequencePatch,
+            };
+
+          case "node.ready":
+            return {
+              nodes: updateProcessingNode(
+                state.nodes,
+                event.nodeId,
+                node => ({
+                  ...node,
+                  status: "ready",
+                  resources: event.resources,
+                  warnings: event.warnings,
+                }),
+              ),
+              ...sequencePatch,
+            };
+
+          case "node.partial":
+            return {
+              nodes: updateProcessingNode(
+                state.nodes,
+                event.nodeId,
+                node => ({
+                  ...node,
+                  status: "partial",
+                  resources: event.resources,
+                  warnings: event.warnings,
+                }),
+              ),
+              ...sequencePatch,
+            };
+
+          case "node.failed":
+            return {
+              nodes: updateProcessingNode(
+                state.nodes,
+                event.nodeId,
+                node => ({
+                  ...node,
+                  status: "failed",
+                  resources: [],
+                  warnings: [],
+                  error: event.error,
+                }),
+              ),
+              ...sequencePatch,
+            };
+
+          case "complete":
+            // ResultGraph 已通过公共 Schema，是丢失增量事件后的权威恢复快照。
+            return {
+              ...createGraphPatch(state, event.data.result.graph),
+              ...sequencePatch,
+              isSearching: false,
+            };
+
+          case "run.failed":
+            // Run 级失败保留已收到的 Graph；错误展示不在 WAY-72 扩展。
+            return { ...sequencePatch, isSearching: false };
+        }
+
+        return assertNeverStreamEvent(event);
+      });
+    },
+
     setGraph: graph => {
-      set(state => ({
-        nodes: graph.nodes,
-        edges: graph.edges,
-        // 图替换后不能保留已不存在的 Node ID，否则原始状态会产生悬空选择。
-        selectedNodeId: graph.nodes.some(
-          node => node.id === state.selectedNodeId,
-        )
-          ? state.selectedNodeId
-          : null,
-      }));
+      set(state => createGraphPatch(state, graph));
     },
 
     selectNode: selectedNodeId => {
@@ -99,10 +246,6 @@ export const createGraphStore = () =>
           ? state
           : { selectedNodeId },
       );
-    },
-
-    setLastSequence: lastSequence => {
-      set({ lastSequence });
     },
 
     finishRun: () => {
