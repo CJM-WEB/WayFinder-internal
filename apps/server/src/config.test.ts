@@ -66,7 +66,7 @@ describe("parseServerConfig", () => {
       SEARCH_TIMEOUT_MS: "20000",
       EXTRACT_TIMEOUT_MS: "20000",
       PLANNER_TIMEOUT_MS: "15000",
-      RERANK_TIMEOUT_MS: "20000",
+      RERANK_TIMEOUT_MS: "15000",
       SEARCH_CONCURRENCY: "1",
       EXTRACT_CONCURRENCY: "1",
       LLM_CONCURRENCY: "1",
@@ -77,7 +77,7 @@ describe("parseServerConfig", () => {
       searchMs: 20_000,
       extractMs: 20_000,
       plannerMs: 15_000,
-      rerankMs: 20_000,
+      rerankMs: 15_000,
     });
     expect(config.concurrency).toEqual({ search: 1, extract: 1, llm: 1 });
   });
@@ -89,6 +89,7 @@ describe("parseServerConfig", () => {
     ["SEARCH_TIMEOUT_MS", "0"],
     ["EXTRACT_TIMEOUT_MS", "20001"],
     ["PLANNER_TIMEOUT_MS", "15001"],
+    ["RERANK_TIMEOUT_MS", "15001"],
     ["RERANK_TIMEOUT_MS", "NaN"],
     ["SEARCH_CONCURRENCY", "7"],
     ["EXTRACT_CONCURRENCY", "4"],

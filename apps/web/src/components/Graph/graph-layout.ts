@@ -13,6 +13,7 @@ import { MarkerType, Position } from "@xyflow/react";
 import type { Edge, Node, XYPosition } from "@xyflow/react";
 
 import type { GraphStoreNode } from "../../stores/graph-store.js";
+import { NODE_STATUS_LABELS } from "./graph-labels.js";
 
 export const GRAPH_NODE_WIDTH = 240;
 export const GRAPH_NODE_HEIGHT = 112;
@@ -251,7 +252,7 @@ export const buildGraphFlowElements = (
       position: positions.get(node.id) ?? { x: 0, y: 0 },
       sourcePosition: Position.Bottom,
       targetPosition: Position.Top,
-      ariaLabel: `${node.title}，状态 ${node.status}`,
+      ariaLabel: `${node.title}，状态：${NODE_STATUS_LABELS[node.status]}`,
       className: `graph-node graph-node--${node.nodeType} graph-node--${node.status}`,
       data: {
         title: node.title,

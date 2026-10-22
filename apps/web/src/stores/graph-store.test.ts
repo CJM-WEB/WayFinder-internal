@@ -7,7 +7,11 @@
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 
-import { GraphPlanSchema, ResultGraphSchema } from "@wayfinder/contracts";
+import {
+  GraphPlanSchema,
+  ResultGraphSchema,
+  StreamEventSchema,
+} from "@wayfinder/contracts";
 import { describe, expect, it } from "vitest";
 
 import { createGraphStore, selectSelectedNode } from "./graph-store.js";
@@ -44,6 +48,17 @@ if (
 
 const readyResultGraph = ResultGraphSchema.parse(resultGraphFixtures.ready);
 
+/** 基础生命周期测试也通过正式事件推进游标，避免保留绕过 Reducer 的测试入口。 */
+const createAnalysisEvent = (runId: string, sequence: number) =>
+  StreamEventSchema.parse({
+    runId,
+    sequence,
+    protocolVersion: "0.1",
+    timestamp: "2026-10-22T00:00:00.000Z",
+    type: "query.analysis",
+    data: graphPlan.analysis,
+  });
+
 describe("Graph store", () => {
   it("提供空闲且未选中节点的初始状态", () => {
     const state = createGraphStore().getState();
@@ -64,7 +79,7 @@ describe("Graph store", () => {
     store.getState().startRun({ runId: "old-run", query: "old query" });
     store.getState().setGraph(graphPlan);
     store.getState().selectNode(graphPlan.nodes[0]?.id ?? null);
-    store.getState().setLastSequence(8);
+    store.getState().applyStreamEvent(createAnalysisEvent("old-run", 8));
 
     store.getState().startRun({ runId: "new-run", query: "new query" });
 
@@ -117,7 +132,7 @@ describe("Graph store", () => {
     const store = createGraphStore();
 
     store.getState().startRun({ runId: "run-27", query: "WayFinder" });
-    store.getState().setLastSequence(12);
+    store.getState().applyStreamEvent(createAnalysisEvent("run-27", 12));
     store.getState().finishRun();
 
     expect(store.getState().lastSequence).toBe(12);
@@ -130,7 +145,7 @@ describe("Graph store", () => {
     store.getState().startRun({ runId: "run-27", query: "WayFinder" });
     store.getState().setGraph(graphPlan);
     store.getState().selectNode(graphPlan.nodes[0]?.id ?? null);
-    store.getState().setLastSequence(3);
+    store.getState().applyStreamEvent(createAnalysisEvent("run-27", 3));
     store.getState().reset();
 
     expect(store.getState()).toMatchObject({

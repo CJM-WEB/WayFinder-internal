@@ -49,6 +49,30 @@ export {
 export type {
   RunNodeSearchesInput,
 } from "./search/run-node-searches.js";
+export { registerSearchRoute } from "./routes/search.js";
+export type {
+  SearchStreamHandler,
+  SearchStreamHandlerInput,
+} from "./routes/search.js";
+export { createRunEventWriter } from "./streaming/run-event-writer.js";
+export type {
+  CreateRunEventWriterInput,
+  RunEventWriter,
+} from "./streaming/run-event-writer.js";
+export { emitValidatedPlanEvents } from "./orchestrator/emit-validated-plan-events.js";
+export type { EmitValidatedPlanEventsInput } from "./orchestrator/emit-validated-plan-events.js";
+export {
+  createRunTerminalEventState,
+  emitRunFailedWithoutGraphPlan,
+} from "./orchestrator/run-terminal-events.js";
+export type {
+  CompleteRunWithTerminalEventsInput,
+  CreateRunTerminalEventStateInput,
+  EmitRunFailedWithoutGraphPlanInput,
+  RunTerminalEventState,
+} from "./orchestrator/run-terminal-events.js";
+export { createRunSearchHandler } from "./orchestrator/run-search.js";
+export type { CreateRunSearchHandlerInput } from "./orchestrator/run-search.js";
 export {
   BROAD_DISCOVERY_RESULTS_PER_QUERY,
   BroadDiscoveryError,

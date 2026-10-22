@@ -1,17 +1,29 @@
 /**
- * 组件职责：以统一视觉展示 Graph Node 的最小产品信息。
+ * 组件职责：以独立文字、符号和语义样式展示 Graph Node（图节点）的六种渐进状态。
  *
- * 范围边界：WAY-30 只展示标题、资源数和状态；资源列表与节点选择交互留给 WAY-31。
+ * 范围边界：加载只由当前 Node 状态决定；组件不读取 Run 全局状态，也不阻塞其他 Node 交互。
  */
 import { Handle, Position } from "@xyflow/react";
 import type { NodeProps } from "@xyflow/react";
 
 import type { GraphFlowNode } from "./graph-layout.js";
-import { NODE_STATUS_LABELS, NODE_TYPE_LABELS } from "./graph-labels.js";
+import {
+  buildNodeStatusPresentation,
+  NODE_TYPE_LABELS,
+} from "./graph-labels.js";
 
 export function GraphNode({ data }: NodeProps<GraphFlowNode>) {
+  const presentation = buildNodeStatusPresentation(
+    data.status,
+    data.resourceCount,
+  );
+
   return (
-    <article className="graph-node__content">
+    <article
+      className="graph-node__content"
+      data-node-status={data.status}
+      aria-busy={presentation.isLoading}
+    >
       {/* 主层级边固定从下方流向上方；侧边 Handle 专门承载 related_to。 */}
       <Handle
         id="main-target"
@@ -29,11 +41,14 @@ export function GraphNode({ data }: NodeProps<GraphFlowNode>) {
       <div className="graph-node__eyebrow">
         <span>{NODE_TYPE_LABELS[data.nodeType]}</span>
         <span className={`graph-node__status graph-node__status--${data.status}`}>
-          {NODE_STATUS_LABELS[data.status]}
+          <span className="graph-node__status-marker" aria-hidden="true">
+            {presentation.marker}
+          </span>
+          {presentation.label}
         </span>
       </div>
       <h3>{data.title}</h3>
-      <p>{data.resourceCount} 条资源</p>
+      <p>{presentation.detail}</p>
 
       <Handle
         id="related-source"

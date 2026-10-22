@@ -95,8 +95,8 @@ export type ProcessNodeContext = Readonly<{
   nowMs: number;
   /** 必须是已按 Run 剩余时间收窄后的正整数阶段预算。 */
   rerankTimeoutMs: number;
-  /** Emit 只接收无 Envelope 的严格业务 Payload；Route 负责补齐 Envelope。 */
-  emit: (payload: NodeStreamEventPayload) => void;
+  /** Emit 只接收无 Envelope 的严格业务 Payload；Run Event Writer 负责补齐 Envelope。 */
+  emit: (payload: NodeStreamEventPayload) => Promise<void>;
   language?: string;
 }>;
 
@@ -128,10 +128,10 @@ function appendUniqueWarnings(
 }
 
 /** 在交给传输层前先校验 Payload，防止内部调用绕过公共 Event Contract。 */
-function emitValidated(
+async function emitValidated(
   emit: ProcessNodeContext["emit"],
   payload: NodeStreamEventPayload,
-): void {
+): Promise<void> {
   const parsed = StreamEventPayloadSchema.parse(payload);
   try {
     switch (parsed.type) {
@@ -139,7 +139,7 @@ function emitValidated(
       case "node.ready":
       case "node.partial":
       case "node.failed":
-        emit(parsed);
+        await emit(parsed);
         return;
       default:
         // 输入类型已经排除非 Node 事件；此分支防止未来 Schema 调整后边界静默扩大。
@@ -164,7 +164,7 @@ export async function processNode(
 
   try {
     signal.throwIfAborted();
-    emitValidated(context.emit, {
+    await emitValidated(context.emit, {
       type: "node.status",
       nodeId: node.id,
       status: "searching",
@@ -181,7 +181,7 @@ export async function processNode(
     });
     appendUniqueWarnings(warnings, searchOutcome.warnings);
 
-    emitValidated(context.emit, {
+    await emitValidated(context.emit, {
       type: "node.status",
       nodeId: node.id,
       status: "filtering",
@@ -255,7 +255,7 @@ export async function processNode(
       code: nodeError.code,
       retryable: nodeError.retryable,
     });
-    emitValidated(context.emit, {
+    await emitValidated(context.emit, {
       type: "node.failed",
       nodeId: node.id,
       error: appError,
@@ -270,7 +270,7 @@ export async function processNode(
    * 终态 Emit 位于业务 catch 之外：若传输层在发送 ready/partial 时抛错，不能再补发
    * node.failed，否则同一 Node 可能出现两个终态事件。此类错误应由 Run 层终止传输。
    */
-  emitValidated(context.emit, {
+  await emitValidated(context.emit, {
     type: result.status === "partial" ? "node.partial" : "node.ready",
     nodeId: node.id,
     resources: result.resources,

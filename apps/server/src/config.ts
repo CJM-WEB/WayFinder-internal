@@ -9,7 +9,12 @@
  */
 import { z } from "zod";
 
+import { MAX_LLM_CALL_TIMEOUT_MS } from "./ai/llm-provider.js";
+
 export const RUN_DEADLINE_MS = 20_000 as const;
+export const MAX_SEARCH_CONCURRENCY = 6 as const;
+export const MAX_EXTRACT_CONCURRENCY = 3 as const;
+export const MAX_LLM_CONCURRENCY = 3 as const;
 
 /**
  * 环境变量天然是字符串；先拒绝小数、符号与科学计数法，再转换为数字，
@@ -36,11 +41,24 @@ const EnvironmentSchema = z
     TAVILY_API_KEY: z.string().trim().min(1),
     SEARCH_TIMEOUT_MS: boundedInteger(8_000, RUN_DEADLINE_MS),
     EXTRACT_TIMEOUT_MS: boundedInteger(10_000, RUN_DEADLINE_MS),
-    PLANNER_TIMEOUT_MS: boundedInteger(15_000, 15_000),
-    RERANK_TIMEOUT_MS: boundedInteger(12_000, RUN_DEADLINE_MS),
-    SEARCH_CONCURRENCY: boundedInteger(6, 6),
-    EXTRACT_CONCURRENCY: boundedInteger(3, 3),
-    LLM_CONCURRENCY: boundedInteger(3, 3),
+    PLANNER_TIMEOUT_MS: boundedInteger(
+      MAX_LLM_CALL_TIMEOUT_MS,
+      MAX_LLM_CALL_TIMEOUT_MS,
+    ),
+    // 所有 Structured Output 共用 15 秒硬上限，配置不能制造运行时必然失败值。
+    RERANK_TIMEOUT_MS: boundedInteger(12_000, MAX_LLM_CALL_TIMEOUT_MS),
+    SEARCH_CONCURRENCY: boundedInteger(
+      MAX_SEARCH_CONCURRENCY,
+      MAX_SEARCH_CONCURRENCY,
+    ),
+    EXTRACT_CONCURRENCY: boundedInteger(
+      MAX_EXTRACT_CONCURRENCY,
+      MAX_EXTRACT_CONCURRENCY,
+    ),
+    LLM_CONCURRENCY: boundedInteger(
+      MAX_LLM_CONCURRENCY,
+      MAX_LLM_CONCURRENCY,
+    ),
   })
   // `process.env` 包含操作系统与工具链变量；这里只投影应用明确声明的字段。
   .strip()

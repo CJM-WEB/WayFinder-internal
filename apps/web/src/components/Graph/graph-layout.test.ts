@@ -1,5 +1,5 @@
 /**
- * 测试职责：验证 WAY-30 的 Product Graph（产品图）到 React Flow 的确定性布局映射。
+ * 测试职责：验证 Product Graph（产品图）到 React Flow 的确定性布局与六态映射。
  *
  * 关键约束：
  * - recommended_next 是 Dagre 主层级的唯一输入。
@@ -7,7 +7,11 @@
  * - 布局层不得丢弃或改写任何 Contract Node / Edge。
  */
 import { MarkerType } from "@xyflow/react";
-import type { GraphEdge } from "@wayfinder/contracts";
+import {
+  StreamNodeStatusSchema,
+  type GraphEdge,
+  type ProcessingNodeStatus,
+} from "@wayfinder/contracts";
 import { describe, expect, it } from "vitest";
 
 import { pythonResultGraphFixture } from "../../fixtures/python-result-graph.js";
@@ -17,6 +21,7 @@ import {
   GRAPH_NODE_HEIGHT,
   GRAPH_NODE_WIDTH,
 } from "./graph-layout.js";
+import { NODE_STATUS_LABELS } from "./graph-labels.js";
 
 const fixtureNodes = pythonResultGraphFixture.graph.nodes;
 const fixtureEdges = pythonResultGraphFixture.graph.edges;
@@ -35,6 +40,21 @@ const fixtureNodeById = (nodeId: string): GraphStoreNode => {
   return node;
 };
 
+/** 从固定 Node Core 派生处理中状态，不复制或伪造终态 Resource。 */
+const processingNode = (status: ProcessingNodeStatus): GraphStoreNode => {
+  const template = fixtureNodeById("python-introduction");
+
+  return {
+    id: `processing-${status}`,
+    title: `处理中：${status}`,
+    description: template.description,
+    nodeType: template.nodeType,
+    layer: template.layer,
+    searchPlan: template.searchPlan,
+    status,
+  };
+};
+
 const nodesOverlap = (
   first: { x: number; y: number },
   second: { x: number; y: number },
@@ -45,6 +65,35 @@ const nodesOverlap = (
   first.y + GRAPH_NODE_HEIGHT > second.y;
 
 describe("Graph layout", () => {
+  it("把六种状态映射为独立 class 与中文可访问名称", () => {
+    const processingFlows = buildGraphFlowElements(
+      [
+        processingNode("planned"),
+        processingNode("searching"),
+        processingNode("filtering"),
+      ],
+      [],
+    ).nodes;
+    const terminalFlows = buildGraphFlowElements(fixtureNodes, fixtureEdges)
+      .nodes.filter(node =>
+        ["ready", "partial", "failed"].includes(node.data.status),
+      );
+    const flowByStatus = new Map(
+      [...processingFlows, ...terminalFlows].map(node => [
+        node.data.status,
+        node,
+      ]),
+    );
+
+    for (const status of StreamNodeStatusSchema.options) {
+      const node = flowByStatus.get(status);
+
+      expect(node).toBeDefined();
+      expect(node?.className).toContain(`graph-node--${status}`);
+      expect(node?.ariaLabel).toContain(NODE_STATUS_LABELS[status]);
+    }
+  });
+
   it("保留 Python fixture 的全部节点、全部边与有限坐标", () => {
     const result = buildGraphFlowElements(fixtureNodes, fixtureEdges);
 
