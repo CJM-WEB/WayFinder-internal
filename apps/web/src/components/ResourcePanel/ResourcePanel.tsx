@@ -1,9 +1,12 @@
 /**
- * 组件职责：展示当前选中 Node 的状态和可交付 Resource（资源）。
+ * 组件职责：展示当前选中 Node 的状态和可交付 Resource（资源），默认显示 Top 3，
+ * 并在用户明确点击后展开本轮已经保留的其余结果。
  *
- * WAY-32 边界：只有用户点击 Open 后才允许打开已重新校验的 HTTP(S) URL。
+ * 边界：Show More 只改变本地视图，绝不触发第二次 Search；只有用户点击 Open 后
+ * 才允许打开已重新校验的 HTTP(S) URL。
  */
 import type { Resource, StreamNodeStatus } from "@wayfinder/contracts";
+import { useState } from "react";
 import { useStore } from "zustand";
 
 import { NODE_STATUS_LABELS } from "../Graph/graph-labels.js";
@@ -24,6 +27,7 @@ type UnselectedPanelModel = {
 
 type SelectedPanelModel = {
   kind: "selected";
+  nodeId: string;
   nodeTitle: string;
   nodeStatus: StreamNodeStatus;
   nodeStatusLabel: string;
@@ -56,6 +60,7 @@ export const buildResourcePanelModel = (
 
   return {
     kind: "selected",
+    nodeId: node.id,
     nodeTitle: node.title,
     nodeStatus: node.status,
     nodeStatusLabel: NODE_STATUS_LABELS[node.status],
@@ -72,25 +77,28 @@ const formatSourceType = (sourceType: string): string =>
 const openBrowserTab: ResourceUrlOpener = (url, target, features) =>
   window.open(url, target, features);
 
-/** 纯展示组件支持注入 opener，便于验证渲染不会产生浏览器副作用。 */
-export function ResourcePanelView({
+const DEFAULT_VISIBLE_RESOURCE_COUNT = 3;
+
+/** 纯函数冻结默认 Top 3 与本地展开语义；返回值始终保持 retained 排序。 */
+export function selectVisibleResources(
+  resources: readonly Resource[],
+  expanded: boolean,
+): readonly Resource[] {
+  return expanded
+    ? resources
+    : resources.slice(0, DEFAULT_VISIBLE_RESOURCE_COUNT);
+}
+
+function SelectedResourcePanel({
   model,
-  openResource = openBrowserTab,
+  openResource,
 }: {
-  model: ResourcePanelModel;
-  openResource?: ResourceUrlOpener;
+  model: SelectedPanelModel;
+  openResource: ResourceUrlOpener;
 }) {
-  if (model.kind === "unselected") {
-    return (
-      <aside className="resource-panel resource-panel--empty" aria-live="polite">
-        <div>
-          <p className="resource-panel__eyebrow">Resource Panel</p>
-          <h2>选择一个节点</h2>
-          <p>你可以自由查看任意节点，不必沿箭头顺序浏览。</p>
-        </div>
-      </aside>
-    );
-  }
+  const [expanded, setExpanded] = useState(false);
+  const visibleResources = selectVisibleResources(model.resources, expanded);
+  const hiddenResourceCount = model.resources.length - visibleResources.length;
 
   return (
     <aside
@@ -114,63 +122,105 @@ export function ResourcePanelView({
       {model.resources.length === 0 ? (
         <p className="resource-panel__notice">{model.emptyMessage}</p>
       ) : (
-        <div className="resource-list" role="list" aria-label="节点资源">
-          {model.resources.map(resource => {
-            const safeUrl = resolveSafeResourceUrl(resource.url);
+        <>
+          <div className="resource-list" role="list" aria-label="节点资源">
+            {visibleResources.map(resource => {
+              const safeUrl = resolveSafeResourceUrl(resource.url);
 
-            return (
-              <article
-                className="resource-card"
-                role="listitem"
-                key={resource.id}
-              >
-                <header className="resource-card__header">
-                  <span className="resource-card__rank">#{resource.rank}</span>
-                  <h3>{resource.title}</h3>
-                </header>
+              return (
+                <article
+                  className="resource-card"
+                  role="listitem"
+                  key={resource.id}
+                >
+                  <header className="resource-card__header">
+                    <span className="resource-card__rank">#{resource.rank}</span>
+                    <h3>{resource.title}</h3>
+                  </header>
 
-                <dl className="resource-card__meta">
-                  <div>
-                    <dt>域名</dt>
-                    <dd>{resource.domain}</dd>
-                  </div>
-                  <div>
-                    <dt>来源类型</dt>
-                    <dd>{formatSourceType(resource.sourceType)}</dd>
-                  </div>
-                </dl>
+                  <dl className="resource-card__meta">
+                    <div>
+                      <dt>域名</dt>
+                      <dd>{resource.domain}</dd>
+                    </div>
+                    <div>
+                      <dt>来源类型</dt>
+                      <dd>{formatSourceType(resource.sourceType)}</dd>
+                    </div>
+                  </dl>
 
-                <section aria-labelledby={`${resource.id}-summary`}>
-                  <h4 id={`${resource.id}-summary`}>AI 摘要</h4>
-                  <p>{resource.summary}</p>
-                </section>
+                  <section aria-labelledby={`${resource.id}-summary`}>
+                    <h4 id={`${resource.id}-summary`}>AI 摘要</h4>
+                    <p>{resource.summary}</p>
+                  </section>
 
-                <section aria-labelledby={`${resource.id}-why-selected`}>
-                  <h4 id={`${resource.id}-why-selected`}>入选原因</h4>
-                  <p>{resource.whySelected}</p>
-                </section>
+                  <section aria-labelledby={`${resource.id}-why-selected`}>
+                    <h4 id={`${resource.id}-why-selected`}>入选原因</h4>
+                    <p>{resource.whySelected}</p>
+                  </section>
 
-                <footer className="resource-card__actions">
-                  <button
-                    type="button"
-                    disabled={safeUrl === null}
-                    aria-label={`在新标签页打开 ${resource.title}`}
-                    onClick={() =>
-                      requestResourceOpen(resource.url, openResource)
-                    }
-                  >
-                    Open
-                  </button>
-                  {safeUrl === null ? (
-                    <p role="status">链接不可用：仅支持有效的 HTTP(S) 地址。</p>
-                  ) : null}
-                </footer>
-              </article>
-            );
-          })}
-        </div>
+                  <footer className="resource-card__actions">
+                    <button
+                      type="button"
+                      disabled={safeUrl === null}
+                      aria-label={`在新标签页打开 ${resource.title}`}
+                      onClick={() =>
+                        requestResourceOpen(resource.url, openResource)
+                      }
+                    >
+                      Open
+                    </button>
+                    {safeUrl === null ? (
+                      <p role="status">
+                        链接不可用：仅支持有效的 HTTP(S) 地址。
+                      </p>
+                    ) : null}
+                  </footer>
+                </article>
+              );
+            })}
+          </div>
+          {hiddenResourceCount > 0 ? (
+            <button
+              className="resource-panel__show-more"
+              type="button"
+              onClick={() => setExpanded(true)}
+            >
+              显示更多（{hiddenResourceCount}）
+            </button>
+          ) : null}
+        </>
       )}
     </aside>
+  );
+}
+
+/** 纯展示入口支持注入 opener；key 变化会重建选中面板并重置展开状态。 */
+export function ResourcePanelView({
+  model,
+  openResource = openBrowserTab,
+}: {
+  model: ResourcePanelModel;
+  openResource?: ResourceUrlOpener;
+}) {
+  if (model.kind === "unselected") {
+    return (
+      <aside className="resource-panel resource-panel--empty" aria-live="polite">
+        <div>
+          <p className="resource-panel__eyebrow">Resource Panel</p>
+          <h2>选择一个节点</h2>
+          <p>你可以自由查看任意节点，不必沿箭头顺序浏览。</p>
+        </div>
+      </aside>
+    );
+  }
+
+  return (
+    <SelectedResourcePanel
+      key={model.nodeId}
+      model={model}
+      openResource={openResource}
+    />
   );
 }
 
