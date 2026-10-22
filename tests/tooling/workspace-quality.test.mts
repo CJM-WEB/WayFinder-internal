@@ -207,7 +207,7 @@ describe("JSON Schema 工具链门禁", () => {
       "pnpm --filter @wayfinder/contracts --fail-if-no-match run schema:check",
     );
     expect(rootScripts.ci).toBe(
-      "pnpm run lint && pnpm run typecheck && pnpm run schema:check && pnpm run test && pnpm run build",
+      "pnpm run lint && pnpm run typecheck && pnpm run schema:check && pnpm run test && pnpm run build && pnpm run test:e2e",
     );
 
     for (const script of [
@@ -272,6 +272,45 @@ describe("JSON Schema 工具链门禁", () => {
     );
 
     expect(attributes.split(/\r?\n/u)).toContain("*.mts text eol=lf");
+  });
+});
+
+describe("Browser E2E 质量门禁", () => {
+  it("要求 Browser E2E 进入根 CI 且固定 Playwright 与 Chromium 安装门禁", () => {
+    const rootScripts = readScripts(path.join(repositoryRoot, "package.json"));
+    const webPackagePath = path.join(repositoryRoot, "apps/web/package.json");
+    const webScripts = readScripts(webPackagePath);
+    const webPackage: unknown = JSON.parse(fs.readFileSync(webPackagePath, "utf8"));
+    const workflow = fs.readFileSync(
+      path.join(repositoryRoot, ".github/workflows/ci.yml"),
+      "utf8",
+    );
+
+    expect(rootScripts["test:e2e"]).toBe(
+      "pnpm --filter @wayfinder/web --fail-if-no-match run test:e2e",
+    );
+    expect(webScripts["test:e2e"]).toBe(
+      "playwright test --config playwright.config.ts",
+    );
+    expect(webScripts.test).toBe("vitest run src");
+    expect(rootScripts.ci).toContain("&& pnpm run test:e2e");
+    expect(workflow).toContain(
+      "pnpm --filter @wayfinder/web exec playwright install --with-deps chromium",
+    );
+    expect(workflow.indexOf("playwright install --with-deps chromium"))
+      .toBeLessThan(workflow.indexOf("pnpm run ci"));
+    if (!isRecord(webPackage) || !isRecord(webPackage.devDependencies)) {
+      throw new Error("Web package 缺少 devDependencies");
+    }
+    expect(webPackage.devDependencies["@playwright/test"]).toBe("1.64.1");
+
+    for (const script of [
+      rootScripts["test:e2e"],
+      webScripts["test:e2e"],
+      rootScripts.ci,
+    ]) {
+      expect(script).not.toContain("--if-present");
+    }
   });
 });
 
