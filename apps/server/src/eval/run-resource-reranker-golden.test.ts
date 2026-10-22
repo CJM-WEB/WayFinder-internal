@@ -1,6 +1,6 @@
 /**
- * 测试职责：冻结 WAY-53 Reranker Golden 的 live guard、固定 Case 数据与脱敏报告。
- * 测试只使用 Fake LLM，不读取 Secret、不访问网络，也不创建真实结果目录。
+ * 测试职责：冻结 Reranker + WAY-55 Diversity Golden 的 live guard、固定 Case 数据
+ * 与脱敏报告。测试只使用 Fake LLM，不读取 Secret、不访问网络或创建真实结果目录。
  */
 import { describe, expect, it } from "vitest";
 
@@ -114,6 +114,18 @@ describe("Reranker Golden 固定 Case", () => {
         ),
       ),
     ).toBe(true);
+    expect(
+      cases.some(goldenCase => {
+        const domainCounts = new Map<string, number>();
+        for (const candidate of goldenCase.candidates) {
+          domainCounts.set(
+            candidate.domain,
+            (domainCounts.get(candidate.domain) ?? 0) + 1,
+          );
+        }
+        return [...domainCounts.values()].some(count => count > 2);
+      }),
+    ).toBe(true);
   });
 
   it("记录排序、质量、延迟与 Token，但不保存输入正文或 URL", async () => {
@@ -138,9 +150,13 @@ describe("Reranker Golden 固定 Case", () => {
 
     expect(result).toMatchObject({
       status: "completed",
+      preDiversityOrder: goldenCase!.candidates.map(
+        candidate => candidate.candidateId,
+      ),
       actualOrder: goldenCase!.candidates.map(
         candidate => candidate.candidateId,
       ),
+      diversityRemovedCandidateIds: [],
       tokenUsage: { inputTokens: 100, outputTokens: 50, totalTokens: 150 },
     });
     expect(result.elapsedMs).toBeGreaterThanOrEqual(0);
@@ -148,5 +164,41 @@ describe("Reranker Golden 固定 Case", () => {
     expect(JSON.stringify(result)).not.toContain(
       goldenCase!.candidates[0]!.content,
     );
+  });
+
+  it("在 News Case 中报告 Diversity 前后顺序与实际移除项", async () => {
+    const cases = await readResourceRerankerGoldenCases();
+    const newsCase = cases.find(goldenCase => goldenCase.id === "wfq-013");
+    expect(newsCase).toBeDefined();
+    const ranking = newsCase!.candidates.map(candidate => ({
+      candidateId: candidate.candidateId,
+      scores: createProfileScores(newsCase!.rankingProfile),
+      summary: "Evidence-grounded news summary.",
+      whySelected: "Ordered from the supplied news evidence.",
+    }));
+
+    const result = await evaluateResourceRerankerGoldenCase({
+      goldenCase: newsCase!,
+      provider: new FakeLLMProvider([{ ranking }]),
+      timeoutMs: 12_000,
+    });
+
+    expect(result).toMatchObject({
+      status: "completed",
+      preDiversityOrder: [
+        "candidate_1",
+        "candidate_2",
+        "candidate_3",
+        "candidate_4",
+        "candidate_5",
+      ],
+      actualOrder: [
+        "candidate_1",
+        "candidate_2",
+        "candidate_3",
+        "candidate_5",
+      ],
+      diversityRemovedCandidateIds: ["candidate_4"],
+    });
   });
 });

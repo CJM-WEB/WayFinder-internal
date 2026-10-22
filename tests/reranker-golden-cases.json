@@ -165,7 +165,7 @@
       {
         "candidateId": "candidate_2",
         "title": "New AI release announcement repost",
-        "canonicalUrl": "https://repost.example/ai-release",
+        "canonicalUrl": "https://repost.example/ai-release-copy-1",
         "domain": "repost.example",
         "snippet": "A same-day repost of the primary announcement.",
         "publishedAt": "2026-10-22T02:00:00Z",
@@ -173,12 +173,30 @@
       },
       {
         "candidateId": "candidate_3",
-        "title": "AI predictions for the coming year",
-        "canonicalUrl": "https://opinion.example/ai-predictions",
-        "domain": "opinion.example",
-        "snippet": "An older opinion article about possible future AI releases.",
-        "publishedAt": "2025-11-10T00:00:00Z",
-        "content": "The author speculates about future developments and does not document the current release or independently verify recent news."
+        "title": "AI release announcement mirror",
+        "canonicalUrl": "https://repost.example/ai-release-copy-2",
+        "domain": "repost.example",
+        "snippet": "Another same-day copy of the primary announcement.",
+        "publishedAt": "2026-10-22T02:05:00Z",
+        "content": "The mirror repeats the primary announcement and adds no independent reporting, verification, or original evidence."
+      },
+      {
+        "candidateId": "candidate_4",
+        "title": "AI release announcement syndicated copy",
+        "canonicalUrl": "https://repost.example/ai-release-copy-3",
+        "domain": "repost.example",
+        "snippet": "A syndicated copy of the same primary announcement.",
+        "publishedAt": "2026-10-22T02:10:00Z",
+        "content": "The syndicated page republishes the announcement without additional sourcing, interviews, or independent analysis."
+      },
+      {
+        "candidateId": "candidate_5",
+        "title": "Independent analysis of the AI release",
+        "canonicalUrl": "https://independent-news.example/ai-release-analysis",
+        "domain": "independent-news.example",
+        "snippet": "An independent report checks the announcement against technical material.",
+        "publishedAt": "2026-10-22T03:00:00Z",
+        "content": "The report links to the primary announcement, checks technical claims against supporting documentation, and clearly separates reported facts from analysis."
       }
     ]
   },

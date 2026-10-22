@@ -1,6 +1,6 @@
 /**
- * 模块职责：串行执行 WAY-53 Resource Reranker Golden Cases，并把质量、延迟、
- * Token 与人工审核材料写入被 Git 忽略的本地目录。
+ * 模块职责：串行执行固定 Resource Reranker Golden Cases，并在模型排序后应用
+ * WAY-55 Source Diversity，把质量、延迟、Token 与人工审核材料写入本地目录。
  *
  * 安全边界：
  * - 缺少唯一 `--live` 参数时，在读取 Secret 或发起网络前立即拒绝；
@@ -36,6 +36,7 @@ import {
   type ResourceRerankDecision,
 } from "../ai/resource-reranker.js";
 import type { LLMProvider } from "../ai/llm-provider.js";
+import { applySourceDiversity } from "../pipeline/diversity.js";
 
 const execFileAsync = promisify(execFile);
 const EXPECTED_CASE_COUNT = 6;
@@ -49,7 +50,7 @@ const GOLDEN_CASE_FILE = resolve(
 );
 const RESULT_ROOT = resolve(
   REPOSITORY_ROOT,
-  "data/eval-results/way-53",
+  "data/eval-results/way-55",
 );
 const GOLDEN_RUN_DEADLINE_MS = 20_000;
 
@@ -96,6 +97,7 @@ const GoldenCaseFileSchema = z
   .array(GoldenCaseSchema)
   .length(EXPECTED_CASE_COUNT)
   .superRefine((cases, context) => {
+    let exercisesDiversityCap = false;
     const caseIds = cases.map(goldenCase => goldenCase.id);
     if (new Set(caseIds).size !== caseIds.length) {
       context.addIssue({ code: "custom", message: "Golden Case ID 必须唯一" });
@@ -125,6 +127,20 @@ const GoldenCaseFileSchema = z
           message: "Candidate canonicalUrl 必须唯一",
         });
       }
+
+      const domainCounts = new Map<string, number>();
+      for (const candidate of goldenCase.candidates) {
+        const count = (domainCounts.get(candidate.domain) ?? 0) + 1;
+        domainCounts.set(candidate.domain, count);
+        exercisesDiversityCap ||= count > 2;
+      }
+    }
+
+    if (!exercisesDiversityCap) {
+      context.addIssue({
+        code: "custom",
+        message: "至少一个 Golden Case 必须实际触发同域 Diversity Cap",
+      });
     }
   });
 
@@ -154,7 +170,10 @@ export type ResourceRerankerGoldenResult = Readonly<{
   rationale: string;
   status: "completed" | "failed";
   elapsedMs: number;
+  /** LLM 的原始质量顺序，用于人工核对 Diversity 没有重排幸存者。 */
+  preDiversityOrder: readonly string[];
   actualOrder: readonly string[];
+  diversityRemovedCandidateIds: readonly string[];
   topCandidateMatched: boolean;
   decisions: readonly ResourceRerankDecision[];
   tokenUsage: DeepSeekTokenUsage | "unavailable";
@@ -324,7 +343,26 @@ export async function evaluateResourceRerankerGoldenCase(input: {
       timeoutMs: input.timeoutMs,
       ...(input.now === undefined ? {} : { now: input.now }),
     });
-    const actualOrder = decisions.map(decision => decision.candidateId);
+    const preDiversityOrder = decisions.map(decision => decision.candidateId);
+    const candidateById = new Map(
+      runtime.candidates.map(candidate => [candidate.candidateId, candidate]),
+    );
+    const rerankedCandidates = preDiversityOrder.map(candidateId => {
+      const candidate = candidateById.get(candidateId);
+      if (candidate === undefined) {
+        // rerankResources 已校验完整唯一映射；这里是 Golden Harness 的内部不变量。
+        throw new TypeError("Golden Reranker Candidate 映射不变量被破坏");
+      }
+      return candidate;
+    });
+    const diversifiedCandidates = applySourceDiversity(rerankedCandidates);
+    const actualOrder = diversifiedCandidates.map(
+      candidate => candidate.candidateId,
+    );
+    const actualIds = new Set(actualOrder);
+    const diversityRemovedCandidateIds = preDiversityOrder.filter(
+      candidateId => !actualIds.has(candidateId),
+    );
     return {
       id: input.goldenCase.id,
       category: input.goldenCase.category,
@@ -333,7 +371,9 @@ export async function evaluateResourceRerankerGoldenCase(input: {
       rationale: input.goldenCase.rationale,
       status: "completed",
       elapsedMs: Math.round(performance.now() - startedAt),
+      preDiversityOrder,
       actualOrder,
+      diversityRemovedCandidateIds,
       topCandidateMatched:
         actualOrder[0] === input.goldenCase.expectedTopCandidateId,
       decisions,
@@ -348,7 +388,9 @@ export async function evaluateResourceRerankerGoldenCase(input: {
       rationale: input.goldenCase.rationale,
       status: "failed",
       elapsedMs: Math.round(performance.now() - startedAt),
+      preDiversityOrder: [],
       actualOrder: [],
+      diversityRemovedCandidateIds: [],
       topCandidateMatched: false,
       decisions: [],
       tokenUsage: summarizeTokenUsage(input.readTokenUsages?.() ?? []),
@@ -417,7 +459,9 @@ function renderHumanReview(results: readonly ResourceRerankerGoldenResult[]): st
 
 - Profile：${result.rankingProfile}
 - 预期 Top：${result.expectedTopCandidateId}
-- 实际顺序：${result.actualOrder.join(" → ") || "未完成"}
+- Diversity 前顺序：${result.preDiversityOrder.join(" → ") || "未完成"}
+- Diversity 后顺序：${result.actualOrder.join(" → ") || "未完成"}
+- Diversity 移除：${result.diversityRemovedCandidateIds.join("、") || "无"}
 - 自动 Top 匹配：${result.topCandidateMatched ? "是" : "否"}
 - 人工评分（1～5）：待填写
 - 人工结论（pass / targetedIterate / fail / inconclusive）：待填写
@@ -429,9 +473,9 @@ function renderHumanReview(results: readonly ResourceRerankerGoldenResult[]): st
 ${JSON.stringify(result.decisions, null, 2)}
 \`\`\``);
 
-  return `# WAY-53 Resource Reranker Golden 人工审核
+  return `# WAY-55 Reranker + Diversity Golden 人工审核
 
-> 仅评估固定脱敏 Fixture 的排序、summary 与 whySelected。不得把本文件提交到 Git。
+> 仅评估固定脱敏 Fixture 的排序、Diversity、summary 与 whySelected。不得把本文件提交到 Git。
 
 ${sections.join("\n\n")}
 `;
@@ -447,7 +491,7 @@ async function runResourceRerankerGolden(): Promise<string> {
   const outputDirectory = resolve(RESULT_ROOT, runId);
   await createOutputDirectory(outputDirectory);
   await writeJson(resolve(outputDirectory, "run-state.json"), {
-    issue: "WAY-53",
+    issue: "WAY-55",
     runId,
     status: "incomplete",
   });
@@ -473,7 +517,7 @@ async function runResourceRerankerGolden(): Promise<string> {
     const completed = results.filter(result => result.status === "completed");
     const report = {
       schemaVersion: 1,
-      issue: "WAY-53",
+      issue: "WAY-55",
       runId,
       completedAt: new Date().toISOString(),
       source: {
@@ -497,6 +541,10 @@ async function runResourceRerankerGolden(): Promise<string> {
         topCandidateMatchCount: completed.filter(
           result => result.topCandidateMatched,
         ).length,
+        diversityRemovedCandidateCount: completed.reduce(
+          (sum, result) => sum + result.diversityRemovedCandidateIds.length,
+          0,
+        ),
         totalLatencyMs: results.reduce(
           (sum, result) => sum + result.elapsedMs,
           0,
@@ -522,15 +570,15 @@ async function runResourceRerankerGolden(): Promise<string> {
       { encoding: "utf8", mode: 0o600 },
     );
     await writeJson(resolve(outputDirectory, "run-state.json"), {
-      issue: "WAY-53",
+      issue: "WAY-55",
       runId,
       status: "completed",
     });
-    return `data/eval-results/way-53/${runId}`;
+    return `data/eval-results/way-55/${runId}`;
   } catch {
     try {
       await writeJson(resolve(outputDirectory, "run-state.json"), {
-        issue: "WAY-53",
+        issue: "WAY-55",
         runId,
         status: "failed",
         failureKind: "unexpected_internal_error",
@@ -547,7 +595,9 @@ async function main(): Promise<void> {
     assertResourceRerankerGoldenLiveMode(process.argv.slice(2));
     loadLocalEnvironmentIfPresent();
     const outputDirectory = await runResourceRerankerGolden();
-    process.stdout.write(`WAY-53 Reranker Golden Eval 已完成：${outputDirectory}\n`);
+    process.stdout.write(
+      `WAY-55 Reranker + Diversity Golden Eval 已完成：${outputDirectory}\n`,
+    );
   } catch (error: unknown) {
     const message =
       error instanceof Error
