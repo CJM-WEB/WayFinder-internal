@@ -3,9 +3,9 @@
  *
  * 关键边界：
  * - SearchRequest 必须在 hijack 与 Streaming Header 前完成校验；
- * - 本层只写入已经带完整 Envelope 的 StreamEvent，不分配 sequence 或决定业务终态；
+ * - Run Event Writer 在本 Route 内把 Payload 补齐为完整 Event；底层函数只做物理 NDJSON；
  * - 正常完成与上层已写入的 run.failed 都干净结束，断连与未知服务端错误只关闭物理流；
- * - WAY-68～70 再分别实现语义 closed Guard、事件顺序和 Node/Run 终态不变量。
+ * - 本层不判断 Analysis 顺序、Node exactly-once 或 Run 终态是否合法。
  */
 import { once } from "node:events";
 import type { Writable } from "node:stream";
@@ -15,14 +15,20 @@ import {
   StreamEventSchema,
   type SearchRequest,
   type StreamEvent,
+  type StreamEventPayload,
 } from "@wayfinder/contracts";
 import type { FastifyInstance } from "fastify";
+
+import {
+  createRunEventWriter,
+  type RunEventWriter,
+} from "../streaming/run-event-writer.js";
 
 export type SearchStreamHandlerInput = Readonly<{
   input: SearchRequest;
   signal: AbortSignal;
-  /** 调用方必须等待写入完成，避免在 Backpressure（背压）解除前结束响应。 */
-  writeEvent: (event: StreamEvent) => Promise<void>;
+  /** 调用方必须等待 Emit，使 NDJSON Backpressure 与传输失败进入同一控制流。 */
+  emit: (payload: StreamEventPayload) => Promise<void>;
 }>;
 
 export type SearchStreamHandler = (
@@ -87,6 +93,7 @@ export function registerSearchRoute(
 
     // 只有合法请求才接管底层响应；从此刻开始 Route 必须自行关闭所有错误路径。
     reply.hijack();
+    let eventWriter: RunEventWriter | undefined;
 
     try {
       reply.raw.once("close", onClose);
@@ -104,12 +111,20 @@ export function registerSearchRoute(
         throw controller.signal.reason ?? new Error("NDJSON 响应已经关闭");
       }
 
-      await handleSearch({
-        input: parsedRequest.data,
-        signal: controller.signal,
+      eventWriter = createRunEventWriter({
+        runId: parsedRequest.data.runId,
+        connectionSignal: controller.signal,
         writeEvent: event =>
           writeNdjsonEvent(reply.raw, controller.signal, event),
       });
+
+      await handleSearch({
+        input: parsedRequest.data,
+        signal: controller.signal,
+        emit: eventWriter.emit,
+      });
+      // Handler 返回不代表底层 Backpressure 已解除；必须先排空所有已接受事件。
+      await eventWriter.close();
 
       if (!reply.raw.destroyed && !reply.raw.writableEnded) {
         reply.raw.end();
@@ -123,6 +138,7 @@ export function registerSearchRoute(
         reply.raw.destroy();
       }
     } finally {
+      eventWriter?.dispose();
       reply.raw.removeListener("close", onClose);
       reply.raw.removeListener("error", onError);
     }

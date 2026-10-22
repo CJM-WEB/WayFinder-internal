@@ -54,6 +54,11 @@ export type {
   SearchStreamHandler,
   SearchStreamHandlerInput,
 } from "./routes/search.js";
+export { createRunEventWriter } from "./streaming/run-event-writer.js";
+export type {
+  CreateRunEventWriterInput,
+  RunEventWriter,
+} from "./streaming/run-event-writer.js";
 export {
   BROAD_DISCOVERY_RESULTS_PER_QUERY,
   BroadDiscoveryError,

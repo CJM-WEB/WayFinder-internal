@@ -1,6 +1,6 @@
 /**
- * 测试职责：冻结 WAY-67 的 HTTP/NDJSON 传输边界与物理连接关闭路径。
- * 本文件不测试 sequence、迟到写入、事件顺序或 exactly-once；这些属于 WAY-68～70。
+ * 测试职责：冻结 WAY-67 的 HTTP/NDJSON 传输边界，并覆盖 WAY-68 Writer 的 Route 接线。
+ * 业务事件顺序、Node exactly-once 与 Run 终态生成仍属于 WAY-69～70。
  */
 import { request as requestHttp, type IncomingMessage } from "node:http";
 import { Writable } from "node:stream";
@@ -8,6 +8,7 @@ import { Writable } from "node:stream";
 import {
   StreamEventSchema,
   type StreamEvent,
+  type StreamEventPayload,
 } from "@wayfinder/contracts";
 import Fastify, { type FastifyInstance } from "fastify";
 import { describe, expect, it, vi } from "vitest";
@@ -34,6 +35,12 @@ function createDeferred<T>(): Deferred<T> {
   return { promise, resolve, reject };
 }
 
+function createStatusPayload(
+  status: "planned" | "searching" | "filtering" = "searching",
+): Extract<StreamEventPayload, { type: "node.status" }> {
+  return { type: "node.status", nodeId: "node-a", status };
+}
+
 function createStatusEvent(
   sequence: number,
   status: "planned" | "searching" | "filtering" = "searching",
@@ -43,21 +50,18 @@ function createStatusEvent(
     sequence,
     protocolVersion: "0.1",
     timestamp: `2026-10-22T08:00:0${sequence}Z`,
-    type: "node.status",
-    nodeId: "node-a",
-    status,
+    ...createStatusPayload(status),
   });
 }
 
-function createRunFailedEvent(): StreamEvent {
-  return StreamEventSchema.parse({
-    runId: "run-67",
-    sequence: 1,
-    protocolVersion: "0.1",
-    timestamp: "2026-10-22T08:00:01Z",
+function createRunFailedPayload(): Extract<
+  StreamEventPayload,
+  { type: "run.failed" }
+> {
+  return {
     type: "run.failed",
     error: { code: "PLANNER_FAILED", retryable: true },
-  });
+  };
 }
 
 function createServer(handleSearch: SearchStreamHandler): FastifyInstance {
@@ -197,12 +201,12 @@ describe("registerSearchRoute", () => {
     const handleSearch: SearchStreamHandler = async ({
       input,
       signal,
-      writeEvent,
+      emit,
     }) => {
       expect(input).toEqual({ runId: "run-67", query: "TypeScript" });
       observedSignal = signal;
-      await writeEvent(createStatusEvent(1, "searching"));
-      await writeEvent(createStatusEvent(2, "filtering"));
+      await emit(createStatusPayload("searching"));
+      await emit(createStatusPayload("filtering"));
     };
     const server = createServer(handleSearch);
 
@@ -222,10 +226,19 @@ describe("registerSearchRoute", () => {
       );
       expect(response.headers["x-accel-buffering"]).toBe("no");
       expect(response.headers["content-length"]).toBeUndefined();
-      expect(parseNdjson(response.body)).toEqual([
-        createStatusEvent(1, "searching"),
-        createStatusEvent(2, "filtering"),
-      ]);
+      const events = parseNdjson(response.body);
+      expect(events[0]).toMatchObject({
+        runId: "run-67",
+        sequence: 1,
+        protocolVersion: "0.1",
+        ...createStatusPayload("searching"),
+      });
+      expect(events[1]).toMatchObject({
+        runId: "run-67",
+        sequence: 2,
+        protocolVersion: "0.1",
+        ...createStatusPayload("filtering"),
+      });
       expect(observedSignal?.aborted).toBe(false);
     } finally {
       await server.close();
@@ -233,9 +246,9 @@ describe("registerSearchRoute", () => {
   });
 
   it("上层写入 run.failed 后正常 resolve，Route 只结束流而不追加第二个事件", async () => {
-    const event = createRunFailedEvent();
-    const server = createServer(async ({ writeEvent }) => {
-      await writeEvent(event);
+    const payload = createRunFailedPayload();
+    const server = createServer(async ({ emit }) => {
+      await emit(payload);
     });
 
     try {
@@ -246,7 +259,14 @@ describe("registerSearchRoute", () => {
       });
 
       expect(response.statusCode).toBe(200);
-      expect(parseNdjson(response.body)).toEqual([event]);
+      const events = parseNdjson(response.body);
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({
+        runId: "run-67",
+        sequence: 1,
+        protocolVersion: "0.1",
+        ...payload,
+      });
     } finally {
       await server.close();
     }
@@ -338,10 +358,10 @@ describe("registerSearchRoute", () => {
   it("真实连接在 Handler 完成前即可读取首个 NDJSON Chunk", async () => {
     const releaseHandler = createDeferred<void>();
     const handlerFinished = createDeferred<void>();
-    const server = createServer(async ({ writeEvent }) => {
-      await writeEvent(createStatusEvent(1));
+    const server = createServer(async ({ emit }) => {
+      await emit(createStatusPayload());
       await releaseHandler.promise;
-      await writeEvent(createStatusEvent(2, "filtering"));
+      await emit(createStatusPayload("filtering"));
       handlerFinished.resolve();
     });
     let opened: OpenRequest | undefined;
@@ -354,7 +374,11 @@ describe("registerSearchRoute", () => {
       response.setEncoding("utf8");
       const observed = observeFirstNdjsonLine(response);
 
-      expect(await observed.firstLine).toEqual(createStatusEvent(1));
+      expect(await observed.firstLine).toMatchObject({
+        runId: "run-67",
+        sequence: 1,
+        ...createStatusPayload(),
+      });
       expect(response.complete).toBe(false);
 
       // 必须先监听终止事件，再释放 Handler，避免同步 end() 造成漏接。
@@ -376,10 +400,12 @@ describe("registerSearchRoute", () => {
     }
   });
 
-  it("真实客户端断开会中止 Handler Signal，且不会在已销毁 Socket 上补写事件", async () => {
+  it("真实客户端断开会关闭 Writer，并安全丢弃忽略取消的迟到事件", async () => {
     const signalAborted = createDeferred<void>();
+    const lateEmitSettled = createDeferred<void>();
     let observedSignal: AbortSignal | undefined;
-    const server = createServer(async ({ signal }) => {
+    let lateEmitError: unknown;
+    const server = createServer(async ({ signal, emit }) => {
       observedSignal = signal;
       await new Promise<void>(resolve => {
         signal.addEventListener(
@@ -391,6 +417,14 @@ describe("registerSearchRoute", () => {
           { once: true },
         );
       });
+      // 模拟忽略取消、仍然迟到返回的 Provider；closed Guard 必须让 Emit 安全完成。
+      try {
+        await emit(createStatusPayload("filtering"));
+      } catch (error: unknown) {
+        lateEmitError = error;
+      } finally {
+        lateEmitSettled.resolve();
+      }
     });
     let opened: OpenRequest | undefined;
     let response: IncomingMessage | undefined;
@@ -403,7 +437,9 @@ describe("registerSearchRoute", () => {
       response.destroy();
 
       await signalAborted.promise;
+      await lateEmitSettled.promise;
       expect(observedSignal?.aborted).toBe(true);
+      expect(lateEmitError).toBeUndefined();
     } finally {
       response?.destroy();
       opened?.request.destroy();
@@ -413,9 +449,9 @@ describe("registerSearchRoute", () => {
 
   it("Header 后的未知服务端错误销毁不完整流，不拼接 Fastify JSON", async () => {
     const releaseFailure = createDeferred<void>();
-    const firstEvent = createStatusEvent(1);
-    const server = createServer(async ({ writeEvent }) => {
-      await writeEvent(firstEvent);
+    const firstPayload = createStatusPayload();
+    const server = createServer(async ({ emit }) => {
+      await emit(firstPayload);
       await releaseFailure.promise;
       throw new Error("post-header failure");
     });
@@ -436,11 +472,21 @@ describe("registerSearchRoute", () => {
         activeResponse.once("error", resolve);
       });
 
-      expect(await observed.firstLine).toEqual(firstEvent);
+      expect(await observed.firstLine).toMatchObject({
+        runId: "run-67",
+        sequence: 1,
+        ...firstPayload,
+      });
       releaseFailure.resolve();
       await responseClosed;
 
-      expect(parseNdjson(observed.chunks.join(""))).toEqual([firstEvent]);
+      const events = parseNdjson(observed.chunks.join(""));
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({
+        runId: "run-67",
+        sequence: 1,
+        ...firstPayload,
+      });
       expect(response.complete).toBe(false);
     } finally {
       releaseFailure.resolve();

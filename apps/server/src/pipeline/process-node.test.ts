@@ -133,7 +133,7 @@ function createContext(
     officialSourcePolicy: { knownRiskyDownloadDomains: [] },
     nowMs: Date.parse("2026-10-22T00:00:00.000Z"),
     rerankTimeoutMs: 10_000,
-    emit(payload) {
+    async emit(payload) {
       events.push(structuredClone(payload));
     },
     ...overrides,
@@ -793,7 +793,7 @@ describe("processNode 失败与取消", () => {
       node,
       {
         ...baseContext,
-        emit(payload) {
+        async emit(payload) {
           events.push(structuredClone(payload));
           throw emitError;
         },
@@ -831,7 +831,7 @@ describe("processNode 失败与取消", () => {
         node,
         {
           ...baseContext,
-          emit(payload) {
+          async emit(payload) {
             events.push(structuredClone(payload));
             if (payload.type === "node.ready") {
               throw emitError;
@@ -865,7 +865,7 @@ describe("processNode 失败与取消", () => {
       node,
       {
         ...baseContext,
-        emit(payload) {
+        async emit(payload) {
           events.push(structuredClone(payload));
           if (payload.type === "node.failed") {
             throw emitError;

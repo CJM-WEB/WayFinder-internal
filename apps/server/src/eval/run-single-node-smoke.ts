@@ -638,7 +638,7 @@ export async function evaluateSingleNodeSmokeCase(
   let terminalEventCount = 0;
   let timeToTerminalMs: number | undefined;
 
-  const emit = (payload: NodeStreamEventPayload): void => {
+  const emit = async (payload: NodeStreamEventPayload): Promise<void> => {
     const parsed = StreamEventPayloadSchema.parse(payload);
     if (
       parsed.type === "node.ready" ||
