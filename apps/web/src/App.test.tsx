@@ -16,6 +16,7 @@ vi.mock("zustand", () => ({
 }));
 
 import { App } from "./App.js";
+import { pythonResultGraphFixture } from "./fixtures/python-result-graph.js";
 import { graphStore } from "./stores/graph-store.js";
 
 const applyPresentationMode = (presentationMode: PresentationMode): void => {
@@ -50,6 +51,8 @@ describe("App Presentation Mode", () => {
 
     expect(markup).toContain("graph-section--graph");
     expect(markup).toContain("滚轮缩放 · 拖动画布 · 选择节点查看资源");
+    expect(markup).not.toContain("H1 呈现评估");
+    expect(markup).not.toContain("Structured Flat List");
     expect(graphStore.getState().presentationMode).toBeNull();
   });
 
@@ -61,5 +64,47 @@ describe("App Presentation Mode", () => {
     expect(markup).toContain("graph-section--compact");
     expect(markup).toContain("紧凑结果 · 选择节点查看资源");
     expect(graphStore.getState().selectedNodeId).toBeNull();
+  });
+
+  it("H1 Graph 条件固定探索式 Graph，避免 compact 成为额外实验变量", () => {
+    applyPresentationMode("compact");
+    graphStore.getState().setGraph(pythonResultGraphFixture.graph);
+
+    const markup = renderToStaticMarkup(
+      <App h1Evaluation={{ initialCondition: "graph" }} />,
+    );
+
+    expect(markup).toContain("graph-section--graph");
+    expect(markup).toContain('data-presentation-mode="graph"');
+    expect(markup).not.toContain("graph-section--compact");
+  });
+
+  it("H1 Flat 条件只替换左侧呈现，并复用同一 Store 与 Resource Panel", () => {
+    graphStore.getState().setGraph(pythonResultGraphFixture.graph);
+    graphStore.getState().selectNode("python-introduction");
+    const nodesBefore = graphStore.getState().nodes;
+    const edgesBefore = graphStore.getState().edges;
+    const resourcesBefore = pythonResultGraphFixture.graph.nodes[0]?.resources;
+
+    const markup = renderToStaticMarkup(
+      <App
+        h1Evaluation={{ initialCondition: "structured-flat-list" }}
+      />,
+    );
+
+    expect(markup).toContain("H1 呈现评估");
+    expect(markup).toContain(
+      'data-evaluation-condition="structured-flat-list"',
+    );
+    expect(markup).toContain("Structured Flat List 搜索结果");
+    expect(markup).toContain("Python Programming Language");
+    expect(graphStore.getState().nodes).toBe(nodesBefore);
+    expect(graphStore.getState().edges).toBe(edgesBefore);
+    const firstNodeAfter = graphStore.getState().nodes[0];
+    expect(
+      firstNodeAfter !== undefined && "resources" in firstNodeAfter
+        ? firstNodeAfter.resources
+        : null,
+    ).toBe(resourcesBefore);
   });
 });

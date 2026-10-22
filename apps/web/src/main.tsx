@@ -9,6 +9,7 @@ import "@xyflow/react/dist/style.css";
 
 import { App } from "./App.js";
 import "./app.css";
+import { resolveH1EvaluationRoute } from "./evaluation/h1-route.js";
 
 const rootElement = document.getElementById("root");
 
@@ -16,8 +17,10 @@ if (rootElement === null) {
   throw new Error("缺少 React 根容器 #root");
 }
 
+const h1Evaluation = resolveH1EvaluationRoute(window.location.search);
+
 createRoot(rootElement).render(
   <StrictMode>
-    <App />
+    <App {...(h1Evaluation === null ? {} : { h1Evaluation })} />
   </StrictMode>,
 );

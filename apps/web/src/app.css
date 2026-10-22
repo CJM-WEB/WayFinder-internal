@@ -156,6 +156,64 @@ input {
   color: #8a3129;
 }
 
+/* H1 入口只由隐藏 Eval Query 激活；控件不进入正常产品导航。 */
+.h1-evaluation {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  margin-bottom: 20px;
+  padding: 16px 18px;
+  border: 1px solid #b9cbbf;
+  border-radius: 18px;
+  background: #eef5f0;
+}
+
+.h1-evaluation h2,
+.h1-evaluation p {
+  margin: 0;
+}
+
+.h1-evaluation h2 {
+  font-size: 1rem;
+}
+
+.h1-evaluation > div > p:last-child {
+  margin-top: 5px;
+  color: #587064;
+  font-size: 0.78rem;
+}
+
+.h1-evaluation__eyebrow {
+  color: #4c695b;
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.h1-evaluation__conditions {
+  display: flex;
+  gap: 8px;
+}
+
+.h1-evaluation__conditions button {
+  padding: 8px 12px;
+  border: 1px solid #9db4a5;
+  border-radius: 10px;
+  color: #315441;
+  background: #fff;
+  cursor: pointer;
+  font-size: 0.76rem;
+  font-weight: 750;
+}
+
+.h1-evaluation__conditions button[aria-pressed="true"] {
+  border-color: #315f47;
+  color: #fff;
+  background: #315f47;
+}
+
 .graph-section {
   overflow: hidden;
   border: 1px solid #d4e0d7;
@@ -191,6 +249,95 @@ input {
   width: 100%;
   height: clamp(520px, calc(100vh - 210px), 760px);
   min-height: 520px;
+}
+
+/* Flat 条件与 Graph 画布占据相同工作区；只替换左侧 Presenter（呈现器）。 */
+.h1-flat-list {
+  height: clamp(520px, calc(100vh - 210px), 760px);
+  min-height: 520px;
+  overflow-y: auto;
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  margin: 0;
+  padding: 22px;
+  list-style: none;
+  background: #f8fbf9;
+}
+
+.h1-flat-list--empty {
+  place-items: center;
+  color: #61786c;
+}
+
+.h1-flat-list__item {
+  overflow: hidden;
+  border: 1px solid var(--node-status-border);
+  border-radius: 16px;
+  background: var(--node-status-surface);
+}
+
+.h1-flat-list__node {
+  display: grid;
+  width: 100%;
+  gap: 7px;
+  padding: 15px 17px;
+  border: 0;
+  color: inherit;
+  text-align: left;
+  background: transparent;
+  cursor: pointer;
+}
+
+.h1-flat-list__node[aria-pressed="true"] {
+  box-shadow: inset 0 0 0 3px rgb(72 125 94 / 20%);
+}
+
+.h1-flat-list__eyebrow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: #587064;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.h1-flat-list__status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  color: var(--node-status-text);
+  background: var(--node-status-badge);
+}
+
+.h1-flat-list__title {
+  color: #17291f;
+  font-weight: 800;
+}
+
+.h1-flat-list__detail,
+.h1-flat-list__relationships {
+  color: #63796d;
+  font-size: 0.78rem;
+}
+
+.h1-flat-list__relationships {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 11px 17px 14px 38px;
+  border-top: 1px solid rgb(117 151 131 / 25%);
+  background: rgb(255 255 255 / 62%);
+}
+
+.h1-flat-list__relationships span {
+  margin-right: 7px;
+  color: #315441;
+  font-weight: 750;
 }
 
 /* Compact 仍渲染完整 Product Graph，只收紧首屏高度，不截断 Node 或 Edge。 */
@@ -287,7 +434,8 @@ input {
  */
 .graph-node--planned,
 .graph-node__status--planned,
-.resource-panel__status--planned {
+.resource-panel__status--planned,
+.h1-flat-list__item--planned {
   --node-status-text: #52685d;
   --node-status-badge: #e8eeea;
   --node-status-border: #aabbb0;
@@ -296,7 +444,8 @@ input {
 
 .graph-node--searching,
 .graph-node__status--searching,
-.resource-panel__status--searching {
+.resource-panel__status--searching,
+.h1-flat-list__item--searching {
   --node-status-text: #245b85;
   --node-status-badge: #deefff;
   --node-status-border: #83b8de;
@@ -305,7 +454,8 @@ input {
 
 .graph-node--filtering,
 .graph-node__status--filtering,
-.resource-panel__status--filtering {
+.resource-panel__status--filtering,
+.h1-flat-list__item--filtering {
   --node-status-text: #62458a;
   --node-status-badge: #eee6ff;
   --node-status-border: #b9a0df;
@@ -314,7 +464,8 @@ input {
 
 .graph-node--ready,
 .graph-node__status--ready,
-.resource-panel__status--ready {
+.resource-panel__status--ready,
+.h1-flat-list__item--ready {
   --node-status-text: #276343;
   --node-status-badge: #def1e4;
   --node-status-border: #8fc3a1;
@@ -323,7 +474,8 @@ input {
 
 .graph-node--partial,
 .graph-node__status--partial,
-.resource-panel__status--partial {
+.resource-panel__status--partial,
+.h1-flat-list__item--partial {
   --node-status-text: #79560a;
   --node-status-badge: #fff1c9;
   --node-status-border: #dfbd63;
@@ -332,7 +484,8 @@ input {
 
 .graph-node--failed,
 .graph-node__status--failed,
-.resource-panel__status--failed {
+.resource-panel__status--failed,
+.h1-flat-list__item--failed {
   --node-status-text: #8a3129;
   --node-status-badge: #ffe2de;
   --node-status-border: #df9c94;
@@ -664,7 +817,8 @@ input {
   }
 
   .app-header,
-  .graph-section__header {
+  .graph-section__header,
+  .h1-evaluation {
     align-items: flex-start;
     flex-direction: column;
   }
@@ -693,6 +847,19 @@ input {
   .graph-section--compact .resource-panel {
     height: auto;
     min-height: 320px;
+  }
+
+  .h1-evaluation__conditions {
+    width: 100%;
+  }
+
+  .h1-evaluation__conditions button {
+    flex: 1;
+  }
+
+  .h1-flat-list {
+    height: auto;
+    min-height: 500px;
   }
 
   .graph-workspace {

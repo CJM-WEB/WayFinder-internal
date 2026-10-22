@@ -1,7 +1,9 @@
 /** 组件职责：组合统一 Omnibox、运行摘要、Graph 结果画布与当前节点的 Resource Panel。 */
 import { useStore } from "zustand";
+import { useState } from "react";
 
 import { startStreamingSearch } from "./api/search.js";
+import { H1StructuredFlatList } from "./components/Evaluation/H1StructuredFlatList.js";
 import { GraphView } from "./components/Graph/GraphView.js";
 import { Omnibox } from "./components/Omnibox/Omnibox.js";
 import { ResourcePanel } from "./components/ResourcePanel/ResourcePanel.js";
@@ -10,6 +12,10 @@ import {
   type BrowserUrlOpener,
 } from "./lib/url.js";
 import { graphStore } from "./stores/graph-store.js";
+import type {
+  H1EvaluationCondition,
+  H1EvaluationRoute,
+} from "./evaluation/h1-route.js";
 
 /** window 只在 Direct 提交时读取，初始渲染与 AI Search 不会自动打开页面。 */
 const openBrowserTab: BrowserUrlOpener = (url, target, features) =>
@@ -19,7 +25,11 @@ const openBrowserTab: BrowserUrlOpener = (url, target, features) =>
 const openDirectUrl = (url: string): boolean =>
   requestSafeUrlOpen(url, openBrowserTab);
 
-export function App() {
+export type AppProps = Readonly<{
+  h1Evaluation?: H1EvaluationRoute;
+}>;
+
+export function App({ h1Evaluation }: AppProps = {}) {
   const query = useStore(graphStore, state => state.query);
   const storedPresentationMode = useStore(
     graphStore,
@@ -27,8 +37,14 @@ export function App() {
   );
   const nodeCount = useStore(graphStore, state => state.nodes.length);
   const isSearching = useStore(graphStore, state => state.isSearching);
+  const [h1Condition, setH1Condition] = useState<H1EvaluationCondition>(
+    h1Evaluation?.initialCondition ?? "graph",
+  );
+  const isH1Evaluation = h1Evaluation !== undefined;
   // Analysis 到达前沿用探索式空态；fallback 只影响视图，不写回 Store。
   const presentationMode = storedPresentationMode ?? "graph";
+  // H1 必须固定 Graph 条件，避免 Planner compact 模式成为额外实验变量。
+  const graphPresentationMode = isH1Evaluation ? "graph" : presentationMode;
   const searchStateLabel = isSearching
     ? "搜索中"
     : query.length > 0
@@ -64,20 +80,63 @@ export function App() {
         openDirectUrl={openDirectUrl}
       />
 
+      {isH1Evaluation ? (
+        <section className="h1-evaluation" aria-labelledby="h1-evaluation-title">
+          <div>
+            <p className="h1-evaluation__eyebrow">Evaluation only</p>
+            <h2 id="h1-evaluation-title">H1 呈现评估</h2>
+            <p>两个条件共享同一份 Node、Edge、Resource 与 Resource Panel。</p>
+          </div>
+          <div className="h1-evaluation__conditions" role="group" aria-label="H1 呈现条件">
+            <button
+              type="button"
+              aria-pressed={h1Condition === "graph"}
+              onClick={() => setH1Condition("graph")}
+            >
+              Graph View
+            </button>
+            <button
+              type="button"
+              aria-pressed={h1Condition === "structured-flat-list"}
+              onClick={() => setH1Condition("structured-flat-list")}
+            >
+              Structured Flat List
+            </button>
+          </div>
+        </section>
+      ) : null}
+
       <section
-        className={`graph-section graph-section--${presentationMode}`}
+        className={`graph-section graph-section--${graphPresentationMode}`}
         aria-labelledby="graph-title"
       >
         <div className="graph-section__header">
           <h2 id="graph-title">搜索结果</h2>
           <p>
-            {presentationMode === "compact"
+            {isH1Evaluation
+              ? h1Condition === "graph"
+                ? "H1 评估 · Graph View · 选择节点查看资源"
+                : "H1 评估 · Structured Flat List · 选择节点查看资源"
+              : presentationMode === "compact"
               ? "紧凑结果 · 选择节点查看资源"
               : "滚轮缩放 · 拖动画布 · 选择节点查看资源"}
           </p>
         </div>
-        <div className="graph-workspace">
-          <GraphView presentationMode={presentationMode} />
+        <div
+          className={`graph-workspace${
+            isH1Evaluation && h1Condition === "structured-flat-list"
+              ? " graph-workspace--structured-flat-list"
+              : ""
+          }`}
+          {...(isH1Evaluation
+            ? { "data-evaluation-condition": h1Condition }
+            : {})}
+        >
+          {isH1Evaluation && h1Condition === "structured-flat-list" ? (
+            <H1StructuredFlatList />
+          ) : (
+            <GraphView presentationMode={graphPresentationMode} />
+          )}
           <ResourcePanel />
         </div>
       </section>
