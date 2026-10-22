@@ -78,7 +78,7 @@ export function parseValidatedGraphPlanForRun(plan: unknown): GraphPlan {
 
 /**
  * 解析一次 Run 的最终 GraphPlan。调用方必须在外层 finally 释放 runScope；返回成功
- * 即表示 WAY-63 可以安全读取 Node，但不表示本函数已经启动任何 Node 工作。
+ * 只表示后续调度器可以安全读取 Node，不表示本函数已经启动任何 Node 工作。
  */
 export async function resolveValidatedGraphPlanForRun(
   input: ResolveValidatedGraphPlanForRunInput,

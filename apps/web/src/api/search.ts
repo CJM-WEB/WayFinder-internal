@@ -124,7 +124,7 @@ export function createStartStreamingSearch(
   };
 }
 
-/** 应用级入口；WAY-76 的 Omnibox 只需调用此函数，不负责 Controller 生命周期。 */
+/** 应用级入口；Omnibox 只需调用此函数，不负责 Controller 生命周期。 */
 export const startStreamingSearch = createStartStreamingSearch({
   store: graphStore,
 });

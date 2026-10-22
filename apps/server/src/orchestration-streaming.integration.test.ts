@@ -38,7 +38,7 @@ import type { SearchProvider } from "./search/provider.js";
 const QUERY = "TypeScript compiler guide";
 const BACKUP_QUERY = "TypeScript compiler reference";
 const LATE_QUERY = "TypeScript compiler internals";
-const RUN_ID = "run-way-75";
+const RUN_ID = "run-streaming-regression";
 
 function createPlan(queries: readonly string[] = [QUERY]): GraphPlan {
   return GraphPlanSchema.parse({
@@ -639,7 +639,7 @@ describe("Orchestration + NDJSON 服务端回归矩阵", () => {
       searchProvider,
     });
     const store = createGraphStore();
-    const runIds = ["run-way-75-a", "run-way-75-b"];
+    const runIds = ["run-streaming-a", "run-streaming-b"];
     const mockEvents = createPythonMockStream(clock);
     const clientController = new AbortController();
     const clientReason = new DOMException("新 Query 已开始", "AbortError");

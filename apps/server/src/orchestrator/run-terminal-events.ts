@@ -160,7 +160,7 @@ function throwIfUserCancelled(runScope: RunLifecycleScope): void {
  * 创建已发布 GraphPlan 的唯一终态账本。
  *
  * 工厂会再次执行最终计划门禁并取得快照，避免调用方随后修改 Node 集合；计划事件本身
- * 必须已由 WAY-69 成功发送，失败路径不能创建本状态并把半条计划流伪装为可完成 Run。
+ * 必须已由计划事件阶段成功发送，失败路径不能创建本状态并把半条计划流伪装为可完成 Run。
  */
 export function createRunTerminalEventState(
   input: CreateRunTerminalEventStateInput,

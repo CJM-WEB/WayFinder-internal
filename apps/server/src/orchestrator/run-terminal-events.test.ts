@@ -2,7 +2,7 @@
  * 测试职责：冻结 Run 级 Node exactly-once、complete 门禁和无 GraphPlan 失败分流。
  *
  * 重点竞态：Node 终态已同步占位但写入仍受背压时，Deadline Outcome 不能再合成 failed，
- * 最终 ResultGraph 也必须保留先发生的终态。客户端 Reader 与旧 runId 防护属于 WAY-71+。
+ * 最终 ResultGraph 也必须保留先发生的终态。客户端 Reader 与旧 runId 防护由 Web 层负责。
  */
 import {
   GraphPlanSchema,

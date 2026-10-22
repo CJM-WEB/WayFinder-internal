@@ -43,7 +43,7 @@ const NDJSON_HEADERS = {
 
 /**
  * 校验并写入一条固定 LF（换行符）结尾的 NDJSON Event。
- * 该函数只等待物理背压，不持有 WAY-68 才引入的 sequence 或语义 closed 状态。
+ * 该函数只等待物理背压，不持有 Writer 管理的 sequence 或语义 closed 状态。
  */
 export async function writeNdjsonEvent(
   response: Writable,

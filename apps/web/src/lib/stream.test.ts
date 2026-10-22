@@ -1,7 +1,7 @@
 /**
- * 测试职责：冻结 WAY-71 增量 NDJSON Reader 的字节边界、Contract 门禁与清理语义。
+ * 测试职责：冻结增量 NDJSON Reader 的字节边界、Contract 门禁与清理语义。
  *
- * 范围边界：不测试旧 runId、sequence 去重、事件归并或终态封闭；这些属于 WAY-72。
+ * 范围边界：不测试旧 runId、sequence 去重、事件归并或终态封闭；这些由 Store 负责。
  */
 import { StreamEventSchema, type StreamEvent } from "@wayfinder/contracts";
 import { describe, expect, it, vi } from "vitest";
@@ -15,7 +15,7 @@ const encoder = new TextEncoder();
 const createEvent = (
   sequence: number,
   topic = "中文主题🙂",
-  runId = "run-way-71",
+  runId = "run-stream-reader",
 ): StreamEvent =>
   StreamEventSchema.parse({
     runId,
@@ -134,11 +134,14 @@ describe("readSearchEventStream", () => {
     ],
   ])("%s 会关闭当前 Run，并停止交付后续行", async (_label, invalidLine) => {
     const store = createGraphStore();
-    store.getState().startRun({ runId: "run-way-71", query: "WayFinder" });
+    store.getState().startRun({
+      runId: "run-stream-reader",
+      query: "WayFinder",
+    });
     const first = createEvent(1);
     const afterFailure = createEvent(2);
     const onEvent = vi.fn();
-    const closeRun = closeActiveRun(store, "run-way-71");
+    const closeRun = closeActiveRun(store, "run-stream-reader");
     const stream = streamChunks([
       encoder.encode(
         `${JSON.stringify(first)}\n${invalidLine}${JSON.stringify(afterFailure)}\n`,
@@ -156,7 +159,7 @@ describe("readSearchEventStream", () => {
     expect(onEvent).toHaveBeenCalledExactlyOnceWith(first);
     expect(closeRun).toHaveBeenCalledOnce();
     expect(store.getState()).toMatchObject({
-      activeRunId: "run-way-71",
+      activeRunId: "run-stream-reader",
       query: "WayFinder",
       isSearching: false,
     });
@@ -187,7 +190,10 @@ describe("readSearchEventStream", () => {
     const networkError = new Error("socket reset");
     const first = createEvent(1);
     const store = createGraphStore();
-    store.getState().startRun({ runId: "run-way-71", query: "WayFinder" });
+    store.getState().startRun({
+      runId: "run-stream-reader",
+      query: "WayFinder",
+    });
     let pullCount = 0;
     const stream = new ReadableStream<Uint8Array>({
       pull(controller) {
@@ -200,7 +206,7 @@ describe("readSearchEventStream", () => {
       },
     });
     const onEvent = vi.fn();
-    const closeRun = closeActiveRun(store, "run-way-71");
+    const closeRun = closeActiveRun(store, "run-stream-reader");
 
     await expect(
       readSearchEventStream({

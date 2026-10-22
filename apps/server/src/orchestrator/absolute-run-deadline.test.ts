@@ -1,5 +1,5 @@
 /**
- * 测试职责：冻结 WAY-61 的唯一 20 秒 Absolute Run Deadline（绝对运行截止时间），
+ * 测试职责：冻结唯一 20 秒 Absolute Run Deadline（绝对运行截止时间），
  * 覆盖统一 Signal、单调剩余预算、父取消竞争与 Scope（作用域）资源释放。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";

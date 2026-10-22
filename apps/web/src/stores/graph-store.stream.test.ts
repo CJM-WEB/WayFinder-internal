@@ -1,5 +1,5 @@
 /**
- * 测试职责：冻结 WAY-72 StreamEvent Reducer 的 Run、sequence 与终态门禁。
+ * 测试职责：冻结 StreamEvent Reducer 的 Run、sequence 与终态门禁。
  *
  * 关键约束：合法事件的业务效果和 sequence 只能原子提交一次；旧 Run、重复、
  * 倒序、已关闭 Run 与不一致最终快照必须保持完整 Store 状态不变。

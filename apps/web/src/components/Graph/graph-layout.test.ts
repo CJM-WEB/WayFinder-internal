@@ -1,5 +1,5 @@
 /**
- * 测试职责：验证 Product Graph（产品图）到 React Flow 的确定性布局与 WAY-74 六态映射。
+ * 测试职责：验证 Product Graph（产品图）到 React Flow 的确定性布局与六态映射。
  *
  * 关键约束：
  * - recommended_next 是 Dagre 主层级的唯一输入。

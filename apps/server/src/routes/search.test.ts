@@ -1,6 +1,6 @@
 /**
- * 测试职责：冻结 WAY-67 的 HTTP/NDJSON 传输边界，并覆盖 WAY-68 Writer 的 Route 接线。
- * 业务事件顺序、Node exactly-once 与 Run 终态生成仍属于 WAY-69～70。
+ * 测试职责：冻结 HTTP/NDJSON 传输边界，并覆盖 Run Event Writer 的 Route 接线。
+ * 业务事件顺序、Node exactly-once 与 Run 终态由 Orchestrator 负责。
  */
 import { request as requestHttp, type IncomingMessage } from "node:http";
 import { Writable } from "node:stream";

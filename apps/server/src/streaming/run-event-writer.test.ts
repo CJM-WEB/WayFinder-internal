@@ -1,8 +1,9 @@
 /**
- * 测试职责：冻结 WAY-68 的 Envelope 分配、FIFO 写入与 closed Guard 竞态。
+ * 测试职责：冻结 Envelope 分配、FIFO 写入与 closed Guard 竞态。
  *
  * 本文件不判断 Analysis/Plan 顺序、Node exactly-once 或终态生成条件；这些分别属于
- * WAY-69/70。所有测试使用内存 Sink 与显式 Deferred，不访问网络或真实 Provider。
+ * 对应语义由 Orchestrator 测试覆盖。所有测试使用内存 Sink 与显式 Deferred，
+ * 不访问网络或真实 Provider。
  */
 import {
   StreamEventSchema,

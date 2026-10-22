@@ -1,7 +1,7 @@
 /**
  * 测试职责：冻结已校验 GraphPlan 的两条计划事件顺序、同源快照与失败传播。
  *
- * WAY-69 边界：这里只验证 query.analysis → graph.plan；Node 事件与 Run 终态由后续任务负责。
+ * 范围边界：这里只验证 query.analysis → graph.plan；Node 事件与 Run 终态由对应模块负责。
  */
 import type { GraphPlan, StreamEventPayload } from "@wayfinder/contracts";
 import { describe, expect, it, vi } from "vitest";

@@ -2,7 +2,7 @@
  * 集成测试职责：覆盖 Mock Product 从渐进 Stream 到可安全打开 Resource 的前端纵切。
  *
  * 范围边界：只使用确定性 Mock Stream，不挂载真实 DOM、不启动 Server、不读取 Secret、
- * 不调用网络；真实 Reader、乱序、断连、Deadline 等完整跨层矩阵留给 WAY-75。
+ * 不调用网络；真实 Reader、乱序、断连、Deadline 等由完整跨层矩阵覆盖。
  */
 import { StreamEventSchema } from "@wayfinder/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";

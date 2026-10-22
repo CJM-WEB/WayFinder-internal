@@ -1,7 +1,7 @@
 /**
  * 测试职责：用真实 processNode 证明不同 layer 的 Node 同步启动，而调用级 Search
  * 仍共享一个集中队列；取消时排队调用立即结束且不得在槽位释放后迟到访问 Provider。
- * Outcome 分类、Deadline timed_out 合成与 ResultGraph 明确留给 WAY-64～66。
+ * Outcome 分类、Deadline timed_out 合成与 ResultGraph 由对应结算模块负责。
  */
 import {
   GraphPlanSchema,

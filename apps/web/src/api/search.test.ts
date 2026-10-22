@@ -1,5 +1,5 @@
 /**
- * 测试职责：冻结 WAY-73 Query（查询）取消协调器的 ID、Signal（中止信号）、
+ * 测试职责：冻结 Query（查询）取消协调器的 ID、Signal（中止信号）、
  * Store（状态仓库）所有权与错误边界。
  *
  * 测试使用显式 Deferred（延迟门）控制旧 Reader（读取器）的完成时刻，不依赖计时器或网络速度。
@@ -271,7 +271,7 @@ describe("Query 取消协调器", () => {
       isSearching: true,
     });
 
-    // 模拟不遵守 Signal 的旧 Reader：WAY-72 runId 门禁和本层 close guard 都必须拒绝它。
+    // 模拟不遵守 Signal 的旧 Reader：Store runId 门禁和本层 close guard 都必须拒绝它。
     await readers[0]?.onEvent(
       eventForRun(eventOfType("graph.plan"), "run-a"),
     );

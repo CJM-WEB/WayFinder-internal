@@ -39,7 +39,7 @@ function createFailedResultNode(
   });
 }
 
-/** 按 Outcome 判别分支保留真实失败原因；跨 Node 关系校验属于 WAY-66 Builder。 */
+/** 按 Outcome 判别分支保留真实失败原因；跨 Node 关系由 ResultGraph Builder 校验。 */
 export function outcomeToResultNode(
   planNode: GraphPlanNode,
   outcome: NodeJobOutcome,

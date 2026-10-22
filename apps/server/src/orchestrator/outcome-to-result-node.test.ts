@@ -1,6 +1,6 @@
 /**
- * 测试职责：冻结 WAY-65 从 Node Job Outcome 到最终 Node 的精确错误投影。
- * 本文件只测试单 Node，不提前实现 WAY-66 的整图匹配、Edge 或 ResultGraph 校验。
+ * 测试职责：冻结从 Node Job Outcome 到最终 Node 的精确错误投影。
+ * 本文件只测试单 Node，不重复实现整图匹配、Edge 或 ResultGraph 校验。
  */
 import {
   GraphPlanNodeSchema,

@@ -3,9 +3,9 @@
  *
  * 关键边界：
  * - 本模块只负责传输解码、单事件校验与 Reader 生命周期，不负责 runId、sequence 或终态状态机；
- *   旧 Run、重复/乱序事件和 complete 后封闭由 WAY-72 的 Store Reducer 处理。
+ *   旧 Run、重复/乱序事件和 complete 后封闭由 Store Reducer 处理。
  * - closeRun 由调用层按本次 runId 注入，避免旧 Reader 结束时误关闭后来启动的新 Run。
- * - AbortSignal 只用于及时停止当前 Reader 并保留原始取消 reason；Controller 生命周期属于 WAY-73。
+ * - AbortSignal 只用于及时停止当前 Reader 并保留原始取消 reason；Controller 生命周期由协调器管理。
  */
 import {
   StreamEventSchema,

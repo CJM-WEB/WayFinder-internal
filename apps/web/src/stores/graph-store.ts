@@ -226,7 +226,7 @@ export const createGraphStore = () =>
             };
 
           case "run.failed":
-            // Run 级失败保留已收到的 Graph；错误展示不在 WAY-72 扩展。
+            // Run 级失败保留已收到的 Graph；错误展示由上层界面负责。
             return { ...sequencePatch, isSearching: false };
         }
 

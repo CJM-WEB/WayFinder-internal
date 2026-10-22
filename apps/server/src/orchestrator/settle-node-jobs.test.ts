@@ -1,6 +1,6 @@
 /**
- * 测试职责：冻结 WAY-64 的 Node job 三分结算、Deadline 快照、用户取消来源与迟到工作。
- * 测试只验证内部 Outcome，不提前构造 WAY-65/66 的错误 Node 或 ResultGraph。
+ * 测试职责：冻结 Node job 三分结算、Deadline 快照、用户取消来源与迟到工作。
+ * 测试只验证内部 Outcome，不重复构造错误 Node 或 ResultGraph。
  */
 import {
   ResultGraphNodeSchema,
@@ -25,7 +25,7 @@ function createResultNode(nodeId: string): ResultGraphNode {
   return ResultGraphNodeSchema.parse({
     id: nodeId,
     title: `节点 ${nodeId}`,
-    description: "WAY-64 结算测试",
+    description: "Node job 结算测试",
     nodeType: "primary",
     layer: 0,
     searchPlan: {

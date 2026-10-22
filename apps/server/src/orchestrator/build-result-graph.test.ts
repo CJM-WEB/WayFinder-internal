@@ -1,5 +1,5 @@
 /**
- * 测试职责：冻结 WAY-66 的整图一一映射、partial 派生与根 Contract 门禁。
+ * 测试职责：冻结 ResultGraph 的整图一一映射、partial 派生与根 Contract 门禁。
  * Contract 包自身已穷举字段级规则；这里每类只保留一个集成哨兵，避免重复测试 Zod。
  */
 import {

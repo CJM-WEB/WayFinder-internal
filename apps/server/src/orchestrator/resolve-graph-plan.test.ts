@@ -1,9 +1,9 @@
 /**
- * 测试职责：冻结 WAY-62 的 Planner → 可选 Broad Discovery / Reviser → 最终校验路径，
+ * 测试职责：冻结 Planner → 可选 Broad Discovery / Reviser → 最终校验路径，
  * 证明所有阶段共享一个 Run Signal 和递减预算，且普通回退不会吞掉取消或程序错误。
  *
  * 边界说明：本文件不启动 Node jobs、不测试并发、StreamEvent 或 ResultGraph；这些属于
- * WAY-63 及后续任务。
+ * Node 调度与执行由后续 Orchestrator 阶段负责。
  */
 import {
   GraphPlanSchema,
