@@ -12,16 +12,16 @@ import type {
   ProviderSearchRequest,
   SearchCapability,
 } from "../../packages/contracts/src/index.js";
+import type { SearchProvider } from "../../apps/server/src/search/provider.js";
+import {
+  assertBoundedLLMTimeout,
+  type LLMCallOptions,
+  type LLMProvider,
+  type StructuredLLMInput,
+} from "../../apps/server/src/ai/llm-provider.js";
 
 /** 可同步返回、异步返回或显式失败的单步脚本。 */
 type ScriptedResponse<T> = T | PromiseLike<T> | Error;
-
-/** LLM 结构化调用的最小输入形状，不预先绑定未来生产 Provider 接口。 */
-export type StructuredLLMInput = {
-  system: string;
-  user: string;
-  schema: unknown;
-};
 
 /** 手动控制 Promise（承诺）的测试夹具，用于稳定覆盖等待中取消。 */
 export type Deferred<T> = {
@@ -97,10 +97,8 @@ export function createAbortFixture(message = "测试请求已取消"): AbortFixt
   };
 }
 
-function throwIfAborted(signal: AbortSignal | undefined): void {
-  if (signal?.aborted === true) {
-    throw signal.reason;
-  }
+function throwIfAborted(signal: AbortSignal): void {
+  signal.throwIfAborted();
 }
 
 /**
@@ -109,17 +107,13 @@ function throwIfAborted(signal: AbortSignal | undefined): void {
  */
 function waitForScript<T>(
   response: ScriptedResponse<T>,
-  signal: AbortSignal | undefined,
+  signal: AbortSignal,
 ): Promise<T> {
   if (response instanceof Error) {
     return Promise.reject(response);
   }
 
   const responsePromise = Promise.resolve(response);
-  if (signal === undefined) {
-    return responsePromise;
-  }
-
   return new Promise<T>((resolve, reject) => {
     const handleAbort = (): void => reject(signal.reason);
     signal.addEventListener("abort", handleAbort, { once: true });
@@ -135,11 +129,11 @@ function cloneValue<T>(value: T): T {
 }
 
 /** 按顺序消费预设响应的 LLM 测试替身。 */
-export class FakeLLMProvider {
+export class FakeLLMProvider implements LLMProvider {
   readonly id = "fake-llm";
   readonly calls: Array<{
     input: StructuredLLMInput;
-    signal: AbortSignal | undefined;
+    options: LLMCallOptions;
   }> = [];
 
   readonly #responses: Array<ScriptedResponse<unknown>>;
@@ -148,20 +142,21 @@ export class FakeLLMProvider {
     this.#responses = [...responses];
   }
 
-  async structured<T>(
+  async structured(
     input: StructuredLLMInput,
-    signal?: AbortSignal,
-  ): Promise<T> {
+    options: LLMCallOptions,
+  ): Promise<unknown> {
+    assertBoundedLLMTimeout(options.timeoutMs);
     // 调用前取消不得消费脚本，否则一次失败会污染后续断言。
-    throwIfAborted(signal);
+    throwIfAborted(options.signal);
     const response = this.#responses.shift();
     if (response === undefined) {
       throw new Error("FakeLLMProvider 脚本已耗尽");
     }
 
-    // 顶层字段保存调用瞬间的快照；schema 可能是不可克隆的 Zod 实例，只保留其身份引用。
-    this.calls.push({ input: { ...input }, signal });
-    return cloneValue((await waitForScript(response, signal)) as T);
+    // 顶层字段保存调用瞬间的快照；JSON Schema 可能较大，只保留其只读身份引用。
+    this.calls.push({ input: { ...input }, options: { ...options } });
+    return cloneValue(await waitForScript(response, options.signal));
   }
 }
 
@@ -177,17 +172,17 @@ export type FakeSearchProviderOptions = {
  * 使用 Query（查询）索引固定结果的 Search Provider 测试替身。
  * 同一 Query 可重复读取隔离副本，便于测试重试、缓存和变异隔离。
  */
-export class FakeSearchProvider {
+export class FakeSearchProvider implements SearchProvider {
   readonly id = "fake-search";
   // 数组本身保留可变类型，以结构兼容批准架构中的 SearchProvider Port。
   readonly capabilities: SearchCapability[] = ["general"];
   readonly searchCalls: Array<{
     request: ProviderSearchRequest;
-    signal: AbortSignal | undefined;
+    signal: AbortSignal;
   }> = [];
   readonly extractCalls: Array<{
     canonicalUrls: readonly string[];
-    signal: AbortSignal | undefined;
+    signal: AbortSignal;
   }> = [];
 
   readonly #options: FakeSearchProviderOptions;
@@ -198,7 +193,7 @@ export class FakeSearchProvider {
 
   async search(
     request: ProviderSearchRequest,
-    signal?: AbortSignal,
+    signal: AbortSignal,
   ): Promise<NormalizedSearchHit[]> {
     throwIfAborted(signal);
     const response = this.#options.searchResponses[request.query];
@@ -212,7 +207,7 @@ export class FakeSearchProvider {
 
   async extract(
     canonicalUrls: readonly string[],
-    signal?: AbortSignal,
+    signal: AbortSignal,
   ): Promise<ExtractedPage[]> {
     throwIfAborted(signal);
     const response = this.#options.extractResponse;

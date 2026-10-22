@@ -8,8 +8,9 @@ import type {
   ExtractedPage,
   NormalizedSearchHit,
   ProviderSearchRequest,
-  SearchCapability,
 } from "../packages/contracts/src/index.js";
+import type { SearchProvider } from "../apps/server/src/search/provider.js";
+import type { LLMProvider } from "../apps/server/src/ai/llm-provider.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -21,6 +22,7 @@ import {
 } from "./support/test-infrastructure.mjs";
 
 const searchRequest: ProviderSearchRequest = {
+  kind: "node",
   nodeId: "python-introduction",
   query: "Python official overview",
   maxResults: 3,
@@ -45,20 +47,6 @@ const searchHit: NormalizedSearchHit = {
 const extractedPage: ExtractedPage = {
   canonicalUrl: searchHit.canonicalUrl,
   content: "Python is a programming language.",
-};
-
-/** WAY-44 正式 Port 落地前，以批准架构的结构冻结 Fake 的可注入性。 */
-type ApprovedSearchProviderShape = {
-  id: string;
-  capabilities: SearchCapability[];
-  search: (
-    request: ProviderSearchRequest,
-    signal?: AbortSignal,
-  ) => Promise<NormalizedSearchHit[]>;
-  extract?: (
-    canonicalUrls: string[],
-    signal?: AbortSignal,
-  ) => Promise<ExtractedPage[]>;
 };
 
 afterEach(() => {
@@ -107,27 +95,44 @@ describe("Abort fixture", () => {
 
 describe("FakeLLMProvider", () => {
   it("按顺序返回固定副本、记录调用并明确报告脚本耗尽", async () => {
+    const scriptedResponse = { topic: "Python" };
     const provider = new FakeLLMProvider([
-      { topic: "Python" },
+      scriptedResponse,
       new Error("脚本化 LLM 失败"),
     ]);
     const input = {
       system: "system",
       user: "Python",
-      schema: { type: "object" },
+      schemaName: "topic",
+      schema: { type: "object" } as const,
     };
+    const controller = new AbortController();
+    const options = { signal: controller.signal, timeoutMs: 8_000 };
 
-    const first = await provider.structured<{ topic: string }>(input);
-    first.topic = "mutated";
+    const first = await provider.structured(input, options);
+    if (typeof first !== "object" || first === null) {
+      throw new Error("FakeLLMProvider 应返回结构化对象");
+    }
+    Object.assign(first, { topic: "mutated" });
     input.user = "mutated";
 
     expect(provider.id).toBe("fake-llm");
     expect(provider.calls).toHaveLength(1);
     expect(provider.calls[0]?.input.user).toBe("Python");
-    await expect(provider.structured(input)).rejects.toThrow("脚本化 LLM 失败");
-    await expect(provider.structured(input)).rejects.toThrow(
+    expect(provider.calls[0]?.options).toEqual(options);
+    expect(scriptedResponse).toEqual({ topic: "Python" });
+    await expect(provider.structured(input, options)).rejects.toThrow(
+      "脚本化 LLM 失败",
+    );
+    await expect(provider.structured(input, options)).rejects.toThrow(
       "FakeLLMProvider 脚本已耗尽",
     );
+  });
+
+  it("结构上兼容正式 LLMProvider Port", () => {
+    const provider: LLMProvider = new FakeLLMProvider([]);
+
+    expect(provider.id).toBe("fake-llm");
   });
 
   it("signal 已取消时不消费响应，pending 响应也能被取消", async () => {
@@ -141,34 +146,51 @@ describe("FakeLLMProvider", () => {
 
     await expect(
       provider.structured(
-        { system: "system", user: "Python", schema: {} },
-        preAborted.signal,
+        {
+          system: "system",
+          user: "Python",
+          schemaName: "topic",
+          schema: {},
+        },
+        { signal: preAborted.signal, timeoutMs: 8_000 },
       ),
     ).rejects.toBe(preAborted.signal.reason);
     await expect(
-      provider.structured<{ topic: string }>({
-        system: "system",
-        user: "Python",
-        schema: {},
-      }),
+      provider.structured(
+        {
+          system: "system",
+          user: "Python",
+          schemaName: "topic",
+          schema: {},
+        },
+        { signal: new AbortController().signal, timeoutMs: 8_000 },
+      ),
     ).resolves.toEqual({ topic: "仍应保留" });
 
     const duringCall = createAbortFixture("调用中取消");
     const pending = provider.structured(
-      { system: "system", user: "Python", schema: {} },
-      duringCall.signal,
+      {
+        system: "system",
+        user: "Python",
+        schemaName: "topic",
+        schema: {},
+      },
+      { signal: duringCall.signal, timeoutMs: 8_000 },
     );
     duringCall.abort();
 
     await expect(pending).rejects.toBe(duringCall.signal.reason);
     deferred.resolve({ topic: "迟到结果" });
+    // 等待迟到 Promise 的清理链完成，确保不会产生二次结算或未处理拒绝。
+    await Promise.resolve();
+    expect(provider.calls).toHaveLength(2);
   });
 });
 
 describe("FakeSearchProvider", () => {
   it("结构上兼容批准架构中的 SearchProvider Port", () => {
     const provider = new FakeSearchProvider({ searchResponses: {} });
-    const compatibleProvider: ApprovedSearchProviderShape = provider;
+    const compatibleProvider: SearchProvider = provider;
 
     expect(compatibleProvider.capabilities).toEqual(["general"]);
   });
@@ -201,7 +223,9 @@ describe("FakeSearchProvider", () => {
         signal: abortFixture.signal,
       },
     ]);
-    await expect(provider.search(searchRequest)).resolves.toEqual([searchHit]);
+    await expect(
+      provider.search(searchRequest, new AbortController().signal),
+    ).resolves.toEqual([searchHit]);
     expect(pages).toEqual([extractedPage]);
   });
 
@@ -220,7 +244,10 @@ describe("FakeSearchProvider", () => {
 
     await expect(pending).rejects.toBe(abortFixture.signal.reason);
     await expect(
-      provider.search({ ...searchRequest, query: "未配置 Query" }),
+      provider.search(
+        { ...searchRequest, query: "未配置 Query" },
+        new AbortController().signal,
+      ),
     ).rejects.toThrow("FakeSearchProvider 未配置 Query");
     expect(fetchSpy).not.toHaveBeenCalled();
     deferred.resolve([searchHit]);

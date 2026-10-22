@@ -11,18 +11,21 @@ import { describe, expectTypeOf, it } from "vitest";
 
 import type {
   AppErrorCode,
+  CandidateSearchHit,
   ExtractedPage,
   NodeJobOutcome,
   NodeSearchOutcome,
   NodeWarningCode,
   NormalizedSearchHit,
   ProviderSearchRequest,
+  QuerySearchOutcome,
   ResourceCandidate,
   ResultGraphNode,
   SearchCapability,
 } from "./index.js";
 
 const validProviderRequest: ProviderSearchRequest = {
+  kind: "node",
   nodeId: "node-001",
   query: "typescript strict mode",
   maxResults: 8,
@@ -46,25 +49,11 @@ const readUnknownProviderScore = (hit: NormalizedSearchHit): number => {
 };
 void readUnknownProviderScore;
 
-type ExpectedCandidateSearchHit = Pick<
-  NormalizedSearchHit,
-  | "provider"
-  | "query"
-  | "title"
-  | "url"
-  | "canonicalUrl"
-  | "domain"
-  | "snippet"
-  | "publishedAt"
-  | "providerRank"
-  | "providerScore"
->;
-
 const readCandidateRawMetadata = (
-  candidate: ResourceCandidate,
+  candidate: CandidateSearchHit,
 ): unknown => {
   // @ts-expect-error Candidate Hit 的白名单必须排除 rawMetadata。
-  return candidate.hit.rawMetadata;
+  return candidate.rawMetadata;
 };
 void readCandidateRawMetadata;
 
@@ -72,9 +61,33 @@ void readCandidateRawMetadata;
 const invalidUndefinedLanguage: ProviderSearchRequest = { ...validProviderRequest, language: undefined };
 void invalidUndefinedLanguage;
 
+// @ts-expect-error Node Search 必须携带真实 Graph Node ID。
+const invalidNodeRequest: ProviderSearchRequest = {
+  kind: "node",
+  query: "missing node id",
+  maxResults: 5,
+  capability: "general",
+  freshnessSensitive: false,
+};
+void invalidNodeRequest;
+
+const invalidBroadRequest: ProviderSearchRequest = {
+  kind: "broad_discovery",
+  // @ts-expect-error Broad Discovery 不得伪造 Node ID。
+  nodeId: "broad-discovery",
+  query: "latest framework release",
+  maxResults: 5,
+  capability: "general",
+  freshnessSensitive: true,
+};
+void invalidBroadRequest;
+
 describe("WAY-24 Provider Search 边界", () => {
   it("冻结 ProviderSearchRequest 字段", () => {
-    expectTypeOf<ProviderSearchRequest>().toEqualTypeOf<{
+    expectTypeOf<
+      Extract<ProviderSearchRequest, { kind: "node" }>
+    >().toMatchTypeOf<{
+      kind: "node";
       nodeId: string;
       query: string;
       maxResults: number;
@@ -82,6 +95,37 @@ describe("WAY-24 Provider Search 边界", () => {
       freshnessSensitive: boolean;
       language?: string;
     }>();
+    expectTypeOf<{
+      kind: "node";
+      nodeId: string;
+      query: string;
+      maxResults: number;
+      capability: SearchCapability;
+      freshnessSensitive: boolean;
+      language?: string;
+    }>().toMatchTypeOf<
+      Extract<ProviderSearchRequest, { kind: "node" }>
+    >();
+    expectTypeOf<
+      Extract<ProviderSearchRequest, { kind: "broad_discovery" }>
+    >().toMatchTypeOf<{
+      kind: "broad_discovery";
+      query: string;
+      maxResults: number;
+      capability: SearchCapability;
+      freshnessSensitive: boolean;
+      language?: string;
+    }>();
+    expectTypeOf<{
+      kind: "broad_discovery";
+      query: string;
+      maxResults: number;
+      capability: SearchCapability;
+      freshnessSensitive: boolean;
+      language?: string;
+    }>().toMatchTypeOf<
+      Extract<ProviderSearchRequest, { kind: "broad_discovery" }>
+    >();
   });
 
   it("冻结 NormalizedSearchHit 与 opaque metadata", () => {
@@ -113,10 +157,28 @@ describe("WAY-24 Extract 与 Candidate 边界", () => {
     }>();
   });
 
+  it("冻结 CandidateSearchHit 的搜索事实白名单", () => {
+    expectTypeOf<CandidateSearchHit>().toEqualTypeOf<
+      Pick<
+        NormalizedSearchHit,
+        | "provider"
+        | "query"
+        | "title"
+        | "url"
+        | "canonicalUrl"
+        | "domain"
+        | "snippet"
+        | "publishedAt"
+        | "providerRank"
+        | "providerScore"
+      >
+    >();
+  });
+
   it("冻结 ResourceCandidate 的搜索事实与决策字段", () => {
     expectTypeOf<ResourceCandidate>().toEqualTypeOf<{
       candidateId: string;
-      hit: ExpectedCandidateSearchHit;
+      hit: CandidateSearchHit;
       heuristicScore: number;
       heuristicSignals: Record<string, number>;
       scores?: Record<string, number>;
@@ -179,6 +241,15 @@ void verifyNodeJobOutcomeNarrowing;
 describe("WAY-24 Node 结果边界", () => {
   it("冻结 NodeSearchOutcome", () => {
     expectTypeOf<NodeSearchOutcome>().toEqualTypeOf<{
+      hits: NormalizedSearchHit[];
+      warnings: NodeWarningCode[];
+      queryOutcomes: QuerySearchOutcome[];
+    }>();
+  });
+
+  it("冻结逐 Query 搜索结果", () => {
+    expectTypeOf<QuerySearchOutcome>().toEqualTypeOf<{
+      query: string;
       hits: NormalizedSearchHit[];
       warnings: NodeWarningCode[];
     }>();

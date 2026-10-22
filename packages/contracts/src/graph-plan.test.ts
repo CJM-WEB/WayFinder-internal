@@ -18,6 +18,7 @@ import type { GraphEdge, GraphPlan, GraphPlanNode } from "./index.js";
 
 const validSearchPlan = {
   queries: ["typescript strict mode"],
+  maxResults: 20,
   rankingProfile: "software",
   providerHints: ["code"],
 } as const;

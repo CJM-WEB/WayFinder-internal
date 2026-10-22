@@ -4,7 +4,11 @@
   "compilerOptions": {
     "noEmit": true,
     "lib": ["ES2023"],
-    "types": ["node"]
+    "types": ["node"],
+    // 开发期直接检查 Contract 源码；生产运行仍通过 package exports 使用 dist。
+    "paths": {
+      "@wayfinder/contracts": ["../../packages/contracts/src/index.ts"]
+    }
   },
   "include": ["src/**/*.ts"]
 }
