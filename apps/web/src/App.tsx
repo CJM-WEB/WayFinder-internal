@@ -5,7 +5,19 @@ import { startStreamingSearch } from "./api/search.js";
 import { GraphView } from "./components/Graph/GraphView.js";
 import { Omnibox } from "./components/Omnibox/Omnibox.js";
 import { ResourcePanel } from "./components/ResourcePanel/ResourcePanel.js";
+import {
+  requestSafeUrlOpen,
+  type BrowserUrlOpener,
+} from "./lib/url.js";
 import { graphStore } from "./stores/graph-store.js";
+
+/** window 只在 Direct 提交时读取，初始渲染与 AI Search 不会自动打开页面。 */
+const openBrowserTab: BrowserUrlOpener = (url, target, features) =>
+  window.open(url, target, features);
+
+/** Direct 仍在最终副作用边界重复校验 URL，不能只信任 Omnibox 的路由结果。 */
+const openDirectUrl = (url: string): boolean =>
+  requestSafeUrlOpen(url, openBrowserTab);
 
 export function App() {
   const query = useStore(graphStore, state => state.query);
@@ -41,7 +53,10 @@ export function App() {
         </dl>
       </header>
 
-      <Omnibox startSearch={startStreamingSearch} />
+      <Omnibox
+        startSearch={startStreamingSearch}
+        openDirectUrl={openDirectUrl}
+      />
 
       <section className="graph-section" aria-labelledby="graph-title">
         <div className="graph-section__header">

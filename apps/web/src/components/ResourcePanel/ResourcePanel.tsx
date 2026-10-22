@@ -16,10 +16,10 @@ import {
   type GraphStoreNode,
 } from "../../stores/graph-store.js";
 import {
-  requestResourceOpen,
-  resolveSafeResourceUrl,
-  type ResourceUrlOpener,
-} from "./resource-url.js";
+  requestSafeUrlOpen,
+  resolveSafeHttpUrl,
+  type BrowserUrlOpener,
+} from "../../lib/url.js";
 
 type UnselectedPanelModel = {
   kind: "unselected";
@@ -74,7 +74,7 @@ const formatSourceType = (sourceType: string): string =>
   sourceType.replaceAll("_", " ");
 
 /** window 只在点击回调执行时读取，服务端渲染与初始渲染不会自动打开页面。 */
-const openBrowserTab: ResourceUrlOpener = (url, target, features) =>
+const openBrowserTab: BrowserUrlOpener = (url, target, features) =>
   window.open(url, target, features);
 
 const DEFAULT_VISIBLE_RESOURCE_COUNT = 3;
@@ -94,7 +94,7 @@ function SelectedResourcePanel({
   openResource,
 }: {
   model: SelectedPanelModel;
-  openResource: ResourceUrlOpener;
+  openResource: BrowserUrlOpener;
 }) {
   const [expanded, setExpanded] = useState(false);
   const visibleResources = selectVisibleResources(model.resources, expanded);
@@ -125,7 +125,7 @@ function SelectedResourcePanel({
         <>
           <div className="resource-list" role="list" aria-label="节点资源">
             {visibleResources.map(resource => {
-              const safeUrl = resolveSafeResourceUrl(resource.url);
+              const safeUrl = resolveSafeHttpUrl(resource.url);
 
               return (
                 <article
@@ -165,7 +165,7 @@ function SelectedResourcePanel({
                       disabled={safeUrl === null}
                       aria-label={`在新标签页打开 ${resource.title}`}
                       onClick={() =>
-                        requestResourceOpen(resource.url, openResource)
+                        requestSafeUrlOpen(resource.url, openResource)
                       }
                     >
                       Open
@@ -201,7 +201,7 @@ export function ResourcePanelView({
   openResource = openBrowserTab,
 }: {
   model: ResourcePanelModel;
-  openResource?: ResourceUrlOpener;
+  openResource?: BrowserUrlOpener;
 }) {
   if (model.kind === "unselected") {
     return (

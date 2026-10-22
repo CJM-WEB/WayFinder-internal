@@ -11,7 +11,7 @@ import { createFixedClock } from "../../../tests/support/test-infrastructure.mjs
 import { buildGraphFlowElements } from "./components/Graph/graph-layout.js";
 import { applySelectedNodeId } from "./components/Graph/graph-selection.js";
 import { buildResourcePanelModel } from "./components/ResourcePanel/ResourcePanel.js";
-import { requestResourceOpen } from "./components/ResourcePanel/resource-url.js";
+import { requestSafeUrlOpen } from "./lib/url.js";
 import {
   createGraphStore,
   selectSelectedNode,
@@ -186,7 +186,7 @@ describe("Mock Product 前端纵切", () => {
     }
 
     expect(opener).not.toHaveBeenCalled();
-    expect(requestResourceOpen(panel.resources[0].url, opener)).toBe(true);
+    expect(requestSafeUrlOpen(panel.resources[0].url, opener)).toBe(true);
     expect(opener).toHaveBeenCalledExactlyOnceWith(
       "https://docs.python.org/3/tutorial/",
       "_blank",
