@@ -1,0 +1,894 @@
+/**
+ * 测试职责：冻结 WAY-57/58 的单 Node Pipeline、Warning 合并、唯一终态与高风险
+ * 检索状态矩阵，全部通过显式 Fake Provider（测试替身）在普通 CI 中确定性运行。
+ *
+ * 关键约束：ready/partial 返回完整且通过 Contract 的 Node；普通失败只发一次
+ * node.failed；取消由上层接管；任何处理中事件都不得携带 Resource 快照。
+ */
+import {
+  ResultGraphNodeSchema,
+  StreamEventPayloadSchema,
+  type GraphPlanNode,
+  type NormalizedSearchHit,
+  type QueryAnalysis,
+  type ResultGraphNode,
+  type StreamEventPayload,
+} from "@wayfinder/contracts";
+import { describe, expect, it } from "vitest";
+
+import {
+  createDeferred,
+  FakeLLMProvider,
+  FakeSearchProvider,
+} from "../../../../tests/support/test-infrastructure.mjs";
+import { LLMProviderError } from "../ai/llm-provider.js";
+import {
+  NodeEventEmissionError,
+  NodeJobError,
+  processNode,
+  toNodeJobError,
+  type ProcessNodeContext,
+} from "./process-node.js";
+
+const ANALYSIS: QueryAnalysis = {
+  intent: "learn",
+  topic: "TypeScript compiler guide",
+  freshnessSensitive: false,
+  ambiguityLevel: "low",
+  presentationMode: "compact",
+  broadSearchQueries: [],
+  strategy: "plan_first",
+};
+
+function createNode(queries: string[] = ["TypeScript compiler guide"]): GraphPlanNode {
+  return {
+    id: "typescript-guide",
+    title: "TypeScript compiler guide",
+    description: "Learn TypeScript compiler options",
+    nodeType: "primary",
+    layer: 0,
+    searchPlan: {
+      queries,
+      maxResults: Math.floor(20 / queries.length),
+      rankingProfile: "knowledge",
+      providerHints: ["general"],
+    },
+    status: "planned",
+  };
+}
+
+function createHit(
+  query = "TypeScript compiler guide",
+  overrides: Partial<NormalizedSearchHit> = {},
+): NormalizedSearchHit {
+  const url = "https://docs.example.com/typescript/compiler";
+  return {
+    provider: "fake-search",
+    query,
+    title: "TypeScript compiler guide",
+    url,
+    canonicalUrl: url,
+    domain: "docs.example.com",
+    snippet: "Learn TypeScript compiler options with practical examples.",
+    providerRank: 1,
+    providerScore: 0.9,
+    rawMetadata: { privateProviderValue: "must-not-leak" },
+    ...overrides,
+  };
+}
+
+function createDistinctHit(
+  index: number,
+  domain: string,
+  query = "TypeScript compiler guide",
+): NormalizedSearchHit {
+  const url = `https://${domain}/typescript/${index}`;
+  return createHit(query, {
+    title: `TypeScript compiler guide ${index}`,
+    url,
+    canonicalUrl: url,
+    domain,
+    snippet: `TypeScript compiler options and examples ${index}.`,
+    providerRank: index,
+    providerScore: Math.max(0, 1 - index / 10),
+  });
+}
+
+function createRerankDecision(candidateId: string, score: number) {
+  return {
+    candidateId,
+    scores: {
+      relevance: score,
+      authority: score,
+      clarity: score,
+      completeness: score,
+      trustSafety: score,
+      freshness: score,
+    },
+    summary: `候选 ${candidateId} 的结构化摘要。`,
+    whySelected: `候选 ${candidateId} 与当前节点直接相关。`,
+  };
+}
+
+function createRerankOutput(
+  candidateIds: readonly string[] = ["candidate_1"],
+) {
+  return {
+    ranking: candidateIds.map((candidateId, index) =>
+      createRerankDecision(candidateId, 0.95 - index * 0.1),
+    ),
+  };
+}
+
+function createContext(
+  searchProvider: FakeSearchProvider,
+  rerankProvider: FakeLLMProvider,
+  events: StreamEventPayload[],
+  overrides: Partial<ProcessNodeContext> = {},
+): ProcessNodeContext {
+  return {
+    analysis: ANALYSIS,
+    tavilyProvider: searchProvider,
+    rerankProvider,
+    officialSourcePolicy: { knownRiskyDownloadDomains: [] },
+    nowMs: Date.parse("2026-10-22T00:00:00.000Z"),
+    rerankTimeoutMs: 10_000,
+    emit(payload) {
+      events.push(structuredClone(payload));
+    },
+    ...overrides,
+  };
+}
+
+function terminalEvents(events: readonly StreamEventPayload[]) {
+  return events.filter(event =>
+    ["node.ready", "node.partial", "node.failed"].includes(event.type),
+  );
+}
+
+/** 每个完成态矩阵 Case 都复用同一组公共 Contract 与唯一终态断言。 */
+function expectCompletedExecution(
+  result: ResultGraphNode,
+  events: readonly StreamEventPayload[],
+): void {
+  expect(ResultGraphNodeSchema.parse(result)).toEqual(result);
+  expect(
+    events.every(event => StreamEventPayloadSchema.safeParse(event).success),
+  ).toBe(true);
+  expect(terminalEvents(events)).toHaveLength(1);
+}
+
+/** 只读取结构化 Prompt 的候选数据区，避免对完整 Prompt/JSON Schema 做脆弱快照。 */
+function readPromptCandidates(provider: FakeLLMProvider): Array<{
+  candidateId: string;
+  canonicalUrl: string;
+  snippet: string;
+  extractedContent?: string;
+}> {
+  const user = provider.calls[0]?.input.user;
+  if (user === undefined) {
+    throw new Error("测试要求 Rerank Provider 已收到一次调用");
+  }
+
+  const packet = JSON.parse(user) as {
+    UNTRUSTED_EXTERNAL_CONTENT: {
+      candidates: Array<{
+        candidateId: string;
+        canonicalUrl: string;
+        snippet: string;
+        extractedContent?: string;
+      }>;
+    };
+  };
+  return packet.UNTRUSTED_EXTERNAL_CONTENT.candidates;
+}
+
+describe("processNode 成功与局部降级", () => {
+  it("组装全部阶段并返回 ready，同时只发送一个携带最终 Resource 的终态", async () => {
+    const hit = createHit();
+    const searchProvider = new FakeSearchProvider({
+      searchResponses: { [hit.query]: [hit] },
+      extractResponse: [
+        {
+          canonicalUrl: hit.canonicalUrl,
+          content: "The compiler guide explains all relevant options.",
+        },
+      ],
+    });
+    const rerankProvider = new FakeLLMProvider([createRerankOutput()]);
+    const events: StreamEventPayload[] = [];
+
+    const result = await processNode(
+      createNode(),
+      createContext(searchProvider, rerankProvider, events),
+      new AbortController().signal,
+    );
+
+    expect(ResultGraphNodeSchema.parse(result)).toEqual(result);
+    expect(result).toMatchObject({
+      id: "typescript-guide",
+      status: "ready",
+      warnings: [],
+    });
+    expect(result.resources).toHaveLength(1);
+    expect(result.resources[0]).toMatchObject({
+      canonicalUrl: hit.canonicalUrl,
+      domain: "docs.example.com",
+      rank: 1,
+      searchProvider: "fake-search",
+      summary: "候选 candidate_1 的结构化摘要。",
+    });
+    expect(JSON.stringify(result)).not.toContain("privateProviderValue");
+    expect(events.map(event => event.type)).toEqual([
+      "node.status",
+      "node.status",
+      "node.ready",
+    ]);
+    expect(events.slice(0, 2)).toEqual([
+      {
+        type: "node.status",
+        nodeId: "typescript-guide",
+        status: "searching",
+      },
+      {
+        type: "node.status",
+        nodeId: "typescript-guide",
+        status: "filtering",
+      },
+    ]);
+    expect(terminalEvents(events)).toHaveLength(1);
+    expect(events.every(event => StreamEventPayloadSchema.safeParse(event).success))
+      .toBe(true);
+  });
+
+  it("按阶段顺序合并三个唯一 Warning，并以完整 Resource 返回 partial", async () => {
+    const node = createNode(["TypeScript compiler guide", "backup query"]);
+    const hit = createHit(node.searchPlan.queries[0]);
+    const searchProvider = new FakeSearchProvider({
+      searchResponses: {
+        [node.searchPlan.queries[0]!]: [hit],
+        [node.searchPlan.queries[1]!]: new Error("search unavailable"),
+      },
+      // 请求的候选没有对应正文，构成局部 Extract 降级。
+      extractResponse: [],
+    });
+    const rerankProvider = new FakeLLMProvider([
+      new LLMProviderError("provider_failure", true),
+    ]);
+    const events: StreamEventPayload[] = [];
+
+    const result = await processNode(
+      node,
+      createContext(searchProvider, rerankProvider, events),
+      new AbortController().signal,
+    );
+
+    expect(ResultGraphNodeSchema.parse(result)).toEqual(result);
+    expect(result.status).toBe("partial");
+    expect(result.resources).toHaveLength(1);
+    expect(result.warnings).toEqual([
+      "SEARCH_PROVIDER_PARTIAL",
+      "EXTRACTION_FAILED",
+      "RERANK_FAILED",
+    ]);
+    expect(events.map(event => event.type)).toEqual([
+      "node.status",
+      "node.status",
+      "node.partial",
+    ]);
+    expect(terminalEvents(events)).toEqual([
+      {
+        type: "node.partial",
+        nodeId: node.id,
+        resources: result.resources,
+        warnings: result.warnings,
+      },
+    ]);
+  });
+});
+
+describe("WAY-58 单 Node 高风险检索矩阵", () => {
+  it("局部 Search 失败但仍有 Hit 时只产生 SEARCH_PROVIDER_PARTIAL", async () => {
+    const node = createNode(["TypeScript compiler guide", "backup query"]);
+    const hit = createHit(node.searchPlan.queries[0]);
+    const privateCause = "PRIVATE_SEARCH_CAUSE";
+    const searchProvider = new FakeSearchProvider({
+      searchResponses: {
+        [node.searchPlan.queries[0]!]: [hit],
+        [node.searchPlan.queries[1]!]: new Error(privateCause),
+      },
+      extractResponse: [
+        { canonicalUrl: hit.canonicalUrl, content: "Compiler reference" },
+      ],
+    });
+    const events: StreamEventPayload[] = [];
+    const rerankProvider = new FakeLLMProvider([createRerankOutput()]);
+    const signal = new AbortController().signal;
+
+    const result = await processNode(
+      node,
+      createContext(searchProvider, rerankProvider, events),
+      signal,
+    );
+
+    expectCompletedExecution(result, events);
+    expect(result.status).toBe("partial");
+    expect(result.warnings).toEqual(["SEARCH_PROVIDER_PARTIAL"]);
+    expect(result.resources).toHaveLength(1);
+    expect(terminalEvents(events).map(event => event.type)).toEqual([
+      "node.partial",
+    ]);
+    expect(
+      searchProvider.searchCalls.map(call => ({
+        query: call.request.query,
+        maxResults: call.request.maxResults,
+      })),
+    ).toEqual([
+      { query: node.searchPlan.queries[0], maxResults: 10 },
+      { query: node.searchPlan.queries[1], maxResults: 10 },
+    ]);
+    expect(searchProvider.searchCalls.every(call => call.signal === signal))
+      .toBe(true);
+    expect(searchProvider.extractCalls).toHaveLength(1);
+    expect(rerankProvider.calls).toHaveLength(1);
+    expect(JSON.stringify({ result, events })).not.toContain(privateCause);
+  });
+
+  it("Extract 普通失败时保留 Candidate 并只产生 EXTRACTION_FAILED", async () => {
+    const node = createNode();
+    const hit = createHit(node.searchPlan.queries[0]);
+    const searchProvider = new FakeSearchProvider({
+      searchResponses: { [node.searchPlan.queries[0]!]: [hit] },
+      extractResponse: new Error("extract unavailable"),
+    });
+    const events: StreamEventPayload[] = [];
+    const rerankProvider = new FakeLLMProvider([createRerankOutput()]);
+
+    const result = await processNode(
+      node,
+      createContext(searchProvider, rerankProvider, events),
+      new AbortController().signal,
+    );
+
+    expectCompletedExecution(result, events);
+    expect(result.status).toBe("partial");
+    expect(result.warnings).toEqual(["EXTRACTION_FAILED"]);
+    expect(result.resources[0]?.summary).toBe(
+      "候选 candidate_1 的结构化摘要。",
+    );
+    expect(searchProvider.searchCalls).toHaveLength(1);
+    expect(searchProvider.extractCalls).toHaveLength(1);
+    expect(rerankProvider.calls).toHaveLength(1);
+    expect(readPromptCandidates(rerankProvider)[0]).not.toHaveProperty(
+      "extractedContent",
+    );
+  });
+
+  it("Rerank 普通失败时保持 Heuristic Candidate 并只产生 RERANK_FAILED", async () => {
+    const node = createNode();
+    const hit = createHit(node.searchPlan.queries[0]);
+    const searchProvider = new FakeSearchProvider({
+      searchResponses: { [node.searchPlan.queries[0]!]: [hit] },
+      extractResponse: [
+        { canonicalUrl: hit.canonicalUrl, content: "Compiler reference" },
+      ],
+    });
+    const events: StreamEventPayload[] = [];
+    const rerankProvider = new FakeLLMProvider([
+      new LLMProviderError("provider_failure", true),
+    ]);
+
+    const result = await processNode(
+      node,
+      createContext(searchProvider, rerankProvider, events),
+      new AbortController().signal,
+    );
+
+    expectCompletedExecution(result, events);
+    expect(result.status).toBe("partial");
+    expect(result.warnings).toEqual(["RERANK_FAILED"]);
+    expect(result.resources[0]).toMatchObject({
+      canonicalUrl: hit.canonicalUrl,
+      summary: hit.snippet,
+      sourceType: "web",
+      whySelected:
+        "该结果通过上游确定性质量与安全筛选，并按当前排序保留。",
+    });
+    expect(result.resources[0]).not.toHaveProperty("scores");
+    expect(searchProvider.searchCalls).toHaveLength(1);
+    expect(searchProvider.extractCalls).toHaveLength(1);
+    expect(rerankProvider.calls).toHaveLength(1);
+  });
+
+  it("跨 Query 的 canonical 或规范化标题 duplicate 只保留首次结果", async () => {
+    const node = createNode(["TypeScript compiler guide", "backup query"]);
+    const first = createHit(node.searchPlan.queries[0], {
+      title: "TypeScript compiler first result",
+      url: "https://docs.example.com/typescript/compiler?utm_source=first#top",
+      snippet: "TypeScript compiler options from the first result.",
+    });
+    const duplicate = createHit(node.searchPlan.queries[1], {
+      provider: "other-search",
+      title: "TypeScript compiler duplicate result",
+      url: "https://DOCS.example.com:443/typescript/compiler#other",
+      snippet: "Longer duplicate content that must not replace the first hit.",
+    });
+    const titleDuplicate = createHit(node.searchPlan.queries[1], {
+      title: "  typescript   compiler FIRST result ",
+      url: "https://other.example/typescript/compiler",
+      canonicalUrl: "https://other.example/typescript/compiler",
+      domain: "other.example",
+      snippet: "Same normalized title on a different URL.",
+    });
+    const unique = createHit(node.searchPlan.queries[1], {
+      title: "TypeScript compiler unique result",
+      url: "https://unique.example/typescript/compiler",
+      canonicalUrl: "https://unique.example/typescript/compiler",
+      domain: "unique.example",
+      snippet: "TypeScript compiler options from the unique second result.",
+    });
+    const canonicalUrl = "https://docs.example.com/typescript/compiler";
+    const searchProvider = new FakeSearchProvider({
+      searchResponses: {
+        [node.searchPlan.queries[0]!]: [first],
+        [node.searchPlan.queries[1]!]: [
+          duplicate,
+          titleDuplicate,
+          unique,
+        ],
+      },
+      extractResponse: [
+        { canonicalUrl, content: "Compiler reference" },
+        { canonicalUrl: unique.canonicalUrl, content: "Unique reference" },
+      ],
+    });
+    const events: StreamEventPayload[] = [];
+    const rerankProvider = new FakeLLMProvider([
+      createRerankOutput(["candidate_1", "candidate_2"]),
+    ]);
+
+    const result = await processNode(
+      node,
+      createContext(searchProvider, rerankProvider, events),
+      new AbortController().signal,
+    );
+
+    expectCompletedExecution(result, events);
+    expect(result.status).toBe("ready");
+    expect(result.resources).toHaveLength(2);
+    expect(result.resources.map(resource => resource.canonicalUrl)).toEqual([
+      canonicalUrl,
+      unique.canonicalUrl,
+    ]);
+    expect(result.resources[0]).toMatchObject({
+      title: first.title,
+      searchProvider: first.provider,
+    });
+    expect(result.resources[1]?.title).toBe(unique.title);
+    expect(searchProvider.searchCalls.map(call => call.request.query)).toEqual(
+      node.searchPlan.queries,
+    );
+    expect(searchProvider.extractCalls[0]?.canonicalUrls).toEqual([
+      canonicalUrl,
+      unique.canonicalUrl,
+    ]);
+    expect(readPromptCandidates(rerankProvider)).toEqual([
+      expect.objectContaining({
+        candidateId: "candidate_1",
+        canonicalUrl,
+        snippet: first.snippet,
+      }),
+      expect.objectContaining({
+        candidateId: "candidate_2",
+        canonicalUrl: unique.canonicalUrl,
+        snippet: unique.snippet,
+      }),
+    ]);
+  });
+
+  it("下载任务在 Rerank fallback 时仍把确定性官方来源排在风险站之前", async () => {
+    const query = "site:code.visualstudio.com Visual Studio Code download";
+    const baseNode = createNode([query]);
+    const node: GraphPlanNode = {
+      ...baseNode,
+      id: "vscode-download",
+      title: "Visual Studio Code official download",
+      description: "Find the official Visual Studio Code installer",
+      searchPlan: { ...baseNode.searchPlan, rankingProfile: "software" },
+    };
+    const risky = createHit(query, {
+      title: "Visual Studio Code download mirror",
+      url: "https://downloads.example/vscode",
+      canonicalUrl: "https://downloads.example/vscode",
+      domain: "downloads.example",
+      snippet: "Download the Visual Studio Code installer from this mirror.",
+      providerRank: 1,
+      providerScore: 1,
+    });
+    const official = createHit(query, {
+      title: "Visual Studio Code official download",
+      url: "https://code.visualstudio.com/download",
+      canonicalUrl: "https://code.visualstudio.com/download",
+      domain: "code.visualstudio.com",
+      snippet: "Download Visual Studio Code from the official product site.",
+      providerRank: 2,
+      providerScore: 0.1,
+    });
+    const searchProvider = new FakeSearchProvider({
+      searchResponses: { [query]: [risky, official] },
+      extractResponse: [
+        { canonicalUrl: risky.canonicalUrl, content: "Mirror page" },
+        { canonicalUrl: official.canonicalUrl, content: "Official page" },
+      ],
+    });
+    const events: StreamEventPayload[] = [];
+    const rerankProvider = new FakeLLMProvider([
+      new LLMProviderError("provider_failure", true),
+    ]);
+
+    const result = await processNode(
+      node,
+      createContext(
+        searchProvider,
+        rerankProvider,
+        events,
+        {
+          analysis: {
+            ...ANALYSIS,
+            intent: "navigate",
+            topic: "Visual Studio Code download",
+          },
+          officialSourcePolicy: {
+            knownRiskyDownloadDomains: ["downloads.example"],
+          },
+        },
+      ),
+      new AbortController().signal,
+    );
+
+    expectCompletedExecution(result, events);
+    expect(result.status).toBe("partial");
+    expect(result.warnings).toEqual(["RERANK_FAILED"]);
+    expect(result.resources.map(resource => resource.canonicalUrl)).toEqual([
+      official.canonicalUrl,
+      risky.canonicalUrl,
+    ]);
+    expect(searchProvider.extractCalls[0]?.canonicalUrls).toEqual([
+      official.canonicalUrl,
+      risky.canonicalUrl,
+    ]);
+    expect(readPromptCandidates(rerankProvider).map(item => item.candidateId))
+      .toEqual(["candidate_2", "candidate_1"]);
+  });
+
+  it("Rerank 后对精确 Domain 执行上限二，并稳定保留其他来源", async () => {
+    const node = createNode();
+    const hits = [
+      createDistinctHit(1, "same.example"),
+      createDistinctHit(2, "same.example"),
+      createDistinctHit(3, "same.example"),
+      createDistinctHit(4, "other.example"),
+    ];
+    const searchProvider = new FakeSearchProvider({
+      searchResponses: { [node.searchPlan.queries[0]!]: hits },
+      extractResponse: hits.map(hit => ({
+        canonicalUrl: hit.canonicalUrl,
+        content: `Extracted ${hit.title}`,
+      })),
+    });
+    const events: StreamEventPayload[] = [];
+    const rerankProvider = new FakeLLMProvider([
+      createRerankOutput([
+        "candidate_1",
+        "candidate_2",
+        "candidate_3",
+        "candidate_4",
+      ]),
+    ]);
+
+    const result = await processNode(
+      node,
+      createContext(searchProvider, rerankProvider, events),
+      new AbortController().signal,
+    );
+
+    expectCompletedExecution(result, events);
+    expect(result.status).toBe("ready");
+    expect(result.resources.map(resource => resource.canonicalUrl)).toEqual([
+      hits[0]!.canonicalUrl,
+      hits[1]!.canonicalUrl,
+      hits[3]!.canonicalUrl,
+    ]);
+    expect(result.resources.map(resource => resource.rank)).toEqual([1, 2, 3]);
+    expect(result.resources.map(resource => resource.domain)).toEqual([
+      "same.example",
+      "same.example",
+      "other.example",
+    ]);
+    expect(result.warnings).toEqual([]);
+    expect(searchProvider.extractCalls[0]?.canonicalUrls).toHaveLength(4);
+    expect(readPromptCandidates(rerankProvider)).toHaveLength(4);
+  });
+});
+
+describe("processNode 失败与取消", () => {
+  it("所有 Search 都无结果时发送精确 node.failed 并抛可重试错误", async () => {
+    const node = createNode(["TypeScript compiler guide", "backup query"]);
+    const searchProvider = new FakeSearchProvider({
+      searchResponses: {
+        [node.searchPlan.queries[0]!]: new Error("provider unavailable a"),
+        [node.searchPlan.queries[1]!]: new Error("provider unavailable b"),
+      },
+    });
+    const events: StreamEventPayload[] = [];
+    const rerankProvider = new FakeLLMProvider([createRerankOutput()]);
+
+    const operation = processNode(
+      node,
+      createContext(searchProvider, rerankProvider, events),
+      new AbortController().signal,
+    );
+
+    await expect(operation).rejects.toMatchObject({
+      name: "NodeJobError",
+      code: "SEARCH_PROVIDER_FAILED",
+      retryable: true,
+    });
+    expect(events).toEqual([
+      {
+        type: "node.status",
+        nodeId: node.id,
+        status: "searching",
+      },
+      {
+        type: "node.failed",
+        nodeId: node.id,
+        error: { code: "SEARCH_PROVIDER_FAILED", retryable: true },
+      },
+    ]);
+    expect(terminalEvents(events)).toHaveLength(1);
+    expect(
+      events.every(event => StreamEventPayloadSchema.safeParse(event).success),
+    ).toBe(true);
+    expect(searchProvider.searchCalls.map(call => call.request.query)).toEqual(
+      node.searchPlan.queries,
+    );
+    expect(searchProvider.extractCalls).toHaveLength(0);
+    expect(rerankProvider.calls).toHaveLength(0);
+  });
+
+  it("全部候选被确定性过滤后仍是无 Resource 的 Search 失败", async () => {
+    const node = createNode();
+    const hit = createHit(node.searchPlan.queries[0], { snippet: "" });
+    const searchProvider = new FakeSearchProvider({
+      searchResponses: { [node.searchPlan.queries[0]!]: [hit] },
+      extractResponse: [],
+    });
+    const events: StreamEventPayload[] = [];
+
+    await expect(
+      processNode(
+        node,
+        createContext(
+          searchProvider,
+          new FakeLLMProvider([createRerankOutput()]),
+          events,
+        ),
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({
+      code: "SEARCH_PROVIDER_FAILED",
+      retryable: true,
+    });
+    expect(events.map(event => event.type)).toEqual([
+      "node.status",
+      "node.status",
+      "node.failed",
+    ]);
+    expect(terminalEvents(events)).toHaveLength(1);
+  });
+
+  it("内部未知错误收敛为不可重试 UNKNOWN，且公共事件不泄漏 cause", async () => {
+    const node = createNode();
+    const hit = createHit(node.searchPlan.queries[0]);
+    const searchProvider = new FakeSearchProvider({
+      searchResponses: { [node.searchPlan.queries[0]!]: [hit] },
+    });
+    const events: StreamEventPayload[] = [];
+
+    await expect(
+      processNode(
+        node,
+        createContext(
+          searchProvider,
+          new FakeLLMProvider([createRerankOutput()]),
+          events,
+          {
+            officialSourcePolicy: {
+              knownRiskyDownloadDomains: ["https://invalid-policy.example"],
+            },
+          },
+        ),
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({ code: "UNKNOWN", retryable: false });
+    expect(terminalEvents(events)).toEqual([
+      {
+        type: "node.failed",
+        nodeId: node.id,
+        error: { code: "UNKNOWN", retryable: false },
+      },
+    ]);
+    expect(JSON.stringify(events)).not.toContain("invalid-policy");
+  });
+
+  it("等待 Search 时取消会原样抛出 reason，且不发送任何终态", async () => {
+    const node = createNode();
+    const pending = createDeferred<readonly NormalizedSearchHit[]>();
+    const searchProvider = new FakeSearchProvider({
+      searchResponses: { [node.searchPlan.queries[0]!]: pending.promise },
+    });
+    const events: StreamEventPayload[] = [];
+    const controller = new AbortController();
+    const reason = new Error("run cancelled");
+    const operation = processNode(
+      node,
+      createContext(
+        searchProvider,
+        new FakeLLMProvider([createRerankOutput()]),
+        events,
+      ),
+      controller.signal,
+    );
+
+    controller.abort(reason);
+
+    await expect(operation).rejects.toBe(reason);
+    expect(events).toEqual([
+      {
+        type: "node.status",
+        nodeId: node.id,
+        status: "searching",
+      },
+    ]);
+    expect(terminalEvents(events)).toEqual([]);
+  });
+
+  it("调用前已经取消时不发送进度或终态，并保留 Deadline reason 身份", async () => {
+    const node = createNode();
+    const events: StreamEventPayload[] = [];
+    const controller = new AbortController();
+    const reason = new DOMException("run deadline", "TimeoutError");
+    controller.abort(reason);
+
+    const operation = processNode(
+      node,
+      createContext(
+        new FakeSearchProvider({
+          searchResponses: { [node.searchPlan.queries[0]!]: [] },
+        }),
+        new FakeLLMProvider([createRerankOutput()]),
+        events,
+      ),
+      controller.signal,
+    );
+
+    await expect(operation).rejects.toBe(reason);
+    expect(events).toEqual([]);
+  });
+
+  it("进度 Emit 失败属于传输故障，不得补发 node.failed", async () => {
+    const node = createNode();
+    const events: StreamEventPayload[] = [];
+    const emitError = new Error("event sink unavailable");
+    const baseContext = createContext(
+      new FakeSearchProvider({
+        searchResponses: { [node.searchPlan.queries[0]!]: [] },
+      }),
+      new FakeLLMProvider([createRerankOutput()]),
+      events,
+    );
+
+    const operation = processNode(
+      node,
+      {
+        ...baseContext,
+        emit(payload) {
+          events.push(structuredClone(payload));
+          throw emitError;
+        },
+      },
+      new AbortController().signal,
+    );
+
+    await expect(operation).rejects.toMatchObject({
+      name: "NodeEventEmissionError",
+      cause: emitError,
+    });
+    expect(events.map(event => event.type)).toEqual(["node.status"]);
+    expect(terminalEvents(events)).toEqual([]);
+  });
+
+  it("ready 终态的 Emit 抛错时不会再补发第二个 failed 终态", async () => {
+    const node = createNode();
+    const hit = createHit(node.searchPlan.queries[0]);
+    const searchProvider = new FakeSearchProvider({
+      searchResponses: { [node.searchPlan.queries[0]!]: [hit] },
+      extractResponse: [
+        { canonicalUrl: hit.canonicalUrl, content: "Compiler reference" },
+      ],
+    });
+    const events: StreamEventPayload[] = [];
+    const emitError = new Error("stream transport closed");
+    const baseContext = createContext(
+      searchProvider,
+      new FakeLLMProvider([createRerankOutput()]),
+      events,
+    );
+
+    await expect(
+      processNode(
+        node,
+        {
+          ...baseContext,
+          emit(payload) {
+            events.push(structuredClone(payload));
+            if (payload.type === "node.ready") {
+              throw emitError;
+            }
+          },
+        },
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({
+      name: "NodeEventEmissionError",
+      cause: emitError,
+    });
+    expect(terminalEvents(events).map(event => event.type)).toEqual([
+      "node.ready",
+    ]);
+  });
+
+  it("failed 终态 Emit 失败时只尝试一次，并作为传输故障上抛", async () => {
+    const node = createNode();
+    const events: StreamEventPayload[] = [];
+    const emitError = new Error("failed event rejected");
+    const baseContext = createContext(
+      new FakeSearchProvider({
+        searchResponses: { [node.searchPlan.queries[0]!]: [] },
+      }),
+      new FakeLLMProvider([createRerankOutput()]),
+      events,
+    );
+
+    const operation = processNode(
+      node,
+      {
+        ...baseContext,
+        emit(payload) {
+          events.push(structuredClone(payload));
+          if (payload.type === "node.failed") {
+            throw emitError;
+          }
+        },
+      },
+      new AbortController().signal,
+    );
+
+    await expect(operation).rejects.toBeInstanceOf(NodeEventEmissionError);
+    expect(terminalEvents(events).map(event => event.type)).toEqual([
+      "node.failed",
+    ]);
+  });
+});
+
+describe("NodeJobError 映射", () => {
+  it("保留既有 NodeJobError，并把未知值收敛为 UNKNOWN", () => {
+    const known = new NodeJobError("RERANK_FAILED", true);
+    expect(toNodeJobError(known)).toBe(known);
+    expect(toNodeJobError(new Error("private details"))).toMatchObject({
+      code: "UNKNOWN",
+      retryable: false,
+    });
+  });
+});

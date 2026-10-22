@@ -359,6 +359,31 @@ input {
   color: #8a3129;
 }
 
+/* Show More 只展开本轮 retained Resource；视觉上与单个 Resource 的 Open 动作区分。 */
+.resource-panel__show-more {
+  width: 100%;
+  margin-top: 14px;
+  padding: 10px 14px;
+  border: 1px solid #b7cbbd;
+  border-radius: 10px;
+  color: #315441;
+  background: #eef5f0;
+  cursor: pointer;
+  font-size: 0.8rem;
+  font-weight: 750;
+}
+
+.resource-panel__show-more:hover,
+.resource-panel__show-more:focus-visible {
+  border-color: #315f47;
+  background: #e3eee6;
+}
+
+.resource-panel__show-more:focus-visible {
+  outline: 3px solid rgb(49 95 71 / 24%);
+  outline-offset: 2px;
+}
+
 .react-flow__node.selected .graph-node__content {
   border-color: #315f47;
   box-shadow:

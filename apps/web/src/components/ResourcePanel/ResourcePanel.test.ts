@@ -1,5 +1,6 @@
 /**
- * 测试职责：冻结 WAY-31 选中节点到 Resource Panel（资源面板）视图模型的映射。
+ * 测试职责：冻结选中 Node 到 Resource Panel（资源面板）的映射，以及 WAY-56
+ * 默认 Top 3 与本地 Show More（展开更多）边界。
  *
  * 关键约束：ready、partial 与 failed 都能被选择；failed 没有 Resource 时仍必须展示节点状态。
  */
@@ -16,6 +17,7 @@ import {
 import {
   buildResourcePanelModel,
   ResourcePanelView,
+  selectVisibleResources,
 } from "./ResourcePanel.js";
 
 const fixtureNodeByStatus = (
@@ -45,6 +47,7 @@ describe("Resource Panel model", () => {
 
       expect(model).toMatchObject({
         kind: "selected",
+        nodeId: node.id,
         nodeTitle: node.title,
         nodeStatus: status,
         nodeStatusLabel: status === "ready" ? "已就绪" : "部分完成",
@@ -91,6 +94,45 @@ describe("Resource Panel model", () => {
     );
 
     expect(openResource).not.toHaveBeenCalled();
+  });
+
+  it("默认只显示 Top 3，并为 retained 次级结果提供本地 Show More", () => {
+    const node = fixtureNodeByStatus("ready");
+    if (!("resources" in node) || node.resources[0] === undefined) {
+      throw new Error("ready Fixture 缺少 Resource");
+    }
+    const resources = Array.from({ length: 5 }, (_, index) => ({
+      ...node.resources[0]!,
+      id: `resource-${index + 1}`,
+      title: `Resource ${index + 1}`,
+      url: `https://source-${index + 1}.example/item`,
+      canonicalUrl: `https://source-${index + 1}.example/item`,
+      domain: `source-${index + 1}.example`,
+      rank: index + 1,
+    }));
+    const model = {
+      kind: "selected" as const,
+      nodeId: node.id,
+      nodeTitle: node.title,
+      nodeStatus: node.status,
+      nodeStatusLabel: "已就绪",
+      resources,
+      emptyMessage: null,
+    };
+
+    expect(selectVisibleResources(resources, false)).toEqual(
+      resources.slice(0, 3),
+    );
+    expect(selectVisibleResources(resources, true)).toEqual(resources);
+
+    const markup = renderToStaticMarkup(
+      createElement(ResourcePanelView, { model, openResource: vi.fn() }),
+    );
+    expect(markup).toContain("Resource 1");
+    expect(markup).toContain("Resource 3");
+    expect(markup).not.toContain("Resource 4");
+    expect(markup).not.toContain("Resource 5");
+    expect(markup).toContain("显示更多（2）");
   });
 
   it("为 failed 节点保留失败状态并提供无资源说明", () => {
