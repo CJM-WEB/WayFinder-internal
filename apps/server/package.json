@@ -16,6 +16,7 @@
   "dependencies": {
     "@wayfinder/contracts": "workspace:*",
     "fastify": "5.12.7",
+    "lru-cache": "11.5.3",
     "openai": "7.32.0",
     "zod": "4.6.7"
   }

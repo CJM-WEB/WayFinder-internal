@@ -13,6 +13,22 @@ export {
 export type { ServerConfig } from "./config.js";
 export type { SearchProvider } from "./search/provider.js";
 export {
+  createMemoryCachedSearchProvider,
+  DEFAULT_MAX_CACHEABLE_EXTRACT_URLS,
+  DEFAULT_EXTRACT_CACHE_MAX_ENTRIES,
+  DEFAULT_SEARCH_CACHE_MAX_ENTRIES,
+  EXTRACT_CACHE_MAX_ENTRY_SIZE_CODE_UNITS,
+  EXTRACT_CACHE_MAX_SIZE_CODE_UNITS,
+  EXTRACT_CACHE_TTL_MS,
+  SEARCH_CACHE_MAX_ENTRY_SIZE_BYTES,
+  SEARCH_CACHE_MAX_SIZE_BYTES,
+  SEARCH_CACHE_TTL_MS,
+} from "./search/memory-cached-provider.js";
+export type {
+  MemoryCachedSearchProviderOptions,
+  SearchProviderCacheObservation,
+} from "./search/memory-cached-provider.js";
+export {
   TavilyProviderError,
   TavilySearchProvider,
 } from "./search/providers/tavily.js";
