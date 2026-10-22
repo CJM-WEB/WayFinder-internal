@@ -128,6 +128,31 @@ describe("DeepSeekLLMProvider Structured Output", () => {
     expect(JSON.stringify(usages)).not.toContain("provider_private_details");
   });
 
+  it("Token 观察器失败不覆盖合法 Structured Output", async () => {
+    const provider = new DeepSeekLLMProvider({
+      apiKey: "test-key",
+      onTokenUsage: () => {
+        throw new Error("观察器私有错误");
+      },
+      transport: async () => ({
+        status: "completed",
+        output_text: '{"topic":"Python"}',
+        usage: {
+          input_tokens: 120,
+          output_tokens: 30,
+          total_tokens: 150,
+        },
+      }),
+    });
+
+    await expect(
+      provider.structured(INPUT, {
+        signal: new AbortController().signal,
+        timeoutMs: 8_000,
+      }),
+    ).resolves.toEqual({ topic: "Python" });
+  });
+
   it.each([
     ["缺少 usage", undefined],
     ["字段类型非法", { input_tokens: "120", output_tokens: 30, total_tokens: 150 }],

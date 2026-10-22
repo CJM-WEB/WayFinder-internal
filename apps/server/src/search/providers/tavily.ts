@@ -17,6 +17,7 @@ import type {
 import { z } from "zod";
 
 import { RUN_DEADLINE_MS } from "../../config.js";
+import { observeCurrentRun } from "../../observability/run-log-context.js";
 import type { SearchProvider } from "../provider.js";
 
 const TAVILY_SEARCH_URL = "https://api.tavily.com/search";
@@ -341,6 +342,10 @@ export class TavilySearchProvider implements SearchProvider {
     let response: Response;
     try {
       // 只有通过取消检查、即将调用 fetch 的尝试才计入实际 HTTP 次数。
+      observeCurrentRun({
+        kind: "http_attempt",
+        operation: operation === "Search" ? "search" : "extract",
+      });
       this.onAttempt?.({
         operation: operation === "Search" ? "search" : "extract",
         attempt,
