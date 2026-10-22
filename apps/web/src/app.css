@@ -214,6 +214,106 @@ input {
   background: #315f47;
 }
 
+/* H2 页面与 H1 分离，只以中性 A/B 控件切换同一个生产 Resource Panel。 */
+.h2-evaluation__controls {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 24px;
+  margin-bottom: 20px;
+  padding: 18px 20px;
+  border: 1px solid #b9cbbf;
+  border-radius: 18px;
+  background: #eef5f0;
+}
+
+.h2-evaluation__controls h2,
+.h2-evaluation__controls p,
+.h2-evaluation__loader h1,
+.h2-evaluation__loader p {
+  margin: 0;
+}
+
+.h2-evaluation__controls h2 {
+  font-size: 1rem;
+}
+
+.h2-evaluation__controls p,
+.h2-evaluation__loader p {
+  margin-top: 6px;
+  color: #587064;
+  font-size: 0.82rem;
+}
+
+.h2-evaluation__conditions {
+  display: flex;
+  gap: 8px;
+}
+
+.h2-evaluation__conditions button {
+  min-width: 96px;
+  padding: 9px 14px;
+  border: 1px solid #9db4a5;
+  border-radius: 10px;
+  color: #315441;
+  background: #fff;
+  cursor: pointer;
+  font-size: 0.78rem;
+  font-weight: 750;
+}
+
+.h2-evaluation__conditions button[aria-pressed="true"] {
+  border-color: #315f47;
+  color: #fff;
+  background: #315f47;
+}
+
+.h2-evaluation__panel {
+  display: grid;
+  min-height: 0;
+}
+
+.h2-evaluation__panel .resource-panel {
+  width: min(100%, 720px);
+  justify-self: center;
+  border: 1px solid #e3ebe5;
+  border-radius: 20px;
+  box-shadow: 0 18px 45px rgb(37 71 52 / 10%);
+}
+
+.h2-evaluation--loader {
+  display: grid;
+  min-height: 100vh;
+  place-content: center;
+}
+
+.h2-evaluation__loader {
+  width: min(100%, 620px);
+  padding: 32px;
+  border: 1px solid #d4e0d7;
+  border-radius: 22px;
+  background: #fff;
+  box-shadow: 0 18px 45px rgb(37 71 52 / 10%);
+}
+
+.h2-evaluation__loader label {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 24px;
+  font-size: 0.82rem;
+  font-weight: 750;
+}
+
+.h2-evaluation__loader input {
+  min-width: 0;
+  max-width: 280px;
+}
+
+.h2-evaluation__loader [role="alert"] {
+  color: #8a3129;
+}
+
 .graph-section {
   overflow: hidden;
   border: 1px solid #d4e0d7;
@@ -855,6 +955,25 @@ input {
 
   .h1-evaluation__conditions button {
     flex: 1;
+  }
+
+  .h2-evaluation__controls {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .h2-evaluation__conditions,
+  .h2-evaluation__loader label {
+    width: 100%;
+  }
+
+  .h2-evaluation__conditions button {
+    flex: 1;
+  }
+
+  .h2-evaluation__loader label {
+    align-items: flex-start;
+    flex-direction: column;
   }
 
   .h1-flat-list {

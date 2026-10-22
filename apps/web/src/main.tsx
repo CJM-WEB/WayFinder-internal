@@ -9,7 +9,9 @@ import "@xyflow/react/dist/style.css";
 
 import { App } from "./App.js";
 import "./app.css";
+import { H2EvaluationApp } from "./components/Evaluation/H2EvaluationApp.js";
 import { resolveH1EvaluationRoute } from "./evaluation/h1-route.js";
+import { resolveH2EvaluationRoute } from "./evaluation/h2-route.js";
 
 const rootElement = document.getElementById("root");
 
@@ -18,9 +20,14 @@ if (rootElement === null) {
 }
 
 const h1Evaluation = resolveH1EvaluationRoute(window.location.search);
+const h2Evaluation = resolveH2EvaluationRoute(window.location.search);
 
 createRoot(rootElement).render(
   <StrictMode>
-    <App {...(h1Evaluation === null ? {} : { h1Evaluation })} />
+    {h2Evaluation === null ? (
+      <App {...(h1Evaluation === null ? {} : { h1Evaluation })} />
+    ) : (
+      <H2EvaluationApp initialCondition={h2Evaluation.initialCondition} />
+    )}
   </StrictMode>,
 );

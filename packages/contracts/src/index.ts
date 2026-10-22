@@ -462,6 +462,179 @@ export const ResultGraphNodeSchema = z.discriminatedUnion("status", [
 ]);
 export type ResultGraphNode = z.infer<typeof ResultGraphNodeSchema>;
 
+/** H2 Retrieval（检索）实验只使用两个中性条件标识，页面不得展示真实检索来源。 */
+export const H2EvaluationConditionIdSchema = z.enum(["A", "B"]);
+export type H2EvaluationConditionId = z.infer<
+  typeof H2EvaluationConditionIdSchema
+>;
+
+/** 来源字段只供受控实验编排与复核使用，不属于普通产品导航或展示信息。 */
+export const H2RetrievalSourceSchema = z.enum([
+  "node_specific",
+  "raw_query",
+]);
+export type H2RetrievalSource = z.infer<typeof H2RetrievalSourceSchema>;
+
+/**
+ * H2 工件只接受可交付的 ready / partial Node；任一条件失败时不能用空结果伪造可比较样本。
+ * 继续复用生产 Node 分支，保证两个条件进入完全相同的 Resource Panel（资源面板）边界。
+ */
+const H2EvaluationNodeSchema = z.discriminatedUnion("status", [
+  ReadyResultNodeSchema,
+  PartialResultNodeSchema,
+]);
+
+const H2EvaluationConditionSchema = z.strictObject({
+  id: H2EvaluationConditionIdSchema,
+  source: H2RetrievalSourceSchema,
+  node: H2EvaluationNodeSchema,
+});
+
+/**
+ * H2 Evaluation Artifact（H2 评估工件）是本地 Server Runner 与隐藏 Web Eval 页之间的
+ * 严格传输协议。它固定为两个条件，并校验 A/B、两种来源和同一 Node 身份各出现一次。
+ */
+export const H2EvaluationArtifactSchema = z
+  .strictObject({
+    version: z.literal("h2-evaluation.v1"),
+    query: SearchRequestSchema.shape.query,
+    conditions: z.tuple([
+      H2EvaluationConditionSchema,
+      H2EvaluationConditionSchema,
+    ]),
+  })
+  .superRefine((artifact, context) => {
+    for (const field of ["id", "source"] as const) {
+      if (
+        new Set(artifact.conditions.map(condition => condition[field])).size !==
+        artifact.conditions.length
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["conditions"],
+          message: `H2 conditions must contain unique ${field}`,
+        });
+      }
+    }
+
+    if (
+      artifact.conditions[0].node.id !== artifact.conditions[1].node.id
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["conditions", 1, "node", "id"],
+        message: "H2 conditions must compare the same node",
+      });
+    }
+
+    const [first, second] = artifact.conditions;
+    for (const field of [
+      "title",
+      "description",
+      "nodeType",
+      "layer",
+    ] as const) {
+      if (first.node[field] !== second.node[field]) {
+        context.addIssue({
+          code: "custom",
+          path: ["conditions", 1, "node", field],
+          message: `H2 conditions must keep node ${field} identical`,
+        });
+      }
+    }
+
+    if (
+      first.node.searchPlan.rankingProfile !==
+      second.node.searchPlan.rankingProfile
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["conditions", 1, "node", "searchPlan", "rankingProfile"],
+        message: "H2 conditions must keep rankingProfile identical",
+      });
+    }
+    if (
+      first.node.searchPlan.providerHints.join("\u0000") !==
+      second.node.searchPlan.providerHints.join("\u0000")
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["conditions", 1, "node", "searchPlan", "providerHints"],
+        message: "H2 conditions must keep providerHints identical",
+      });
+    }
+    const firstCandidateBudget =
+      first.node.searchPlan.queries.length *
+      first.node.searchPlan.maxResults;
+    const secondCandidateBudget =
+      second.node.searchPlan.queries.length *
+      second.node.searchPlan.maxResults;
+    if (firstCandidateBudget !== secondCandidateBudget) {
+      context.addIssue({
+        code: "custom",
+        path: ["conditions", 1, "node", "searchPlan", "maxResults"],
+        message: "H2 conditions must keep total candidate budget identical",
+      });
+    }
+
+    artifact.conditions.forEach((condition, conditionIndex) => {
+      for (const field of ["id", "canonicalUrl", "rank"] as const) {
+        const values = condition.node.resources.map(resource => resource[field]);
+        if (new Set(values).size !== values.length) {
+          context.addIssue({
+            code: "custom",
+            path: ["conditions", conditionIndex, "node", "resources"],
+            message: `H2 condition resources must contain unique ${field}`,
+          });
+        }
+      }
+      if (
+        condition.node.resources.some(
+          (resource, resourceIndex) => resource.rank !== resourceIndex + 1,
+        )
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["conditions", conditionIndex, "node", "resources"],
+          message: "H2 condition resource ranks must be sequential",
+        });
+      }
+    });
+
+    const rawCondition = artifact.conditions.find(
+      condition => condition.source === "raw_query",
+    );
+    const nodeSpecificCondition = artifact.conditions.find(
+      condition => condition.source === "node_specific",
+    );
+    // 来源唯一性失败时避免追加误导性的二级诊断。
+    if (rawCondition !== undefined && nodeSpecificCondition !== undefined) {
+      if (
+        rawCondition.node.searchPlan.queries.length !== 1 ||
+        rawCondition.node.searchPlan.queries[0] !== artifact.query
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["conditions"],
+          message: "H2 raw_query condition must use only the artifact query",
+        });
+      }
+      if (
+        nodeSpecificCondition.node.searchPlan.queries.length === 1 &&
+        nodeSpecificCondition.node.searchPlan.queries[0] === artifact.query
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["conditions"],
+          message: "H2 node_specific condition must differ from raw query",
+        });
+      }
+    }
+  });
+export type H2EvaluationArtifact = z.infer<
+  typeof H2EvaluationArtifactSchema
+>;
+
 /** 普通 Node Job 失败明确排除 Deadline 与用户取消控制流。 */
 type NodeJobRejectedCode = Exclude<
   AppErrorCode,
