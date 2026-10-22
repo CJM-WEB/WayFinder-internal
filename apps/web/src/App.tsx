@@ -1,7 +1,9 @@
-/** 组件职责：组合运行摘要、Graph 结果画布与当前节点的 Resource Panel。 */
+/** 组件职责：组合统一 Omnibox、运行摘要、Graph 结果画布与当前节点的 Resource Panel。 */
 import { useStore } from "zustand";
 
+import { startStreamingSearch } from "./api/search.js";
 import { GraphView } from "./components/Graph/GraphView.js";
+import { Omnibox } from "./components/Omnibox/Omnibox.js";
 import { ResourcePanel } from "./components/ResourcePanel/ResourcePanel.js";
 import { graphStore } from "./stores/graph-store.js";
 
@@ -9,7 +11,11 @@ export function App() {
   const query = useStore(graphStore, state => state.query);
   const nodeCount = useStore(graphStore, state => state.nodes.length);
   const isSearching = useStore(graphStore, state => state.isSearching);
-  const searchStateLabel = isSearching ? "搜索中" : "已完成";
+  const searchStateLabel = isSearching
+    ? "搜索中"
+    : query.length > 0
+      ? "已完成"
+      : "待搜索";
 
   return (
     <main className="app-shell">
@@ -35,9 +41,11 @@ export function App() {
         </dl>
       </header>
 
+      <Omnibox startSearch={startStreamingSearch} />
+
       <section className="graph-section" aria-labelledby="graph-title">
         <div className="graph-section__header">
-          <h2 id="graph-title">Python 学习路径</h2>
+          <h2 id="graph-title">搜索结果</h2>
           <p>滚轮缩放 · 拖动画布 · 控件复位</p>
         </div>
         <div className="graph-workspace">

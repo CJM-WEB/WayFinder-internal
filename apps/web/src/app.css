@@ -84,6 +84,76 @@ input {
 .app-summary dd {
   margin: 3px 0 0;
   font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+/*
+ * Omnibox 只提供一个提交入口；搜索期间仍保持可编辑，便于新 Query 立即替换旧 Run。
+ * 表单使用原生 submit 语义承接 Enter，不为键盘路径增加第二套事件处理。
+ */
+.omnibox {
+  margin-bottom: 20px;
+  padding: 18px;
+  border: 1px solid #d4e0d7;
+  border-radius: 20px;
+  background: #fff;
+  box-shadow: 0 12px 32px rgb(37 71 52 / 8%);
+}
+
+.omnibox > label {
+  display: block;
+  margin-bottom: 8px;
+  color: #385647;
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.omnibox__controls {
+  display: flex;
+  gap: 10px;
+}
+
+.omnibox__controls input {
+  min-width: 0;
+  flex: 1;
+  padding: 13px 15px;
+  border: 1px solid #b9cbbf;
+  border-radius: 14px;
+  color: #15271f;
+  background: #fbfdfb;
+}
+
+.omnibox__controls input:focus-visible {
+  border-color: #3b7655;
+  outline: 3px solid rgb(59 118 85 / 18%);
+}
+
+.omnibox__controls button {
+  padding: 0 22px;
+  border: 0;
+  border-radius: 14px;
+  color: #fff;
+  background: #285f43;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.omnibox__controls button:hover {
+  background: #1f4d36;
+}
+
+.omnibox__hint,
+.omnibox__error {
+  margin: 8px 2px 0;
+  font-size: 0.76rem;
+}
+
+.omnibox__hint {
+  color: #60776a;
+}
+
+.omnibox__error {
+  color: #8a3129;
 }
 
 .graph-section {
