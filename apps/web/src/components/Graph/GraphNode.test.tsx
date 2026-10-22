@@ -54,15 +54,19 @@ describe("GraphNode 渐进状态接线", () => {
     expect(markup).toContain("正在检索网页");
   });
 
-  it("failed 明确结束加载并展示失败说明", () => {
+  it.each([
+    ["ready", 2, "✓", "已就绪", "2 条可用资源"],
+    ["partial", 2, "!", "部分完成", "2 条可用资源 · 含降级"],
+    ["failed", 0, "×", "失败", "没有可用资源"],
+  ] as const)("%s 以独立提示结束加载", (status, count, marker, label, detail) => {
     const markup = renderToStaticMarkup(
-      <GraphNode {...createNodeProps("failed", 0)} />,
+      <GraphNode {...createNodeProps(status, count)} />,
     );
 
     expect(markup).toContain('aria-busy="false"');
-    expect(markup).toContain('data-node-status="failed"');
-    expect(markup).toContain("×");
-    expect(markup).toContain("失败");
-    expect(markup).toContain("没有可用资源");
+    expect(markup).toContain(`data-node-status="${status}"`);
+    expect(markup).toContain(marker);
+    expect(markup).toContain(label);
+    expect(markup).toContain(detail);
   });
 });

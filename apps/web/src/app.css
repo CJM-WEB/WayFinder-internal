@@ -349,13 +349,44 @@ input {
   font-weight: 700;
 }
 
-.resource-panel__notice {
+.resource-panel__notice,
+.resource-panel__outcome {
   margin: 18px 0 0;
   padding: 14px;
+  border: 1px solid transparent;
   border-radius: 12px;
-  color: #6d403b;
-  background: #fff0ed;
   line-height: 1.55;
+}
+
+.resource-panel__notice {
+  color: #415a4d;
+  background: #edf3ef;
+}
+
+/* partial 与 failed 使用独立标题、文字和列表；色彩只作为额外扫描线索。 */
+.resource-panel__outcome--warning {
+  border-color: #dfbd63;
+  color: #644807;
+  background: #fffbef;
+}
+
+.resource-panel__outcome--error {
+  border-color: #df9c94;
+  color: #762a23;
+  background: #fff0ed;
+}
+
+.resource-panel__outcome h3 {
+  margin: 0;
+  font-size: 0.86rem;
+}
+
+.resource-panel__outcome ul {
+  display: grid;
+  gap: 5px;
+  margin: 7px 0 0;
+  padding-left: 20px;
+  font-size: 0.8rem;
 }
 
 .resource-list {
