@@ -1,9 +1,13 @@
 /**
- * 测试职责：冻结选中 Node 到 Resource Panel（资源面板）的映射，以及 WAY-56
+ * 测试职责：冻结选中 Node 到 Resource Panel（资源面板）的映射，以及 WAY-80
  * 默认 Top 3 与本地 Show More（展开更多）边界。
  *
  * 关键约束：ready、partial 与 failed 都能被选择；failed 没有 Resource 时仍必须展示节点状态。
  */
+import {
+  MAX_RETAINED_RESOURCES_PER_NODE,
+  type Resource,
+} from "@wayfinder/contracts";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
@@ -32,6 +36,42 @@ const fixtureNodeByStatus = (
   }
 
   return node;
+};
+
+/**
+ * 构造保持输入顺序的 retained Resource（本轮保留资源）列表。
+ * 测试刻意不从 rank 推导顺序，避免前端复制 Finalizer 的排序职责。
+ */
+const buildRetainedResources = (count: number): readonly Resource[] => {
+  const node = fixtureNodeByStatus("ready");
+  if (!("resources" in node) || node.resources[0] === undefined) {
+    throw new Error("ready Fixture 缺少 Resource");
+  }
+
+  return Array.from({ length: count }, (_, index) => ({
+    ...node.resources[0]!,
+    id: `resource-${index + 1}`,
+    title: `Resource ${index + 1}`,
+    url: `https://source-${index + 1}.example/item`,
+    canonicalUrl: `https://source-${index + 1}.example/item`,
+    domain: `source-${index + 1}.example`,
+    rank: index + 1,
+  }));
+};
+
+/** 构造只含数量差异的 ready 面板模型，避免每个边界用例重复无关字段。 */
+const buildSelectedModel = (resources: readonly Resource[]) => {
+  const node = fixtureNodeByStatus("ready");
+
+  return {
+    kind: "selected" as const,
+    nodeId: node.id,
+    nodeTitle: node.title,
+    nodeStatus: node.status,
+    nodeStatusLabel: "已就绪",
+    resources,
+    emptyMessage: resources.length === 0 ? "资源仍在准备中。" : null,
+  };
 };
 
 describe("Resource Panel model", () => {
@@ -96,43 +136,66 @@ describe("Resource Panel model", () => {
     expect(openResource).not.toHaveBeenCalled();
   });
 
-  it("默认只显示 Top 3，并为 retained 次级结果提供本地 Show More", () => {
-    const node = fixtureNodeByStatus("ready");
-    if (!("resources" in node) || node.resources[0] === undefined) {
-      throw new Error("ready Fixture 缺少 Resource");
-    }
-    const resources = Array.from({ length: 5 }, (_, index) => ({
-      ...node.resources[0]!,
-      id: `resource-${index + 1}`,
-      title: `Resource ${index + 1}`,
-      url: `https://source-${index + 1}.example/item`,
-      canonicalUrl: `https://source-${index + 1}.example/item`,
-      domain: `source-${index + 1}.example`,
-      rank: index + 1,
+  it.each([1, 2, 3])(
+    "%i 个 retained Resource 全部可见且不显示 Show More",
+    resourceCount => {
+      const resources = buildRetainedResources(resourceCount);
+      const markup = renderToStaticMarkup(
+        createElement(ResourcePanelView, {
+          model: buildSelectedModel(resources),
+          openResource: vi.fn(),
+        }),
+      );
+
+      for (const resource of resources) {
+        expect(markup).toContain(resource.title);
+      }
+      expect(markup).not.toContain("显示更多");
+    },
+  );
+
+  it.each([
+    { resourceCount: 4, hiddenCount: 1 },
+    {
+      resourceCount: MAX_RETAINED_RESOURCES_PER_NODE,
+      hiddenCount: MAX_RETAINED_RESOURCES_PER_NODE - 3,
+    },
+  ])(
+    "$resourceCount 个 retained Resource 默认显示 Top 3，展开后保持完整顺序",
+    ({ resourceCount, hiddenCount }) => {
+      const resources = buildRetainedResources(resourceCount);
+      const resourcesSnapshot = [...resources];
+      const collapsedResources = selectVisibleResources(resources, false);
+      const expandedResources = selectVisibleResources(resources, true);
+
+      expect(collapsedResources).toEqual(resources.slice(0, 3));
+      expect(expandedResources).toEqual(resources);
+      expect(resources).toEqual(resourcesSnapshot);
+
+      const markup = renderToStaticMarkup(
+        createElement(ResourcePanelView, {
+          model: buildSelectedModel(resources),
+          openResource: vi.fn(),
+        }),
+      );
+      expect(markup).toContain("Resource 1");
+      expect(markup).toContain("Resource 3");
+      expect(markup).not.toContain("Resource 4");
+      expect(markup).not.toContain(`Resource ${resourceCount}`);
+      expect(markup).toContain(`显示更多（${hiddenCount}）`);
+    },
+  );
+
+  it("按 retained 数组顺序取 Top 3，不依据 rank 在前端重排", () => {
+    const resources = buildRetainedResources(4).map((resource, index) => ({
+      ...resource,
+      rank: [8, 1, 6, 2][index]!,
     }));
-    const model = {
-      kind: "selected" as const,
-      nodeId: node.id,
-      nodeTitle: node.title,
-      nodeStatus: node.status,
-      nodeStatusLabel: "已就绪",
-      resources,
-      emptyMessage: null,
-    };
 
     expect(selectVisibleResources(resources, false)).toEqual(
       resources.slice(0, 3),
     );
     expect(selectVisibleResources(resources, true)).toEqual(resources);
-
-    const markup = renderToStaticMarkup(
-      createElement(ResourcePanelView, { model, openResource: vi.fn() }),
-    );
-    expect(markup).toContain("Resource 1");
-    expect(markup).toContain("Resource 3");
-    expect(markup).not.toContain("Resource 4");
-    expect(markup).not.toContain("Resource 5");
-    expect(markup).toContain("显示更多（2）");
   });
 
   it("为 failed 节点保留失败状态并提供无资源说明", () => {
@@ -154,6 +217,7 @@ describe("Resource Panel model", () => {
 
     expect(markup).toContain("该节点检索失败，暂无可展示的资源。");
     expect(markup).not.toContain(">Open</button>");
+    expect(markup).not.toContain("显示更多");
   });
 
   it("按非箭头顺序选择任意节点并保持三种最终状态", () => {
