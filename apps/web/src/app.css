@@ -193,6 +193,17 @@ input {
   min-height: 520px;
 }
 
+/* Compact 仍渲染完整 Product Graph，只收紧首屏高度，不截断 Node 或 Edge。 */
+.graph-section--compact .graph-canvas,
+.graph-section--compact .resource-panel {
+  height: clamp(340px, calc(100vh - 350px), 460px);
+  min-height: 340px;
+}
+
+.graph-section--compact .graph-empty {
+  min-height: 340px;
+}
+
 /* Graph 与 Resource Panel 共享结果页高度；画布保持可缩放，面板独立滚动。 */
 .graph-workspace {
   display: grid;
@@ -640,6 +651,17 @@ input {
   .graph-empty {
     min-height: 500px;
     height: calc(100vh - 280px);
+  }
+
+  .graph-section--compact .graph-canvas,
+  .graph-section--compact .graph-empty {
+    height: 380px;
+    min-height: 320px;
+  }
+
+  .graph-section--compact .resource-panel {
+    height: auto;
+    min-height: 320px;
   }
 
   .graph-workspace {

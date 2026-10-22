@@ -65,6 +65,7 @@ describe("Graph store", () => {
 
     expect(state.activeRunId).toBeNull();
     expect(state.query).toBe("");
+    expect(state.presentationMode).toBeNull();
     expect(state.nodes).toEqual([]);
     expect(state.edges).toEqual([]);
     expect(state.selectedNodeId).toBeNull();
@@ -86,6 +87,7 @@ describe("Graph store", () => {
     expect(store.getState()).toMatchObject({
       activeRunId: "new-run",
       query: "new query",
+      presentationMode: null,
       nodes: [],
       edges: [],
       selectedNodeId: null,
@@ -136,6 +138,9 @@ describe("Graph store", () => {
     store.getState().finishRun();
 
     expect(store.getState().lastSequence).toBe(12);
+    expect(store.getState().presentationMode).toBe(
+      graphPlan.analysis.presentationMode,
+    );
     expect(store.getState().isSearching).toBe(false);
   });
 
@@ -151,6 +156,7 @@ describe("Graph store", () => {
     expect(store.getState()).toMatchObject({
       activeRunId: null,
       query: "",
+      presentationMode: null,
       nodes: [],
       edges: [],
       selectedNodeId: null,

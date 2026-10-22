@@ -1,5 +1,5 @@
 /**
- * 测试职责：验证 GraphView（图视图）把当前 Store 快照同步接到生产 ReactFlow 边界。
+ * 测试职责：验证 GraphView（图视图）按 Graph/Compact 模式把 Store 快照同步接到 ReactFlow。
  *
  * React Flow 画布在测试中只捕获 Props（属性）；布局、Store 与 GraphView 均使用真实实现。
  */
@@ -65,7 +65,9 @@ describe("GraphView 渐进快照接线", () => {
     graphStore.getState().startRun({ runId: plan.runId, query: "Python" });
     graphStore.getState().applyStreamEvent(plan);
 
-    renderToStaticMarkup(<GraphView />);
+    const markup = renderToStaticMarkup(
+      <GraphView presentationMode="graph" />,
+    );
 
     const nodes = capturedFlow.nodes as readonly GraphFlowNode[] | undefined;
     const edges = capturedFlow.edges as readonly GraphFlowEdge[] | undefined;
@@ -78,7 +80,43 @@ describe("GraphView 渐进快照接线", () => {
     expect(edges?.map(edge => edge.id)).toEqual(
       plan.data.edges.map(edge => edge.id),
     );
+    expect(markup).toContain('data-presentation-mode="graph"');
+    expect(markup).toContain('aria-label="探索式搜索结果图"');
   });
+
+  it.each([1, 3])(
+    "compact 完整渲染 %i 个 Node 且不提前自动选择",
+    nodeCount => {
+      const plan = createPythonMockStream({
+        now: () => Date.parse("2026-10-22T00:00:00.000Z"),
+      }).find(event => event.type === "graph.plan");
+      if (plan?.type !== "graph.plan") {
+        throw new Error("Python Mock Stream 缺少 graph.plan");
+      }
+      const nodes = plan.data.nodes.slice(0, nodeCount);
+      const nodeIds = new Set(nodes.map(node => node.id));
+      const edges = plan.data.edges.filter(
+        edge => nodeIds.has(edge.source) && nodeIds.has(edge.target),
+      );
+      expect(nodes).toHaveLength(nodeCount);
+      graphStore.getState().setGraph({ nodes, edges });
+
+      const markup = renderToStaticMarkup(
+        <GraphView presentationMode="compact" />,
+      );
+
+      expect(capturedFlow.nodes).toHaveLength(nodeCount);
+      expect(capturedFlow.edges).toHaveLength(edges.length);
+      expect(capturedFlow.edges).toEqual(
+        expect.arrayContaining(
+          edges.map(edge => expect.objectContaining({ id: edge.id })),
+        ),
+      );
+      expect(graphStore.getState().selectedNodeId).toBeNull();
+      expect(markup).toContain('data-presentation-mode="compact"');
+      expect(markup).toContain('aria-label="紧凑搜索结果图"');
+    },
+  );
 
   it("把 React Flow 键盘选择变化接回 Store", () => {
     const plan = createPythonMockStream({
@@ -90,7 +128,7 @@ describe("GraphView 渐进快照接线", () => {
     graphStore.getState().startRun({ runId: plan.runId, query: "Python" });
     graphStore.getState().applyStreamEvent(plan);
 
-    renderToStaticMarkup(<GraphView />);
+    renderToStaticMarkup(<GraphView presentationMode="graph" />);
 
     const firstNodeId = plan.data.nodes[0]?.id;
     const secondNodeId = plan.data.nodes[1]?.id;
@@ -104,7 +142,7 @@ describe("GraphView 渐进快照接线", () => {
     expect(graphStore.getState().selectedNodeId).toBe(firstNodeId);
 
     // Store 更新后重新 render，确保回调基于最新受控 Nodes 完成键盘切换。
-    renderToStaticMarkup(<GraphView />);
+    renderToStaticMarkup(<GraphView presentationMode="graph" />);
     const switchSelection = capturedFlow.onNodesChange as
       | ((changes: NodeChange<GraphFlowNode>[]) => void)
       | undefined;
@@ -114,7 +152,7 @@ describe("GraphView 渐进快照接线", () => {
     ]);
     expect(graphStore.getState().selectedNodeId).toBe(secondNodeId);
 
-    renderToStaticMarkup(<GraphView />);
+    renderToStaticMarkup(<GraphView presentationMode="graph" />);
     const clearSelection = capturedFlow.onNodesChange as
       | ((changes: NodeChange<GraphFlowNode>[]) => void)
       | undefined;

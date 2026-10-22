@@ -10,6 +10,7 @@ import type {
   GraphEdge,
   GraphNodeCore,
   GraphPlan,
+  PresentationMode,
   ProcessingNodeStatus,
   ResultGraph,
   ResultGraphNode,
@@ -33,6 +34,8 @@ type GraphSnapshot =
 type GraphStoreData = {
   activeRunId: SearchRequest["runId"] | null;
   query: SearchRequest["query"];
+  /** null 仅表示当前尚未收到 AI Search 的分析结果；Direct 永远不写入 Store。 */
+  presentationMode: PresentationMode | null;
   nodes: GraphStoreNode[];
   edges: GraphEdge[];
   selectedNodeId: GraphNodeCore["id"] | null;
@@ -101,6 +104,7 @@ const createInitialGraphState = (): GraphStoreData => ({
   activeRunId: null,
   // 空字符串只表示尚未开始查询；真实请求仍由 SearchRequestSchema 保证非空。
   query: "",
+  presentationMode: null,
   nodes: [],
   edges: [],
   selectedNodeId: null,
@@ -149,8 +153,11 @@ export const createGraphStore = () =>
 
         switch (event.type) {
           case "query.analysis":
-            // 当前 Store 不展示 Analysis；仍消费事件以维持全局 sequence 单调。
-            return sequencePatch;
+            // 只保存 UI 必需的展示模式，不复制完整 Analysis 形成第二份业务状态。
+            return {
+              presentationMode: event.data.presentationMode,
+              ...sequencePatch,
+            };
 
           case "graph.plan":
             // 服务端只应发布一次计划；重复计划不能把已收敛的 Node 退回 planned。
@@ -158,6 +165,7 @@ export const createGraphStore = () =>
               ? sequencePatch
               : {
                   ...createGraphPatch(state, event.data),
+                  presentationMode: event.data.analysis.presentationMode,
                   ...sequencePatch,
                 };
 
@@ -221,6 +229,9 @@ export const createGraphStore = () =>
             // ResultGraph 已通过公共 Schema，是丢失增量事件后的权威恢复快照。
             return {
               ...createGraphPatch(state, event.data.result.graph),
+              // complete 是漏收增量事件后的权威恢复快照，模式也必须一并收敛。
+              presentationMode:
+                event.data.result.analysis.presentationMode,
               ...sequencePatch,
               isSearching: false,
             };

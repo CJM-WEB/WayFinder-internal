@@ -14,6 +14,7 @@ import type {
   NodeChange,
   NodeTypes,
 } from "@xyflow/react";
+import type { PresentationMode } from "@wayfinder/contracts";
 import { useCallback, useMemo } from "react";
 import { useStore } from "zustand";
 
@@ -44,7 +45,12 @@ const ARIA_LABELS: Partial<AriaLabelConfig> = {
   "controls.fitView.ariaLabel": "显示全部节点",
 };
 
-export function GraphView() {
+export type GraphViewProps = Readonly<{
+  presentationMode: PresentationMode;
+}>;
+
+/** 两种展示模式共用同一 Product Graph；Compact 只改变视图密度，不改写 Node 或 Edge。 */
+export function GraphView({ presentationMode }: GraphViewProps) {
   const nodes = useStore(graphStore, state => state.nodes);
   const edges = useStore(graphStore, state => state.edges);
   const selectedNodeId = useStore(graphStore, state => state.selectedNodeId);
@@ -93,7 +99,15 @@ export function GraphView() {
   }
 
   return (
-    <div className="graph-canvas" aria-label="Python 搜索结果图">
+    <div
+      className={`graph-canvas graph-canvas--${presentationMode}`}
+      data-presentation-mode={presentationMode}
+      aria-label={
+        presentationMode === "compact"
+          ? "紧凑搜索结果图"
+          : "探索式搜索结果图"
+      }
+    >
       <ReactFlow<GraphFlowNode, GraphFlowEdge>
         nodes={flowNodes}
         edges={elements.edges}

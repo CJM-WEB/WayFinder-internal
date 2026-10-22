@@ -62,6 +62,23 @@ const createActiveStore = () => {
 };
 
 describe("Graph store StreamEvent Reducer", () => {
+  it.each(["graph", "compact"] as const)(
+    "query.analysis 忠实保存 %s 展示模式且不选择 Node",
+    presentationMode => {
+      const store = createActiveStore();
+      const analysis = eventOfType("query.analysis");
+      const modeEvent = StreamEventSchema.parse({
+        ...analysis,
+        data: { ...analysis.data, presentationMode },
+      });
+
+      store.getState().applyStreamEvent(modeEvent);
+
+      expect(store.getState().presentationMode).toBe(presentationMode);
+      expect(store.getState().selectedNodeId).toBeNull();
+    },
+  );
+
   it.each(everyEventType)(
     "旧 Run 的 $type 不改变状态或通知订阅者",
     event => {
@@ -112,6 +129,7 @@ describe("Graph store StreamEvent Reducer", () => {
     );
 
     expect(store.getState()).toMatchObject({
+      presentationMode: "graph",
       nodes: eventOfType("graph.plan").data.nodes,
       edges: eventOfType("graph.plan").data.edges,
       lastSequence: 3,
@@ -143,6 +161,7 @@ describe("Graph store StreamEvent Reducer", () => {
     store.getState().applyStreamEvent(complete);
 
     expect(store.getState()).toMatchObject({
+      presentationMode: "graph",
       nodes: pythonResultGraphFixture.graph.nodes,
       edges: pythonResultGraphFixture.graph.edges,
       lastSequence: complete.sequence,
@@ -221,6 +240,7 @@ describe("Graph store StreamEvent Reducer", () => {
     );
 
     expect(failed).toMatchObject({
+      presentationMode: "graph",
       nodes: graphBeforeFailure,
       lastSequence: runFailedEvent.sequence,
       isSearching: false,
@@ -283,6 +303,38 @@ describe("Graph store StreamEvent Reducer", () => {
     expect(store.getState()).toBe(before);
   });
 
+  it("complete 可在漏收分析与计划事件时权威恢复 compact 模式", () => {
+    const store = createActiveStore();
+    const complete = eventOfType("complete");
+    const compactComplete = StreamEventSchema.parse({
+      ...complete,
+      sequence: 1,
+      data: {
+        ...complete.data,
+        result: {
+          ...complete.data.result,
+          analysis: {
+            ...complete.data.result.analysis,
+            presentationMode: "compact",
+          },
+        },
+      },
+    });
+    if (compactComplete.type !== "complete") {
+      throw new Error("测试事件必须保持 complete 类型");
+    }
+
+    store.getState().applyStreamEvent(compactComplete);
+
+    expect(store.getState()).toMatchObject({
+      presentationMode: "compact",
+      nodes: compactComplete.data.result.graph.nodes,
+      edges: compactComplete.data.result.graph.edges,
+      isSearching: false,
+    });
+    expect(store.getState().selectedNodeId).toBeNull();
+  });
+
   it("新 Run 重置封闭状态并重新接受 sequence 1", () => {
     const store = createActiveStore();
     store.getState().applyStreamEvent(runFailedEvent);
@@ -301,6 +353,7 @@ describe("Graph store StreamEvent Reducer", () => {
     expect(store.getState()).toMatchObject({
       activeRunId: "new-run",
       query: "new query",
+      presentationMode: "graph",
       nodes: [],
       isSearching: true,
       lastSequence: 1,

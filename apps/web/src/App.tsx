@@ -21,8 +21,14 @@ const openDirectUrl = (url: string): boolean =>
 
 export function App() {
   const query = useStore(graphStore, state => state.query);
+  const storedPresentationMode = useStore(
+    graphStore,
+    state => state.presentationMode,
+  );
   const nodeCount = useStore(graphStore, state => state.nodes.length);
   const isSearching = useStore(graphStore, state => state.isSearching);
+  // Analysis 到达前沿用探索式空态；fallback 只影响视图，不写回 Store。
+  const presentationMode = storedPresentationMode ?? "graph";
   const searchStateLabel = isSearching
     ? "搜索中"
     : query.length > 0
@@ -58,13 +64,20 @@ export function App() {
         openDirectUrl={openDirectUrl}
       />
 
-      <section className="graph-section" aria-labelledby="graph-title">
+      <section
+        className={`graph-section graph-section--${presentationMode}`}
+        aria-labelledby="graph-title"
+      >
         <div className="graph-section__header">
           <h2 id="graph-title">搜索结果</h2>
-          <p>滚轮缩放 · 拖动画布 · 控件复位</p>
+          <p>
+            {presentationMode === "compact"
+              ? "紧凑结果 · 选择节点查看资源"
+              : "滚轮缩放 · 拖动画布 · 选择节点查看资源"}
+          </p>
         </div>
         <div className="graph-workspace">
-          <GraphView />
+          <GraphView presentationMode={presentationMode} />
           <ResourcePanel />
         </div>
       </section>
