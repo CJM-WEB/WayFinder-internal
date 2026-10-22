@@ -14,6 +14,8 @@ export type AbsoluteRunDeadlineScope = Readonly<{
   deadlineAt: number;
   /** Planner、Broad Search、Reviser 与 Node jobs 必须复用同一对象。 */
   signal: AbortSignal;
+  /** 只按本 Scope 唯一 reason 的对象身份识别真正 Run Deadline。 */
+  isDeadlineReason: (reason: unknown) => boolean;
   /**
    * 返回当前仍可使用的正整数毫秒预算。
    *
@@ -107,6 +109,8 @@ export function createAbsoluteRunDeadline(
   return Object.freeze({
     deadlineAt,
     signal: controller.signal,
+    // 用户取消可以携带同名 TimeoutError；来源只能用私有 reason 的身份判定。
+    isDeadlineReason: (reason: unknown) => reason === deadlineReason,
     requirePositiveRemainingMs: () => {
       controller.signal.throwIfAborted();
 

@@ -79,6 +79,7 @@ describe("createAbsoluteRunDeadline", () => {
     expect(scope.signal.reason).toBeInstanceOf(DOMException);
     expect(scope.signal.reason).toMatchObject({ name: "TimeoutError" });
     const deadlineReason = scope.signal.reason;
+    expect(scope.isDeadlineReason(deadlineReason)).toBe(true);
     parent.abort(new Error("late parent cancellation"));
     expect(scope.signal.reason).toBe(deadlineReason);
     expect(vi.getTimerCount()).toBe(0);
@@ -109,10 +110,25 @@ describe("createAbsoluteRunDeadline", () => {
 
     expect(activeScope.signal.aborted).toBe(true);
     expect(activeScope.signal.reason).toBe(activeReason);
+    expect(activeScope.isDeadlineReason(activeReason)).toBe(false);
     expect(vi.getTimerCount()).toBe(0);
+
+    const timeoutNamedParent = new AbortController();
+    const timeoutNamedReason = new DOMException(
+      "用户主动取消",
+      "TimeoutError",
+    );
+    timeoutNamedParent.abort(timeoutNamedReason);
+    const timeoutNamedScope = createAbsoluteRunDeadline({
+      parentSignal: timeoutNamedParent.signal,
+      now: () => 0,
+    });
+    expect(timeoutNamedScope.signal.reason).toBe(timeoutNamedReason);
+    expect(timeoutNamedScope.isDeadlineReason(timeoutNamedReason)).toBe(false);
 
     preCancelledScope.dispose();
     activeScope.dispose();
+    timeoutNamedScope.dispose();
   });
 
   it("时钟已过期但 Timer 尚未回调时同步终止，禁止启动新阶段", () => {
