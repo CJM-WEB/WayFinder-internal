@@ -8,10 +8,13 @@ import {
   BackgroundVariant,
   Controls,
   ReactFlow,
-  useNodesState,
 } from "@xyflow/react";
-import type { AriaLabelConfig, NodeTypes } from "@xyflow/react";
-import { useCallback, useEffect, useMemo } from "react";
+import type {
+  AriaLabelConfig,
+  NodeChange,
+  NodeTypes,
+} from "@xyflow/react";
+import { useCallback, useMemo } from "react";
 import { useStore } from "zustand";
 
 import { graphStore } from "../../stores/graph-store.js";
@@ -24,6 +27,7 @@ import {
 import {
   applySelectedNodeId,
   resolveSelectedNodeId,
+  resolveSelectedNodeIdFromChanges,
 } from "./graph-selection.js";
 
 /** 稳定引用避免 React Flow 在每次渲染时重建 Node Type 注册表。 */
@@ -49,22 +53,39 @@ export function GraphView() {
     () => buildGraphFlowElements(nodes, edges),
     [nodes, edges],
   );
-  const [flowNodes, setFlowNodes, handleNodesChange] =
-    useNodesState<GraphFlowNode>(elements.nodes);
-
-  // React Flow 的 selected 属于交互态，由其标准 onNodesChange 通道管理；
-  // 业务图快照或 Store 选择变化时再统一派生，避免两处选择状态分叉。
-  useEffect(() => {
-    setFlowNodes(applySelectedNodeId(elements.nodes, selectedNodeId));
-  }, [elements.nodes, selectedNodeId, setFlowNodes]);
+  /**
+   * Flow Node 是 Store 当前快照的同步派生值；不能通过 Effect 复制第二份节点状态，
+   * 否则 graph.plan 与增量状态会先绘制一帧旧 Graph。选择也只由业务 ID 派生。
+   */
+  const flowNodes = useMemo(
+    () => applySelectedNodeId(elements.nodes, selectedNodeId),
+    [elements.nodes, selectedNodeId],
+  );
 
   const handleSelectionChange = useCallback(
     ({ nodes: selectedNodes }: { nodes: GraphFlowNode[] }) => {
-      // 事件只回写业务 ID；上方 effect 再统一派生高亮。
+      // 事件只回写业务 ID；上方同步派生值再统一形成高亮。
       // Store 对同值写入不通知，阻断 React Flow 与 Store 的重复回写环。
       selectNode(resolveSelectedNodeId(selectedNodes));
     },
     [selectNode],
+  );
+
+  const handleNodesChange = useCallback(
+    (changes: NodeChange<GraphFlowNode>[]) => {
+      /**
+       * 键盘 Enter / Space 只产生 select change，不触发 onNodeClick；这里仅提取选择，
+       * 测量与位置等 React Flow 内部变化不进入业务 Store。
+       */
+      const nextSelectedNodeId = resolveSelectedNodeIdFromChanges(
+        flowNodes,
+        changes,
+      );
+      if (nextSelectedNodeId !== undefined) {
+        selectNode(nextSelectedNodeId);
+      }
+    },
+    [flowNodes, selectNode],
   );
 
   if (elements.nodes.length === 0) {

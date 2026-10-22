@@ -200,30 +200,72 @@ input {
   font-size: 0.8rem;
 }
 
+/*
+ * 六态 Token（视觉标记）同时服务 Graph Node 与 Resource Panel。
+ * 标签与符号承担非颜色语义；这里的色彩只强化扫描效率，不构成唯一状态信号。
+ */
+.graph-node--planned,
+.graph-node__status--planned,
+.resource-panel__status--planned {
+  --node-status-text: #52685d;
+  --node-status-badge: #e8eeea;
+  --node-status-border: #aabbb0;
+  --node-status-surface: #f7faf8;
+}
+
+.graph-node--searching,
+.graph-node__status--searching,
+.resource-panel__status--searching {
+  --node-status-text: #245b85;
+  --node-status-badge: #deefff;
+  --node-status-border: #83b8de;
+  --node-status-surface: #f4faff;
+}
+
+.graph-node--filtering,
+.graph-node__status--filtering,
+.resource-panel__status--filtering {
+  --node-status-text: #62458a;
+  --node-status-badge: #eee6ff;
+  --node-status-border: #b9a0df;
+  --node-status-surface: #faf7ff;
+}
+
+.graph-node--ready,
+.graph-node__status--ready,
+.resource-panel__status--ready {
+  --node-status-text: #276343;
+  --node-status-badge: #def1e4;
+  --node-status-border: #8fc3a1;
+  --node-status-surface: #f5fbf7;
+}
+
+.graph-node--partial,
+.graph-node__status--partial,
+.resource-panel__status--partial {
+  --node-status-text: #79560a;
+  --node-status-badge: #fff1c9;
+  --node-status-border: #dfbd63;
+  --node-status-surface: #fffbef;
+}
+
+.graph-node--failed,
+.graph-node__status--failed,
+.resource-panel__status--failed {
+  --node-status-text: #8a3129;
+  --node-status-badge: #ffe2de;
+  --node-status-border: #df9c94;
+  --node-status-surface: #fff7f5;
+}
+
 .resource-panel__status {
   flex: none;
   padding: 4px 9px;
   border-radius: 999px;
-  background: #e7efe9;
-  color: #315441;
+  background: var(--node-status-badge);
+  color: var(--node-status-text);
   font-size: 0.72rem;
   font-weight: 700;
-}
-
-.resource-panel__status--partial {
-  background: #fff1c9;
-  color: #71520b;
-}
-
-.resource-panel__status--failed {
-  background: #ffe2de;
-  color: #8a3129;
-}
-
-.resource-panel__status--searching,
-.resource-panel__status--filtering {
-  background: #dcecff;
-  color: #285578;
 }
 
 .resource-panel__notice {
@@ -414,15 +456,14 @@ input {
   flex-direction: column;
   justify-content: center;
   padding: 15px 17px;
-  border: 1px solid #bdd0c3;
+  border: 1px solid var(--node-status-border);
   border-radius: 16px;
-  background: #fff;
+  background: var(--node-status-surface);
   box-shadow: 0 8px 22px rgb(37 71 52 / 12%);
 }
 
 .graph-node--related .graph-node__content {
   border-style: dashed;
-  background: #f7faf8;
 }
 
 .graph-node__eyebrow {
@@ -438,27 +479,20 @@ input {
 }
 
 .graph-node__status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   padding: 3px 8px;
   border-radius: 999px;
-  background: #e7efe9;
-  color: #315441;
+  background: var(--node-status-badge);
+  color: var(--node-status-text);
   letter-spacing: 0;
 }
 
-.graph-node__status--partial {
-  background: #fff1c9;
-  color: #71520b;
-}
-
-.graph-node__status--failed {
-  background: #ffe2de;
-  color: #8a3129;
-}
-
-.graph-node__status--searching,
-.graph-node__status--filtering {
-  background: #dcecff;
-  color: #285578;
+.graph-node__status-marker {
+  font-size: 0.86rem;
+  font-weight: 900;
+  line-height: 1;
 }
 
 .graph-node__content h3 {

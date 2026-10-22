@@ -1,14 +1,15 @@
 /**
- * 集成测试职责：覆盖 D1 Mock Product 从合法 Stream 到可安全打开 Resource 的完整纵切。
+ * 集成测试职责：覆盖 Mock Product 从渐进 Stream 到可安全打开 Resource 的前端纵切。
  *
- * 范围边界：不挂载真实 DOM、不启动 Server、不读取 Secret，也不调用网络；
- * 后续真实 Stream reader（流读取器）与乱序状态机不在 WAY-33 提前实现。
+ * 范围边界：只使用确定性 Mock Stream，不挂载真实 DOM、不启动 Server、不读取 Secret、
+ * 不调用网络；真实 Reader、乱序、断连、Deadline 等完整跨层矩阵留给 WAY-75。
  */
 import { StreamEventSchema } from "@wayfinder/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createFixedClock } from "../../../tests/support/test-infrastructure.mjs";
 import { buildGraphFlowElements } from "./components/Graph/graph-layout.js";
+import { applySelectedNodeId } from "./components/Graph/graph-selection.js";
 import { buildResourcePanelModel } from "./components/ResourcePanel/ResourcePanel.js";
 import { requestResourceOpen } from "./components/ResourcePanel/resource-url.js";
 import {
@@ -21,7 +22,100 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe("D1 Mock Product happy path", () => {
+describe("Mock Product 前端纵切", () => {
+  it("plan 后立即显示 Draft，并让单 Node 失败不阻塞其他 Node", () => {
+    const events = createPythonMockStream(
+      createFixedClock("2026-01-01T00:00:00.000Z"),
+    );
+    const plan = events.find(event => event.type === "graph.plan");
+    const ready = events.find(event => event.type === "node.ready");
+    const searching = events.find(
+      event => event.type === "node.status" && event.nodeId !== ready?.nodeId,
+    );
+    const failed = events.find(event => event.type === "node.failed");
+    if (
+      plan?.type !== "graph.plan" ||
+      ready?.type !== "node.ready" ||
+      searching?.type !== "node.status" ||
+      failed?.type !== "node.failed"
+    ) {
+      throw new Error("Python Mock Stream 缺少渐进状态测试事件");
+    }
+
+    const store = createGraphStore();
+    store.getState().startRun({ runId: plan.runId, query: "Python" });
+    let draftAtNotification:
+      | ReturnType<typeof buildGraphFlowElements>
+      | undefined;
+    const unsubscribe = store.subscribe((state, previousState) => {
+      if (previousState.nodes.length === 0 && state.nodes.length > 0) {
+        // 在 Store 的同一次同步通知中构建布局，证明 Draft 不等待 Effect、Node 终态或 complete。
+        draftAtNotification = buildGraphFlowElements(state.nodes, state.edges);
+      }
+    });
+
+    store.getState().applyStreamEvent(plan);
+    unsubscribe();
+
+    expect(draftAtNotification?.nodes.map(node => node.data.status)).toEqual(
+      plan.data.nodes.map(() => "planned"),
+    );
+    expect(draftAtNotification?.nodes.map(node => node.id)).toEqual(
+      plan.data.nodes.map(node => node.id),
+    );
+    expect(draftAtNotification?.edges.map(edge => edge.id)).toEqual(
+      plan.data.edges.map(edge => edge.id),
+    );
+    expect(store.getState().isSearching).toBe(true);
+
+    store.getState().applyStreamEvent(ready);
+    store.getState().applyStreamEvent(searching);
+    store.getState().selectNode(ready.nodeId);
+    store.getState().applyStreamEvent(failed);
+
+    const stateAfterFailure = store.getState();
+    const nodeStatusById = new Map(
+      stateAfterFailure.nodes.map(node => [node.id, node.status]),
+    );
+    expect(nodeStatusById.get(ready.nodeId)).toBe("ready");
+    expect(nodeStatusById.get(searching.nodeId)).toBe("searching");
+    expect(nodeStatusById.get(failed.nodeId)).toBe("failed");
+    expect(stateAfterFailure.isSearching).toBe(true);
+    expect(stateAfterFailure.selectedNodeId).toBe(ready.nodeId);
+
+    const selectedFlowNodes = applySelectedNodeId(
+      buildGraphFlowElements(
+        stateAfterFailure.nodes,
+        stateAfterFailure.edges,
+      ).nodes,
+      stateAfterFailure.selectedNodeId,
+    );
+    expect(
+      selectedFlowNodes.filter(node => node.selected).map(node => node.id),
+    ).toEqual([ready.nodeId]);
+
+    const panel = buildResourcePanelModel(
+      selectSelectedNode(stateAfterFailure),
+    );
+    expect(panel).toMatchObject({
+      kind: "selected",
+      nodeId: ready.nodeId,
+      nodeStatus: "ready",
+    });
+    if (panel.kind !== "selected") {
+      throw new Error("ready Node 应保持可浏览");
+    }
+    expect(panel.resources.length).toBeGreaterThan(0);
+
+    // failed 之后仍可切换到其他 Node；单点失败不产生 Graph 级禁用。
+    const plannedNode = stateAfterFailure.nodes.find(
+      node => node.status === "planned",
+    );
+    expect(plannedNode).toBeDefined();
+    store.getState().selectNode(plannedNode?.id ?? null);
+    expect(store.getState().selectedNodeId).toBe(plannedNode?.id);
+  });
+
   it("从连贯 Stream 构建 Graph、自由选择 Node 并显式安全打开 Resource", () => {
     const clock = createFixedClock("2026-01-01T00:00:00.000Z");
     const events = createPythonMockStream(clock);
