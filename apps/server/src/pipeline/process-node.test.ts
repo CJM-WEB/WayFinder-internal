@@ -581,7 +581,7 @@ describe("WAY-58 单 Node 高风险检索矩阵", () => {
     ]);
   });
 
-  it("下载任务在 Rerank 成功后重新守住 official > unknown > risky", async () => {
+  it("Rerank 成功后保留模型顺序作为 WAY-90 回退基线", async () => {
     const query = "site:code.visualstudio.com Visual Studio Code download";
     const baseNode = createNode([query]);
     const node: GraphPlanNode = {
@@ -658,9 +658,9 @@ describe("WAY-58 单 Node 高风险检索矩阵", () => {
     expect(result.warnings).toEqual([]);
     expect(result.status).toBe("ready");
     expect(result.resources.map(resource => resource.canonicalUrl)).toEqual([
-      official.canonicalUrl,
-      unknown.canonicalUrl,
       risky.canonicalUrl,
+      unknown.canonicalUrl,
+      official.canonicalUrl,
     ]);
     expect(node).toEqual(nodeSnapshot);
     expect(searchProvider.searchCalls).toHaveLength(1);

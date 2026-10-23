@@ -26,10 +26,7 @@ import {
 import { canonicalizeAndDeduplicateCandidates } from "./canonicalize-candidates.js";
 import { applySourceDiversity } from "./diversity.js";
 import { applyDeterministicHardFilters } from "./hard-filter.js";
-import {
-  applyOfficialSourceSafetyOrder,
-  heuristicRankCandidates,
-} from "./heuristic-rank.js";
+import { heuristicRankCandidates } from "./heuristic-rank.js";
 import {
   detectOfficialSourceSignals,
   type OfficialSourcePolicy,
@@ -226,12 +223,11 @@ export async function processNode(
     });
     appendUniqueWarnings(warnings, reranked.warnings);
 
-    // 模型只决定同一安全层级内的语义顺序，不能把风险站提升到有效官方来源之前。
-    const safetyOrdered = applyOfficialSourceSafetyOrder(
-      reranked.candidates,
-      assessments,
+    // WAY-90 前瞻协议在首个 Control Block 失效，按冻结规则保守恢复既有边界：
+    // Diversity 直接消费模型顺序；这不表示已证明 Safety Guard 导致实验失败。
+    const resources = finalizeResources(
+      applySourceDiversity(reranked.candidates),
     );
-    const resources = finalizeResources(applySourceDiversity(safetyOrdered));
     if (resources.length === 0) {
       throw new NodeJobError("SEARCH_PROVIDER_FAILED", true);
     }
