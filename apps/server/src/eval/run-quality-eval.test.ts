@@ -2,12 +2,14 @@
  * 测试职责：冻结 WAY-86 Live CLI、工件脱敏与本地私有写入边界。
  */
 import {
+  chmod,
   mkdir,
   mkdtemp,
   readFile,
   readdir,
   stat,
   symlink,
+  writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -19,8 +21,22 @@ import {
   createQualityEvalPrivateOutputDirectory,
   initializeQualityEvalPrivateOutput,
   parseQualityEvalCliArgs,
+  writeQualityEvalFinalArtifacts,
   writeQualityEvalPrivateJson,
+  writeQualityEvalPrivateText,
 } from "./run-quality-eval.js";
+
+type FinalArtifact = "report" | "humanReview" | "completed";
+
+function createFinalArtifactWriters(
+  write: (artifact: FinalArtifact) => Promise<void>,
+) {
+  return {
+    writeReport: () => write("report"),
+    writeHumanReview: () => write("humanReview"),
+    writeCompletedState: () => write("completed"),
+  };
+}
 
 describe("WAY-86 Quality Eval Live 闸门", () => {
   it.each([
@@ -96,7 +112,7 @@ describe("WAY-86 Quality Eval 工件安全", () => {
     ).toThrow("凭据形态文本");
   });
 
-  it("只创建内部 Run ID 的私有目录与 0600 JSON", async () => {
+  it("只创建内部 Run ID 的私有目录与 0600 JSON / Markdown", async () => {
     const root = await mkdtemp(join(tmpdir(), "wayfinder-quality-eval-"));
     const runId = "2026-10-23T00-00-00-000Z-11111111-1111-4111-8111-111111111111";
     const outputDirectory = await createQualityEvalPrivateOutputDirectory(
@@ -105,18 +121,109 @@ describe("WAY-86 Quality Eval 工件安全", () => {
       root,
     );
     const outputFile = join(outputDirectory, "report.json");
+    const reviewFile = join(outputDirectory, "human-review.md");
     await writeQualityEvalPrivateJson(outputFile, { status: "ok" });
+    await writeQualityEvalPrivateText(reviewFile, "# 人工评审\n");
 
     expect(JSON.parse(await readFile(outputFile, "utf8"))).toEqual({
       status: "ok",
     });
+    expect(await readFile(reviewFile, "utf8")).toBe("# 人工评审\n");
     if (process.platform !== "win32") {
       expect((await stat(outputDirectory)).mode & 0o777).toBe(0o700);
       expect((await stat(outputFile)).mode & 0o777).toBe(0o600);
+      expect((await stat(reviewFile)).mode & 0o777).toBe(0o600);
     }
     await expect(
       createQualityEvalPrivateOutputDirectory(root, "../../escape", root),
     ).rejects.toThrow("Run ID 格式无效");
+  });
+
+  it.runIf(process.platform !== "win32")(
+    "覆盖已有文件时仍把权限收紧为 0600",
+    async () => {
+      const root = await mkdtemp(join(tmpdir(), "wayfinder-quality-mode-"));
+      const outputFile = join(root, "human-review.md");
+      await writeFile(outputFile, "旧内容", "utf8");
+      await chmod(outputFile, 0o644);
+
+      await writeQualityEvalPrivateText(outputFile, "新内容");
+
+      expect(await readFile(outputFile, "utf8")).toBe("新内容");
+      expect((await stat(outputFile)).mode & 0o777).toBe(0o600);
+    },
+  );
+
+  it.each(["report", "humanReview"] as const)(
+    "%s 写入失败时不写 completed 状态",
+    async failedArtifact => {
+      const calls: string[] = [];
+      const write = (artifact: string): Promise<void> => {
+        calls.push(artifact);
+        return artifact === failedArtifact
+          ? Promise.reject(new Error("固定测试错误"))
+          : Promise.resolve();
+      };
+
+      await expect(
+        writeQualityEvalFinalArtifacts(
+          createFinalArtifactWriters(write),
+          new AbortController().signal,
+        ),
+      ).rejects.toThrow("固定测试错误");
+      expect(calls).not.toContain("completed");
+    },
+  );
+
+  it("开始写入前已取消时不创建最终工件", async () => {
+    const calls: string[] = [];
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(
+      writeQualityEvalFinalArtifacts(
+        createFinalArtifactWriters(artifact => {
+          calls.push(artifact);
+          return Promise.resolve();
+        }),
+        controller.signal,
+      ),
+    ).rejects.toThrow("Quality Eval 已取消");
+    expect(calls).toEqual([]);
+  });
+
+  it("最终工件写入期间取消时不写 completed 状态", async () => {
+    const calls: string[] = [];
+    const controller = new AbortController();
+
+    await expect(
+      writeQualityEvalFinalArtifacts(
+        createFinalArtifactWriters(artifact => {
+          calls.push(artifact);
+          if (artifact === "humanReview") controller.abort();
+          return Promise.resolve();
+        }),
+        controller.signal,
+      ),
+    ).rejects.toThrow("Quality Eval 已取消");
+    expect(calls).toEqual(["report", "humanReview"]);
+  });
+
+  it("completed 写入期间取消时把控制权交回取消状态路径", async () => {
+    const calls: string[] = [];
+    const controller = new AbortController();
+
+    await expect(
+      writeQualityEvalFinalArtifacts(
+        createFinalArtifactWriters(artifact => {
+          calls.push(artifact);
+          if (artifact === "completed") controller.abort();
+          return Promise.resolve();
+        }),
+        controller.signal,
+      ),
+    ).rejects.toThrow("Quality Eval 已取消");
+    expect(calls).toEqual(["report", "humanReview", "completed"]);
   });
 
   it.runIf(process.platform !== "win32")(

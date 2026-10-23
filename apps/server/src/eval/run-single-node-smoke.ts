@@ -56,6 +56,7 @@ import {
   TavilySearchProvider,
   type TavilyAttemptObservation,
 } from "../search/providers/tavily.js";
+import { encodeMarkdownArtifactText } from "./markdown-artifact.js";
 
 const execFileAsync = promisify(execFile);
 const EXPECTED_CASE_COUNT = 3;
@@ -875,15 +876,8 @@ export async function writeSingleNodeSmokePrivateJson(
   });
 }
 
-/**
- * 逐 Unicode code point 转成数字实体，使网页/模型文本只能显示为纯文本，
- * 不能形成 Markdown Link/Image、HTML Tag 或自动链接并触发外部请求。
- */
-export function encodeSingleNodeSmokeReviewText(value: string): string {
-  return [...value]
-    .map(codePoint => `&#${String(codePoint.codePointAt(0))};`)
-    .join("");
-}
+// 保留既有导出名，但删除与 Planner / Quality Review 重复的实现。
+export const encodeSingleNodeSmokeReviewText = encodeMarkdownArtifactText;
 
 function renderHumanReview(
   results: readonly SingleNodeSmokeCaseResult[],

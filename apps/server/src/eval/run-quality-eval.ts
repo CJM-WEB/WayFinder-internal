@@ -1,6 +1,6 @@
 /**
  * Runner 职责：通过一个受控 CLI 串行运行 Golden 6 条或 Full 20 条固定 Query，
- * 复用完整生产 Pipeline，并把版本化脱敏报告写入本地私有目录。
+ * 复用完整生产 Pipeline，并把版本化脱敏报告与人工评审表写入本地私有目录。
  *
  * 安全边界：
  * - CLI Guard（闸门）先于 Git、文件、环境、Provider 与网络副作用；
@@ -50,6 +50,7 @@ import {
   type QualityEvalDatasetKind,
   type QualityEvalDatasets,
 } from "./quality-eval.js";
+import { renderQualityEvalHumanReview } from "./quality-review.js";
 
 const execFileAsync = promisify(execFile);
 const REPOSITORY_ROOT = fileURLToPath(
@@ -325,11 +326,50 @@ export async function writeQualityEvalPrivateJson(
   path: string,
   value: unknown,
 ): Promise<void> {
-  await writeFile(path, `${JSON.stringify(value, null, 2)}\n`, {
+  await writeQualityEvalPrivateText(
+    path,
+    `${JSON.stringify(value, null, 2)}\n`,
+  );
+}
+
+/** JSON 与人工评审表共用同一私有文件权限实现，避免新工件弱化边界。 */
+export async function writeQualityEvalPrivateText(
+  path: string,
+  value: string,
+): Promise<void> {
+  await writeFile(path, value, {
     encoding: "utf8",
     mode: 0o600,
   });
   if (process.platform !== "win32") await chmod(path, 0o600);
+}
+
+type QualityEvalFinalArtifactWriters = Readonly<{
+  writeReport: () => Promise<void>;
+  writeHumanReview: () => Promise<void>;
+  writeCompletedState: () => Promise<void>;
+}>;
+
+function assertQualityEvalNotCancelled(signal: AbortSignal): void {
+  if (signal.aborted) throw new Error("Quality Eval 已取消");
+}
+
+/**
+ * 最终工件必须按报告、人工表、完成状态的顺序写入；任一工件失败或期间取消，
+ * 调用方都会进入统一失败路径，不能留下与真实状态不符的 completed 标记。
+ */
+export async function writeQualityEvalFinalArtifacts(
+  writers: QualityEvalFinalArtifactWriters,
+  signal: AbortSignal,
+): Promise<void> {
+  assertQualityEvalNotCancelled(signal);
+  await writers.writeReport();
+  assertQualityEvalNotCancelled(signal);
+  await writers.writeHumanReview();
+  assertQualityEvalNotCancelled(signal);
+  await writers.writeCompletedState();
+  // 覆盖 completed 文件写入期间到达的取消，由外层 catch 改写为 cancelled。
+  assertQualityEvalNotCancelled(signal);
 }
 
 /** 初始化失败只暴露固定文案，禁止底层文件错误携带个人绝对路径。 */
@@ -559,18 +599,44 @@ async function runQualityEval(
       config.llmApiKey,
       config.tavilyApiKey,
     ]);
-    await writeQualityEvalPrivateJson(
-      resolve(outputDirectory, "report.json"),
-      report,
-    );
-    await writeQualityEvalPrivateJson(
-      resolve(outputDirectory, "run-state.json"),
-      {
-        issue: "WAY-86",
-        evaluationRunId,
-        dataset: dataset.kind,
-        status: "completed",
+    const humanReview = renderQualityEvalHumanReview({
+      evaluationRunId,
+      gitCommit: report.source.git.commit,
+      dataset: {
+        kind: report.dataset.kind,
+        version: report.dataset.version,
+        fingerprint: report.dataset.fingerprint,
       },
+      results: report.results,
+    });
+    assertQualityEvalArtifactSafety(humanReview, [
+      config.llmApiKey,
+      config.tavilyApiKey,
+    ]);
+    await writeQualityEvalFinalArtifacts(
+      {
+        writeReport: () =>
+          writeQualityEvalPrivateJson(
+            resolve(outputDirectory, "report.json"),
+            report,
+          ),
+        writeHumanReview: () =>
+          writeQualityEvalPrivateText(
+            resolve(outputDirectory, "human-review.md"),
+            humanReview,
+          ),
+        writeCompletedState: () =>
+          writeQualityEvalPrivateJson(
+            resolve(outputDirectory, "run-state.json"),
+            {
+              issue: "WAY-86",
+              evaluationRunId,
+              dataset: dataset.kind,
+              status: "completed",
+            },
+          ),
+      },
+      signal,
     );
     return `data/eval-results/way-86/${evaluationRunId}`;
   } catch {
