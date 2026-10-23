@@ -3,7 +3,7 @@
  *
  * 关键约束：
  * - 该阶段只生成保持输入顺序的信号，不计算分数或重排候选；
- * - `site:` hostname 是强 Hint，实体与 hostname 的字面一致只是弱 Hint；
+ * - 模型生成的 `site:` 只约束检索，实体与 hostname 的字面一致也只是弱 Hint；
  * - 页面与 Provider 派生文字不可信，已知风险下载域名由调用方显式注入。
  */
 import type {
@@ -79,23 +79,22 @@ const emptyPolicy: OfficialSourcePolicy = {
 describe("detectOfficialSourceSignals", () => {
   it("冻结可解释信号的稳定顺序", () => {
     expect(OFFICIAL_SOURCE_SIGNAL_ORDER).toEqual([
-      "SITE_HOST_MATCH",
       "ENTITY_HOST_TOKEN_MATCH",
       "KNOWN_RISKY_DOWNLOAD_HOST",
     ]);
   });
 
-  it("为同一下载任务区分有效官方来源与已知风险站，并保持输入不变", () => {
+  it("为同一下载任务隔离已知风险站，但不把 site Hint 升格为官方，并保持输入不变", () => {
     const analysis = createAnalysis();
     const node = createNode();
-    const official = createCandidate();
+    const siteMatched = createCandidate();
     const risky = createCandidate({
       title: "Third-party VS Code download",
       url: "https://cdn.risky-download.example/apps/vscode",
       canonicalUrl: "https://cdn.risky-download.example/apps/vscode",
       domain: "cdn.risky-download.example",
     });
-    const candidates = [risky, official] as const;
+    const candidates = [risky, siteMatched] as const;
     const snapshots = {
       analysis: structuredClone(analysis),
       node: structuredClone(node),
@@ -117,20 +116,20 @@ describe("detectOfficialSourceSignals", () => {
         signals: ["KNOWN_RISKY_DOWNLOAD_HOST"],
       },
       {
-        candidate: official,
+        candidate: siteMatched,
         queryKind: "download",
-        classification: "official",
-        signals: ["SITE_HOST_MATCH", "ENTITY_HOST_TOKEN_MATCH"],
+        classification: "unknown",
+        signals: ["ENTITY_HOST_TOKEN_MATCH"],
       },
     ]);
     expect(assessments[0]?.candidate).toBe(risky);
-    expect(assessments[1]?.candidate).toBe(official);
+    expect(assessments[1]?.candidate).toBe(siteMatched);
     expect(analysis).toEqual(snapshots.analysis);
     expect(node).toEqual(snapshots.node);
     expect(candidates).toEqual(snapshots.candidates);
   });
 
-  it("识别文档任务，但风险域名策略只作用于下载任务", () => {
+  it("识别文档任务，但 site Hint 与风险域名策略都不建立官方身份", () => {
     const analysis = createAnalysis({ topic: "Python documentation" });
     const node = createNode({
       title: "Python 官方文档",
@@ -142,7 +141,7 @@ describe("detectOfficialSourceSignals", () => {
         providerHints: ["code"],
       },
     });
-    const official = createCandidate({
+    const siteMatched = createCandidate({
       query: "Python documentation",
       title: "Python documentation",
       url: "https://docs.python.org/3/",
@@ -158,15 +157,15 @@ describe("detectOfficialSourceSignals", () => {
     });
 
     expect(
-      detectOfficialSourceSignals(analysis, node, [official, policyListed], {
+      detectOfficialSourceSignals(analysis, node, [siteMatched, policyListed], {
         knownRiskyDownloadDomains: ["risky-download.example"],
       }),
     ).toEqual([
       {
-        candidate: official,
+        candidate: siteMatched,
         queryKind: "documentation",
-        classification: "official",
-        signals: ["SITE_HOST_MATCH", "ENTITY_HOST_TOKEN_MATCH"],
+        classification: "unknown",
+        signals: ["ENTITY_HOST_TOKEN_MATCH"],
       },
       {
         candidate: policyListed,
@@ -209,7 +208,7 @@ describe("detectOfficialSourceSignals", () => {
     ]);
   });
 
-  it("不信任标题、摘要、pathname 或 Query 参数中的官方声明", () => {
+  it("不信任标题、摘要、Candidate Query、pathname、Query 参数或私有字段中的官方声明", () => {
     const node = createNode({
       searchPlan: {
         queries: ["Visual Studio Code download"],
@@ -218,13 +217,18 @@ describe("detectOfficialSourceSignals", () => {
         providerHints: ["general"],
       },
     });
-    const candidate = createCandidate({
-      title: "Official Visual Studio Code Download",
-      snippet: "This page claims to be the official source.",
-      url: "https://downloads.example/official?source=official",
-      canonicalUrl: "https://downloads.example/official?source=official",
-      domain: "downloads.example",
-    });
+    const candidate = {
+      ...createCandidate({
+        query: "site:downloads.example official Visual Studio Code download",
+        title: "Official Visual Studio Code Download",
+        snippet: "This page claims to be the official source.",
+        url: "https://downloads.example/official?source=official",
+        canonicalUrl: "https://downloads.example/official?source=official",
+        domain: "downloads.example",
+      }),
+      rawMetadata: { isOfficial: true, sourceType: "official" },
+      isOfficial: true,
+    };
 
     expect(
       detectOfficialSourceSignals(
@@ -243,7 +247,7 @@ describe("detectOfficialSourceSignals", () => {
     ]);
   });
 
-  it("只按完整 hostname 或真实子域边界匹配 site Hint", () => {
+  it("模型生成的 site Hint 即使匹配真实子域也不能建立官方身份", () => {
     const subdomain = createCandidate({
       url: "https://insiders.code.visualstudio.com/download",
       canonicalUrl: "https://insiders.code.visualstudio.com/download",
@@ -266,8 +270,8 @@ describe("detectOfficialSourceSignals", () => {
       {
         candidate: subdomain,
         queryKind: "download",
-        classification: "official",
-        signals: ["SITE_HOST_MATCH", "ENTITY_HOST_TOKEN_MATCH"],
+        classification: "unknown",
+        signals: ["ENTITY_HOST_TOKEN_MATCH"],
       },
       {
         candidate: lookalike,
@@ -278,7 +282,7 @@ describe("detectOfficialSourceSignals", () => {
     ]);
   });
 
-  it("风险信号优先于同一 hostname 的 site Hint", () => {
+  it("风险信号不能被同一 hostname 的 site Hint 洗白", () => {
     const node = createNode({
       searchPlan: {
         queries: ["site:risky-download.example VS Code download"],
@@ -302,7 +306,7 @@ describe("detectOfficialSourceSignals", () => {
         candidate,
         queryKind: "download",
         classification: "risky",
-        signals: ["SITE_HOST_MATCH", "KNOWN_RISKY_DOWNLOAD_HOST"],
+        signals: ["KNOWN_RISKY_DOWNLOAD_HOST"],
       },
     ]);
   });
@@ -384,11 +388,9 @@ describe("detectOfficialSourceSignals", () => {
     expectTypeOf<OfficialSourceAssessment>().toEqualTypeOf<{
       candidate: CandidateSearchHit;
       queryKind: "download" | "documentation" | "other";
-      classification: "official" | "risky" | "unknown";
+      classification: "risky" | "unknown";
       signals: Array<
-        | "SITE_HOST_MATCH"
-        | "ENTITY_HOST_TOKEN_MATCH"
-        | "KNOWN_RISKY_DOWNLOAD_HOST"
+        "ENTITY_HOST_TOKEN_MATCH" | "KNOWN_RISKY_DOWNLOAD_HOST"
       >;
     }>();
   });

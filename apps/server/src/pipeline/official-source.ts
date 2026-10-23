@@ -1,6 +1,6 @@
 /**
  * 模块职责：在 Hard Filter（硬过滤）之后、Heuristic Ranking（启发式排序）之前，
- * 从系统生成的 Query 上下文与候选 hostname 产生可复现的官方/风险来源信号。
+ * 从模型生成的 Query 上下文与候选 hostname 产生可复现的来源/风险信号。
  *
  * 安全边界：候选标题、摘要、pathname 与 Query 参数均为 Untrusted Input（不可信输入），
  * 本模块不会读取它们来证明官方身份。该阶段不计算分数、不裁剪候选，也不改变顺序。
@@ -13,7 +13,6 @@ import type {
 import { domainToASCII } from "node:url";
 
 export const OFFICIAL_SOURCE_SIGNAL_ORDER = [
-  "SITE_HOST_MATCH",
   "ENTITY_HOST_TOKEN_MATCH",
   "KNOWN_RISKY_DOWNLOAD_HOST",
 ] as const;
@@ -32,7 +31,7 @@ export type OfficialSourcePolicy = {
 export type OfficialSourceAssessment = {
   candidate: CandidateSearchHit;
   queryKind: "download" | "documentation" | "other";
-  classification: "official" | "risky" | "unknown";
+  classification: "risky" | "unknown";
   signals: OfficialSourceSignal[];
 };
 
@@ -170,42 +169,13 @@ function normalizePolicyHostname(value: string): string {
   return hostname;
 }
 
-/** site: 来自系统生成 Search Plan；非法 Hint 只是不提供证据，不使整批候选失败。 */
-function tryNormalizeSiteHostname(value: string): string | null {
-  try {
-    return normalizePolicyHostname(value);
-  } catch {
-    return null;
-  }
-}
-
-function extractSiteHostnames(queries: readonly string[]): Set<string> {
-  const hostnames = new Set<string>();
-
-  for (const query of queries) {
-    for (const match of query.matchAll(SITE_OPERATOR_PATTERN)) {
-      const token = match[1];
-      if (token === undefined) {
-        continue;
-      }
-
-      const hostname = tryNormalizeSiteHostname(token);
-      if (hostname !== null) {
-        hostnames.add(hostname);
-      }
-    }
-  }
-
-  return hostnames;
-}
-
 function hostnameMatches(hostname: string, expected: string): boolean {
   return hostname === expected || hostname.endsWith(`.${expected}`);
 }
 
 /**
  * 重新解析 canonicalUrl 并核对 domain，防止绕过 WAY-49 调用本模块时把冲突字段
- * 错当成可信 hostname。失败候选仍保留位置，但不会得到任何官方或风险信号。
+ * 错当成可信 hostname。失败候选仍保留位置，但不会得到任何来源或风险信号。
  */
 function parseCandidateHostname(candidate: CandidateSearchHit): string | null {
   let parsed: URL;
@@ -310,7 +280,6 @@ export function detectOfficialSourceSignals(
   const riskyDomains = policy.knownRiskyDownloadDomains.map(
     normalizePolicyHostname,
   );
-  const siteHostnames = extractSiteHostnames(node.searchPlan.queries);
   const entityTokens = extractEntityTokens(contextValues);
 
   return candidates.map(candidate => {
@@ -326,9 +295,6 @@ export function detectOfficialSourceSignals(
       };
     }
 
-    const hasSiteHostMatch = Array.from(siteHostnames).some(siteHostname =>
-      hostnameMatches(hostname, siteHostname),
-    );
     const hasEntityMatch = hasEntityHostnameMatch(entityTokens, hostname);
     const hasRiskMatch =
       queryKind === "download" &&
@@ -336,9 +302,6 @@ export function detectOfficialSourceSignals(
         hostnameMatches(hostname, riskyDomain),
       );
 
-    if (hasSiteHostMatch) {
-      signals.push("SITE_HOST_MATCH");
-    }
     if (hasEntityMatch) {
       signals.push("ENTITY_HOST_TOKEN_MATCH");
     }
@@ -349,11 +312,8 @@ export function detectOfficialSourceSignals(
     return {
       candidate,
       queryKind,
-      classification: hasRiskMatch
-        ? "risky"
-        : hasSiteHostMatch
-          ? "official"
-          : "unknown",
+      // Planner/Reviser 生成的 `site:` 只是检索语法，不能建立可信官方身份。
+      classification: hasRiskMatch ? "risky" : "unknown",
       signals,
     };
   });

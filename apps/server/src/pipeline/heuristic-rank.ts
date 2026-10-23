@@ -199,9 +199,6 @@ function calculateOfficialness(
   if (!isOfficialnessRelevant(assessment)) {
     return 0;
   }
-  if (assessment.classification === "official") {
-    return 1;
-  }
   if (
     assessment.classification === "unknown" &&
     assessment.signals.includes("ENTITY_HOST_TOKEN_MATCH")
@@ -211,7 +208,7 @@ function calculateOfficialness(
   return 0;
 }
 
-/** 下载/文档任务的安全层级优先于分数，落实 WAY-50 留给本阶段的不变量。 */
+/** 下载/文档任务的已知风险隔离优先于分数，落实 WAY-50 留给本阶段的不变量。 */
 function calculateSafetyTier(
   assessment: OfficialSourceAssessment,
 ): number {
@@ -220,8 +217,6 @@ function calculateSafetyTier(
   }
 
   switch (assessment.classification) {
-    case "official":
-      return 2;
     case "unknown":
       return 1;
     case "risky":
@@ -230,8 +225,8 @@ function calculateSafetyTier(
 }
 
 /**
- * 在粗排和模型重排后复用同一个稳定安全层级。函数只重排现有候选：不重新评分、
- * 不修改输入，也不把内部 URL 写入不变量错误。
+ * 在粗排和模型重排后复用同一个稳定风险层级。函数只重排现有候选：不重新评分、
+ * 不修改输入，也不把内部 URL 写入不变量错误；模型分数不能把已知风险站提到普通候选之前。
  */
 export function applyOfficialSourceSafetyOrder(
   candidates: readonly ResourceCandidate[],
