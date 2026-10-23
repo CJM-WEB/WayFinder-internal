@@ -28,7 +28,7 @@ import {
   type LLMProvider,
   type StructuredLLMInput,
 } from "./llm-provider.js";
-import { GRAPH_REVISER_SYSTEM_PROMPT } from "./prompts/graph-reviser.v2.js";
+import { GRAPH_REVISER_SYSTEM_PROMPT } from "./prompts/graph-reviser.v1.js";
 
 /** Prompt 投影上限按批准语义使用 Unicode code point（码点），不按 UTF-16 code unit。 */
 export const GRAPH_REVISER_MAX_EVIDENCE_QUERY_CODE_POINTS = 200 as const;
