@@ -14,24 +14,16 @@ import {
   assertQualityEvalArtifactSafety,
   type QualityEvalReport,
 } from "./run-quality-eval.js";
+import {
+  assertQualityEvalReportDatasetIntegrity,
+  summarizeQualityEvalProviderUsage,
+  type QualityEvalCallCounts,
+} from "./quality-eval-operating-summary.js";
 
 const BLOCK_ORDER = ["A1", "B1", "B2", "A2"] as const;
-const CALL_COUNT_KEYS = [
-  "logicalSearchCalls",
-  "logicalExtractCalls",
-  "extractUrlCount",
-  "logicalLlmCalls",
-  "searchHttpAttempts",
-  "extractHttpAttempts",
-] as const;
-const FULL_QUERY_IDS = Array.from({ length: 20 }, (_, index) =>
-  `wfq-${String(index + 1).padStart(3, "0")}`,
-);
 const COMMIT_PATTERN = /^[0-9a-f]{40}$/u;
 
 type BlockName = (typeof BLOCK_ORDER)[number];
-type CallCountKey = (typeof CALL_COUNT_KEYS)[number];
-type CallCounts = Readonly<Record<CallCountKey, number>>;
 
 export type QualityEvalComparisonInput = Readonly<{
   baselineCommit: string;
@@ -53,9 +45,13 @@ type BlockFacts = Readonly<{
 }>;
 
 export type QualityEvalBlockSummary =
-  | (BlockFacts & Readonly<{ status: "complete"; totals: CallCounts }>)
   | (BlockFacts &
-      Readonly<{ status: "partial"; observedTotals: CallCounts }>)
+      Readonly<{ status: "complete"; totals: QualityEvalCallCounts }>)
+  | (BlockFacts &
+      Readonly<{
+        status: "partial";
+        observedTotals: QualityEvalCallCounts;
+      }>)
   | (BlockFacts & Readonly<{ status: "unavailable" }>);
 
 export type QualityEvalComparison = Readonly<{
@@ -63,17 +59,6 @@ export type QualityEvalComparison = Readonly<{
   reason: "all_blocks_complete" | "telemetry_incomplete";
   blocks: readonly QualityEvalBlockSummary[];
 }>;
-
-function createZeroCounts(): Record<CallCountKey, number> {
-  return {
-    logicalSearchCalls: 0,
-    logicalExtractCalls: 0,
-    extractUrlCount: 0,
-    logicalLlmCalls: 0,
-    searchHttpAttempts: 0,
-    extractHttpAttempts: 0,
-  };
-}
 
 function parseReport(value: unknown, block: BlockName): QualityEvalReport {
   try {
@@ -105,49 +90,11 @@ function readComparableMetadata(report: QualityEvalReport): unknown {
   };
 }
 
-function assertFullQueryOrder(report: QualityEvalReport): void {
-  const queryIds = report.results.map(result => result.query.id);
-  if (
-    report.dataset.kind !== "full" ||
-    report.dataset.queryCount !== FULL_QUERY_IDS.length ||
-    queryIds.length !== FULL_QUERY_IDS.length ||
-    queryIds.some((queryId, index) => queryId !== FULL_QUERY_IDS[index]) ||
-    report.results.some(
-      result =>
-        result.comparisonKey !==
-        `${report.dataset.version}:${result.query.id}`,
-    )
-  ) {
-    throw new TypeError(
-      "Quality Eval 比较只接受按 wfq-001 至 wfq-020 排列的完整 Full 报告",
-    );
-  }
-}
-
 function aggregateBlock(
   block: BlockName,
   report: QualityEvalReport,
 ): QualityEvalBlockSummary {
-  const totals = createZeroCounts();
-  const missingQueryIds: string[] = [];
-  let observedTelemetryCount = 0;
-
-  for (const result of report.results) {
-    if (result.telemetry === null) {
-      missingQueryIds.push(result.query.id);
-      continue;
-    }
-    observedTelemetryCount += 1;
-    for (const key of CALL_COUNT_KEYS) {
-      const next = totals[key] + result.telemetry.counts[key];
-      if (!Number.isSafeInteger(next)) {
-        throw new TypeError(
-          "Quality Eval 调用计数总计超出安全整数范围",
-        );
-      }
-      totals[key] = next;
-    }
-  }
+  const usage = summarizeQualityEvalProviderUsage(report.results);
 
   const facts: BlockFacts = {
     block,
@@ -155,16 +102,20 @@ function aggregateBlock(
     evaluationRunId: report.evaluationRunId,
     sourceCommit: report.source.git.commit,
     expectedQueryCount: 20,
-    observedTelemetryCount,
-    missingQueryIds,
+    observedTelemetryCount: usage.observedQueryCount,
+    missingQueryIds: usage.missingQueryIds,
   };
-  if (observedTelemetryCount === FULL_QUERY_IDS.length) {
-    return { ...facts, status: "complete", totals };
+  if (usage.status === "complete") {
+    return { ...facts, status: "complete", totals: usage.totals };
   }
-  if (observedTelemetryCount === 0) {
+  if (usage.status === "unavailable") {
     return { ...facts, status: "unavailable" };
   }
-  return { ...facts, status: "partial", observedTotals: totals };
+  return {
+    ...facts,
+    status: "partial",
+    observedTotals: usage.observedTotals,
+  };
 }
 
 /**
@@ -206,7 +157,10 @@ export function compareQualityEvalBlocks(
   }
 
   for (const [index, report] of reports.entries()) {
-    assertFullQueryOrder(report);
+    if (report.dataset.kind !== "full") {
+      throw new TypeError("Quality Eval 比较只接受完整 Full 报告");
+    }
+    assertQualityEvalReportDatasetIntegrity(report);
     const expectedCommit =
       BLOCK_ORDER[index]?.startsWith("A") === true
         ? input.baselineCommit

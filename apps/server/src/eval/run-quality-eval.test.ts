@@ -26,13 +26,18 @@ import {
   writeQualityEvalPrivateText,
 } from "./run-quality-eval.js";
 
-type FinalArtifact = "report" | "humanReview" | "completed";
+type FinalArtifact =
+  | "report"
+  | "operatingSummary"
+  | "humanReview"
+  | "completed";
 
 function createFinalArtifactWriters(
   write: (artifact: FinalArtifact) => Promise<void>,
 ) {
   return {
     writeReport: () => write("report"),
+    writeOperatingSummary: () => write("operatingSummary"),
     writeHumanReview: () => write("humanReview"),
     writeCompletedState: () => write("completed"),
   };
@@ -154,8 +159,8 @@ describe("WAY-86 Quality Eval 工件安全", () => {
     },
   );
 
-  it.each(["report", "humanReview"] as const)(
-    "%s 写入失败时不写 completed 状态",
+  it.each(["report", "operatingSummary", "humanReview"] as const)(
+    "%s 写入失败时立即停止后续工件",
     async failedArtifact => {
       const calls: string[] = [];
       const write = (artifact: string): Promise<void> => {
@@ -171,7 +176,12 @@ describe("WAY-86 Quality Eval 工件安全", () => {
           new AbortController().signal,
         ),
       ).rejects.toThrow("固定测试错误");
-      expect(calls).not.toContain("completed");
+      const expectedCalls = {
+        report: ["report"],
+        operatingSummary: ["report", "operatingSummary"],
+        humanReview: ["report", "operatingSummary", "humanReview"],
+      } as const;
+      expect(calls).toEqual(expectedCalls[failedArtifact]);
     },
   );
 
@@ -206,7 +216,24 @@ describe("WAY-86 Quality Eval 工件安全", () => {
         controller.signal,
       ),
     ).rejects.toThrow("Quality Eval 已取消");
-    expect(calls).toEqual(["report", "humanReview"]);
+    expect(calls).toEqual(["report", "operatingSummary", "humanReview"]);
+  });
+
+  it("运行摘要写入期间取消时不继续写人工表或 completed", async () => {
+    const calls: string[] = [];
+    const controller = new AbortController();
+
+    await expect(
+      writeQualityEvalFinalArtifacts(
+        createFinalArtifactWriters(artifact => {
+          calls.push(artifact);
+          if (artifact === "operatingSummary") controller.abort();
+          return Promise.resolve();
+        }),
+        controller.signal,
+      ),
+    ).rejects.toThrow("Quality Eval 已取消");
+    expect(calls).toEqual(["report", "operatingSummary"]);
   });
 
   it("completed 写入期间取消时把控制权交回取消状态路径", async () => {
@@ -223,7 +250,12 @@ describe("WAY-86 Quality Eval 工件安全", () => {
         controller.signal,
       ),
     ).rejects.toThrow("Quality Eval 已取消");
-    expect(calls).toEqual(["report", "humanReview", "completed"]);
+    expect(calls).toEqual([
+      "report",
+      "operatingSummary",
+      "humanReview",
+      "completed",
+    ]);
   });
 
   it.runIf(process.platform !== "win32")(

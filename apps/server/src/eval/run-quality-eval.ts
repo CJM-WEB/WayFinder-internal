@@ -1,6 +1,6 @@
 /**
  * Runner 职责：通过一个受控 CLI 串行运行 Golden 6 条或 Full 20 条固定 Query，
- * 复用完整生产 Pipeline，并把版本化脱敏报告与人工评审表写入本地私有目录。
+ * 复用完整生产 Pipeline，并把版本化脱敏报告、运行摘要与人工评审表写入本地私有目录。
  *
  * 安全边界：
  * - CLI Guard（闸门）先于 Git、文件、环境、Provider 与网络副作用；
@@ -50,6 +50,7 @@ import {
   type QualityEvalDatasetKind,
   type QualityEvalDatasets,
 } from "./quality-eval.js";
+import { createQualityEvalOperatingSummary } from "./quality-eval-operating-summary.js";
 import { renderQualityEvalHumanReview } from "./quality-review.js";
 
 const execFileAsync = promisify(execFile);
@@ -334,7 +335,7 @@ export async function writeQualityEvalPrivateJson(
   );
 }
 
-/** JSON 与人工评审表共用同一私有文件权限实现，避免新工件弱化边界。 */
+/** JSON 与人工评审表共用同一私有文件权限实现，避免新增 Sidecar 弱化边界。 */
 export async function writeQualityEvalPrivateText(
   path: string,
   value: string,
@@ -348,6 +349,7 @@ export async function writeQualityEvalPrivateText(
 
 type QualityEvalFinalArtifactWriters = Readonly<{
   writeReport: () => Promise<void>;
+  writeOperatingSummary: () => Promise<void>;
   writeHumanReview: () => Promise<void>;
   writeCompletedState: () => Promise<void>;
 }>;
@@ -357,7 +359,7 @@ function assertQualityEvalNotCancelled(signal: AbortSignal): void {
 }
 
 /**
- * 最终工件必须按报告、人工表、完成状态的顺序写入；任一工件失败或期间取消，
+ * 最终工件必须按报告、运行摘要、人工表、完成状态的顺序写入；任一工件失败或期间取消，
  * 调用方都会进入统一失败路径，不能留下与真实状态不符的 completed 标记。
  */
 export async function writeQualityEvalFinalArtifacts(
@@ -366,6 +368,8 @@ export async function writeQualityEvalFinalArtifacts(
 ): Promise<void> {
   assertQualityEvalNotCancelled(signal);
   await writers.writeReport();
+  assertQualityEvalNotCancelled(signal);
+  await writers.writeOperatingSummary();
   assertQualityEvalNotCancelled(signal);
   await writers.writeHumanReview();
   assertQualityEvalNotCancelled(signal);
@@ -601,6 +605,11 @@ async function runQualityEval(
       config.llmApiKey,
       config.tavilyApiKey,
     ]);
+    const operatingSummary = createQualityEvalOperatingSummary(report);
+    assertQualityEvalArtifactSafety(operatingSummary, [
+      config.llmApiKey,
+      config.tavilyApiKey,
+    ]);
     const humanReview = renderQualityEvalHumanReview({
       evaluationRunId,
       gitCommit: report.source.git.commit,
@@ -621,6 +630,11 @@ async function runQualityEval(
           writeQualityEvalPrivateJson(
             resolve(outputDirectory, "report.json"),
             report,
+          ),
+        writeOperatingSummary: () =>
+          writeQualityEvalPrivateJson(
+            resolve(outputDirectory, "operating-summary.json"),
+            operatingSummary,
           ),
         writeHumanReview: () =>
           writeQualityEvalPrivateText(
