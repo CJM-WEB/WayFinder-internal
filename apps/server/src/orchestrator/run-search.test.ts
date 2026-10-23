@@ -8,9 +8,10 @@ import {
   GraphPlanSchema,
   type GraphPlan,
   type NormalizedSearchHit,
+  type ResultGraph,
   type StreamEventPayload,
 } from "@wayfinder/contracts";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   createDeferred,
@@ -18,6 +19,7 @@ import {
   FakeLLMProvider,
   FakeSearchProvider,
 } from "../../../../tests/support/test-infrastructure.mjs";
+import type { LLMProvider } from "../ai/llm-provider.js";
 import { NodeEventEmissionError } from "../pipeline/process-node.js";
 import type { SearchProvider } from "../search/provider.js";
 import { createConcurrencyLimitedProviders } from "./provider-concurrency.js";
@@ -25,6 +27,7 @@ import { createRunSearchHandler } from "./run-search.js";
 
 const QUERY = "TypeScript compiler guide";
 const SECOND_QUERY = "TypeScript project configuration";
+const BROAD_QUERY = "TypeScript compiler ecosystem";
 
 function createPlan(): GraphPlan {
   return GraphPlanSchema.parse({
@@ -102,6 +105,25 @@ function createTwoNodePlan(): GraphPlan {
   });
 }
 
+function createEvidenceAssistedPlan(description: string): GraphPlan {
+  const plan = createTwoNodePlan();
+  return GraphPlanSchema.parse({
+    ...plan,
+    analysis: {
+      ...plan.analysis,
+      intent: "learn",
+      topic: "TypeScript compiler ecosystem",
+      freshnessSensitive: false,
+      ambiguityLevel: "medium",
+      broadSearchQueries: [BROAD_QUERY],
+      strategy: "evidence_assisted",
+    },
+    nodes: plan.nodes.map((node, index) =>
+      index === 0 ? { ...node, description } : node,
+    ),
+  });
+}
+
 function createRerankOutput() {
   return {
     ranking: [
@@ -153,6 +175,245 @@ function createDependencies(
 }
 
 describe("createRunSearchHandler", () => {
+  it("六个外部阶段共享同一 Run Scope，且迟到 Rerank 不能改写已完成 Graph", async () => {
+    vi.useFakeTimers();
+    const clock = createFixedClock("2026-10-22T08:00:00.000Z");
+    const initialPlan = createEvidenceAssistedPlan("初始计划");
+    const revisedPlan = createEvidenceAssistedPlan("Evidence 修订计划");
+    const lateRerank = createDeferred<unknown>();
+    const rerankEntered = createDeferred<void>();
+    const observedSignals: Array<{
+      stage: string;
+      signal: AbortSignal;
+    }> = [];
+    const llmTimeouts: number[] = [];
+    let llmCallIndex = 0;
+
+    const llmProvider: LLMProvider = {
+      id: "deadline-matrix-llm",
+      structured: async (_input, options) => {
+        const stage = ["planner", "reviser", "rerank"][llmCallIndex];
+        if (stage === undefined) {
+          throw new Error("Deadline 矩阵收到未预期的 LLM 调用");
+        }
+        llmCallIndex += 1;
+        observedSignals.push({ stage, signal: options.signal });
+        llmTimeouts.push(options.timeoutMs);
+        if (stage === "planner") return initialPlan;
+        if (stage === "reviser") return revisedPlan;
+        rerankEntered.resolve();
+        // 故意忽略 AbortSignal，模拟不能及时取消的外部 SDK。
+        return lateRerank.promise;
+      },
+    };
+    const broadHit: NormalizedSearchHit = {
+      ...createHit(),
+      query: BROAD_QUERY,
+      url: "https://evidence.example/typescript",
+      canonicalUrl: "https://evidence.example/typescript",
+      domain: "evidence.example",
+    };
+    const nodeHit: NormalizedSearchHit = {
+      ...createHit(),
+      query: SECOND_QUERY,
+      title: SECOND_QUERY,
+      url: "https://docs.example.com/typescript/project",
+      canonicalUrl: "https://docs.example.com/typescript/project",
+    };
+    const searchProvider: SearchProvider = {
+      id: "deadline-matrix-search",
+      capabilities: ["general"],
+      search: async (request, signal) => {
+        observedSignals.push({
+          stage:
+            request.kind === "broad_discovery"
+              ? "broadSearch"
+              : `search:${request.nodeId}`,
+          signal,
+        });
+        if (request.kind === "broad_discovery") {
+          clock.advanceBy(7_000);
+          vi.advanceTimersByTime(7_000);
+          return [broadHit];
+        }
+        if (request.query === QUERY) {
+          throw new Error("第一个 Node 在 Deadline 前普通失败");
+        }
+        if (request.query === SECOND_QUERY) return [nodeHit];
+        throw new Error(`Deadline 矩阵未配置 Query：${request.query}`);
+      },
+      extract: async (canonicalUrls, signal) => {
+        observedSignals.push({ stage: "extract", signal });
+        clock.advanceBy(10_000);
+        vi.advanceTimersByTime(10_000);
+        return canonicalUrls.map(canonicalUrl => ({
+          canonicalUrl,
+          content: "TypeScript project configuration reference.",
+        }));
+      },
+    };
+    const handler = createRunSearchHandler({
+      ...createDependencies(clock, []),
+      providers: createConcurrencyLimitedProviders({
+        searchProvider,
+        llmProvider,
+        concurrency: { search: 6, extract: 3, llm: 3 },
+      }),
+    });
+    const payloads: StreamEventPayload[] = [];
+    let emittedResult: ResultGraph | undefined;
+    let handlerFinished = false;
+    const pending = handler({
+      input: { runId: "run-93-degraded", query: QUERY },
+      signal: new AbortController().signal,
+      emit: async payload => {
+        if (payload.type === "complete") {
+          // 保留生产对象引用，避免克隆后的事件掩盖迟到任务对最终 Graph 的突变。
+          emittedResult = payload.data.result;
+        }
+        payloads.push(structuredClone(payload));
+      },
+    }).then(() => {
+      handlerFinished = true;
+    });
+
+    try {
+      await rerankEntered.promise;
+      await Promise.resolve();
+
+      expect(observedSignals.map(item => item.stage)).toEqual([
+        "planner",
+        "broadSearch",
+        "reviser",
+        "search:typescript-guide",
+        "search:typescript-project",
+        "extract",
+        "rerank",
+      ]);
+      const sharedSignal = observedSignals[0]?.signal;
+      expect(sharedSignal).toBeDefined();
+      expect(observedSignals.every(item => item.signal === sharedSignal)).toBe(
+        true,
+      );
+      // Broad Search 与 Extract 已消耗 17 秒，Rerank 只能拿到同一 Run 的最后 3 秒。
+      expect(llmTimeouts).toEqual([15_000, 13_000, 3_000]);
+      expect(vi.getTimerCount()).toBe(1);
+      expect(payloads).toContainEqual({
+        type: "node.failed",
+        nodeId: "typescript-guide",
+        error: { code: "SEARCH_PROVIDER_FAILED", retryable: true },
+      });
+
+      await vi.advanceTimersByTimeAsync(2_999);
+      expect(handlerFinished).toBe(false);
+      expect(payloads.some(payload => payload.type === "complete")).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(1);
+      await pending;
+      expect(handlerFinished).toBe(true);
+
+      const nodeFailures = payloads.filter(
+        (payload): payload is Extract<
+          StreamEventPayload,
+          { type: "node.failed" }
+        > => payload.type === "node.failed",
+      );
+      expect(nodeFailures).toEqual([
+        {
+          type: "node.failed",
+          nodeId: "typescript-guide",
+          error: { code: "SEARCH_PROVIDER_FAILED", retryable: true },
+        },
+        {
+          type: "node.failed",
+          nodeId: "typescript-project",
+          error: { code: "RUN_DEADLINE_EXCEEDED", retryable: true },
+        },
+      ]);
+      const complete = payloads.find(
+        (payload): payload is Extract<
+          StreamEventPayload,
+          { type: "complete" }
+        > => payload.type === "complete",
+      );
+      expect(complete).toBeDefined();
+      expect(payloads.at(-1)).toBe(complete);
+      if (emittedResult === undefined) {
+        throw new Error("Deadline 矩阵缺少原始最终 ResultGraph");
+      }
+      const resultSnapshot = structuredClone(emittedResult);
+      const closedPayloads = structuredClone(payloads);
+
+      lateRerank.resolve(createRerankOutput());
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(payloads).toEqual(closedPayloads);
+      expect(emittedResult).toEqual(resultSnapshot);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      lateRerank.resolve(createRerankOutput());
+      await Promise.resolve();
+      vi.useRealTimers();
+    }
+  });
+
+  it("GraphPlan 前无响应的 Planner 不阻塞 Deadline，且迟到结果不能追加事件", async () => {
+    vi.useFakeTimers();
+    const clock = createFixedClock("2026-10-22T08:00:00.000Z");
+    const latePlanner = createDeferred<unknown>();
+    const plannerEntered = createDeferred<void>();
+    const llmProvider: LLMProvider = {
+      id: "deadline-ignoring-planner",
+      structured: async () => {
+        plannerEntered.resolve();
+        // 故意忽略 AbortSignal，证明进程级并发装饰器仍会按 Run Deadline 释放调用方。
+        return latePlanner.promise;
+      },
+    };
+    const handler = createRunSearchHandler({
+      ...createDependencies(clock, []),
+      providers: createConcurrencyLimitedProviders({
+        searchProvider: new FakeSearchProvider({ searchResponses: {} }),
+        llmProvider,
+        concurrency: { search: 6, extract: 3, llm: 3 },
+      }),
+    });
+    const payloads: StreamEventPayload[] = [];
+    const pending = handler({
+      input: { runId: "run-93-late-planner", query: QUERY },
+      signal: new AbortController().signal,
+      emit: async payload => {
+        payloads.push(structuredClone(payload));
+      },
+    });
+
+    try {
+      await plannerEntered.promise;
+      await vi.advanceTimersByTimeAsync(20_000);
+      await pending;
+
+      expect(payloads).toEqual([
+        {
+          type: "run.failed",
+          error: { code: "RUN_DEADLINE_EXCEEDED", retryable: true },
+        },
+      ]);
+      const closedPayloads = structuredClone(payloads);
+
+      latePlanner.resolve(createPlan());
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(payloads).toEqual(closedPayloads);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      latePlanner.resolve(createPlan());
+      await Promise.resolve();
+      vi.useRealTimers();
+    }
+  });
+
   it("连通真实计划与 Node Pipeline，并在唯一 Node 终态后 complete", async () => {
     const clock = createFixedClock("2026-10-22T08:00:00.000Z");
     const payloads: StreamEventPayload[] = [];

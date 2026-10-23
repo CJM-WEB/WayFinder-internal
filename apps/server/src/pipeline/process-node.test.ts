@@ -28,6 +28,7 @@ import {
   processNode,
   toNodeJobError,
   type ProcessNodeContext,
+  type ProcessNodeRunScope,
 } from "./process-node.js";
 
 const ANALYSIS: QueryAnalysis = {
@@ -140,6 +141,14 @@ function createContext(
   };
 }
 
+/** 单 Node 测试默认使用未耗尽的同一 Run Scope；Deadline Case 可覆写预算读取。 */
+function createRunScope(
+  signal: AbortSignal = new AbortController().signal,
+  requirePositiveRemainingMs: () => number = () => 20_000,
+): ProcessNodeRunScope {
+  return { signal, requirePositiveRemainingMs };
+}
+
 function terminalEvents(events: readonly StreamEventPayload[]) {
   return events.filter(event =>
     ["node.ready", "node.partial", "node.failed"].includes(event.type),
@@ -197,11 +206,16 @@ describe("processNode 成功与局部降级", () => {
     });
     const rerankProvider = new FakeLLMProvider([createRerankOutput()]);
     const events: StreamEventPayload[] = [];
+    const remainingBudgets = [20_000, 10_000, 4_000];
+    const signal = new AbortController().signal;
 
     const result = await processNode(
       createNode(),
       createContext(searchProvider, rerankProvider, events),
-      new AbortController().signal,
+      createRunScope(
+        signal,
+        () => remainingBudgets.shift() ?? 4_000,
+      ),
     );
 
     expect(ResultGraphNodeSchema.parse(result)).toEqual(result);
@@ -219,6 +233,13 @@ describe("processNode 成功与局部降级", () => {
       summary: "候选 candidate_1 的结构化摘要。",
     });
     expect(JSON.stringify(result)).not.toContain("privateProviderValue");
+    expect(searchProvider.searchCalls[0]?.signal).toBe(signal);
+    expect(searchProvider.extractCalls[0]?.signal).toBe(signal);
+    expect(rerankProvider.calls[0]?.options).toEqual({
+      signal,
+      timeoutMs: 4_000,
+    });
+    expect(remainingBudgets).toEqual([]);
     expect(events.map(event => event.type)).toEqual([
       "node.status",
       "node.status",
@@ -260,7 +281,7 @@ describe("processNode 成功与局部降级", () => {
     const result = await processNode(
       node,
       createContext(searchProvider, rerankProvider, events),
-      new AbortController().signal,
+      createRunScope(),
     );
 
     expect(ResultGraphNodeSchema.parse(result)).toEqual(result);
@@ -308,7 +329,7 @@ describe("WAY-58 单 Node 高风险检索矩阵", () => {
     const result = await processNode(
       node,
       createContext(searchProvider, rerankProvider, events),
-      signal,
+      createRunScope(signal),
     );
 
     expectCompletedExecution(result, events);
@@ -347,7 +368,7 @@ describe("WAY-58 单 Node 高风险检索矩阵", () => {
     const result = await processNode(
       node,
       createContext(searchProvider, rerankProvider, events),
-      new AbortController().signal,
+      createRunScope(),
     );
 
     expectCompletedExecution(result, events);
@@ -381,7 +402,7 @@ describe("WAY-58 单 Node 高风险检索矩阵", () => {
     const result = await processNode(
       node,
       createContext(searchProvider, rerankProvider, events),
-      new AbortController().signal,
+      createRunScope(),
     );
 
     expectCompletedExecution(result, events);
@@ -450,7 +471,7 @@ describe("WAY-58 单 Node 高风险检索矩阵", () => {
     const result = await processNode(
       node,
       createContext(searchProvider, rerankProvider, events),
-      new AbortController().signal,
+      createRunScope(),
     );
 
     expectCompletedExecution(result, events);
@@ -544,7 +565,7 @@ describe("WAY-58 单 Node 高风险检索矩阵", () => {
           },
         },
       ),
-      signal,
+      createRunScope(signal),
     );
 
     expectCompletedExecution(result, events);
@@ -652,7 +673,7 @@ describe("WAY-58 单 Node 高风险检索矩阵", () => {
           knownRiskyDownloadDomains: ["downloads.example"],
         },
       }),
-      signal,
+      createRunScope(signal),
     );
 
     expectCompletedExecution(result, events);
@@ -720,7 +741,7 @@ describe("WAY-58 单 Node 高风险检索矩阵", () => {
     const result = await processNode(
       node,
       createContext(searchProvider, rerankProvider, events),
-      new AbortController().signal,
+      createRunScope(),
     );
 
     expectCompletedExecution(result, events);
@@ -743,6 +764,82 @@ describe("WAY-58 单 Node 高风险检索矩阵", () => {
 });
 
 describe("processNode 失败与取消", () => {
+  it.each([
+    {
+      deadlineRead: 1,
+      expectedSearchCalls: 0,
+      expectedExtractCalls: 0,
+      expectedRerankCalls: 0,
+      expectedStatuses: ["searching"],
+    },
+    {
+      deadlineRead: 2,
+      expectedSearchCalls: 1,
+      expectedExtractCalls: 0,
+      expectedRerankCalls: 0,
+      expectedStatuses: ["searching", "filtering"],
+    },
+    {
+      deadlineRead: 3,
+      expectedSearchCalls: 1,
+      expectedExtractCalls: 1,
+      expectedRerankCalls: 0,
+      expectedStatuses: ["searching", "filtering"],
+    },
+  ])(
+    "第 $deadlineRead 次预算读取发现过期时不启动后续外调或发送业务终态",
+    async ({
+      deadlineRead,
+      expectedSearchCalls,
+      expectedExtractCalls,
+      expectedRerankCalls,
+      expectedStatuses,
+    }) => {
+      const node = createNode();
+      const hit = createHit(node.searchPlan.queries[0]);
+      const searchProvider = new FakeSearchProvider({
+        searchResponses: { [node.searchPlan.queries[0]!]: [hit] },
+        extractResponse: [
+          { canonicalUrl: hit.canonicalUrl, content: "Compiler reference" },
+        ],
+      });
+      const rerankProvider = new FakeLLMProvider([createRerankOutput()]);
+      const events: StreamEventPayload[] = [];
+      const controller = new AbortController();
+      const deadlineReason = new DOMException(
+        "Run deadline exceeded",
+        "TimeoutError",
+      );
+      let budgetReads = 0;
+
+      const operation = processNode(
+        node,
+        createContext(searchProvider, rerankProvider, events),
+        createRunScope(controller.signal, () => {
+          budgetReads += 1;
+          if (budgetReads === deadlineRead) {
+            // 模拟阶段返回后绝对时间已过、但统一 Timer 回调尚未取得执行权。
+            controller.abort(deadlineReason);
+            throw deadlineReason;
+          }
+          return 20_000;
+        }),
+      );
+
+      await expect(operation).rejects.toBe(deadlineReason);
+      expect(budgetReads).toBe(deadlineRead);
+      expect(searchProvider.searchCalls).toHaveLength(expectedSearchCalls);
+      expect(searchProvider.extractCalls).toHaveLength(expectedExtractCalls);
+      expect(rerankProvider.calls).toHaveLength(expectedRerankCalls);
+      expect(
+        events.map(event =>
+          event.type === "node.status" ? event.status : event.type,
+        ),
+      ).toEqual(expectedStatuses);
+      expect(terminalEvents(events)).toEqual([]);
+    },
+  );
+
   it("所有 Search 都无结果时发送精确 node.failed 并抛可重试错误", async () => {
     const node = createNode(["TypeScript compiler guide", "backup query"]);
     const searchProvider = new FakeSearchProvider({
@@ -757,7 +854,7 @@ describe("processNode 失败与取消", () => {
     const operation = processNode(
       node,
       createContext(searchProvider, rerankProvider, events),
-      new AbortController().signal,
+      createRunScope(),
     );
 
     await expect(operation).rejects.toMatchObject({
@@ -805,7 +902,7 @@ describe("processNode 失败与取消", () => {
           new FakeLLMProvider([createRerankOutput()]),
           events,
         ),
-        new AbortController().signal,
+        createRunScope(),
       ),
     ).rejects.toMatchObject({
       code: "SEARCH_PROVIDER_FAILED",
@@ -840,7 +937,7 @@ describe("processNode 失败与取消", () => {
             },
           },
         ),
-        new AbortController().signal,
+        createRunScope(),
       ),
     ).rejects.toMatchObject({ code: "UNKNOWN", retryable: false });
     expect(terminalEvents(events)).toEqual([
@@ -869,7 +966,7 @@ describe("processNode 失败与取消", () => {
         new FakeLLMProvider([createRerankOutput()]),
         events,
       ),
-      controller.signal,
+      createRunScope(controller.signal),
     );
 
     controller.abort(reason);
@@ -901,7 +998,7 @@ describe("processNode 失败与取消", () => {
         new FakeLLMProvider([createRerankOutput()]),
         events,
       ),
-      controller.signal,
+      createRunScope(controller.signal),
     );
 
     await expect(operation).rejects.toBe(reason);
@@ -929,7 +1026,7 @@ describe("processNode 失败与取消", () => {
           throw emitError;
         },
       },
-      new AbortController().signal,
+      createRunScope(),
     );
 
     await expect(operation).rejects.toMatchObject({
@@ -969,7 +1066,7 @@ describe("processNode 失败与取消", () => {
             }
           },
         },
-        new AbortController().signal,
+        createRunScope(),
       ),
     ).rejects.toMatchObject({
       name: "NodeEventEmissionError",
@@ -1003,7 +1100,7 @@ describe("processNode 失败与取消", () => {
           }
         },
       },
-      new AbortController().signal,
+      createRunScope(),
     );
 
     await expect(operation).rejects.toBeInstanceOf(NodeEventEmissionError);

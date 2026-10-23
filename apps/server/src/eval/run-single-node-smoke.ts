@@ -605,7 +605,8 @@ export async function evaluateSingleNodeSmokeCase(
         new DOMException("单 Node Smoke 已超过安全截止时间", "TimeoutError"),
       );
     }
-    deadlineSignal.throwIfAborted();
+    // 组合 Signal 同时承载人员取消与 Run Deadline；这里必须保留最先发生的原始 reason。
+    signal.throwIfAborted();
     return remainingMs;
   };
   const telemetry: MutableProviderTelemetry = {
@@ -657,10 +658,6 @@ export async function evaluateSingleNodeSmokeCase(
   };
 
   try {
-    const remainingMs = Math.min(
-      input.rerankTimeoutMs,
-      readRemainingDeadlineMs(),
-    );
     const result = ResultGraphNodeSchema.parse(
       await processNode(
         input.smokeCase.node,
@@ -671,11 +668,14 @@ export async function evaluateSingleNodeSmokeCase(
           // 没有人员批准的真实风险域名清单时必须保持为空。
           officialSourcePolicy: { knownRiskyDownloadDomains: [] },
           nowMs: Date.parse(referenceTime),
-          rerankTimeoutMs: remainingMs,
+          rerankTimeoutMs: input.rerankTimeoutMs,
           emit,
           language: "en",
         },
-        signal,
+        {
+          signal,
+          requirePositiveRemainingMs: readRemainingDeadlineMs,
+        },
       ),
     );
     if (
