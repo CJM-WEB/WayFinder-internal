@@ -1,8 +1,8 @@
 /**
- * 测试职责：冻结 WAY-86 统一质量评估接口的数据集、完整管线事实投影与失败语义。
+ * 测试职责：冻结 WAY-86/87 统一质量评估接口的数据集、完整管线事实、指标与失败语义。
  *
  * 边界说明：测试只使用公共 Contract 对象和 Fake Handler，不读取 Secret、不访问网络，
- * 也不对质量设置通过阈值；自动判分属于后续 WAY-87。
+ * 也不对质量设置通过阈值、通过率或综合分。
  */
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
@@ -97,11 +97,10 @@ const sharedResource = {
 } as const;
 
 function createSensitiveSharedResource(nodeId: string) {
-  const canonicalUrl =
-    `https://code.visualstudio.com/download?access_token=${nodeId}-secret-value`;
+  const canonicalUrl = "https://code.visualstudio.com/download";
   return {
     ...sharedResource,
-    id: `resource_${createHash("sha256").update(canonicalUrl).digest("hex")}`,
+    id: `resource_${createHash("sha256").update(`${canonicalUrl}:${nodeId}`).digest("hex")}`,
     url: `https://alice:password@code.visualstudio.com/download?access_token=${nodeId}-secret-value#section`,
     canonicalUrl,
   } as const;
@@ -281,6 +280,7 @@ describe("WAY-86 Quality Eval 数据集", () => {
 
 describe("WAY-86 Quality Eval 查询投影", () => {
   it("保留计划、Top 3、官方排名、跨 Node 重复、多样性与 Run Log 遥测", async () => {
+    expect(QUALITY_EVAL_SCHEMA_VERSION).toBe("quality-eval.v2");
     const payloads: StreamEventPayload[] = [
       { type: "query.analysis", data: plan.analysis },
       { type: "graph.plan", data: plan },
@@ -293,6 +293,7 @@ describe("WAY-86 Quality Eval 查询投影", () => {
       query: QUERY,
       runId: "eval-run",
       signal: new AbortController().signal,
+      runDeadlineMs: 20_000,
       expectedOfficialDomains: ["code.visualstudio.com"],
       handleSearch: async ({ emit }) => {
         for (const payload of payloads) await emit(payload);
@@ -311,9 +312,24 @@ describe("WAY-86 Quality Eval 查询投影", () => {
         tokens: runLog.tokens,
         estimatedCost: runLog.estimatedCost,
       },
+      metrics: {
+        schemaValidity: "valid",
+        nodeCount: 2,
+        resourceCount: 8,
+        duplicateRate: {
+          status: "measured",
+          duplicateOccurrences: 1,
+          totalOccurrences: 8,
+          value: 0.125,
+        },
+        officialSource: { status: "detected", rank: 1 },
+        deadlineCompliance: { status: "within" },
+      },
+      metricFailure: null,
     });
     expect(projected.nodes).toHaveLength(2);
     expect(projected.nodes[0]).toMatchObject({
+      resourceCount: 4,
       officialSource: { status: "detected", rank: 1 },
       diversity: {
         distinctExactDomainCount: 3,
@@ -375,6 +391,7 @@ describe("WAY-86 Quality Eval 查询投影", () => {
       query: QUERY,
       runId: "array-order-run",
       signal: new AbortController().signal,
+      runDeadlineMs: 20_000,
       expectedOfficialDomains: ["code.visualstudio.com"],
       handleSearch: async ({ emit }) => {
         await emit({ type: "graph.plan", data: plan });
@@ -399,6 +416,7 @@ describe("WAY-86 Quality Eval 查询投影", () => {
       query: QUERY,
       runId: "failed-run",
       signal: new AbortController().signal,
+      runDeadlineMs: 20_000,
       expectedOfficialDomains: ["code.visualstudio.com"],
       handleSearch: async ({ emit }) => {
         await emit({
@@ -415,6 +433,42 @@ describe("WAY-86 Quality Eval 查询投影", () => {
       plan: null,
       nodes: [],
       duplicateResources: [],
+      metrics: null,
+      metricFailure: {
+        queryId: QUERY.id,
+        metric: "execution",
+        stage: "pipeline",
+        code: "PLANNER_FAILED",
+      },
+    });
+  });
+
+  it("Run 级 Deadline 失败定位到合规指标与阶段", async () => {
+    const projected = await evaluateQualityEvalQuery({
+      query: QUERY,
+      runId: "deadline-failed-run",
+      signal: new AbortController().signal,
+      runDeadlineMs: 20_000,
+      expectedOfficialDomains: ["code.visualstudio.com"],
+      handleSearch: async ({ emit }) => {
+        await emit({
+          type: "run.failed",
+          error: { code: "RUN_DEADLINE_EXCEEDED", retryable: true },
+        });
+      },
+      readRunLog: () => ({ ...runLog, outcome: "failed" }),
+    });
+
+    expect(projected).toMatchObject({
+      executionStatus: "run_failed",
+      errorCode: "RUN_DEADLINE_EXCEEDED",
+      metrics: null,
+      metricFailure: {
+        queryId: QUERY.id,
+        metric: "deadlineCompliance",
+        stage: "runDeadline",
+        code: "RUN_DEADLINE_EXCEEDED",
+      },
     });
   });
 
@@ -425,6 +479,7 @@ describe("WAY-86 Quality Eval 查询投影", () => {
       query: QUERY,
       runId: "cancelled-run",
       signal: cancelController.signal,
+      runDeadlineMs: 20_000,
       expectedOfficialDomains: ["code.visualstudio.com"],
       handleSearch: async () => {
         cancelController.abort(sensitiveError);
@@ -436,6 +491,7 @@ describe("WAY-86 Quality Eval 查询投影", () => {
       query: QUERY,
       runId: "internal-run",
       signal: new AbortController().signal,
+      runDeadlineMs: 20_000,
       expectedOfficialDomains: ["code.visualstudio.com"],
       handleSearch: async () => {
         throw sensitiveError;
@@ -444,10 +500,54 @@ describe("WAY-86 Quality Eval 查询投影", () => {
     });
 
     expect(cancelled.executionStatus).toBe("cancelled");
+    expect(cancelled.metricFailure).toEqual({
+      queryId: QUERY.id,
+      metric: "execution",
+      stage: "pipeline",
+      code: "cancelled",
+    });
     expect(failed.executionStatus).toBe("unexpected_internal_error");
+    expect(failed.metricFailure).toEqual({
+      queryId: QUERY.id,
+      metric: "execution",
+      stage: "pipeline",
+      code: "unexpected_internal_error",
+    });
     expect(JSON.stringify([cancelled, failed])).not.toContain(
       sensitiveError.message,
     );
+  });
+
+  it("Stream Schema 失败只记录固定 Query、指标、阶段与 Code", async () => {
+    const projected = await evaluateQualityEvalQuery({
+      query: QUERY,
+      runId: "invalid-stream-run",
+      signal: new AbortController().signal,
+      runDeadlineMs: 20_000,
+      expectedOfficialDomains: ["code.visualstudio.com"],
+      handleSearch: async ({ emit }) => {
+        await emit({
+          type: "complete",
+          data: {
+            finalStatus: "complete",
+            result: {
+              ...resultGraph,
+              leaked: "sk-private-value /Users/private/project",
+            },
+          },
+        } as StreamEventPayload);
+      },
+      readRunLog: () => runLog,
+    });
+
+    expect(projected.metricFailure).toEqual({
+      queryId: QUERY.id,
+      metric: "schemaValidity",
+      stage: "streamEvent",
+      code: "schema_invalid",
+    });
+    expect(JSON.stringify(projected)).not.toContain("sk-private-value");
+    expect(JSON.stringify(projected)).not.toContain("/Users/private");
   });
 
   it("保留 Partial 与 Deadline 失败事实，并将无结果的官方排名标为不可用", async () => {
@@ -476,6 +576,7 @@ describe("WAY-86 Quality Eval 查询投影", () => {
       query: QUERY,
       runId: "partial-run",
       signal: new AbortController().signal,
+      runDeadlineMs: 20_000,
       expectedOfficialDomains: ["code.visualstudio.com"],
       handleSearch: async ({ emit }) => {
         await emit({ type: "graph.plan", data: plan });
@@ -496,6 +597,9 @@ describe("WAY-86 Quality Eval 查询投影", () => {
       status: "failed",
       errorCode: "RUN_DEADLINE_EXCEEDED",
       officialSource: { status: "unavailable", reason: "noResources" },
+    });
+    expect(projected.metrics?.deadlineCompliance).toEqual({
+      status: "exceeded",
     });
   });
 });
@@ -524,6 +628,13 @@ describe("WAY-86 Quality Eval Suite 编排", () => {
           plan: null,
           nodes: [],
           duplicateResources: [],
+          metrics: null,
+          metricFailure: {
+            queryId: query.id,
+            metric: "execution",
+            stage: "pipeline",
+            code: "PLANNER_FAILED",
+          },
           telemetry: null,
         });
       },
@@ -551,6 +662,14 @@ describe("WAY-86 Quality Eval Suite 编排", () => {
           plan: null,
           nodes: [],
           duplicateResources: [],
+          metrics: null,
+          metricFailure: {
+            queryId: query.id,
+            metric: "execution",
+            stage: "pipeline",
+            code:
+              goldenSeen.length === 2 ? "cancelled" : "PLANNER_FAILED",
+          },
           telemetry: null,
         });
       },

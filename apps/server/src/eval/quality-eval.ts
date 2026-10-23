@@ -1,10 +1,10 @@
 /**
- * 模块职责：定义 WAY-86 Golden / Full Quality Eval（质量评估）的统一版本化接口，
- * 并把完整生产 Search Run 投影成可比较的本地事实工件。
+ * 模块职责：定义 WAY-86/87 Golden / Full Quality Eval（质量评估）的统一版本化接口，
+ * 并把完整生产 Search Run 投影成可比较的本地事实与确定性指标工件。
  *
  * 关键边界：
  * - 本模块只处理已冻结数据集、公共 Event/ResultGraph 与内部 Run Log，不读取文件、环境或 Secret；
- * - 报告记录结构与基础事实，不设置质量阈值、总分或产品结论，避免越界实现 WAY-87；
+ * - 报告记录结构、基础事实和独立指标，不设置质量阈值、总分或产品结论；
  * - Top 3 只复制公共 Resource 投影，禁止 Provider 原始响应、Extract 正文和 Error 对象进入结果；
  * - 官方来源排名使用固定 Eval 真值，不用被测生产检测器或 sourceType 自我评分。
  */
@@ -13,6 +13,7 @@ import { createHash } from "node:crypto";
 import {
   AppErrorCodeSchema,
   GraphPlanSchema,
+  MAX_RETAINED_RESOURCES_PER_NODE,
   NodeWarningCodeSchema,
   ResourceSchema,
   StreamEventPayloadSchema,
@@ -22,13 +23,23 @@ import {
 } from "@wayfinder/contracts";
 import { z } from "zod";
 
-import {
-  RunLogRecordSchema,
-  type RunLogRecord,
-} from "../observability/run-log.js";
+import type { RunLogRecord } from "../observability/run-log.js";
 import type { SearchStreamHandler } from "../routes/search.js";
+import {
+  QualityEvalDuplicateResourceSchema,
+  QualityEvalMetricFailureSchema,
+  QualityEvalMetricsSchema,
+  QualityEvalOfficialSourceSchema,
+  QualityEvalTelemetrySchema,
+  createQualityEvalMetricFailure,
+  fingerprintQualityEvalCanonicalUrl,
+  measureQualityEvalMetrics,
+  redactQualityEvalResourceUrl,
+  type QualityEvalMetricFailure,
+  type QualityEvalMetricMeasurement,
+} from "./quality-metrics.js";
 
-export const QUALITY_EVAL_SCHEMA_VERSION = "quality-eval.v1" as const;
+export const QUALITY_EVAL_SCHEMA_VERSION = "quality-eval.v2" as const;
 export const QUALITY_EVAL_DATASET_VERSION =
   "wayfinder-regression.v1" as const;
 
@@ -180,47 +191,21 @@ export function parseQualityEvalDatasets(
   };
 }
 
-const QualityEvalTelemetrySchema = RunLogRecordSchema.pick({
-  timingsMs: true,
-  tokens: true,
-  estimatedCost: true,
-});
-
-const OfficialSourceEvidenceSchema = z.discriminatedUnion("status", [
-  z.strictObject({ status: z.literal("notApplicable") }),
-  z.strictObject({
-    status: z.literal("unavailable"),
-    reason: z.literal("noResources"),
-  }),
-  z.strictObject({ status: z.literal("noneDetected") }),
-  z.strictObject({
-    status: z.literal("detected"),
-    rank: z.number().int().min(1).max(8),
-  }),
-]);
-
 const QualityEvalNodeSchema = z.strictObject({
   id: z.string().min(1),
   status: z.enum(["ready", "partial", "failed"]),
   warnings: z.array(NodeWarningCodeSchema),
   errorCode: AppErrorCodeSchema.nullable(),
+  resourceCount: z
+    .number()
+    .int()
+    .min(0)
+    .max(MAX_RETAINED_RESOURCES_PER_NODE),
   topResources: z.array(ResourceSchema).max(3),
-  officialSource: OfficialSourceEvidenceSchema,
+  officialSource: QualityEvalOfficialSourceSchema,
   diversity: z.strictObject({
     distinctExactDomainCount: z.number().int().min(0).max(3),
   }),
-});
-
-const DuplicateResourceSchema = z.strictObject({
-  canonicalUrlFingerprint: z.string().regex(/^[0-9a-f]{64}$/u),
-  occurrences: z
-    .array(
-      z.strictObject({
-        nodeId: z.string().min(1),
-        rank: z.number().int().min(1).max(8),
-      }),
-    )
-    .min(2),
 });
 
 export const QualityEvalQueryResultSchema = z
@@ -238,7 +223,9 @@ export const QualityEvalQueryResultSchema = z
     errorCode: AppErrorCodeSchema.nullable(),
     plan: GraphPlanSchema.nullable(),
     nodes: z.array(QualityEvalNodeSchema),
-    duplicateResources: z.array(DuplicateResourceSchema),
+    duplicateResources: z.array(QualityEvalDuplicateResourceSchema),
+    metrics: QualityEvalMetricsSchema.nullable(),
+    metricFailure: QualityEvalMetricFailureSchema.nullable(),
     telemetry: QualityEvalTelemetrySchema.nullable(),
   })
   .superRefine((result, context) => {
@@ -246,7 +233,9 @@ export const QualityEvalQueryResultSchema = z
       result.executionStatus === "completed" &&
       (result.finalStatus === null ||
         result.plan === null ||
-        result.telemetry === null)
+        result.telemetry === null ||
+        result.metrics === null ||
+        result.metricFailure !== null)
     ) {
       context.addIssue({
         code: "custom",
@@ -258,7 +247,9 @@ export const QualityEvalQueryResultSchema = z
       (result.finalStatus !== null ||
         result.plan !== null ||
         result.nodes.length > 0 ||
-        result.duplicateResources.length > 0)
+        result.duplicateResources.length > 0 ||
+        result.metrics !== null ||
+        result.metricFailure === null)
     ) {
       context.addIssue({
         code: "custom",
@@ -283,6 +274,15 @@ export const QualityEvalQueryResultSchema = z
         message: "只有 run_failed 可以包含 Run 级错误码",
       });
     }
+    if (
+      result.metricFailure !== null &&
+      result.metricFailure.queryId !== result.query.id
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "指标失败必须定位当前 Query",
+      });
+    }
   });
 
 export type QualityEvalQueryResult = Readonly<
@@ -293,6 +293,7 @@ export type EvaluateQualityEvalQueryInput = Readonly<{
   query: QualityEvalQuery;
   runId: string;
   signal: AbortSignal;
+  runDeadlineMs: number;
   expectedOfficialDomains: readonly string[];
   handleSearch: SearchStreamHandler;
   readRunLog: () => RunLogRecord | undefined;
@@ -323,43 +324,25 @@ function createBaseResult(
 
 function createExecutionFailure(
   query: QualityEvalQuery,
-  executionStatus: "cancelled" | "unexpected_internal_error",
+  executionStatus:
+    | "run_failed"
+    | "cancelled"
+    | "unexpected_internal_error",
   telemetry: z.infer<typeof QualityEvalTelemetrySchema> | null,
+  metricFailure: QualityEvalMetricFailure,
+  errorCode: z.infer<typeof AppErrorCodeSchema> | null = null,
 ): QualityEvalQueryResult {
   return QualityEvalQueryResultSchema.parse({
     ...createBaseResult(query, telemetry),
     executionStatus,
     finalStatus: null,
-    errorCode: null,
+    errorCode,
     plan: null,
     nodes: [],
     duplicateResources: [],
+    metrics: null,
+    metricFailure,
   });
-}
-
-function readOfficialSourceEvidence(
-  node: ResultGraphNode,
-  expectedOfficialDomains: readonly string[],
-): z.infer<typeof OfficialSourceEvidenceSchema> {
-  if (expectedOfficialDomains.length === 0) {
-    return { status: "notApplicable" };
-  }
-  if (node.resources.length === 0) {
-    return { status: "unavailable", reason: "noResources" };
-  }
-
-  const officialRanks = node.resources
-    .filter(resource =>
-      expectedOfficialDomains.some(
-        expectedDomain =>
-          resource.domain === expectedDomain ||
-          resource.domain.endsWith(`.${expectedDomain}`),
-      ),
-    )
-    .map(resource => resource.rank);
-  return officialRanks.length === 0
-    ? { status: "noneDetected" }
-    : { status: "detected", rank: Math.min(...officialRanks) };
 }
 
 function readDiversity(
@@ -372,39 +355,31 @@ function readDiversity(
   };
 }
 
-/**
- * URL 的 userinfo、query 与 fragment 可能携带凭据或跟踪标识；Eval 只保留
- * 可供人工识别与跨运行比较的 scheme、host、port 与 pathname。
- */
-function redactResourceUrl(value: string): string {
-  const parsed = new URL(value);
-  parsed.username = "";
-  parsed.password = "";
-  parsed.search = "";
-  parsed.hash = "";
-  return parsed.toString();
-}
-
-function fingerprintRedactedCanonicalUrl(value: string): string {
-  return fingerprintText(redactResourceUrl(value));
-}
-
 function projectResource(
   resource: ResultGraphNode["resources"][number],
 ): z.infer<typeof ResourceSchema> {
   return ResourceSchema.parse({
     ...resource,
-    id: `resource_${fingerprintRedactedCanonicalUrl(resource.canonicalUrl)}`,
-    url: redactResourceUrl(resource.url),
-    canonicalUrl: redactResourceUrl(resource.canonicalUrl),
+    id: `resource_${fingerprintQualityEvalCanonicalUrl(resource.canonicalUrl)}`,
+    url: redactQualityEvalResourceUrl(resource.url),
+    canonicalUrl: redactQualityEvalResourceUrl(resource.canonicalUrl),
   });
 }
 
+type MeasuredNodeMetric = Extract<
+  QualityEvalMetricMeasurement,
+  { status: "measured" }
+>["nodeMetrics"][number];
+
 function projectNodes(
   result: ResultGraph,
-  expectedOfficialDomains: readonly string[],
+  nodeMetrics: readonly MeasuredNodeMetric[],
 ): z.infer<typeof QualityEvalNodeSchema>[] {
-  return result.graph.nodes.map(node => {
+  return result.graph.nodes.map((node, index) => {
+    const nodeMetric = nodeMetrics[index];
+    if (nodeMetric === undefined || nodeMetric.nodeId !== node.id) {
+      throw new TypeError("Quality Eval Node 指标与结果不一致");
+    }
     // 生产 Finalizer 已冻结展示数组顺序；这里保留其前 3 项，不能重排并掩盖顺序回归。
     const topResources = node.resources.slice(0, 3).map(projectResource);
     return QualityEvalNodeSchema.parse({
@@ -412,43 +387,12 @@ function projectNodes(
       status: node.status,
       warnings: node.warnings,
       errorCode: node.status === "failed" ? node.error.code : null,
+      resourceCount: nodeMetric.resourceCount,
       topResources,
-      officialSource: readOfficialSourceEvidence(node, expectedOfficialDomains),
+      officialSource: nodeMetric.officialSource,
       diversity: readDiversity(topResources),
     });
   });
-}
-
-function readDuplicateResources(
-  result: ResultGraph,
-): z.infer<typeof DuplicateResourceSchema>[] {
-  const occurrences = new Map<
-    string,
-    Array<{ nodeId: string; rank: number }>
-  >();
-  for (const node of result.graph.nodes) {
-    for (const resource of node.resources) {
-      const canonicalUrlFingerprint = fingerprintRedactedCanonicalUrl(
-        resource.canonicalUrl,
-      );
-      const current = occurrences.get(canonicalUrlFingerprint) ?? [];
-      current.push({
-        nodeId: node.id,
-        rank: resource.rank,
-      });
-      occurrences.set(canonicalUrlFingerprint, current);
-    }
-  }
-
-  return [...occurrences.entries()]
-    .filter(([, values]) => values.length > 1)
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([canonicalUrlFingerprint, values]) =>
-      DuplicateResourceSchema.parse({
-        canonicalUrlFingerprint,
-        occurrences: values,
-      }),
-    );
 }
 
 export type EvaluateQualityEvalDatasetInput = Readonly<{
@@ -462,7 +406,7 @@ export type EvaluateQualityEvalDatasetInput = Readonly<{
 
 /**
  * Suite（套件）严格按数据集顺序串行运行；取消一旦可见便停止启动后续 Query。
- * 这里只定义编排事实，不计算质量通过率或其他 WAY-87 指标。
+ * 逐 Query 指标由纯函数计算；这里不引入通过率、阈值或综合分。
  */
 export async function evaluateQualityEvalDataset(
   input: EvaluateQualityEvalDatasetInput,
@@ -496,21 +440,36 @@ export async function evaluateQualityEvalQuery(
   input: EvaluateQualityEvalQueryInput,
 ): Promise<QualityEvalQueryResult> {
   const payloads: StreamEventPayload[] = [];
+  let streamSchemaInvalid = false;
   try {
     await input.handleSearch({
       input: { runId: input.runId, query: input.query.query },
       signal: input.signal,
       emit: async payload => {
-        payloads.push(
-          structuredClone(StreamEventPayloadSchema.parse(payload)),
-        );
+        const parsed = StreamEventPayloadSchema.safeParse(payload);
+        if (!parsed.success) {
+          streamSchemaInvalid = true;
+          throw new TypeError("Quality Eval Stream Event Schema 无效");
+        }
+        payloads.push(structuredClone(parsed.data));
       },
     });
   } catch {
+    const cancelled = input.signal.aborted;
     return createExecutionFailure(
       input.query,
-      input.signal.aborted ? "cancelled" : "unexpected_internal_error",
+      cancelled ? "cancelled" : "unexpected_internal_error",
       projectRunLog(input.readRunLog()),
+      createQualityEvalMetricFailure(
+        input.query.id,
+        streamSchemaInvalid ? "schemaValidity" : "execution",
+        streamSchemaInvalid ? "streamEvent" : "pipeline",
+        cancelled
+          ? "cancelled"
+          : streamSchemaInvalid
+            ? "schema_invalid"
+            : "unexpected_internal_error",
+      ),
     );
   }
 
@@ -521,18 +480,31 @@ export async function evaluateQualityEvalQuery(
       input.query,
       "unexpected_internal_error",
       telemetry,
+      createQualityEvalMetricFailure(
+        input.query.id,
+        "execution",
+        "streamEvent",
+        "terminal_event_invalid",
+      ),
     );
   }
   if (terminal.type === "run.failed") {
-    return QualityEvalQueryResultSchema.parse({
-      ...createBaseResult(input.query, telemetry),
-      executionStatus: "run_failed",
-      finalStatus: null,
-      errorCode: terminal.error.code,
-      plan: null,
-      nodes: [],
-      duplicateResources: [],
-    });
+    return createExecutionFailure(
+      input.query,
+      "run_failed",
+      telemetry,
+      createQualityEvalMetricFailure(
+        input.query.id,
+        terminal.error.code === "RUN_DEADLINE_EXCEEDED"
+          ? "deadlineCompliance"
+          : "execution",
+        terminal.error.code === "RUN_DEADLINE_EXCEEDED"
+          ? "runDeadline"
+          : "pipeline",
+        terminal.error.code,
+      ),
+      terminal.error.code,
+    );
   }
 
   const plans = payloads.filter(
@@ -541,11 +513,30 @@ export async function evaluateQualityEvalQuery(
     ): payload is Extract<StreamEventPayload, { type: "graph.plan" }> =>
       payload.type === "graph.plan",
   );
-  if (plans.length !== 1 || telemetry === null) {
+  if (plans.length !== 1) {
     return createExecutionFailure(
       input.query,
       "unexpected_internal_error",
       telemetry,
+      createQualityEvalMetricFailure(
+        input.query.id,
+        "schemaValidity",
+        "graphPlan",
+        "plan_event_invalid",
+      ),
+    );
+  }
+  if (telemetry === null) {
+    return createExecutionFailure(
+      input.query,
+      "unexpected_internal_error",
+      null,
+      createQualityEvalMetricFailure(
+        input.query.id,
+        "deadlineCompliance",
+        "runLog",
+        "telemetry_unavailable",
+      ),
     );
   }
 
@@ -555,19 +546,40 @@ export async function evaluateQualityEvalQuery(
       input.query,
       "unexpected_internal_error",
       telemetry,
+      createQualityEvalMetricFailure(
+        input.query.id,
+        "schemaValidity",
+        "graphPlan",
+        "plan_event_invalid",
+      ),
     );
   }
   const result = terminal.data.result;
+  const measurement = measureQualityEvalMetrics({
+    queryId: input.query.id,
+    plan: finalPlan,
+    result,
+    telemetry,
+    expectedOfficialDomains: input.expectedOfficialDomains,
+    runDeadlineMs: input.runDeadlineMs,
+  });
+  if (measurement.status === "failed") {
+    return createExecutionFailure(
+      input.query,
+      "unexpected_internal_error",
+      telemetry,
+      measurement.failure,
+    );
+  }
   return QualityEvalQueryResultSchema.parse({
     ...createBaseResult(input.query, telemetry),
     executionStatus: "completed",
     finalStatus: terminal.data.finalStatus,
     errorCode: null,
     plan: finalPlan,
-    nodes: projectNodes(
-      result,
-      input.expectedOfficialDomains,
-    ),
-    duplicateResources: readDuplicateResources(result),
+    nodes: projectNodes(result, measurement.nodeMetrics),
+    duplicateResources: measurement.duplicateResources,
+    metrics: measurement.metrics,
+    metricFailure: null,
   });
 }

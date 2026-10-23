@@ -484,6 +484,7 @@ async function runQualityEval(
           query,
           runId: randomUUID(),
           signal: querySignal,
+          runDeadlineMs: RUN_DEADLINE_MS,
           expectedOfficialDomains:
             dataset.officialDomainsByQueryId[query.id] ?? [],
           handleSearch: handler,
