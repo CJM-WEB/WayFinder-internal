@@ -161,6 +161,16 @@ const resultGraph = ResultGraphSchema.parse({
   },
 });
 
+// 只冻结 Quality Eval 对外投影的 Provider 调用事实，避免重复维护 Run Log 其余派生计数。
+const projectedCallCounts = {
+  logicalSearchCalls: 2,
+  logicalExtractCalls: 2,
+  extractUrlCount: 8,
+  logicalLlmCalls: 3,
+  searchHttpAttempts: 2,
+  extractHttpAttempts: 2,
+} as const;
+
 const runLog = RunLogRecordSchema.parse({
   schemaVersion: "run-log.v1",
   createdAt: "2026-10-23T00:00:00.000Z",
@@ -183,14 +193,9 @@ const runLog = RunLogRecordSchema.parse({
     readyNodes: 2,
     partialNodes: 0,
     failedNodes: 0,
-    logicalSearchCalls: 2,
-    logicalExtractCalls: 2,
-    extractUrlCount: 8,
-    logicalLlmCalls: 3,
+    ...projectedCallCounts,
     searchResultCount: 16,
     extractedPageCount: 8,
-    searchHttpAttempts: 2,
-    extractHttpAttempts: 2,
   },
   warningCodes: [],
   errorCodes: [],
@@ -280,7 +285,7 @@ describe("WAY-86 Quality Eval 数据集", () => {
 
 describe("WAY-86 Quality Eval 查询投影", () => {
   it("保留计划、Top 3、官方排名、跨 Node 重复、多样性与 Run Log 遥测", async () => {
-    expect(QUALITY_EVAL_SCHEMA_VERSION).toBe("quality-eval.v3");
+    expect(QUALITY_EVAL_SCHEMA_VERSION).toBe("quality-eval.v4");
     const payloads: StreamEventPayload[] = [
       { type: "query.analysis", data: plan.analysis },
       { type: "graph.plan", data: plan },
@@ -310,6 +315,7 @@ describe("WAY-86 Quality Eval 查询投影", () => {
       plan,
       telemetry: {
         timingsMs: runLog.timingsMs,
+        counts: projectedCallCounts,
         tokens: runLog.tokens,
         estimatedCost: runLog.estimatedCost,
       },
@@ -536,10 +542,10 @@ describe("WAY-86 Quality Eval 查询投影", () => {
     ).toThrow("新鲜度投影与 Plan、参考时间或 Top Resource 不一致");
   });
 
-  it("严格拒绝旧版本或缺少新鲜度投影的节点", async () => {
+  it("严格拒绝旧版本、缺少调用计数或缺少新鲜度投影的节点", async () => {
     const projected = await evaluateQualityEvalQuery({
       query: QUERY,
-      runId: "strict-v3-run",
+      runId: "strict-v4-run",
       signal: new AbortController().signal,
       runDeadlineMs: 20_000,
       expectedOfficialDomains: ["code.visualstudio.com"],
@@ -556,12 +562,31 @@ describe("WAY-86 Quality Eval 查询投影", () => {
     if (firstNode === undefined) throw new Error("测试投影缺少首个 Node");
     const nodeWithoutFreshness: Record<string, unknown> = { ...firstNode };
     Reflect.deleteProperty(nodeWithoutFreshness, "freshness");
+    const telemetryWithoutCounts: Record<string, unknown> = {
+      ...projected.telemetry,
+    };
+    Reflect.deleteProperty(telemetryWithoutCounts, "counts");
     const otherNodes = projected.nodes.slice(1);
 
     expect(() =>
       QualityEvalQueryResultSchema.parse({
         ...projected,
-        schemaVersion: "quality-eval.v2",
+        schemaVersion: "quality-eval.v3",
+      }),
+    ).toThrow();
+    expect(() =>
+      QualityEvalQueryResultSchema.parse({
+        ...projected,
+        telemetry: telemetryWithoutCounts,
+      }),
+    ).toThrow();
+    expect(() =>
+      QualityEvalQueryResultSchema.parse({
+        ...projected,
+        telemetry: {
+          ...projected.telemetry,
+          counts: { ...projectedCallCounts, logicalLlmCalls: -1 },
+        },
       }),
     ).toThrow();
     expect(() =>
@@ -690,6 +715,9 @@ describe("WAY-86 Quality Eval 查询投影", () => {
         stage: "pipeline",
         code: "PLANNER_FAILED",
       },
+      telemetry: {
+        counts: projectedCallCounts,
+      },
     });
   });
 
@@ -719,10 +747,13 @@ describe("WAY-86 Quality Eval 查询投影", () => {
         stage: "runDeadline",
         code: "RUN_DEADLINE_EXCEEDED",
       },
+      telemetry: {
+        counts: projectedCallCounts,
+      },
     });
   });
 
-  it("取消与未知内部错误保持不同状态且不保存原始 Error", async () => {
+  it("取消与未知内部错误保持不同状态，并按 Run Log 可用性投影计数", async () => {
     const cancelController = new AbortController();
     const sensitiveError = new Error("secret-local-path");
     const cancelled = await evaluateQualityEvalQuery({
@@ -748,8 +779,22 @@ describe("WAY-86 Quality Eval 查询投影", () => {
       },
       readRunLog: () => undefined,
     });
+    const availableCancelController = new AbortController();
+    const cancelledWithTelemetry = await evaluateQualityEvalQuery({
+      query: QUERY,
+      runId: "cancelled-with-telemetry-run",
+      signal: availableCancelController.signal,
+      runDeadlineMs: 20_000,
+      expectedOfficialDomains: ["code.visualstudio.com"],
+      handleSearch: async () => {
+        availableCancelController.abort(sensitiveError);
+        throw sensitiveError;
+      },
+      readRunLog: () => ({ ...runLog, outcome: "cancelled" }),
+    });
 
     expect(cancelled.executionStatus).toBe("cancelled");
+    expect(cancelled.telemetry).toBeNull();
     expect(cancelled.metricFailure).toEqual({
       queryId: QUERY.id,
       metric: "execution",
@@ -757,13 +802,18 @@ describe("WAY-86 Quality Eval 查询投影", () => {
       code: "cancelled",
     });
     expect(failed.executionStatus).toBe("unexpected_internal_error");
+    expect(failed.telemetry).toBeNull();
     expect(failed.metricFailure).toEqual({
       queryId: QUERY.id,
       metric: "execution",
       stage: "pipeline",
       code: "unexpected_internal_error",
     });
-    expect(JSON.stringify([cancelled, failed])).not.toContain(
+    expect(cancelledWithTelemetry.executionStatus).toBe("cancelled");
+    expect(cancelledWithTelemetry.telemetry?.counts).toEqual(
+      projectedCallCounts,
+    );
+    expect(JSON.stringify([cancelled, failed, cancelledWithTelemetry])).not.toContain(
       sensitiveError.message,
     );
   });

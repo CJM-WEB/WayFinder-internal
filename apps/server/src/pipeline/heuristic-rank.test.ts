@@ -517,12 +517,19 @@ describe("applyOfficialSourceSafetyOrder", () => {
       createRankedCandidate(official, "candidate_3"),
       createRankedCandidate(secondUnknown, "candidate_4"),
     ];
+    const candidateSnapshot = structuredClone(candidates);
+    const assessmentSnapshot = structuredClone(assessments);
+    const ordered = applyOfficialSourceSafetyOrder(candidates, assessments);
 
     expect(
-      applyOfficialSourceSafetyOrder(candidates, assessments).map(
-        candidate => candidate.candidateId,
-      ),
+      ordered.map(candidate => candidate.candidateId),
     ).toEqual(["candidate_3", "candidate_2", "candidate_4", "candidate_1"]);
+    expect(ordered[0]).toBe(candidates[2]);
+    expect(ordered[1]).toBe(candidates[1]);
+    expect(ordered[2]).toBe(candidates[3]);
+    expect(ordered[3]).toBe(candidates[0]);
+    expect(candidates).toEqual(candidateSnapshot);
+    expect(assessments).toEqual(assessmentSnapshot);
   });
 
   it("普通任务保持输入顺序，不让分类结果扩大适用范围", () => {
@@ -537,12 +544,14 @@ describe("applyOfficialSourceSafetyOrder", () => {
       createRankedCandidate(second, "candidate_2"),
     ];
 
-    expect(
-      applyOfficialSourceSafetyOrder(candidates, [
-        createAssessment(first, { classification: "risky" }),
-        createAssessment(second, { classification: "official" }),
-      ]),
-    ).toEqual(candidates);
+    const ordered = applyOfficialSourceSafetyOrder(candidates, [
+      createAssessment(first, { classification: "risky" }),
+      createAssessment(second, { classification: "official" }),
+    ]);
+
+    expect(ordered).toEqual(candidates);
+    expect(ordered[0]).toBe(candidates[0]);
+    expect(ordered[1]).toBe(candidates[1]);
   });
 
   it("文档任务同样把 official 稳定排在 unknown 之前", () => {

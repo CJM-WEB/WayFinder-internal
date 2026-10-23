@@ -22,10 +22,21 @@ import { RunLogRecordSchema } from "../observability/run-log.js";
 
 export const QUALITY_METRICS_VERSION = "quality-metrics.v1" as const;
 
+const QualityEvalCallCountsSchema = RunLogRecordSchema.shape.counts.pick({
+  logicalSearchCalls: true,
+  logicalExtractCalls: true,
+  extractUrlCount: true,
+  logicalLlmCalls: true,
+  searchHttpAttempts: true,
+  extractHttpAttempts: true,
+});
+
 export const QualityEvalTelemetrySchema = RunLogRecordSchema.pick({
   timingsMs: true,
   tokens: true,
   estimatedCost: true,
+}).extend({
+  counts: QualityEvalCallCountsSchema,
 });
 
 export const QualityEvalOfficialSourceSchema = z.discriminatedUnion("status", [

@@ -40,7 +40,7 @@ import {
   type QualityEvalMetricMeasurement,
 } from "./quality-metrics.js";
 
-export const QUALITY_EVAL_SCHEMA_VERSION = "quality-eval.v3" as const;
+export const QUALITY_EVAL_SCHEMA_VERSION = "quality-eval.v4" as const;
 export const QUALITY_EVAL_DATASET_VERSION =
   "wayfinder-regression.v1" as const;
 
@@ -389,8 +389,20 @@ function projectRunLog(record: RunLogRecord | undefined): z.infer<
   typeof QualityEvalTelemetrySchema
 > | null {
   if (record === undefined) return null;
+
+  // Run Log 还包含可由 ResultGraph 推导的数量；Eval 只投影 Provider 调用事实，
+  // 防止同一事实在报告中出现两套来源并随 Run Log 扩展而隐式漂移。
+  const { counts } = record;
   return QualityEvalTelemetrySchema.parse({
     timingsMs: record.timingsMs,
+    counts: {
+      logicalSearchCalls: counts.logicalSearchCalls,
+      logicalExtractCalls: counts.logicalExtractCalls,
+      extractUrlCount: counts.extractUrlCount,
+      logicalLlmCalls: counts.logicalLlmCalls,
+      searchHttpAttempts: counts.searchHttpAttempts,
+      extractHttpAttempts: counts.extractHttpAttempts,
+    },
     tokens: record.tokens,
     estimatedCost: record.estimatedCost,
   });

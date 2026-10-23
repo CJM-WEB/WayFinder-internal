@@ -525,6 +525,7 @@ describe("WAY-58 单 Node 高风险检索矩阵", () => {
     const rerankProvider = new FakeLLMProvider([
       new LLMProviderError("provider_failure", true),
     ]);
+    const signal = new AbortController().signal;
 
     const result = await processNode(
       node,
@@ -543,7 +544,7 @@ describe("WAY-58 单 Node 高风险检索矩阵", () => {
           },
         },
       ),
-      new AbortController().signal,
+      signal,
     );
 
     expectCompletedExecution(result, events);
@@ -559,6 +560,25 @@ describe("WAY-58 单 Node 高风险检索矩阵", () => {
     ]);
     expect(readPromptCandidates(rerankProvider).map(item => item.candidateId))
       .toEqual(["candidate_2", "candidate_1"]);
+    expect(searchProvider.searchCalls[0]?.request).toEqual({
+      kind: "node",
+      nodeId: node.id,
+      query,
+      maxResults: 20,
+      capability: "general",
+      freshnessSensitive: false,
+    });
+    expect(searchProvider.searchCalls).toHaveLength(1);
+    expect(searchProvider.extractCalls).toHaveLength(1);
+    expect(rerankProvider.calls).toHaveLength(1);
+    expect(searchProvider.searchCalls[0]?.signal).toBe(signal);
+    expect(searchProvider.extractCalls[0]?.signal).toBe(signal);
+    expect(rerankProvider.calls[0]?.options.signal).toBe(signal);
+    expect(events.map(event => event.type)).toEqual([
+      "node.status",
+      "node.status",
+      "node.partial",
+    ]);
   });
 
   it("下载任务在 Rerank 成功后重新守住 official > unknown > risky", async () => {
@@ -616,6 +636,8 @@ describe("WAY-58 单 Node 高风险检索矩阵", () => {
         ),
       },
     ]);
+    const signal = new AbortController().signal;
+    const nodeSnapshot = structuredClone(node);
 
     const result = await processNode(
       node,
@@ -629,7 +651,7 @@ describe("WAY-58 单 Node 高风险检索矩阵", () => {
           knownRiskyDownloadDomains: ["downloads.example"],
         },
       }),
-      new AbortController().signal,
+      signal,
     );
 
     expectCompletedExecution(result, events);
@@ -639,6 +661,33 @@ describe("WAY-58 单 Node 高风险检索矩阵", () => {
       official.canonicalUrl,
       unknown.canonicalUrl,
       risky.canonicalUrl,
+    ]);
+    expect(node).toEqual(nodeSnapshot);
+    expect(searchProvider.searchCalls).toHaveLength(1);
+    expect(searchProvider.extractCalls).toHaveLength(1);
+    expect(rerankProvider.calls).toHaveLength(1);
+    expect(searchProvider.searchCalls[0]?.request).toEqual({
+      kind: "node",
+      nodeId: node.id,
+      query,
+      maxResults: 20,
+      capability: "general",
+      freshnessSensitive: false,
+    });
+    expect(searchProvider.extractCalls[0]?.canonicalUrls).toEqual([
+      official.canonicalUrl,
+      unknown.canonicalUrl,
+      risky.canonicalUrl,
+    ]);
+    expect(searchProvider.searchCalls[0]?.signal).toBe(signal);
+    expect(searchProvider.extractCalls[0]?.signal).toBe(signal);
+    expect(rerankProvider.calls[0]?.options.signal).toBe(signal);
+    expect(readPromptCandidates(rerankProvider).map(item => item.candidateId))
+      .toEqual(["candidate_3", "candidate_2", "candidate_1"]);
+    expect(events.map(event => event.type)).toEqual([
+      "node.status",
+      "node.status",
+      "node.ready",
     ]);
   });
 

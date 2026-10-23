@@ -1,5 +1,5 @@
 /**
- * 模块职责：把已校验的 `quality-eval.v3` 结果渲染为 WAY-88 本地人工评审工作表。
+ * 模块职责：把已校验的 `quality-eval.v4` 结果渲染为 WAY-88 本地人工评审工作表。
  *
  * 关键边界：
  * - 只消费已脱敏 Query Result，不接收 ResultGraph、Provider 响应或网页正文；

@@ -11,10 +11,10 @@ import {
 } from "@wayfinder/contracts";
 import { describe, expect, it } from "vitest";
 
-import { RunLogRecordSchema } from "../observability/run-log.js";
 import {
   QUALITY_METRICS_VERSION,
   QualityEvalMetricsSchema,
+  QualityEvalTelemetrySchema,
   measureQualityEvalMetrics,
 } from "./quality-metrics.js";
 
@@ -134,17 +134,21 @@ function createFailedResult(): ResultGraph {
 }
 
 function createTelemetry(totalMs: number) {
-  return RunLogRecordSchema.pick({
-    timingsMs: true,
-    tokens: true,
-    estimatedCost: true,
-  }).parse({
+  return QualityEvalTelemetrySchema.parse({
     timingsMs: {
       planning: 100,
       nodeProcessing: 200,
       total: totalMs,
       // Provider 耗时可以并发累加，Deadline 指标只能读取 total。
       provider: { search: 30_000, extract: 30_000, llm: 30_000 },
+    },
+    counts: {
+      logicalSearchCalls: 1,
+      logicalExtractCalls: 1,
+      extractUrlCount: 1,
+      logicalLlmCalls: 2,
+      searchHttpAttempts: 1,
+      extractHttpAttempts: 1,
     },
     tokens: {
       status: "complete",
