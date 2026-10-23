@@ -10,7 +10,7 @@
   },
   "scripts": {
     "build": "pnpm --filter @wayfinder/contracts --fail-if-no-match run build && pnpm --filter @wayfinder/web --fail-if-no-match run build && pnpm --filter @wayfinder/server --fail-if-no-match run build",
-    "ci": "pnpm run lint && pnpm run typecheck && pnpm run schema:check && pnpm run test && pnpm run build && pnpm run test:e2e",
+    "ci": "pnpm run lint && pnpm run typecheck && pnpm run schema:check && pnpm run test && pnpm run build && pnpm run test:production-smoke && pnpm run test:e2e",
     "dev": "pnpm -r --parallel --if-present run dev",
     "eval:golden": "pnpm --filter @wayfinder/server --fail-if-no-match run eval:golden",
     "eval:quality": "pnpm --filter @wayfinder/server --fail-if-no-match run eval:quality",
@@ -19,8 +19,10 @@
     "lint": "eslint eslint.config.mjs tests --max-warnings=0 && pnpm --filter @wayfinder/contracts --fail-if-no-match run lint && pnpm --filter @wayfinder/web --fail-if-no-match run lint && pnpm --filter @wayfinder/server --fail-if-no-match run lint",
     "schema:check": "pnpm --filter @wayfinder/contracts --fail-if-no-match run schema:check",
     "schema:generate": "pnpm --filter @wayfinder/contracts --fail-if-no-match run schema:generate",
+    "start": "pnpm --filter @wayfinder/server --fail-if-no-match run start",
     "test": "pnpm run test:tooling && pnpm --filter @wayfinder/contracts --fail-if-no-match run test && pnpm --filter @wayfinder/web --fail-if-no-match run test && pnpm --filter @wayfinder/server --fail-if-no-match run test",
     "test:e2e": "pnpm --filter @wayfinder/web --fail-if-no-match run test:e2e",
+    "test:production-smoke": "pnpm --filter @wayfinder/server --fail-if-no-match run smoke:production",
     "test:tooling": "vitest run tests",
     "typecheck": "tsc --project tsconfig.json --noEmit && pnpm --filter @wayfinder/contracts --fail-if-no-match run typecheck && pnpm --filter @wayfinder/web --fail-if-no-match run typecheck && pnpm --filter @wayfinder/server --fail-if-no-match run typecheck"
   },

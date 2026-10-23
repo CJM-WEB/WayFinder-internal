@@ -25,13 +25,20 @@ function createRuntime(
 }
 
 describe("runServer", () => {
-  it("配置通过后才使用已校验端口启动监听", async () => {
+  it("配置通过后才把完整已校验配置交给唯一启动回调", async () => {
     const runtime = createRuntime({ ...REQUIRED_ENVIRONMENT, PORT: "4321" });
 
     await runServer(runtime);
 
     expect(runtime.startListening).toHaveBeenCalledOnce();
-    expect(runtime.startListening).toHaveBeenCalledWith(4_321);
+    expect(runtime.startListening).toHaveBeenCalledWith(
+      expect.objectContaining({
+        port: 4_321,
+        llmApiKey: "test-llm-key",
+        tavilyApiKey: "test-tavily-key",
+        runLogging: false,
+      }),
+    );
     expect(runtime.writeError).not.toHaveBeenCalled();
     expect(runtime.setExitCode).not.toHaveBeenCalled();
   });

@@ -240,8 +240,21 @@ describe("JSON Schema 工具链门禁", () => {
       "pnpm --filter @wayfinder/contracts --fail-if-no-match run schema:check",
     );
     expect(rootScripts.ci).toBe(
-      "pnpm run lint && pnpm run typecheck && pnpm run schema:check && pnpm run test && pnpm run build && pnpm run test:e2e",
+      "pnpm run lint && pnpm run typecheck && pnpm run schema:check && pnpm run test && pnpm run build && pnpm run test:production-smoke && pnpm run test:e2e",
     );
+    expect(rootScripts["test:production-smoke"]).toBe(
+      "pnpm --filter @wayfinder/server --fail-if-no-match run smoke:production",
+    );
+
+    const ciScript = rootScripts.ci ?? "";
+    const ciStages = [
+      "pnpm run test",
+      "pnpm run build",
+      "pnpm run test:production-smoke",
+      "pnpm run test:e2e",
+    ].map(stage => ciScript.indexOf(stage));
+    expect(ciStages.every(index => index >= 0)).toBe(true);
+    expect(ciStages).toEqual([...ciStages].sort((left, right) => left - right));
 
     for (const script of [
       contractsScripts["schema:generate"],
