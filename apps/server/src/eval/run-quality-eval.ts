@@ -74,7 +74,7 @@ const GitBaselineSchema = z.strictObject({
   worktreeClean: z.literal(true),
 });
 
-const QualityEvalReportSchema = z.strictObject({
+export const QualityEvalReportSchema = z.strictObject({
   schemaVersion: z.literal(QUALITY_EVAL_SCHEMA_VERSION),
   issue: z.literal("WAY-86"),
   evaluationRunId: z.string().regex(RUN_ID_PATTERN),
@@ -134,7 +134,9 @@ const QualityEvalReportSchema = z.strictObject({
   results: z.array(QualityEvalQueryResultSchema).min(1).max(20),
 });
 
-type QualityEvalReport = Readonly<z.infer<typeof QualityEvalReportSchema>>;
+export type QualityEvalReport = Readonly<
+  z.infer<typeof QualityEvalReportSchema>
+>;
 
 export function parseQualityEvalCliArgs(
   args: readonly string[],
