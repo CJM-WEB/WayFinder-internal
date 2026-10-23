@@ -11,8 +11,7 @@ import type {
   RankingProfile,
   ResourceCandidate,
 } from "@wayfinder/contracts";
-import { z } from "zod";
-
+import { classifyFreshness } from "./freshness.js";
 import type { OfficialSourceAssessment } from "./official-source.js";
 
 export const MAX_PRERANK_CANDIDATES_PER_NODE = 6;
@@ -94,13 +93,9 @@ export type HeuristicRankInput = {
 type RankedEntry = {
   candidate: ResourceCandidate;
   originalIndex: number;
-  safetyTier: number;
 };
 
-const DAY_MS = 24 * 60 * 60 * 1000;
 const SCORE_PRECISION = 1_000_000;
-/** 与最终 Resource Contract 复用相同语义：必须是带时区的严格 ISO datetime。 */
-const PUBLISHED_AT_SCHEMA = z.iso.datetime({ offset: true });
 
 function clampUnit(value: number): number {
   return Math.min(1, Math.max(0, value));
@@ -173,30 +168,20 @@ function calculateFreshness(
   if (!enabled || publishedAt == null) {
     return 0;
   }
-
-  const parsedPublishedAt = PUBLISHED_AT_SCHEMA.safeParse(publishedAt);
-  if (!parsedPublishedAt.success) {
-    return 0;
+  switch (classifyFreshness(publishedAt, nowMs)) {
+    case "within1Day":
+      return 1;
+    case "within7Days":
+      return 0.8;
+    case "within30Days":
+      return 0.6;
+    case "within365Days":
+      return 0.3;
+    case "unavailable":
+    case "future":
+    case "older":
+      return 0;
   }
-
-  const publishedAtMs = Date.parse(parsedPublishedAt.data);
-  const ageMs = nowMs - publishedAtMs;
-  if (ageMs < 0) {
-    return 0;
-  }
-  if (ageMs <= DAY_MS) {
-    return 1;
-  }
-  if (ageMs <= 7 * DAY_MS) {
-    return 0.8;
-  }
-  if (ageMs <= 30 * DAY_MS) {
-    return 0.6;
-  }
-  if (ageMs <= 365 * DAY_MS) {
-    return 0.3;
-  }
-  return 0;
 }
 
 function isOfficialnessRelevant(
@@ -242,6 +227,50 @@ function calculateSafetyTier(
     case "risky":
       return 0;
   }
+}
+
+/**
+ * 在粗排和模型重排后复用同一个稳定安全层级。函数只重排现有候选：不重新评分、
+ * 不修改输入，也不把内部 URL 写入不变量错误。
+ */
+export function applyOfficialSourceSafetyOrder(
+  candidates: readonly ResourceCandidate[],
+  assessments: readonly OfficialSourceAssessment[],
+): ResourceCandidate[] {
+  const assessmentByCanonicalUrl = new Map<string, OfficialSourceAssessment>();
+  for (const assessment of assessments) {
+    const canonicalUrl = assessment.candidate.canonicalUrl;
+    if (assessmentByCanonicalUrl.has(canonicalUrl)) {
+      throw new TypeError("Official Source Assessment 与候选不一致");
+    }
+    assessmentByCanonicalUrl.set(canonicalUrl, assessment);
+  }
+
+  const seenCandidateUrls = new Set<string>();
+  return candidates
+    .map((candidate, originalIndex) => {
+      if (seenCandidateUrls.has(candidate.hit.canonicalUrl)) {
+        throw new TypeError("Official Source Assessment 与候选不一致");
+      }
+      seenCandidateUrls.add(candidate.hit.canonicalUrl);
+      const assessment = assessmentByCanonicalUrl.get(
+        candidate.hit.canonicalUrl,
+      );
+      if (assessment === undefined) {
+        throw new TypeError("Official Source Assessment 与候选不一致");
+      }
+      return {
+        candidate,
+        originalIndex,
+        safetyTier: calculateSafetyTier(assessment),
+      };
+    })
+    .sort(
+      (left, right) =>
+        right.safetyTier - left.safetyTier ||
+        left.originalIndex - right.originalIndex,
+    )
+    .map(entry => entry.candidate);
 }
 
 function calculateWeightedScore(
@@ -319,18 +348,18 @@ export function heuristicRankCandidates(
           heuristicSignals: signals,
         },
         originalIndex,
-        safetyTier: calculateSafetyTier(assessment),
       };
     },
   );
 
-  return entries
+  const rankedByScore = entries
     .sort(
       (left, right) =>
-        right.safetyTier - left.safetyTier ||
         right.candidate.heuristicScore - left.candidate.heuristicScore ||
         left.originalIndex - right.originalIndex,
     )
-    .slice(0, MAX_PRERANK_CANDIDATES_PER_NODE)
     .map(entry => entry.candidate);
+
+  return applyOfficialSourceSafetyOrder(rankedByScore, input.assessments)
+    .slice(0, MAX_PRERANK_CANDIDATES_PER_NODE);
 }

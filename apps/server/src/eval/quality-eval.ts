@@ -1,5 +1,5 @@
 /**
- * 模块职责：定义 WAY-86/87 Golden / Full Quality Eval（质量评估）的统一版本化接口，
+ * 模块职责：定义 WAY-86/87/90 Golden / Full Quality Eval（质量评估）的统一版本化接口，
  * 并把完整生产 Search Run 投影成可比较的本地事实与确定性指标工件。
  *
  * 关键边界：
@@ -24,6 +24,7 @@ import {
 import { z } from "zod";
 
 import type { RunLogRecord } from "../observability/run-log.js";
+import { classifyFreshness } from "../pipeline/freshness.js";
 import type { SearchStreamHandler } from "../routes/search.js";
 import {
   QualityEvalDuplicateResourceSchema,
@@ -39,7 +40,7 @@ import {
   type QualityEvalMetricMeasurement,
 } from "./quality-metrics.js";
 
-export const QUALITY_EVAL_SCHEMA_VERSION = "quality-eval.v2" as const;
+export const QUALITY_EVAL_SCHEMA_VERSION = "quality-eval.v3" as const;
 export const QUALITY_EVAL_DATASET_VERSION =
   "wayfinder-regression.v1" as const;
 
@@ -191,22 +192,56 @@ export function parseQualityEvalDatasets(
   };
 }
 
-const QualityEvalNodeSchema = z.strictObject({
-  id: z.string().min(1),
-  status: z.enum(["ready", "partial", "failed"]),
-  warnings: z.array(NodeWarningCodeSchema),
-  errorCode: AppErrorCodeSchema.nullable(),
-  resourceCount: z
-    .number()
-    .int()
-    .min(0)
-    .max(MAX_RETAINED_RESOURCES_PER_NODE),
-  topResources: z.array(ResourceSchema).max(3),
-  officialSource: QualityEvalOfficialSourceSchema,
-  diversity: z.strictObject({
-    distinctExactDomainCount: z.number().int().min(0).max(3),
+const QualityEvalFreshnessSchema = z.discriminatedUnion("status", [
+  z.strictObject({ status: z.literal("notApplicable") }),
+  z.strictObject({
+    status: z.literal("unavailable"),
+    reason: z.enum(["noResources", "noDatedResources"]),
   }),
-});
+  z.strictObject({
+    status: z.literal("measured"),
+    buckets: z.strictObject({
+      within1Day: z.number().int().min(0).max(3),
+      within7Days: z.number().int().min(0).max(3),
+      within30Days: z.number().int().min(0).max(3),
+      within365Days: z.number().int().min(0).max(3),
+      older: z.number().int().min(0).max(3),
+      future: z.number().int().min(0).max(3),
+    }),
+  }),
+]);
+
+const QualityEvalNodeSchema = z
+  .strictObject({
+    id: z.string().min(1),
+    status: z.enum(["ready", "partial", "failed"]),
+    warnings: z.array(NodeWarningCodeSchema),
+    errorCode: AppErrorCodeSchema.nullable(),
+    resourceCount: z
+      .number()
+      .int()
+      .min(0)
+      .max(MAX_RETAINED_RESOURCES_PER_NODE),
+    topResources: z.array(ResourceSchema).max(3),
+    officialSource: QualityEvalOfficialSourceSchema,
+    diversity: z.strictObject({
+      distinctExactDomainCount: z.number().int().min(0).max(3),
+    }),
+    freshness: QualityEvalFreshnessSchema,
+  })
+  .superRefine((node, context) => {
+    const exactDomainCount = new Set(
+      node.topResources.map(resource => resource.domain),
+    ).size;
+    if (node.diversity.distinctExactDomainCount !== exactDomainCount) {
+      context.addIssue({
+        code: "custom",
+        path: ["diversity", "distinctExactDomainCount"],
+        message: "域名多样性计数与 Top Resource 不一致",
+      });
+    }
+
+  });
 
 export const QualityEvalQueryResultSchema = z
   .strictObject({
@@ -221,6 +256,7 @@ export const QualityEvalQueryResultSchema = z
     ]),
     finalStatus: z.enum(["complete", "partial"]).nullable(),
     errorCode: AppErrorCodeSchema.nullable(),
+    freshnessReferenceAt: z.iso.datetime({ offset: true }).nullable(),
     plan: GraphPlanSchema.nullable(),
     nodes: z.array(QualityEvalNodeSchema),
     duplicateResources: z.array(QualityEvalDuplicateResourceSchema),
@@ -232,6 +268,7 @@ export const QualityEvalQueryResultSchema = z
     if (
       result.executionStatus === "completed" &&
       (result.finalStatus === null ||
+        result.freshnessReferenceAt === null ||
         result.plan === null ||
         result.telemetry === null ||
         result.metrics === null ||
@@ -245,6 +282,7 @@ export const QualityEvalQueryResultSchema = z
     if (
       result.executionStatus !== "completed" &&
       (result.finalStatus !== null ||
+        result.freshnessReferenceAt !== null ||
         result.plan !== null ||
         result.nodes.length > 0 ||
         result.duplicateResources.length > 0 ||
@@ -282,6 +320,54 @@ export const QualityEvalQueryResultSchema = z
         code: "custom",
         message: "指标失败必须定位当前 Query",
       });
+    }
+    if (
+      result.executionStatus === "completed" &&
+      result.plan !== null &&
+      result.freshnessReferenceAt !== null &&
+      result.metrics !== null
+    ) {
+      const planNodeIds = result.plan.nodes.map(node => node.id);
+      const projectedNodeIds = result.nodes.map(node => node.id);
+      if (
+        result.metrics.nodeCount !== planNodeIds.length ||
+        projectedNodeIds.length !== planNodeIds.length ||
+        projectedNodeIds.some((nodeId, index) => nodeId !== planNodeIds[index])
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["nodes"],
+          message: "Quality Eval Node 投影与 Plan 或指标不一致",
+        });
+      }
+      const planNodeById = new Map(
+        result.plan.nodes.map(node => [node.id, node]),
+      );
+      const referenceMs = Date.parse(result.freshnessReferenceAt);
+      for (const [index, node] of result.nodes.entries()) {
+        const planNode = planNodeById.get(node.id);
+        if (planNode === undefined) {
+          context.addIssue({
+            code: "custom",
+            path: ["nodes", index, "id"],
+            message: "新鲜度投影缺少对应 Plan Node",
+          });
+          continue;
+        }
+        const expected = readFreshness(
+          planNode.searchPlan.rankingProfile === "news" ||
+            result.plan.analysis.freshnessSensitive,
+          node.topResources,
+          referenceMs,
+        );
+        if (JSON.stringify(node.freshness) !== JSON.stringify(expected)) {
+          context.addIssue({
+            code: "custom",
+            path: ["nodes", index, "freshness"],
+            message: "新鲜度投影与 Plan、参考时间或 Top Resource 不一致",
+          });
+        }
+      }
     }
   });
 
@@ -337,6 +423,7 @@ function createExecutionFailure(
     executionStatus,
     finalStatus: null,
     errorCode,
+    freshnessReferenceAt: null,
     plan: null,
     nodes: [],
     duplicateResources: [],
@@ -352,6 +439,48 @@ function readDiversity(
     distinctExactDomainCount: new Set(
       topResources.map(resource => resource.domain),
     ).size,
+  };
+}
+
+/**
+ * 新鲜度只投影最终 Top 3 的可观察日期，不从摘要或模型分数推断缺失事实。
+ * ResultGraph 已通过公共 Schema；若带日期值仍无法分类，则视为内部投影不变量失败。
+ */
+function readFreshness(
+  applicable: boolean,
+  topResources: readonly ResultGraphNode["resources"][number][],
+  referenceMs: number,
+): z.infer<typeof QualityEvalFreshnessSchema> {
+  if (!applicable) return { status: "notApplicable" };
+
+  if (topResources.length === 0) {
+    return { status: "unavailable", reason: "noResources" };
+  }
+
+  const buckets = {
+    within1Day: 0,
+    within7Days: 0,
+    within30Days: 0,
+    within365Days: 0,
+    older: 0,
+    future: 0,
+  };
+  let publishedAtCount = 0;
+  for (const resource of topResources) {
+    if (resource.publishedAt == null) continue;
+    const bucket = classifyFreshness(resource.publishedAt, referenceMs);
+    if (bucket === "unavailable") {
+      throw new TypeError("Quality Eval Resource 日期事实无效");
+    }
+    buckets[bucket] += 1;
+    publishedAtCount += 1;
+  }
+  if (publishedAtCount === 0) {
+    return { status: "unavailable", reason: "noDatedResources" };
+  }
+  return {
+    status: "measured",
+    buckets,
   };
 }
 
@@ -375,6 +504,7 @@ function projectNodes(
   result: ResultGraph,
   nodeMetrics: readonly MeasuredNodeMetric[],
 ): z.infer<typeof QualityEvalNodeSchema>[] {
+  const referenceMs = Date.parse(result.meta.createdAt);
   return result.graph.nodes.map((node, index) => {
     const nodeMetric = nodeMetrics[index];
     if (nodeMetric === undefined || nodeMetric.nodeId !== node.id) {
@@ -391,6 +521,12 @@ function projectNodes(
       topResources,
       officialSource: nodeMetric.officialSource,
       diversity: readDiversity(topResources),
+      freshness: readFreshness(
+        node.searchPlan.rankingProfile === "news" ||
+          result.analysis.freshnessSensitive,
+        topResources,
+        referenceMs,
+      ),
     });
   });
 }
@@ -576,6 +712,7 @@ export async function evaluateQualityEvalQuery(
     executionStatus: "completed",
     finalStatus: terminal.data.finalStatus,
     errorCode: null,
+    freshnessReferenceAt: result.meta.createdAt,
     plan: finalPlan,
     nodes: projectNodes(result, measurement.nodeMetrics),
     duplicateResources: measurement.duplicateResources,

@@ -561,6 +561,87 @@ describe("WAY-58 单 Node 高风险检索矩阵", () => {
       .toEqual(["candidate_2", "candidate_1"]);
   });
 
+  it("下载任务在 Rerank 成功后重新守住 official > unknown > risky", async () => {
+    const query = "site:code.visualstudio.com Visual Studio Code download";
+    const baseNode = createNode([query]);
+    const node: GraphPlanNode = {
+      ...baseNode,
+      id: "vscode-download-success",
+      title: "Visual Studio Code official download",
+      description: "Find the official Visual Studio Code installer",
+      searchPlan: { ...baseNode.searchPlan, rankingProfile: "software" },
+    };
+    const risky = createHit(query, {
+      title: "Visual Studio Code mirror",
+      url: "https://downloads.example/vscode",
+      canonicalUrl: "https://downloads.example/vscode",
+      domain: "downloads.example",
+    });
+    const unknown = createHit(query, {
+      title: "Visual Studio Code guide",
+      url: "https://community.example/vscode",
+      canonicalUrl: "https://community.example/vscode",
+      domain: "community.example",
+    });
+    const official = createHit(query, {
+      title: "Visual Studio Code official download",
+      url: "https://code.visualstudio.com/download",
+      canonicalUrl: "https://code.visualstudio.com/download",
+      domain: "code.visualstudio.com",
+    });
+    const searchProvider = new FakeSearchProvider({
+      searchResponses: { [query]: [risky, unknown, official] },
+      extractResponse: [risky, unknown, official].map(hit => ({
+        canonicalUrl: hit.canonicalUrl,
+        content: `Extracted ${hit.title}`,
+      })),
+    });
+    const events: StreamEventPayload[] = [];
+    // Candidate ID 取自 Search 输入位置；模型故意把 risky 排到第一位。
+    const rerankProvider = new FakeLLMProvider([
+      {
+        ranking: ["candidate_1", "candidate_2", "candidate_3"].map(
+          candidateId => ({
+            candidateId,
+            scores: {
+              officialness: 0.8,
+              trustSafety: 0.8,
+              relevance: 0.8,
+              freshness: 0.8,
+              clarity: 0.8,
+            },
+            summary: `候选 ${candidateId} 的结构化摘要。`,
+            whySelected: `候选 ${candidateId} 与当前节点直接相关。`,
+          }),
+        ),
+      },
+    ]);
+
+    const result = await processNode(
+      node,
+      createContext(searchProvider, rerankProvider, events, {
+        analysis: {
+          ...ANALYSIS,
+          intent: "navigate",
+          topic: "Visual Studio Code download",
+        },
+        officialSourcePolicy: {
+          knownRiskyDownloadDomains: ["downloads.example"],
+        },
+      }),
+      new AbortController().signal,
+    );
+
+    expectCompletedExecution(result, events);
+    expect(result.warnings).toEqual([]);
+    expect(result.status).toBe("ready");
+    expect(result.resources.map(resource => resource.canonicalUrl)).toEqual([
+      official.canonicalUrl,
+      unknown.canonicalUrl,
+      risky.canonicalUrl,
+    ]);
+  });
+
   it("Rerank 后对精确 Domain 执行上限二，并稳定保留其他来源", async () => {
     const node = createNode();
     const hits = [

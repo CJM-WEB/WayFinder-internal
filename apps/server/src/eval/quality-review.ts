@@ -1,5 +1,5 @@
 /**
- * 模块职责：把已校验的 `quality-eval.v2` 结果渲染为 WAY-88 本地人工评审工作表。
+ * 模块职责：把已校验的 `quality-eval.v3` 结果渲染为 WAY-88 本地人工评审工作表。
  *
  * 关键边界：
  * - 只消费已脱敏 Query Result，不接收 ResultGraph、Provider 响应或网页正文；
@@ -76,6 +76,24 @@ function renderEdgeEvidence(edges: readonly GraphEdge[]): string {
     .join("\n");
 }
 
+function renderFreshnessEvidence(
+  freshness: QualityEvalQueryResult["nodes"][number]["freshness"],
+  topResources: QualityEvalQueryResult["nodes"][number]["topResources"],
+): string {
+  const publishedAtCount = topResources.filter(
+    resource => resource.publishedAt != null,
+  ).length;
+  const missingPublishedAtCount = topResources.length - publishedAtCount;
+  switch (freshness.status) {
+    case "notApplicable":
+      return "- 新鲜度事实：notApplicable";
+    case "unavailable":
+      return `- 新鲜度事实：unavailable / ${freshness.reason}；Top 3 数量 ${topResources.length}；缺失日期 ${missingPublishedAtCount}`;
+    case "measured":
+      return `- 新鲜度事实：measured；Top 3 数量 ${topResources.length}；有日期 ${publishedAtCount}；缺失日期 ${missingPublishedAtCount}\n- 新鲜度日期桶：1 天内 ${freshness.buckets.within1Day}；7 天内 ${freshness.buckets.within7Days}；30 天内 ${freshness.buckets.within30Days}；365 天内 ${freshness.buckets.within365Days}；更旧 ${freshness.buckets.older}；未来 ${freshness.buckets.future}`;
+  }
+}
+
 function renderCompletedQuery(
   result: QualityEvalQueryResult,
   queryIndex: number,
@@ -83,7 +101,8 @@ function renderCompletedQuery(
   if (
     result.executionStatus !== "completed" ||
     result.plan === null ||
-    result.metrics === null
+    result.metrics === null ||
+    result.freshnessReferenceAt === null
   ) {
     throw new TypeError("Quality Review 完成结果不完整");
   }
@@ -108,6 +127,7 @@ function renderCompletedQuery(
 - 结果状态：${node.status}
 - 完整保留 Resource 数量：${node.resourceCount}
 - 本表评审 Resource 数量：${node.topResources.length}
+${renderFreshnessEvidence(node.freshness, node.topResources)}
 ${renderScore("必要性")}
 ${renderScore("命名清晰度")}
 ${renderScore("粒度合理性")}
@@ -126,6 +146,7 @@ ${resources || "无可评分 Top 3 Resource。"}`;
 - 分类：${encode(result.query.category)}
 - 执行状态：${result.executionStatus}
 - 最终状态：${result.finalStatus ?? "unavailable"}
+- 新鲜度参考时间：${encode(result.freshnessReferenceAt)}
 - Node 数量：${result.metrics.nodeCount}
 - 完整 Resource 数量：${result.metrics.resourceCount}
 

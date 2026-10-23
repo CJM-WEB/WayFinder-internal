@@ -1,5 +1,5 @@
 /**
- * 测试职责：冻结 WAY-86/87 统一质量评估接口的数据集、完整管线事实、指标与失败语义。
+ * 测试职责：冻结 WAY-86/87/90 统一质量评估接口的数据集、完整管线事实、指标与失败语义。
  *
  * 边界说明：测试只使用公共 Contract 对象和 Fake Handler，不读取 Secret、不访问网络，
  * 也不对质量设置通过阈值、通过率或综合分。
@@ -280,7 +280,7 @@ describe("WAY-86 Quality Eval 数据集", () => {
 
 describe("WAY-86 Quality Eval 查询投影", () => {
   it("保留计划、Top 3、官方排名、跨 Node 重复、多样性与 Run Log 遥测", async () => {
-    expect(QUALITY_EVAL_SCHEMA_VERSION).toBe("quality-eval.v2");
+    expect(QUALITY_EVAL_SCHEMA_VERSION).toBe("quality-eval.v3");
     const payloads: StreamEventPayload[] = [
       { type: "query.analysis", data: plan.analysis },
       { type: "graph.plan", data: plan },
@@ -306,6 +306,7 @@ describe("WAY-86 Quality Eval 查询投影", () => {
       comparisonKey: `${QUALITY_EVAL_DATASET_VERSION}:${QUERY.id}`,
       executionStatus: "completed",
       finalStatus: "complete",
+      freshnessReferenceAt: resultGraph.meta.createdAt,
       plan,
       telemetry: {
         timingsMs: runLog.timingsMs,
@@ -334,6 +335,7 @@ describe("WAY-86 Quality Eval 查询投影", () => {
       diversity: {
         distinctExactDomainCount: 3,
       },
+      freshness: { status: "notApplicable" },
     });
     expect(projected.nodes[0]?.topResources).toHaveLength(3);
     expect(projected.nodes[0]?.topResources[0]).toMatchObject({
@@ -363,6 +365,254 @@ describe("WAY-86 Quality Eval 查询投影", () => {
         ],
       },
     ]);
+  });
+
+  it("为适用 Node 显式区分已测量、无日期与无资源的新鲜度事实", async () => {
+    const newsPlan = GraphPlanSchema.parse({
+      ...plan,
+      // 先只启用 News Profile，单独冻结 OR 条件的一侧。
+      analysis: { ...plan.analysis, freshnessSensitive: false },
+      nodes: plan.nodes.map(node => ({
+        ...node,
+        searchPlan: { ...node.searchPlan, rankingProfile: "news" },
+      })),
+    });
+    const firstNode = resultGraph.graph.nodes[0];
+    const secondNode = resultGraph.graph.nodes[1];
+    if (firstNode === undefined || secondNode === undefined) {
+      throw new Error("测试 Fixture 缺少 Node");
+    }
+    const newsResult = ResultGraphSchema.parse({
+      ...resultGraph,
+      analysis: newsPlan.analysis,
+      graph: {
+        ...resultGraph.graph,
+        nodes: [
+          {
+            ...firstNode,
+            searchPlan: newsPlan.nodes[0]?.searchPlan,
+            resources: firstNode.resources.map((resource, index) => ({
+              ...resource,
+              publishedAt:
+                index === 0
+                  ? "2026-10-22T12:00:00.000Z"
+                  : index === 1
+                    ? "2026-10-20T00:00:00.000Z"
+                    : null,
+            })),
+          },
+          {
+            ...secondNode,
+            searchPlan: newsPlan.nodes[1]?.searchPlan,
+            resources: secondNode.resources.map(resource => ({
+              ...resource,
+              publishedAt: null,
+            })),
+          },
+        ],
+      },
+    });
+    const projected = await evaluateQualityEvalQuery({
+      query: QUERY,
+      runId: "freshness-run",
+      signal: new AbortController().signal,
+      runDeadlineMs: 20_000,
+      expectedOfficialDomains: ["code.visualstudio.com"],
+      handleSearch: async ({ emit }) => {
+        await emit({ type: "graph.plan", data: newsPlan });
+        await emit({
+          type: "complete",
+          data: { finalStatus: "complete", result: newsResult },
+        });
+      },
+      readRunLog: () => runLog,
+    });
+
+    expect(projected.nodes[0]?.freshness).toEqual({
+      status: "measured",
+      buckets: {
+        within1Day: 1,
+        within7Days: 1,
+        within30Days: 0,
+        within365Days: 0,
+        older: 0,
+        future: 0,
+      },
+    });
+    expect(projected.nodes[1]?.freshness).toEqual({
+      status: "unavailable",
+      reason: "noDatedResources",
+    });
+
+    const sensitivePlan = GraphPlanSchema.parse({
+      ...newsPlan,
+      analysis: { ...newsPlan.analysis, freshnessSensitive: true },
+      nodes: newsPlan.nodes.map(node => ({
+        ...node,
+        searchPlan: { ...node.searchPlan, rankingProfile: "software" },
+      })),
+    });
+    const sensitiveResult = ResultGraphSchema.parse({
+      ...newsResult,
+      analysis: sensitivePlan.analysis,
+      graph: {
+        ...newsResult.graph,
+        nodes: newsResult.graph.nodes.map((node, index) => ({
+          ...node,
+          searchPlan: sensitivePlan.nodes[index]?.searchPlan,
+        })),
+      },
+    });
+    const sensitiveProjected = await evaluateQualityEvalQuery({
+      query: QUERY,
+      runId: "freshness-sensitive-run",
+      signal: new AbortController().signal,
+      runDeadlineMs: 20_000,
+      expectedOfficialDomains: ["code.visualstudio.com"],
+      handleSearch: async ({ emit }) => {
+        await emit({ type: "graph.plan", data: sensitivePlan });
+        await emit({
+          type: "complete",
+          data: { finalStatus: "complete", result: sensitiveResult },
+        });
+      },
+      readRunLog: () => runLog,
+    });
+    expect(sensitiveProjected.nodes[0]?.freshness.status).toBe("measured");
+
+    const noResourcesResult = ResultGraphSchema.parse({
+      ...newsResult,
+      graph: {
+        ...newsResult.graph,
+        nodes: newsResult.graph.nodes.map((node, index) =>
+          index === 0
+            ? {
+                ...node,
+                status: "failed",
+                resources: [],
+                warnings: [],
+                error: { code: "SEARCH_PROVIDER_FAILED", retryable: true },
+              }
+            : node,
+        ),
+      },
+      meta: { ...newsResult.meta, partial: true },
+    });
+    const noResources = await evaluateQualityEvalQuery({
+      query: QUERY,
+      runId: "freshness-empty-run",
+      signal: new AbortController().signal,
+      runDeadlineMs: 20_000,
+      expectedOfficialDomains: ["code.visualstudio.com"],
+      handleSearch: async ({ emit }) => {
+        await emit({ type: "graph.plan", data: newsPlan });
+        await emit({
+          type: "complete",
+          data: { finalStatus: "partial", result: noResourcesResult },
+        });
+      },
+      readRunLog: () => ({ ...runLog, outcome: "partial" }),
+    });
+
+    expect(noResources.nodes[0]?.freshness).toEqual({
+      status: "unavailable",
+      reason: "noResources",
+    });
+    expect(() =>
+      QualityEvalQueryResultSchema.parse({
+        ...sensitiveProjected,
+        nodes: sensitiveProjected.nodes.map((node, index) =>
+          index === 0
+            ? { ...node, freshness: { status: "notApplicable" } }
+            : node,
+        ),
+      }),
+    ).toThrow("新鲜度投影与 Plan、参考时间或 Top Resource 不一致");
+    expect(() =>
+      QualityEvalQueryResultSchema.parse({
+        ...sensitiveProjected,
+        freshnessReferenceAt: "2027-10-23T00:00:00.000Z",
+      }),
+    ).toThrow("新鲜度投影与 Plan、参考时间或 Top Resource 不一致");
+  });
+
+  it("严格拒绝旧版本或缺少新鲜度投影的节点", async () => {
+    const projected = await evaluateQualityEvalQuery({
+      query: QUERY,
+      runId: "strict-v3-run",
+      signal: new AbortController().signal,
+      runDeadlineMs: 20_000,
+      expectedOfficialDomains: ["code.visualstudio.com"],
+      handleSearch: async ({ emit }) => {
+        await emit({ type: "graph.plan", data: plan });
+        await emit({
+          type: "complete",
+          data: { finalStatus: "complete", result: resultGraph },
+        });
+      },
+      readRunLog: () => runLog,
+    });
+    const firstNode = projected.nodes[0];
+    if (firstNode === undefined) throw new Error("测试投影缺少首个 Node");
+    const nodeWithoutFreshness: Record<string, unknown> = { ...firstNode };
+    Reflect.deleteProperty(nodeWithoutFreshness, "freshness");
+    const otherNodes = projected.nodes.slice(1);
+
+    expect(() =>
+      QualityEvalQueryResultSchema.parse({
+        ...projected,
+        schemaVersion: "quality-eval.v2",
+      }),
+    ).toThrow();
+    expect(() =>
+      QualityEvalQueryResultSchema.parse({
+        ...projected,
+        nodes: [nodeWithoutFreshness, ...otherNodes],
+      }),
+    ).toThrow();
+    expect(() =>
+      QualityEvalQueryResultSchema.parse({
+        ...projected,
+        nodes: projected.nodes.slice(1),
+      }),
+    ).toThrow("Quality Eval Node 投影与 Plan 或指标不一致");
+    expect(() =>
+      QualityEvalQueryResultSchema.parse({
+        ...projected,
+        nodes: [firstNode, firstNode],
+      }),
+    ).toThrow("Quality Eval Node 投影与 Plan 或指标不一致");
+    expect(() =>
+      QualityEvalQueryResultSchema.parse({
+        ...projected,
+        metrics: { ...projected.metrics, nodeCount: 1 },
+      }),
+    ).toThrow("Quality Eval Node 投影与 Plan 或指标不一致");
+    expect(() =>
+      QualityEvalQueryResultSchema.parse({
+        ...projected,
+        freshnessReferenceAt: null,
+      }),
+    ).toThrow("completed 结果必须包含最终状态、计划与遥测");
+    expect(() =>
+      QualityEvalQueryResultSchema.parse({
+        ...projected,
+        freshnessReferenceAt: "invalid",
+      }),
+    ).toThrow();
+    expect(() =>
+      QualityEvalQueryResultSchema.parse({
+        ...projected,
+        nodes: projected.nodes.map((node, index) =>
+          index === 0
+            ? {
+                ...node,
+                diversity: { distinctExactDomainCount: 0 },
+              }
+            : node,
+        ),
+      }),
+    ).toThrow("域名多样性计数与 Top Resource 不一致");
   });
 
   it("Top 3 忠实保留生产数组顺序，官方排名仍取最小显式 rank", async () => {
@@ -625,6 +875,7 @@ describe("WAY-86 Quality Eval Suite 编排", () => {
           executionStatus: "run_failed",
           finalStatus: null,
           errorCode: "PLANNER_FAILED",
+          freshnessReferenceAt: null,
           plan: null,
           nodes: [],
           duplicateResources: [],
@@ -659,6 +910,7 @@ describe("WAY-86 Quality Eval Suite 编排", () => {
           finalStatus: null,
           errorCode:
             goldenSeen.length === 2 ? null : "PLANNER_FAILED",
+          freshnessReferenceAt: null,
           plan: null,
           nodes: [],
           duplicateResources: [],

@@ -16,6 +16,7 @@ import type {
 import { describe, expect, expectTypeOf, it } from "vitest";
 
 import {
+  applyOfficialSourceSafetyOrder,
   HEURISTIC_PROFILE_WEIGHTS,
   HEURISTIC_SIGNAL_KEYS,
   heuristicRankCandidates,
@@ -85,6 +86,26 @@ function createAssessment(
     classification: "unknown",
     signals: [],
     ...overrides,
+  };
+}
+
+function createRankedCandidate(
+  hit: CandidateSearchHit,
+  candidateId: string,
+): ResourceCandidate {
+  return {
+    candidateId,
+    hit,
+    heuristicScore: 0,
+    heuristicSignals: {
+      providerQuality: 0,
+      titleRelevance: 0,
+      snippetRelevance: 0,
+      https: 0,
+      domainDiversity: 0,
+      freshness: 0,
+      officialness: 0,
+    },
   };
 }
 
@@ -241,19 +262,41 @@ describe("heuristicRankCandidates", () => {
     ["2026-09-21T00:00:00.000Z", 0.6],
     ["2025-10-21T00:00:00.000Z", 0.3],
     ["2025-10-20T23:59:59.999Z", 0],
-    ["2026-10-21T08:00:00+08:00", 1],
-    ["2026-10-14T00:00:00", 0],
-    ["2026-02-30T00:00:00Z", 0],
-    ["invalid", 0],
     ["2026-10-22T00:00:00.000Z", 0],
     [null, 0],
-  ] as const)("按注入时钟计算 Freshness 桶：%s → %s", (publishedAt, expected) => {
+  ] as const)("把共享 Freshness 桶映射为生产分数：%s → %s", (publishedAt, expected) => {
     const candidate = createCandidate({ publishedAt });
     const result = rank([createAssessment(candidate)], {
       node: createNode("news"),
     });
 
     expect(result[0]?.heuristicSignals.freshness).toBe(expected);
+  });
+
+  it("News 候选仅日期不同时把更新结果排在旧结果之前", () => {
+    const old = createCandidate({
+      canonicalUrl: "https://news.example/item-old",
+      domain: "news.example",
+      publishedAt: "2025-10-20T00:00:00.000Z",
+      url: "https://news.example/item-old",
+    });
+    const recent = createCandidate({
+      canonicalUrl: "https://news.example/item-recent",
+      domain: "news.example",
+      publishedAt: "2026-10-20T00:00:00.000Z",
+      url: "https://news.example/item-recent",
+    });
+
+    const result = rank(
+      [createAssessment(old), createAssessment(recent)],
+      { node: createNode("news") },
+    );
+
+    expect(result.map(item => item.hit)).toEqual([recent, old]);
+    expect(result.map(item => item.candidateId)).toEqual([
+      "candidate_2",
+      "candidate_1",
+    ]);
   });
 
   it("仅在 news Profile 或 Freshness-sensitive 分析中启用 Freshness", () => {
@@ -431,5 +474,129 @@ describe("heuristicRankCandidates", () => {
     expectTypeOf<ReturnType<typeof heuristicRankCandidates>>().toEqualTypeOf<
       ResourceCandidate[]
     >();
+  });
+});
+
+describe("applyOfficialSourceSafetyOrder", () => {
+  it("稳定应用 official > unknown > risky，并保留同层级的模型顺序", () => {
+    const risky = createCandidate({
+      canonicalUrl: "https://risky.example/download",
+      domain: "risky.example",
+      url: "https://risky.example/download",
+    });
+    const firstUnknown = createCandidate({
+      canonicalUrl: "https://unknown-a.example/download",
+      domain: "unknown-a.example",
+      url: "https://unknown-a.example/download",
+    });
+    const official = createCandidate({
+      canonicalUrl: "https://official.example/download",
+      domain: "official.example",
+      url: "https://official.example/download",
+    });
+    const secondUnknown = createCandidate({
+      canonicalUrl: "https://unknown-b.example/download",
+      domain: "unknown-b.example",
+      url: "https://unknown-b.example/download",
+    });
+    const assessments = [
+      createAssessment(risky, {
+        queryKind: "download",
+        classification: "risky",
+      }),
+      createAssessment(firstUnknown, { queryKind: "download" }),
+      createAssessment(official, {
+        queryKind: "download",
+        classification: "official",
+      }),
+      createAssessment(secondUnknown, { queryKind: "download" }),
+    ];
+    const candidates = [
+      createRankedCandidate(risky, "candidate_1"),
+      createRankedCandidate(firstUnknown, "candidate_2"),
+      createRankedCandidate(official, "candidate_3"),
+      createRankedCandidate(secondUnknown, "candidate_4"),
+    ];
+
+    expect(
+      applyOfficialSourceSafetyOrder(candidates, assessments).map(
+        candidate => candidate.candidateId,
+      ),
+    ).toEqual(["candidate_3", "candidate_2", "candidate_4", "candidate_1"]);
+  });
+
+  it("普通任务保持输入顺序，不让分类结果扩大适用范围", () => {
+    const first = createCandidate();
+    const second = createCandidate({
+      canonicalUrl: "https://second.example/item",
+      domain: "second.example",
+      url: "https://second.example/item",
+    });
+    const candidates = [
+      createRankedCandidate(first, "candidate_1"),
+      createRankedCandidate(second, "candidate_2"),
+    ];
+
+    expect(
+      applyOfficialSourceSafetyOrder(candidates, [
+        createAssessment(first, { classification: "risky" }),
+        createAssessment(second, { classification: "official" }),
+      ]),
+    ).toEqual(candidates);
+  });
+
+  it("文档任务同样把 official 稳定排在 unknown 之前", () => {
+    const unknown = createCandidate();
+    const official = createCandidate({
+      canonicalUrl: "https://official.example/docs",
+      domain: "official.example",
+      url: "https://official.example/docs",
+    });
+    const candidates = [
+      createRankedCandidate(unknown, "candidate_1"),
+      createRankedCandidate(official, "candidate_2"),
+    ];
+
+    expect(
+      applyOfficialSourceSafetyOrder(candidates, [
+        createAssessment(unknown, { queryKind: "documentation" }),
+        createAssessment(official, {
+          queryKind: "documentation",
+          classification: "official",
+        }),
+      ]).map(candidate => candidate.candidateId),
+    ).toEqual(["candidate_2", "candidate_1"]);
+  });
+
+  it("候选与 Assessment 不一致时只抛固定内部错误，不泄露 URL", () => {
+    const candidate = createCandidate({
+      canonicalUrl: "https://secret.example/private-path",
+      domain: "secret.example",
+      url: "https://secret.example/private-path",
+    });
+
+    expect(() =>
+      applyOfficialSourceSafetyOrder(
+        [createRankedCandidate(candidate, "candidate_1")],
+        [],
+      ),
+    ).toThrowError("Official Source Assessment 与候选不一致");
+    try {
+      applyOfficialSourceSafetyOrder(
+        [createRankedCandidate(candidate, "candidate_1")],
+        [],
+      );
+    } catch (error: unknown) {
+      expect(String(error)).not.toContain(candidate.canonicalUrl);
+    }
+    expect(() =>
+      applyOfficialSourceSafetyOrder(
+        [
+          createRankedCandidate(candidate, "candidate_1"),
+          createRankedCandidate(candidate, "candidate_2"),
+        ],
+        [createAssessment(candidate)],
+      ),
+    ).toThrowError("Official Source Assessment 与候选不一致");
   });
 });

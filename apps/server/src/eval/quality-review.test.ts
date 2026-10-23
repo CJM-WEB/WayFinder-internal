@@ -1,7 +1,7 @@
 /**
  * 测试职责：冻结 WAY-88 人工评审工作表的评分字段、H1～H5 证据隔离与脱敏边界。
  *
- * 边界说明：只测试已校验 `quality-eval.v2` 投影的确定性渲染，不填写主观分数、
+ * 边界说明：只测试已校验 `quality-eval.v3` 投影的确定性渲染，不填写主观分数、
  * 不访问网络，也不把 Worksheet 变成第二份机器报告 Contract。
  */
 import { describe, expect, it } from "vitest";
@@ -33,7 +33,7 @@ function createCompletedResult(): QualityEvalQueryResult {
     whySelected: index === 0 ? MALICIOUS_TEXT : `Reason ${index + 1}`,
     rank: index + 1,
     searchProvider: "tavily",
-    publishedAt: null,
+    publishedAt: index === 0 ? "2026-10-22T12:00:00.000Z" : null,
   }));
   const firstNodeId = `node-${MALICIOUS_TEXT}`;
   const planNodes = [
@@ -79,11 +79,12 @@ function createCompletedResult(): QualityEvalQueryResult {
     executionStatus: "completed",
     finalStatus: "partial",
     errorCode: null,
+    freshnessReferenceAt: "2026-10-23T00:00:00.000Z",
     plan: {
       analysis: {
         intent: "navigate",
         topic: "download",
-        freshnessSensitive: false,
+        freshnessSensitive: true,
         ambiguityLevel: "low",
         broadSearchQueries: [],
         strategy: "plan_first",
@@ -115,6 +116,17 @@ function createCompletedResult(): QualityEvalQueryResult {
         topResources: resources,
         officialSource: { status: "notApplicable" },
         diversity: { distinctExactDomainCount: 1 },
+        freshness: {
+          status: "measured",
+          buckets: {
+            within1Day: 1,
+            within7Days: 0,
+            within30Days: 0,
+            within365Days: 0,
+            older: 0,
+            future: 0,
+          },
+        },
       },
       {
         id: "failed-node",
@@ -125,6 +137,10 @@ function createCompletedResult(): QualityEvalQueryResult {
         topResources: [],
         officialSource: { status: "notApplicable" },
         diversity: { distinctExactDomainCount: 0 },
+        freshness: {
+          status: "unavailable",
+          reason: "noResources",
+        },
       },
     ],
     duplicateResources: [],
@@ -184,6 +200,7 @@ function createFailedResult(
     executionStatus,
     finalStatus: null,
     errorCode: runFailed ? "PLANNER_FAILED" : null,
+    freshnessReferenceAt: null,
     plan: null,
     nodes: [],
     duplicateResources: [],
@@ -243,6 +260,18 @@ describe("WAY-88 人工质量评审工作表", () => {
     expect(review).toContain("冗余 Node 对证据：待填写");
     expect(count(review, "命名清晰度（1～5）：待填写")).toBe(2);
     expect(review).toContain("完整保留 Resource 数量：4");
+    expect(review).toContain(
+      `新鲜度参考时间：${encodeMarkdownArtifactText("2026-10-23T00:00:00.000Z")}`,
+    );
+    expect(review).toContain(
+      "新鲜度事实：measured；Top 3 数量 3；有日期 1；缺失日期 2",
+    );
+    expect(review).toContain(
+      "新鲜度日期桶：1 天内 1；7 天内 0；30 天内 0；365 天内 0；更旧 0；未来 0",
+    );
+    expect(review).toContain(
+      "新鲜度事实：unavailable / noResources；Top 3 数量 0；缺失日期 0",
+    );
     expect(count(review, "#### Resource ")).toBe(3);
     expect(review).not.toContain("#### Resource 4");
     expect(review).toContain(encodeMarkdownArtifactText("Resource 2"));
@@ -401,7 +430,7 @@ describe("WAY-88 人工质量评审工作表", () => {
       .toBe(full.replace("- Dataset：full", "- Dataset：<kind>"));
   });
 
-  it("拒绝绕过 quality-eval.v2 的非法结果", () => {
+  it("拒绝绕过 quality-eval.v3 的非法结果", () => {
     const invalidResult = {
       ...createCompletedResult(),
       metrics: null,

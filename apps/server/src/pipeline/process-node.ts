@@ -26,7 +26,10 @@ import {
 import { canonicalizeAndDeduplicateCandidates } from "./canonicalize-candidates.js";
 import { applySourceDiversity } from "./diversity.js";
 import { applyDeterministicHardFilters } from "./hard-filter.js";
-import { heuristicRankCandidates } from "./heuristic-rank.js";
+import {
+  applyOfficialSourceSafetyOrder,
+  heuristicRankCandidates,
+} from "./heuristic-rank.js";
 import {
   detectOfficialSourceSignals,
   type OfficialSourcePolicy,
@@ -223,9 +226,12 @@ export async function processNode(
     });
     appendUniqueWarnings(warnings, reranked.warnings);
 
-    const resources = finalizeResources(
-      applySourceDiversity(reranked.candidates),
+    // 模型只决定同一安全层级内的语义顺序，不能把风险站提升到有效官方来源之前。
+    const safetyOrdered = applyOfficialSourceSafetyOrder(
+      reranked.candidates,
+      assessments,
     );
+    const resources = finalizeResources(applySourceDiversity(safetyOrdered));
     if (resources.length === 0) {
       throw new NodeJobError("SEARCH_PROVIDER_FAILED", true);
     }
