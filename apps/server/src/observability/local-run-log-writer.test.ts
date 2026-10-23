@@ -62,7 +62,7 @@ function createRecord(): RunLogRecord {
       protocol: "0.1",
       resultGraph: "0.1",
       plannerPrompt: "graph-planner.v1",
-      reviserPrompt: "graph-reviser.v1",
+      reviserPrompt: "graph-reviser.v2",
       rerankerPrompt: "resource-reranker.v1",
     },
     providers: { search: "fake-search", llm: "fake-llm" },

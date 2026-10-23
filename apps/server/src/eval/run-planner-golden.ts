@@ -22,7 +22,7 @@ import {
 } from "../ai/prompts/graph-planner.v1.js";
 import {
   GRAPH_REVISER_PROMPT_VERSION,
-} from "../ai/prompts/graph-reviser.v1.js";
+} from "../ai/prompts/graph-reviser.v2.js";
 import {
   DEEPSEEK_LLM_MODEL,
   DEEPSEEK_LLM_PROVIDER_ID,

@@ -27,7 +27,7 @@ import { promisify } from "node:util";
 import { z } from "zod";
 
 import { GRAPH_PLANNER_PROMPT_VERSION } from "../ai/prompts/graph-planner.v1.js";
-import { GRAPH_REVISER_PROMPT_VERSION } from "../ai/prompts/graph-reviser.v1.js";
+import { GRAPH_REVISER_PROMPT_VERSION } from "../ai/prompts/graph-reviser.v2.js";
 import { RESOURCE_RERANKER_PROMPT_VERSION } from "../ai/prompts/resource-reranker.v1.js";
 import {
   DEEPSEEK_LLM_MODEL,

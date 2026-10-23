@@ -34,7 +34,7 @@ import {
   reviseGraphPlan,
   type GraphRevisionValidationDiagnostic,
 } from "./graph-reviser.js";
-import { GRAPH_REVISER_SYSTEM_PROMPT } from "./prompts/graph-reviser.v1.js";
+import { GRAPH_REVISER_SYSTEM_PROMPT } from "./prompts/graph-reviser.v2.js";
 
 const QUERY = "NVIDIA 最新动态";
 
