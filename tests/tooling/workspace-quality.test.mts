@@ -137,6 +137,39 @@ describe("Workspace 质量脚本", () => {
       }
     }
   });
+
+  it("仅通过显式 live 参数开放统一质量 Eval，且不接入普通 CI", () => {
+    const rootScripts = readScripts(path.join(repositoryRoot, "package.json"));
+    const serverScripts = readScripts(path.join(
+      repositoryRoot,
+      "apps/server/package.json",
+    ));
+    const workflow = fs.readFileSync(
+      path.join(repositoryRoot, ".github/workflows/ci.yml"),
+      "utf8",
+    );
+
+    expect(rootScripts["eval:quality"]).toBe(
+      "pnpm --filter @wayfinder/server --fail-if-no-match run eval:quality",
+    );
+    expect(serverScripts["eval:quality"]).toBe(
+      "pnpm run build && node dist/eval/run-quality-eval.js",
+    );
+
+    // 真实 Provider / LLM Eval 需要凭据且会产生费用，只允许人员显式运行。
+    for (const ordinaryGate of [
+      rootScripts.ci,
+      rootScripts.test,
+      serverScripts.test,
+      serverScripts.build,
+    ]) {
+      expect(ordinaryGate).not.toContain("eval:quality");
+      expect(ordinaryGate).not.toContain("run-quality-eval");
+      expect(ordinaryGate).not.toContain("--live");
+    }
+    expect(workflow).not.toContain("eval:quality");
+    expect(workflow).not.toContain("run-quality-eval");
+  });
 });
 
 describe("Workspace TypeScript 配置", () => {
