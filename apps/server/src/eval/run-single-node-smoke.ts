@@ -153,6 +153,8 @@ type EvaluateSingleNodeSmokeCaseInput = Readonly<{
   runDeadlineMs?: number;
   parentSignal?: AbortSignal;
   now?: () => number;
+  /** 同一受控实验可注入稳定时间，避免条件间墙钟变化成为额外变量。 */
+  referenceTime?: string;
 }>;
 
 const GoldenQueryFileSchema = z
@@ -578,7 +580,9 @@ export async function evaluateSingleNodeSmokeCase(
     throw new RangeError(`runDeadlineMs 必须是 1 到 ${RUN_DEADLINE_MS} 的整数`);
   }
 
-  const referenceTime = new Date().toISOString();
+  const referenceTime = z.iso.datetime({ offset: true }).parse(
+    input.referenceTime ?? new Date().toISOString(),
+  );
   const startedAt = now();
   const deadlineAt = startedAt + runDeadlineMs;
   const deadlineController = new AbortController();

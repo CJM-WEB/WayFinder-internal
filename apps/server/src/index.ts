@@ -74,6 +74,21 @@ export type {
 export { createRunSearchHandler } from "./orchestrator/run-search.js";
 export type { CreateRunSearchHandlerInput } from "./orchestrator/run-search.js";
 export {
+  createLocalRunLogSink,
+  RUN_LOG_RELATIVE_DIRECTORY,
+} from "./observability/local-run-log-writer.js";
+export {
+  createRunLogRecorder,
+  RunLogRecordSchema,
+} from "./observability/run-log.js";
+export type {
+  CreateRunLogRecorderInput,
+  RunLogRecord,
+  RunLogRecorder,
+  RunLogSink,
+  RunProviderOperation,
+} from "./observability/run-log.js";
+export {
   BROAD_DISCOVERY_RESULTS_PER_QUERY,
   BroadDiscoveryError,
   discoverBroadEvidence,

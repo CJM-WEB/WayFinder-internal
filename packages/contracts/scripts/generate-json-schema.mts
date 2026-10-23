@@ -11,6 +11,7 @@ import { z } from "zod";
 
 import {
   GraphPlanSchema,
+  H2EvaluationArtifactSchema,
   QueryAnalysisSchema,
   ResultGraphSchema,
   SearchRequestSchema,
@@ -67,6 +68,11 @@ const jsonSchemaRoots = [
     schemaName: "ResultGraphSchema",
     fileName: "result-graph.schema.json",
     schema: ResultGraphSchema,
+  },
+  {
+    schemaName: "H2EvaluationArtifactSchema",
+    fileName: "h2-evaluation-artifact.schema.json",
+    schema: H2EvaluationArtifactSchema,
   },
 ] as const satisfies readonly JsonSchemaRoot[];
 
@@ -257,7 +263,7 @@ export async function runJsonSchemaCli(args: readonly string[]): Promise<void> {
   const mode = parseCliMode(args);
   if (mode === "write") {
     await writeJsonSchemaArtifacts();
-    console.log("已生成五个 JSON Schema 产物。");
+    console.log(`已生成 ${jsonSchemaRoots.length} 个 JSON Schema 产物。`);
     return;
   }
 

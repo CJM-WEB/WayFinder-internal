@@ -5,6 +5,8 @@
  * Run 共用；Search、Extract、LLM 使用三个独立队列，不能限制整个 Node Pipeline。
  * Cache 应包在 Search 装饰器外层，使命中缓存时不占真实外部调用槽位。
  */
+import { AsyncLocalStorage } from "node:async_hooks";
+
 import pLimit from "p-limit";
 
 import type { LLMProvider } from "../ai/llm-provider.js";
@@ -54,13 +56,21 @@ function runLimited<T>(
   operation: () => Promise<T>,
 ): Promise<T> {
   signal.throwIfAborted();
-  const scheduled = limit(async () => {
-    signal.throwIfAborted();
-    const result = await operation();
-    // 防御忽略 Signal 的 Provider：取消后的迟到成功不能穿过装饰器。
-    signal.throwIfAborted();
-    return result;
-  });
+  /**
+   * p-limit 会在前一个任务释放 Slot 的异步上下文里启动队列下一项；若不显式恢复
+   * 调用方 Context，并发 Run 的日志观察值可能串账。snapshot 不承载业务数据，只保证
+   * 所有 AsyncLocalStorage（异步本地存储）在真实 Provider 调用时恢复到入队来源。
+   */
+  const runInCallerContext = AsyncLocalStorage.snapshot();
+  const scheduled = limit(() =>
+    runInCallerContext(async () => {
+      signal.throwIfAborted();
+      const result = await operation();
+      // 防御忽略 Signal 的 Provider：取消后的迟到成功不能穿过装饰器。
+      signal.throwIfAborted();
+      return result;
+    }),
+  );
 
   return new Promise<T>((resolve, reject) => {
     let settled = false;

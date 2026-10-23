@@ -10,6 +10,7 @@ import type {
   GraphEdge,
   GraphNodeCore,
   GraphPlan,
+  PresentationMode,
   ProcessingNodeStatus,
   ResultGraph,
   ResultGraphNode,
@@ -33,9 +34,13 @@ type GraphSnapshot =
 type GraphStoreData = {
   activeRunId: SearchRequest["runId"] | null;
   query: SearchRequest["query"];
+  /** null 仅表示当前尚未收到 AI Search 的分析结果；Direct 永远不写入 Store。 */
+  presentationMode: PresentationMode | null;
   nodes: GraphStoreNode[];
   edges: GraphEdge[];
   selectedNodeId: GraphNodeCore["id"] | null;
+  /** 首次 Compact 自动选择或用户实际改变选择后关闭，防止后续终态夺回控制权。 */
+  hasResolvedInitialCompactSelection: boolean;
   isSearching: boolean;
   lastSequence: StreamEvent["sequence"];
 };
@@ -79,6 +84,37 @@ const updateProcessingNode = (
   return didUpdate ? nextNodes : nodes;
 };
 
+/**
+ * ready/partial 的状态收敛与首次 Compact 选择必须原子提交。
+ * 未知 Node、重复终态、Graph 模式或用户已经接管选择时只更新应有的 Node 状态。
+ */
+const createUsefulNodePatch = (
+  state: GraphStoreData,
+  nodeId: GraphNodeCore["id"],
+  update: (node: ProcessingGraphNode) => GraphStoreNode,
+): Pick<GraphStoreData, "nodes"> &
+  Partial<
+    Pick<
+      GraphStoreData,
+      "selectedNodeId" | "hasResolvedInitialCompactSelection"
+    >
+  > => {
+  const nodes = updateProcessingNode(state.nodes, nodeId, update);
+  const shouldAutoSelect =
+    nodes !== state.nodes &&
+    state.presentationMode === "compact" &&
+    !state.hasResolvedInitialCompactSelection &&
+    state.selectedNodeId === null;
+
+  return shouldAutoSelect
+    ? {
+        nodes,
+        selectedNodeId: nodeId,
+        hasResolvedInitialCompactSelection: true,
+      }
+    : { nodes };
+};
+
 /** 图快照替换与选择修复必须一起提交，不能短暂暴露悬空 selectedNodeId。 */
 const createGraphPatch = (
   state: GraphStoreData,
@@ -101,9 +137,11 @@ const createInitialGraphState = (): GraphStoreData => ({
   activeRunId: null,
   // 空字符串只表示尚未开始查询；真实请求仍由 SearchRequestSchema 保证非空。
   query: "",
+  presentationMode: null,
   nodes: [],
   edges: [],
   selectedNodeId: null,
+  hasResolvedInitialCompactSelection: false,
   isSearching: false,
   lastSequence: 0,
 });
@@ -149,8 +187,11 @@ export const createGraphStore = () =>
 
         switch (event.type) {
           case "query.analysis":
-            // 当前 Store 不展示 Analysis；仍消费事件以维持全局 sequence 单调。
-            return sequencePatch;
+            // 只保存 UI 必需的展示模式，不复制完整 Analysis 形成第二份业务状态。
+            return {
+              presentationMode: event.data.presentationMode,
+              ...sequencePatch,
+            };
 
           case "graph.plan":
             // 服务端只应发布一次计划；重复计划不能把已收敛的 Node 退回 planned。
@@ -158,6 +199,7 @@ export const createGraphStore = () =>
               ? sequencePatch
               : {
                   ...createGraphPatch(state, event.data),
+                  presentationMode: event.data.analysis.presentationMode,
                   ...sequencePatch,
                 };
 
@@ -173,8 +215,8 @@ export const createGraphStore = () =>
 
           case "node.ready":
             return {
-              nodes: updateProcessingNode(
-                state.nodes,
+              ...createUsefulNodePatch(
+                state,
                 event.nodeId,
                 node => ({
                   ...node,
@@ -188,8 +230,8 @@ export const createGraphStore = () =>
 
           case "node.partial":
             return {
-              nodes: updateProcessingNode(
-                state.nodes,
+              ...createUsefulNodePatch(
+                state,
                 event.nodeId,
                 node => ({
                   ...node,
@@ -217,13 +259,36 @@ export const createGraphStore = () =>
               ...sequencePatch,
             };
 
-          case "complete":
+          case "complete": {
             // ResultGraph 已通过公共 Schema，是丢失增量事件后的权威恢复快照。
+            const graphPatch = createGraphPatch(
+              state,
+              event.data.result.graph,
+            );
+            const fallbackNode = graphPatch.nodes.find(
+              node => node.status === "ready" || node.status === "partial",
+            );
+            const shouldAutoSelectFromComplete =
+              event.data.result.analysis.presentationMode === "compact" &&
+              !state.hasResolvedInitialCompactSelection &&
+              state.selectedNodeId === null &&
+              fallbackNode !== undefined;
+
             return {
-              ...createGraphPatch(state, event.data.result.graph),
+              ...graphPatch,
+              // complete 是漏收增量事件后的权威恢复快照，模式也必须一并收敛。
+              presentationMode:
+                event.data.result.analysis.presentationMode,
+              ...(shouldAutoSelectFromComplete
+                ? {
+                    selectedNodeId: fallbackNode.id,
+                    hasResolvedInitialCompactSelection: true,
+                  }
+                : {}),
               ...sequencePatch,
               isSearching: false,
             };
+          }
 
           case "run.failed":
             // Run 级失败保留已收到的 Graph；错误展示由上层界面负责。
@@ -244,7 +309,11 @@ export const createGraphStore = () =>
       set(state =>
         state.selectedNodeId === selectedNodeId
           ? state
-          : { selectedNodeId },
+          : {
+              selectedNodeId,
+              // 实际选择变化表示用户已经接管；后续终态不能再次自动覆盖。
+              hasResolvedInitialCompactSelection: true,
+            },
       );
     },
 

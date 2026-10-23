@@ -14,6 +14,7 @@ import OpenAI, {
   RateLimitError,
 } from "openai";
 
+import { observeCurrentRun } from "../../observability/run-log-context.js";
 import {
   assertBoundedLLMTimeout,
   LLMProviderError,
@@ -252,7 +253,13 @@ export class DeepSeekLLMProvider implements LLMProvider {
     const outputText = readCompletedOutputText(response);
     const usage = readTokenUsage(response);
     if (usage !== null) {
-      this.#onTokenUsage?.(usage);
+      // Run Log 与外部观察器均为旁路能力，异常不得把有效模型响应改成失败。
+      observeCurrentRun({ kind: "token_usage", ...usage });
+      try {
+        this.#onTokenUsage?.(usage);
+      } catch {
+        // 可观测性失败不改变 Structured Output 结果。
+      }
     }
     try {
       // Structured Output 保证 JSON 形状，但业务 Schema 校验仍由 WAY-36 负责。

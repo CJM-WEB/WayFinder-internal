@@ -61,7 +61,160 @@ const createActiveStore = () => {
   return store;
 };
 
+const compactPlanEvent = () => {
+  const plan = eventOfType("graph.plan");
+  const compactPlan = StreamEventSchema.parse({
+    ...plan,
+    data: {
+      ...plan.data,
+      analysis: { ...plan.data.analysis, presentationMode: "compact" },
+    },
+  });
+  if (compactPlan.type !== "graph.plan") {
+    throw new Error("测试事件必须保持 graph.plan 类型");
+  }
+  return compactPlan;
+};
+
+const compactCompleteEvent = () => {
+  const complete = eventOfType("complete");
+  const compactComplete = StreamEventSchema.parse({
+    ...complete,
+    data: {
+      ...complete.data,
+      result: {
+        ...complete.data.result,
+        analysis: {
+          ...complete.data.result.analysis,
+          presentationMode: "compact",
+        },
+      },
+    },
+  });
+  if (compactComplete.type !== "complete") {
+    throw new Error("测试事件必须保持 complete 类型");
+  }
+  return compactComplete;
+};
+
 describe("Graph store StreamEvent Reducer", () => {
+  it.each(["graph", "compact"] as const)(
+    "query.analysis 忠实保存 %s 展示模式且不选择 Node",
+    presentationMode => {
+      const store = createActiveStore();
+      const analysis = eventOfType("query.analysis");
+      const modeEvent = StreamEventSchema.parse({
+        ...analysis,
+        data: { ...analysis.data, presentationMode },
+      });
+
+      store.getState().applyStreamEvent(modeEvent);
+
+      expect(store.getState().presentationMode).toBe(presentationMode);
+      expect(store.getState().selectedNodeId).toBeNull();
+      expect(store.getState().hasResolvedInitialCompactSelection).toBe(false);
+    },
+  );
+
+  it("compact 按首个有效 ready/partial 事件原子选择，failed 与未知 Node 不消耗机会", () => {
+    const store = createActiveStore();
+    const plan = compactPlanEvent();
+    const unknownReady = StreamEventSchema.parse({
+      ...eventOfType("node.ready"),
+      nodeId: "unknown-node",
+      sequence: plan.sequence + 1,
+    });
+    const failed = replaceEnvelope(eventOfType("node.failed"), {
+      sequence: plan.sequence + 2,
+    });
+    const partial = replaceEnvelope(eventOfType("node.partial"), {
+      sequence: plan.sequence + 3,
+    });
+    const ready = replaceEnvelope(eventOfType("node.ready"), {
+      sequence: plan.sequence + 4,
+    });
+
+    store.getState().applyStreamEvent(plan);
+    store.getState().applyStreamEvent(unknownReady);
+    store.getState().applyStreamEvent(failed);
+    expect(store.getState()).toMatchObject({
+      selectedNodeId: null,
+      hasResolvedInitialCompactSelection: false,
+    });
+
+    const subscriber = vi.fn();
+    store.subscribe(subscriber);
+    store.getState().applyStreamEvent(partial);
+
+    expect(subscriber).toHaveBeenCalledOnce();
+    expect(subscriber.mock.calls[0]?.[0]).toMatchObject({
+      selectedNodeId: eventOfType("node.partial").nodeId,
+      hasResolvedInitialCompactSelection: true,
+    });
+    expect(
+      store
+        .getState()
+        .nodes.find(node => node.id === eventOfType("node.partial").nodeId)
+        ?.status,
+    ).toBe("partial");
+
+    store.getState().applyStreamEvent(ready);
+    expect(store.getState().selectedNodeId).toBe(
+      eventOfType("node.partial").nodeId,
+    );
+  });
+
+  it("graph 模式的 ready/partial 不自动选择", () => {
+    const store = createActiveStore();
+    store.getState().applyStreamEvent(eventOfType("graph.plan"));
+    store.getState().applyStreamEvent(eventOfType("node.ready"));
+    store.getState().applyStreamEvent(eventOfType("node.partial"));
+
+    expect(store.getState()).toMatchObject({
+      selectedNodeId: null,
+      hasResolvedInitialCompactSelection: false,
+    });
+  });
+
+  it("用户实际改变并清除选择后，compact 终态不再夺回控制权", () => {
+    const store = createActiveStore();
+    const plan = compactPlanEvent();
+    const userSelectedNodeId = plan.data.nodes[0]?.id;
+    if (userSelectedNodeId === undefined) {
+      throw new Error("Compact 测试计划缺少 Node");
+    }
+    store.getState().applyStreamEvent(plan);
+    store.getState().selectNode(userSelectedNodeId);
+    store.getState().selectNode(null);
+
+    store.getState().applyStreamEvent(eventOfType("node.ready"));
+
+    expect(store.getState()).toMatchObject({
+      selectedNodeId: null,
+      hasResolvedInitialCompactSelection: true,
+    });
+  });
+
+  it("compact 初始 null 选择回调不关闭自动选择门闩", () => {
+    const store = createActiveStore();
+    store.getState().applyStreamEvent(compactPlanEvent());
+    const before = store.getState();
+    const subscriber = vi.fn();
+    store.subscribe(subscriber);
+
+    store.getState().selectNode(null);
+
+    expect(store.getState()).toBe(before);
+    expect(subscriber).not.toHaveBeenCalled();
+    expect(store.getState().hasResolvedInitialCompactSelection).toBe(false);
+
+    store.getState().applyStreamEvent(eventOfType("node.ready"));
+    expect(store.getState()).toMatchObject({
+      selectedNodeId: eventOfType("node.ready").nodeId,
+      hasResolvedInitialCompactSelection: true,
+    });
+  });
+
   it.each(everyEventType)(
     "旧 Run 的 $type 不改变状态或通知订阅者",
     event => {
@@ -112,6 +265,7 @@ describe("Graph store StreamEvent Reducer", () => {
     );
 
     expect(store.getState()).toMatchObject({
+      presentationMode: "graph",
       nodes: eventOfType("graph.plan").data.nodes,
       edges: eventOfType("graph.plan").data.edges,
       lastSequence: 3,
@@ -143,10 +297,13 @@ describe("Graph store StreamEvent Reducer", () => {
     store.getState().applyStreamEvent(complete);
 
     expect(store.getState()).toMatchObject({
+      presentationMode: "graph",
       nodes: pythonResultGraphFixture.graph.nodes,
       edges: pythonResultGraphFixture.graph.edges,
       lastSequence: complete.sequence,
       isSearching: false,
+      selectedNodeId: null,
+      hasResolvedInitialCompactSelection: false,
     });
   });
 
@@ -221,6 +378,7 @@ describe("Graph store StreamEvent Reducer", () => {
     );
 
     expect(failed).toMatchObject({
+      presentationMode: "graph",
       nodes: graphBeforeFailure,
       lastSequence: runFailedEvent.sequence,
       isSearching: false,
@@ -283,6 +441,91 @@ describe("Graph store StreamEvent Reducer", () => {
     expect(store.getState()).toBe(before);
   });
 
+  it("complete 可在漏收分析与计划事件时权威恢复 compact 模式", () => {
+    const store = createActiveStore();
+    const compactComplete = StreamEventSchema.parse({
+      ...compactCompleteEvent(),
+      sequence: 1,
+    });
+    if (compactComplete.type !== "complete") {
+      throw new Error("测试事件必须保持 complete 类型");
+    }
+
+    store.getState().applyStreamEvent(compactComplete);
+
+    expect(store.getState()).toMatchObject({
+      presentationMode: "compact",
+      nodes: compactComplete.data.result.graph.nodes,
+      edges: compactComplete.data.result.graph.edges,
+      isSearching: false,
+      selectedNodeId: compactComplete.data.result.graph.nodes.find(
+        node => node.status === "ready" || node.status === "partial",
+      )?.id,
+      hasResolvedInitialCompactSelection: true,
+    });
+  });
+
+  it("compact complete 全部 failed 时保持未选择", () => {
+    const store = createActiveStore();
+    const compactComplete = compactCompleteEvent();
+    const failedNodes = compactComplete.data.result.graph.nodes
+      .slice(0, 3)
+      .map(node => ({
+        ...node,
+        status: "failed" as const,
+        resources: [],
+        warnings: [],
+        error: { code: "UNKNOWN" as const, retryable: false },
+      }));
+    const failedNodeIds = new Set(failedNodes.map(node => node.id));
+    const allFailedComplete = StreamEventSchema.parse({
+      ...compactComplete,
+      sequence: 1,
+      data: {
+        ...compactComplete.data,
+        result: {
+          ...compactComplete.data.result,
+          graph: {
+            nodes: failedNodes,
+            edges: compactComplete.data.result.graph.edges.filter(
+              edge =>
+                failedNodeIds.has(edge.source) &&
+                failedNodeIds.has(edge.target),
+            ),
+          },
+          meta: { ...compactComplete.data.result.meta, partial: true },
+        },
+      },
+    });
+
+    store.getState().applyStreamEvent(allFailedComplete);
+
+    expect(store.getState()).toMatchObject({
+      selectedNodeId: null,
+      hasResolvedInitialCompactSelection: false,
+      isSearching: false,
+    });
+  });
+
+  it("compact complete 保留用户已经选择的有效 Node", () => {
+    const store = createActiveStore();
+    const plan = compactPlanEvent();
+    const selectedNodeId = plan.data.nodes[1]?.id;
+    if (selectedNodeId === undefined) {
+      throw new Error("Compact 测试计划缺少第二个 Node");
+    }
+    store.getState().applyStreamEvent(plan);
+    store.getState().selectNode(selectedNodeId);
+
+    store.getState().applyStreamEvent(compactCompleteEvent());
+
+    expect(store.getState()).toMatchObject({
+      selectedNodeId,
+      hasResolvedInitialCompactSelection: true,
+      isSearching: false,
+    });
+  });
+
   it("新 Run 重置封闭状态并重新接受 sequence 1", () => {
     const store = createActiveStore();
     store.getState().applyStreamEvent(runFailedEvent);
@@ -301,9 +544,11 @@ describe("Graph store StreamEvent Reducer", () => {
     expect(store.getState()).toMatchObject({
       activeRunId: "new-run",
       query: "new query",
+      presentationMode: "graph",
       nodes: [],
       isSearching: true,
       lastSequence: 1,
+      hasResolvedInitialCompactSelection: false,
     });
   });
 

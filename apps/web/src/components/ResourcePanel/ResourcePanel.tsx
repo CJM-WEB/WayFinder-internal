@@ -5,7 +5,12 @@
  * 边界：Show More 只改变本地视图，绝不触发第二次 Search；只有用户点击 Open 后
  * 才允许打开已重新校验的 HTTP(S) URL。
  */
-import type { Resource, StreamNodeStatus } from "@wayfinder/contracts";
+import type {
+  AppErrorCode,
+  NodeWarningCode,
+  Resource,
+  StreamNodeStatus,
+} from "@wayfinder/contracts";
 import { useState } from "react";
 import { useStore } from "zustand";
 
@@ -16,10 +21,10 @@ import {
   type GraphStoreNode,
 } from "../../stores/graph-store.js";
 import {
-  requestResourceOpen,
-  resolveSafeResourceUrl,
-  type ResourceUrlOpener,
-} from "./resource-url.js";
+  requestSafeUrlOpen,
+  resolveSafeHttpUrl,
+  type BrowserUrlOpener,
+} from "../../lib/url.js";
 
 type UnselectedPanelModel = {
   kind: "unselected";
@@ -32,12 +37,62 @@ type SelectedPanelModel = {
   nodeStatus: StreamNodeStatus;
   nodeStatusLabel: string;
   resources: readonly Resource[];
+  outcomeNotice: OutcomeNotice | null;
   emptyMessage: string | null;
 };
+
+type OutcomeNotice = Readonly<{
+  kind: "warning" | "error";
+  title: string;
+  messages: readonly string[];
+}>;
 
 export type ResourcePanelModel =
   | UnselectedPanelModel
   | SelectedPanelModel;
+
+/**
+ * Warning 只暴露公共 Contract 的稳定语义，不显示 Provider 原始异常、网页内容或内部诊断。
+ * Record 保证新增 Warning Code 时必须同步决定用户文案，不能静默退化为裸协议值。
+ */
+const NODE_WARNING_MESSAGES: Record<NodeWarningCode, string> = {
+  SEARCH_PROVIDER_PARTIAL: "部分搜索来源暂时不可用，现有结果仍可浏览。",
+  EXTRACTION_FAILED: "部分网页正文读取失败，相关内容使用搜索摘要。",
+  RERANK_FAILED: "智能排序暂时不可用，当前结果使用基础排序。",
+};
+
+/** Error 文案保持简洁且可穷尽；详细 cause、Stack 与 Provider 响应只能进入脱敏 Run Log。 */
+const NODE_ERROR_MESSAGES: Record<AppErrorCode, string> = {
+  PLANNER_FAILED: "未能生成可用的检索计划。",
+  INVALID_GRAPH: "检索计划无效，未能执行该节点。",
+  SEARCH_PROVIDER_FAILED: "未能获取可用的搜索结果。",
+  EXTRACTION_FAILED: "未能读取可用的网页内容。",
+  RERANK_FAILED: "未能完成结果排序。",
+  RUN_DEADLINE_EXCEEDED: "该节点未能在本轮时限内完成。",
+  REQUEST_ABORTED: "该节点处理已中止。",
+  UNKNOWN: "该节点处理失败，暂无可用结果。",
+};
+
+/** 只依据判别联合中的终态字段构造提示，不从 Resource 数量反向猜测状态。 */
+const buildOutcomeNotice = (node: GraphStoreNode): OutcomeNotice | null => {
+  if (node.status === "partial") {
+    return {
+      kind: "warning",
+      title: "结果部分降级",
+      messages: node.warnings.map(code => NODE_WARNING_MESSAGES[code]),
+    };
+  }
+
+  if (node.status === "failed") {
+    return {
+      kind: "error",
+      title: "节点处理失败",
+      messages: [NODE_ERROR_MESSAGES[node.error.code]],
+    };
+  }
+
+  return null;
+};
 
 /**
  * Store 中也可能存在尚未完成的 GraphPlan Node，因此先通过字段收窄再读取 resources。
@@ -51,12 +106,11 @@ export const buildResourcePanelModel = (
   }
 
   const resources = "resources" in node ? node.resources : [];
+  const outcomeNotice = buildOutcomeNotice(node);
   const emptyMessage =
-    resources.length > 0
+    resources.length > 0 || outcomeNotice?.kind === "error"
       ? null
-      : node.status === "failed"
-        ? "该节点检索失败，暂无可展示的资源。"
-        : "该节点仍在处理，资源准备完成后将在此显示。";
+      : "该节点仍在处理，资源准备完成后将在此显示。";
 
   return {
     kind: "selected",
@@ -65,6 +119,7 @@ export const buildResourcePanelModel = (
     nodeStatus: node.status,
     nodeStatusLabel: NODE_STATUS_LABELS[node.status],
     resources,
+    outcomeNotice,
     emptyMessage,
   };
 };
@@ -74,7 +129,7 @@ const formatSourceType = (sourceType: string): string =>
   sourceType.replaceAll("_", " ");
 
 /** window 只在点击回调执行时读取，服务端渲染与初始渲染不会自动打开页面。 */
-const openBrowserTab: ResourceUrlOpener = (url, target, features) =>
+const openBrowserTab: BrowserUrlOpener = (url, target, features) =>
   window.open(url, target, features);
 
 const DEFAULT_VISIBLE_RESOURCE_COUNT = 3;
@@ -94,7 +149,7 @@ function SelectedResourcePanel({
   openResource,
 }: {
   model: SelectedPanelModel;
-  openResource: ResourceUrlOpener;
+  openResource: BrowserUrlOpener;
 }) {
   const [expanded, setExpanded] = useState(false);
   const visibleResources = selectVisibleResources(model.resources, expanded);
@@ -119,13 +174,31 @@ function SelectedResourcePanel({
         <p>{model.resources.length} 条可用资源</p>
       </header>
 
+      {model.outcomeNotice === null ? null : (
+        <section
+          className={`resource-panel__outcome resource-panel__outcome--${model.outcomeNotice.kind}`}
+          role={model.outcomeNotice.kind === "error" ? "alert" : "status"}
+        >
+          <h3>{model.outcomeNotice.title}</h3>
+          <ul>
+            {model.outcomeNotice.messages.map(message => (
+              <li key={message}>{message}</li>
+            ))}
+          </ul>
+        </section>
+      )}
+
       {model.resources.length === 0 ? (
-        <p className="resource-panel__notice">{model.emptyMessage}</p>
+        model.emptyMessage === null ? null : (
+          <p className="resource-panel__notice" role="status">
+            {model.emptyMessage}
+          </p>
+        )
       ) : (
         <>
           <div className="resource-list" role="list" aria-label="节点资源">
             {visibleResources.map(resource => {
-              const safeUrl = resolveSafeResourceUrl(resource.url);
+              const safeUrl = resolveSafeHttpUrl(resource.url);
 
               return (
                 <article
@@ -165,7 +238,7 @@ function SelectedResourcePanel({
                       disabled={safeUrl === null}
                       aria-label={`在新标签页打开 ${resource.title}`}
                       onClick={() =>
-                        requestResourceOpen(resource.url, openResource)
+                        requestSafeUrlOpen(resource.url, openResource)
                       }
                     >
                       Open
@@ -201,7 +274,7 @@ export function ResourcePanelView({
   openResource = openBrowserTab,
 }: {
   model: ResourcePanelModel;
-  openResource?: ResourceUrlOpener;
+  openResource?: BrowserUrlOpener;
 }) {
   if (model.kind === "unselected") {
     return (

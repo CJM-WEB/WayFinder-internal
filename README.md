@@ -12,13 +12,12 @@ WayFinder 是一个 AI-native Browser 方向的 Web MVP。它把搜索结果组�
 
 ```text
 apps/
-  web/                 React + Vite 前端
+  web/                 React + Vite 前端及 Playwright E2E
   server/              Fastify 后端与搜索编排
 packages/
   contracts/           前后端共享的 Zod 数据契约
 tests/
   fixtures/            稳定测试样例
-  e2e/                 Playwright 端到端测试
 data/
   runs/                本地 Run Log；内容不进入 Git
 docs/                   预留的公开文档目录；本地资料不进入 Git
@@ -68,6 +67,7 @@ pnpm --version
    node --version
    pnpm --version
    pnpm install --frozen-lockfile
+   pnpm --filter @wayfinder/web exec playwright install chromium
    ```
 
 5. 创建本地环境文件：
@@ -102,6 +102,7 @@ pnpm --version
    node --version
    pnpm --version
    pnpm install --frozen-lockfile
+   pnpm --filter @wayfinder/web exec playwright install chromium
    ```
 
 5. 创建本地环境文件：
@@ -133,13 +134,14 @@ pnpm install --frozen-lockfile
 | `pnpm dev` | 启动可用的开发服务 |
 | `pnpm typecheck` | 运行 TypeScript 类型检查 |
 | `pnpm lint` | 运行静态检查 |
-| `pnpm run schema:generate` | 从五个公共 Zod 根 Schema 显式更新 JSON Schema 产物 |
+| `pnpm run schema:generate` | 从六个公共 Zod 根 Schema 显式更新 JSON Schema 产物 |
 | `pnpm run schema:check` | 只读检查 JSON Schema 是否缺失、变化或出现额外产物 |
 | `pnpm test` | 运行单元测试 |
 | `pnpm build` | 构建所有应用和 Package |
-| `pnpm run ci` | 按顺序运行 Lint、Typecheck、Schema Drift Check、Tests 与 Build |
+| `pnpm run test:e2e` | 用本地 Fixture 在 Chromium 中运行 Browser-like E2E |
+| `pnpm run ci` | 按顺序运行 Lint、Typecheck、Schema Drift Check、Tests、Build 与 E2E |
 
-当前单元测试已覆盖公共 Contract、JSON Schema 生成器和各 Workspace 工程链路；Web 与 Server 仍主要是 Smoke Test（冒烟测试），不能把工具链通过理解为产品功能已完成。
+当前自动化测试已覆盖公共 Contract、JSON Schema 生成器、各 Workspace 工程链路，以及一条无 Secret 的 Browser-like E2E；它仍不能替代真实 Provider Eval 与真人 Smoke Test（冒烟测试）。
 
 ## Continuous integration
 
@@ -158,6 +160,7 @@ Checkout
   → 按 .nvmrc 安装 Node.js
   → 按 package.json 启用固定版本 pnpm
   → pnpm install --frozen-lockfile
+  → 安装 lockfile 对应的 Playwright Chromium
   → pnpm run ci
 ```
 
@@ -165,10 +168,11 @@ Checkout
 
 ```bash
 pnpm install --frozen-lockfile
+pnpm --filter @wayfinder/web exec playwright install chromium
 pnpm run ci
 ```
 
-三个生产 Workspace 均已配置真实的 Lint、Typecheck、Test 和 Build 脚本；根命令会显式执行每个 Workspace，并在缺包、缺脚本或失败时返回非零状态。根 CI 在类型检查后运行只读 `schema:check`，人工修改、遗漏或增加受检产物都会阻断后续 Test 与 Build。
+三个生产 Workspace 均已配置真实的 Lint、Typecheck、Test 和 Build 脚本；根命令会显式执行每个 Workspace，并在缺包、缺脚本或失败时返回非零状态。根 CI 在类型检查后运行只读 `schema:check`，人工修改、遗漏或增加受检产物都会阻断后续 Test 与 Build；构建通过后还会运行固定 Chromium 的 Fixture E2E。
 
 受跟踪的 JSON Schema 位于 `packages/contracts/json-schema/`，由 Zod 4 原生转换器生成。它们只表达 Zod 输入侧可表示的结构投影；`trim()` 后长度、`superRefine()` 和跨对象关系仍必须由运行时 Zod Schema 校验，不能用 JSON Schema 通过替代真实入口的 Zod parse。
 

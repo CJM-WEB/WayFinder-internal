@@ -1,5 +1,5 @@
 /**
- * 测试职责：锁定 WAY-25 的五项发布面、确定性字节与代表性 JSON Schema 语义。
+ * 测试职责：锁定公共协议发布面、确定性字节与代表性 JSON Schema 语义。
  *
  * 关键约束：这里验证结构投影，不宣称 JSON Schema 与 Zod Runtime 接受域完全等价。
  */
@@ -24,6 +24,7 @@ const expectedFileNames = [
   "graph-plan.schema.json",
   "stream-event.schema.json",
   "result-graph.schema.json",
+  "h2-evaluation-artifact.schema.json",
 ] as const;
 
 const temporaryDirectories: string[] = [];
@@ -75,7 +76,7 @@ function parseArtifact(fileName: string): Record<string, unknown> {
 }
 
 describe("JSON Schema 纯生成", () => {
-  it("只按固定顺序发布五个外部 Wire 根协议", () => {
+  it("只按固定顺序发布批准的外部 Wire 根协议", () => {
     expect(createJsonSchemaArtifacts().map(item => item.fileName)).toEqual(
       expectedFileNames,
     );
@@ -124,6 +125,12 @@ describe("JSON Schema 纯生成", () => {
         branch => isRecord(branch) && branch.additionalProperties === false,
       ),
     ).toBe(true);
+
+    const h2Artifact = parseArtifact("h2-evaluation-artifact.schema.json");
+    expect(containsRecord(
+      h2Artifact,
+      record => record.const === "h2-evaluation.v1",
+    )).toBe(true);
   });
 
   it("不可表达类型失败时报告根 Schema 名称", () => {
@@ -133,7 +140,7 @@ describe("JSON Schema 纯生成", () => {
 });
 
 describe("JSON Schema 文件与 CLI 边界", () => {
-  it("写入五个白名单文件且保留普通文件", async () => {
+  it("写入全部白名单文件且保留普通文件", async () => {
     const directory = await createTemporaryDirectory();
     await fs.writeFile(path.join(directory, "README.txt"), "keep\n", "utf8");
 
@@ -194,7 +201,7 @@ describe("JSON Schema 文件与 CLI 边界", () => {
     ]);
   });
 
-  it("检查缺失目录时报告五项缺失且不创建目录", async () => {
+  it("检查缺失目录时报告全部缺失项且不创建目录", async () => {
     const root = await createTemporaryDirectory();
     const missingDirectory = path.join(root, "missing");
 

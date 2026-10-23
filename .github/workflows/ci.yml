@@ -55,6 +55,10 @@ jobs:
       - name: Install dependencies from lockfile
         run: pnpm install --frozen-lockfile
 
+      - name: Install pinned Chromium for browser E2E
+        # Playwright 版本由 Web package 与 lockfile 固定；只安装 WAY-85 所需的 Chromium。
+        run: pnpm --filter @wayfinder/web exec playwright install --with-deps chromium
+
       - name: 运行确定性质量门禁
         # Package 脚本为必需项，根命令还会按固定包名逐个执行；
         # 缺少或改名的 Workspace 会失败，不会被当作已验证。

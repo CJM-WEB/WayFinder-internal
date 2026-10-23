@@ -6,8 +6,9 @@
   "scripts": {
     "build": "tsc --project tsconfig.build.json --noEmit && vite build",
     "dev": "vite",
-    "lint": "eslint src vite.config.mjs --max-warnings=0",
-    "test": "vitest run",
+    "lint": "eslint src e2e vite.config.mjs playwright.config.ts --max-warnings=0",
+    "test": "vitest run src",
+    "test:e2e": "playwright test --config playwright.config.ts",
     "typecheck": "tsc --project tsconfig.build.json --noEmit && tsc --project tsconfig.json --noEmit"
   },
   "dependencies": {
@@ -19,6 +20,7 @@
     "zustand": "5.0.15"
   },
   "devDependencies": {
+    "@playwright/test": "1.64.1",
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
     "@vitejs/plugin-react": "6.1.2",

@@ -17,6 +17,7 @@ import type {
 } from "@wayfinder/contracts";
 import { LRUCache } from "lru-cache";
 
+import { observeCurrentRun } from "../observability/run-log-context.js";
 import type { SearchProvider } from "./provider.js";
 
 export const SEARCH_CACHE_TTL_MS = 10 * 60 * 1_000;
@@ -154,6 +155,8 @@ function emitObservation(
   observer: MemoryCachedSearchProviderOptions["onObservation"],
   observation: SearchProviderCacheObservation,
 ): void {
+  // Async Context 只接收脱敏计数，用于并发 Run 的本地日志归属。
+  observeCurrentRun({ kind: "cache", ...observation });
   try {
     observer?.(observation);
   } catch {

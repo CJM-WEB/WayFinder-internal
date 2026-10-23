@@ -1,23 +1,20 @@
 /**
- * 测试职责：冻结 Resource 打开前的浏览器侧 URL 安全边界。
+ * 测试职责：冻结浏览器外部 URL 的共享安全边界。
  *
  * 关键约束：只接受 Contract 允许的显式绝对 HTTP(S)，且安全 URL 只能触发一次新标签页打开。
  */
 import { describe, expect, it, vi } from "vitest";
 
-import {
-  requestResourceOpen,
-  resolveSafeResourceUrl,
-} from "./resource-url.js";
+import { requestSafeUrlOpen, resolveSafeHttpUrl } from "./url.js";
 
-describe("Resource URL 安全解析", () => {
+describe("浏览器 URL 安全解析", () => {
   it.each([
     ["https://example.com/docs", "https://example.com/docs"],
     ["http://example.com/resource", "http://example.com/resource"],
     ["hTtPs://example.com/guide", "https://example.com/guide"],
     ["https://example.com/resource ", "https://example.com/resource"],
   ])("接受并规范化显式 HTTP(S) URL：%s", (input, expected) => {
-    expect(resolveSafeResourceUrl(input)).toBe(expected);
+    expect(resolveSafeHttpUrl(input)).toBe(expected);
   });
 
   it.each([
@@ -34,19 +31,19 @@ describe("Resource URL 安全解析", () => {
     "http://",
     "not a url",
   ])("拒绝不安全或畸形 URL：%s", input => {
-    expect(resolveSafeResourceUrl(input)).toBeNull();
+    expect(resolveSafeHttpUrl(input)).toBeNull();
   });
 
   it.each([null, undefined, 42, {}, []])("拒绝非字符串输入：%o", input => {
-    expect(resolveSafeResourceUrl(input)).toBeNull();
+    expect(resolveSafeHttpUrl(input)).toBeNull();
   });
 });
 
-describe("Resource 打开请求", () => {
+describe("浏览器 URL 打开请求", () => {
   it("使用固定安全参数同步打开规范化后的 URL", () => {
     const opener = vi.fn(() => null);
 
-    expect(requestResourceOpen("hTtPs://example.com/guide", opener)).toBe(true);
+    expect(requestSafeUrlOpen("hTtPs://example.com/guide", opener)).toBe(true);
     expect(opener).toHaveBeenCalledOnce();
     expect(opener).toHaveBeenCalledWith(
       "https://example.com/guide",
@@ -63,7 +60,7 @@ describe("Resource 打开请求", () => {
   ])("拒绝 %o 且不调用浏览器 opener", input => {
     const opener = vi.fn(() => null);
 
-    expect(requestResourceOpen(input, opener)).toBe(false);
+    expect(requestSafeUrlOpen(input, opener)).toBe(false);
     expect(opener).not.toHaveBeenCalled();
   });
 });
