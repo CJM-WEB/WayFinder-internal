@@ -6,12 +6,16 @@ import { resolve } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
-import { buildServer } from "./app.js";
-import { ServerConfigError, parseServerConfig } from "./config.js";
+import {
+  ServerConfigError,
+  parseServerConfig,
+  type ServerConfig,
+} from "./config.js";
+import { buildProductionServer } from "./production-server.js";
 
 export interface ServerRuntime {
   readonly environment: Readonly<Record<string, string | undefined>>;
-  readonly startListening: (port: number) => Promise<void>;
+  readonly startListening: (config: ServerConfig) => Promise<void>;
   readonly writeError: (message: string) => void;
   readonly setExitCode: (code: number) => void;
 }
@@ -24,7 +28,7 @@ export async function runServer(runtime: ServerRuntime): Promise<void> {
   try {
     const config = parseServerConfig(runtime.environment);
 
-    await runtime.startListening(config.port);
+    await runtime.startListening(config);
   } catch (error: unknown) {
     const message =
       error instanceof ServerConfigError
@@ -45,11 +49,18 @@ const isDirectExecution =
 if (isDirectExecution) {
   await runServer({
     environment: process.env,
-    startListening: async (port) => {
-      // 必须在配置通过后才构建并监听，确保 Secret 缺失时无网络副作用。
-      const server = buildServer();
+    startListening: async (config) => {
+      // 路径只从当前模块推导，部署启动目录变化不能改变静态根或 Run Log 根。
+      const server = await buildProductionServer({
+        config,
+        repositoryRoot: fileURLToPath(new URL("../../../", import.meta.url)),
+        webAssetsDirectory: fileURLToPath(
+          new URL("../../web/dist/", import.meta.url),
+        ),
+      });
 
-      await server.listen({ host: "0.0.0.0", port });
+      // 腾讯云同机 Nginx 是唯一公网入口；Node 端口不得直接暴露。
+      await server.listen({ host: "127.0.0.1", port: config.port });
     },
     writeError: (message) => process.stderr.write(message),
     setExitCode: (code) => {

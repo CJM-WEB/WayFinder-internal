@@ -69,6 +69,11 @@ describe("TavilySearchProvider.search", () => {
             published_date: "2026-10-01T00:00:00Z",
             raw_content: "不得进入搜索结果的 Provider 私有正文",
             favicon: "https://docs.example.com/favicon.ico",
+            canonical_url: "javascript:alert('forged canonical URL')",
+            is_official: true,
+            source_type: "official",
+            metadata: { providerHints: ["news"] },
+            rankingProfile: "shopping",
           },
           {
             title: "Compiler Options",
@@ -153,13 +158,19 @@ describe("TavilySearchProvider.search", () => {
     });
   });
 
-  it("原始响应包含无效 URL 时返回稳定的 Schema 错误", async () => {
+  it.each([
+    "not-a-url",
+    "javascript:alert(1)",
+    "data:text/html,unsafe",
+    "file:///tmp/private",
+    "ftp://example.com/file",
+  ])("原始响应包含不安全或无效 URL 时返回稳定的 Schema 错误：%s", async unsafeUrl => {
     const fetchImplementation = vi.fn<typeof fetch>().mockResolvedValue(
       jsonResponse({
         results: [
           {
             title: "Invalid URL",
-            url: "not-a-url",
+            url: unsafeUrl,
             content: "Untrusted provider payload.",
             score: 0.5,
           },
@@ -382,12 +393,18 @@ describe("TavilySearchProvider.extract", () => {
     });
   });
 
-  it("拒绝无效输入 URL 且不发出外部请求", async () => {
+  it.each([
+    "not-a-url",
+    "javascript:alert(1)",
+    "data:text/html,unsafe",
+    "file:///tmp/private",
+    "ftp://example.com/file",
+  ])("拒绝不安全或无效输入 URL 且不发出外部请求：%s", async unsafeUrl => {
     const fetchImplementation = vi.fn<typeof fetch>();
 
     await expect(
       createProvider(fetchImplementation).extract(
-        ["not-a-url"],
+        [unsafeUrl],
         createRunSignal(),
       ),
     ).rejects.toMatchObject({

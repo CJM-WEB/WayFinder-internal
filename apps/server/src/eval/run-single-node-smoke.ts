@@ -56,6 +56,7 @@ import {
   TavilySearchProvider,
   type TavilyAttemptObservation,
 } from "../search/providers/tavily.js";
+import { encodeMarkdownArtifactText } from "./markdown-artifact.js";
 
 const execFileAsync = promisify(execFile);
 const EXPECTED_CASE_COUNT = 3;
@@ -604,7 +605,8 @@ export async function evaluateSingleNodeSmokeCase(
         new DOMException("单 Node Smoke 已超过安全截止时间", "TimeoutError"),
       );
     }
-    deadlineSignal.throwIfAborted();
+    // 组合 Signal 同时承载人员取消与 Run Deadline；这里必须保留最先发生的原始 reason。
+    signal.throwIfAborted();
     return remainingMs;
   };
   const telemetry: MutableProviderTelemetry = {
@@ -656,10 +658,6 @@ export async function evaluateSingleNodeSmokeCase(
   };
 
   try {
-    const remainingMs = Math.min(
-      input.rerankTimeoutMs,
-      readRemainingDeadlineMs(),
-    );
     const result = ResultGraphNodeSchema.parse(
       await processNode(
         input.smokeCase.node,
@@ -670,11 +668,14 @@ export async function evaluateSingleNodeSmokeCase(
           // 没有人员批准的真实风险域名清单时必须保持为空。
           officialSourcePolicy: { knownRiskyDownloadDomains: [] },
           nowMs: Date.parse(referenceTime),
-          rerankTimeoutMs: remainingMs,
+          rerankTimeoutMs: input.rerankTimeoutMs,
           emit,
           language: "en",
         },
-        signal,
+        {
+          signal,
+          requirePositiveRemainingMs: readRemainingDeadlineMs,
+        },
       ),
     );
     if (
@@ -875,15 +876,8 @@ export async function writeSingleNodeSmokePrivateJson(
   });
 }
 
-/**
- * 逐 Unicode code point 转成数字实体，使网页/模型文本只能显示为纯文本，
- * 不能形成 Markdown Link/Image、HTML Tag 或自动链接并触发外部请求。
- */
-export function encodeSingleNodeSmokeReviewText(value: string): string {
-  return [...value]
-    .map(codePoint => `&#${String(codePoint.codePointAt(0))};`)
-    .join("");
-}
+// 保留既有导出名，但删除与 Planner / Quality Review 重复的实现。
+export const encodeSingleNodeSmokeReviewText = encodeMarkdownArtifactText;
 
 function renderHumanReview(
   results: readonly SingleNodeSmokeCaseResult[],

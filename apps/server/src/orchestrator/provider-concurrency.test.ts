@@ -1,6 +1,7 @@
 /**
  * 测试职责：冻结进程级 Provider 并发装饰器的三层独立配额、错误透明性和安全配置。
- * 排队取消与真实 Node 并行接线由 start-node-jobs.test.ts 联合验证。
+ * 本文件直接验证 LLM 排队扣时与取消，真实 Node 并行接线由
+ * start-node-jobs.test.ts 联合验证。
  */
 import type {
   ExtractedPage,
@@ -11,11 +12,13 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   createDeferred,
+  createFixedClock,
   type Deferred,
 } from "../../../../tests/support/test-infrastructure.mjs";
-import type {
-  LLMProvider,
-  StructuredLLMInput,
+import {
+  LLMProviderError,
+  type LLMProvider,
+  type StructuredLLMInput,
 } from "../ai/llm-provider.js";
 import type { SearchProvider } from "../search/provider.js";
 import { createConcurrencyLimitedProviders } from "./provider-concurrency.js";
@@ -34,6 +37,12 @@ const STRUCTURED_INPUT: StructuredLLMInput = {
   user: "user",
   schemaName: "test_schema",
   schema: {},
+};
+
+const UNUSED_SEARCH_PROVIDER: SearchProvider = {
+  id: "unused-search",
+  capabilities: ["general"],
+  search: async () => [],
 };
 
 type ActivityGate<T> = Readonly<{
@@ -205,6 +214,185 @@ describe("createConcurrencyLimitedProviders", () => {
     expect([searchGate.active(), extractGate.active(), llmGate.active()]).toEqual(
       [0, 0, 0],
     );
+  });
+
+  it("LLM 取得槽位后从阶段 timeout 扣除队列等待时间", async () => {
+    const clock = createFixedClock(0);
+    const activeResponses = Array.from({ length: 3 }, () =>
+      createDeferred<unknown>(),
+    );
+    const receivedTimeouts: number[] = [];
+    const llmProvider: LLMProvider = {
+      id: "queue-budget-llm",
+      structured: async (_input, options) => {
+        const callIndex = receivedTimeouts.length;
+        receivedTimeouts.push(options.timeoutMs);
+        return activeResponses[callIndex]?.promise ?? {};
+      },
+    };
+    const limited = createConcurrencyLimitedProviders({
+      searchProvider: UNUSED_SEARCH_PROVIDER,
+      llmProvider,
+      concurrency: { search: 1, extract: 1, llm: 3 },
+      now: clock.now,
+    });
+    const signal = new AbortController().signal;
+
+    const activeCalls = Array.from({ length: 3 }, () =>
+      limited.llmProvider.structured(STRUCTURED_INPUT, {
+        signal,
+        timeoutMs: 1_000,
+      }),
+    );
+    await vi.waitFor(() =>
+      expect(receivedTimeouts).toEqual([1_000, 1_000, 1_000]),
+    );
+    const queued = limited.llmProvider.structured(STRUCTURED_INPUT, {
+      signal,
+      timeoutMs: 1_000,
+    });
+
+    clock.advanceBy(400);
+    for (const response of activeResponses) response.resolve({});
+
+    await expect(Promise.all(activeCalls)).resolves.toEqual([{}, {}, {}]);
+    await expect(queued).resolves.toEqual({});
+    expect(receivedTimeouts).toEqual([1_000, 1_000, 1_000, 600]);
+  });
+
+  it("LLM 排队耗尽阶段 timeout 时不调用底层 Provider", async () => {
+    const clock = createFixedClock(0);
+    const activeResponses = Array.from({ length: 3 }, () =>
+      createDeferred<unknown>(),
+    );
+    let providerCalls = 0;
+    const llmProvider: LLMProvider = {
+      id: "exhausted-queue-budget-llm",
+      structured: async () => {
+        const callIndex = providerCalls;
+        providerCalls += 1;
+        return activeResponses[callIndex]?.promise ?? {};
+      },
+    };
+    const limited = createConcurrencyLimitedProviders({
+      searchProvider: UNUSED_SEARCH_PROVIDER,
+      llmProvider,
+      concurrency: { search: 1, extract: 1, llm: 3 },
+      now: clock.now,
+    });
+    const signal = new AbortController().signal;
+
+    const activeCalls = Array.from({ length: 3 }, () =>
+      limited.llmProvider.structured(STRUCTURED_INPUT, {
+        signal,
+        timeoutMs: 1_000,
+      }),
+    );
+    await vi.waitFor(() => expect(providerCalls).toBe(3));
+    const queued = limited.llmProvider.structured(STRUCTURED_INPUT, {
+      signal,
+      timeoutMs: 1_000,
+    });
+
+    clock.advanceBy(1_000);
+    for (const response of activeResponses) response.resolve({});
+
+    await expect(Promise.all(activeCalls)).resolves.toEqual([{}, {}, {}]);
+    await expect(queued).rejects.toEqual(
+      new LLMProviderError("timeout", true),
+    );
+    expect(providerCalls).toBe(3);
+  });
+
+  it("LLM 排队取消优先传播原始 reason，且释放槽位后不调用底层 Provider", async () => {
+    const activeResponse = createDeferred<unknown>();
+    let providerCalls = 0;
+    const llmProvider: LLMProvider = {
+      id: "cancelled-queue-budget-llm",
+      structured: async () => {
+        providerCalls += 1;
+        return providerCalls === 1 ? activeResponse.promise : {};
+      },
+    };
+    const limited = createConcurrencyLimitedProviders({
+      searchProvider: UNUSED_SEARCH_PROVIDER,
+      llmProvider,
+      concurrency: { search: 1, extract: 1, llm: 1 },
+    });
+    const activeSignal = new AbortController().signal;
+    const queuedController = new AbortController();
+    const reason = new DOMException("run cancelled", "AbortError");
+
+    const active = limited.llmProvider.structured(STRUCTURED_INPUT, {
+      signal: activeSignal,
+      timeoutMs: 1_000,
+    });
+    await vi.waitFor(() => expect(providerCalls).toBe(1));
+    const queued = limited.llmProvider.structured(STRUCTURED_INPUT, {
+      signal: queuedController.signal,
+      timeoutMs: 1_000,
+    });
+
+    queuedController.abort(reason);
+    await expect(queued).rejects.toBe(reason);
+    activeResponse.resolve({});
+    await expect(active).resolves.toEqual({});
+    await vi.waitFor(() => expect(providerCalls).toBe(1));
+  });
+
+  it("LLM 并发时钟回拨时不扩张调用方 timeout", async () => {
+    const times = [100, 50];
+    let receivedTimeoutMs: number | null = null;
+    const limited = createConcurrencyLimitedProviders({
+      searchProvider: UNUSED_SEARCH_PROVIDER,
+      llmProvider: {
+        id: "rollback-clock-llm",
+        structured: async (_input, options) => {
+          receivedTimeoutMs = options.timeoutMs;
+          return {};
+        },
+      },
+      concurrency: { search: 1, extract: 1, llm: 1 },
+      now: () => times.shift() ?? 50,
+    });
+
+    await limited.llmProvider.structured(STRUCTURED_INPUT, {
+      signal: new AbortController().signal,
+      timeoutMs: 750,
+    });
+
+    expect(receivedTimeoutMs).toBe(750);
+  });
+
+  it.each([
+    ["入队", [Number.NaN]],
+    ["取得槽位", [0, Number.POSITIVE_INFINITY]],
+  ] as const)("LLM %s时拒绝非有限时钟", async (_stage, sourceTimes) => {
+    const times = [...sourceTimes];
+    let providerCalls = 0;
+    const limited = createConcurrencyLimitedProviders({
+      searchProvider: UNUSED_SEARCH_PROVIDER,
+      llmProvider: {
+        id: "invalid-clock-llm",
+        structured: async () => {
+          providerCalls += 1;
+          return {};
+        },
+      },
+      concurrency: { search: 1, extract: 1, llm: 1 },
+      now: () => times.shift() ?? 0,
+    });
+
+    const call = async (): Promise<unknown> =>
+      limited.llmProvider.structured(STRUCTURED_INPUT, {
+        signal: new AbortController().signal,
+        timeoutMs: 1_000,
+      });
+
+    await expect(call()).rejects.toThrow(
+      "Provider 并发时钟必须返回有限数字",
+    );
+    expect(providerCalls).toBe(0);
   });
 
   it("Provider 同步抛错或异步拒绝都会释放槽位并保留原错误对象", async () => {

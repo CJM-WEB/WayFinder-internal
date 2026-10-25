@@ -298,16 +298,13 @@ export function createRunSearchHandler(
       let outcomes: readonly NodeJobOutcome[];
       observeSafely(() => recorder?.recordNodeProcessingStarted());
       try {
-        const rerankTimeoutMs = Math.min(
-          dependencies.rerankTimeoutMs,
-          runScope.requirePositiveRemainingMs(),
-        );
         const jobs = startNodeJobs({
           plan,
           context: {
             officialSourcePolicy: dependencies.officialSourcePolicy,
             nowMs: startedAt,
-            rerankTimeoutMs,
+            // processNode 会在真正进入 Rerank 前按同一 Run Scope 再次收窄。
+            rerankTimeoutMs: dependencies.rerankTimeoutMs,
             emit: terminalEvents.emitNode,
             language: dependencies.language,
           },

@@ -16,7 +16,7 @@ const HEALTH_RESPONSE_SCHEMA = {
 } as const;
 
 export function buildServer(): FastifyInstance {
-  // WAY-28 尚未接入脱敏 Run Log，默认关闭 Logger，避免意外记录请求环境。
+  // HTTP Logger 保持关闭；脱敏 Run Log 由生产组合根按显式开关独立注入。
   const server = Fastify({ logger: false });
 
   server.get(

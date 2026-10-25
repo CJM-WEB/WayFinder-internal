@@ -26,7 +26,10 @@ import {
 import { canonicalizeAndDeduplicateCandidates } from "./canonicalize-candidates.js";
 import { applySourceDiversity } from "./diversity.js";
 import { applyDeterministicHardFilters } from "./hard-filter.js";
-import { heuristicRankCandidates } from "./heuristic-rank.js";
+import {
+  applyOfficialSourceSafetyOrder,
+  heuristicRankCandidates,
+} from "./heuristic-rank.js";
 import {
   detectOfficialSourceSignals,
   type OfficialSourcePolicy,
@@ -93,11 +96,20 @@ export type ProcessNodeContext = Readonly<{
   officialSourcePolicy: OfficialSourcePolicy;
   /** 调用方注入同一次 Run 的稳定时间，避免各 Node 自行读取墙上时钟。 */
   nowMs: number;
-  /** 必须是已按 Run 剩余时间收窄后的正整数阶段预算。 */
+  /** Rerank 阶段配置上限；真正调用前还要按 Run 当前剩余预算再次收窄。 */
   rerankTimeoutMs: number;
   /** Emit 只接收无 Envelope 的严格业务 Payload；Run Event Writer 负责补齐 Envelope。 */
   emit: (payload: NodeStreamEventPayload) => Promise<void>;
   language?: string;
+}>;
+
+/**
+ * Node Pipeline 只消费 Orchestrator 创建的同一 Run Scope，不接收 deadlineAt 数值，
+ * 也不创建第二个 Timer。同步预算读取用于封闭 Timer 回调被事件循环延迟的窗口。
+ */
+export type ProcessNodeRunScope = Readonly<{
+  signal: AbortSignal;
+  requirePositiveRemainingMs: () => number;
 }>;
 
 /** 已知业务失败保留精确 code；未知内部错误收敛为不可重试的 UNKNOWN。 */
@@ -157,8 +169,9 @@ async function emitValidated(
 export async function processNode(
   node: GraphPlanNode,
   context: ProcessNodeContext,
-  signal: AbortSignal,
+  runScope: ProcessNodeRunScope,
 ): Promise<ResultGraphNode> {
+  const { signal } = runScope;
   const warnings: NodeWarningCode[] = [];
   let result: SuccessfulResultGraphNode;
 
@@ -170,6 +183,8 @@ export async function processNode(
       status: "searching",
     });
 
+    // 每次外调前同步读取同一绝对预算，不能只依赖可能迟到执行的 Timer 回调。
+    runScope.requirePositiveRemainingMs();
     const searchOutcome = await runNodeSearches({
       node,
       freshnessSensitive: context.analysis.freshnessSensitive,
@@ -206,6 +221,7 @@ export async function processNode(
     });
 
     // Extract 与 Rerank 的普通已知失败由各自 Wrapper 降级为 Warning；取消继续上抛。
+    runScope.requirePositiveRemainingMs();
     const extraction = await extractCandidatesSelectively({
       candidates: preRanked,
       provider: context.tavilyProvider,
@@ -213,19 +229,26 @@ export async function processNode(
     });
     appendUniqueWarnings(warnings, extraction.warnings);
 
+    const rerankTimeoutMs = Math.min(
+      context.rerankTimeoutMs,
+      runScope.requirePositiveRemainingMs(),
+    );
     const reranked = await rerankCandidatesWithFallback({
       node,
       candidates: preRanked,
       pages: extraction.pages,
       provider: context.rerankProvider,
       signal,
-      timeoutMs: context.rerankTimeoutMs,
+      timeoutMs: rerankTimeoutMs,
     });
     appendUniqueWarnings(warnings, reranked.warnings);
 
-    const resources = finalizeResources(
-      applySourceDiversity(reranked.candidates),
+    // 网页正文与模型分数都不能把已知风险站提升到普通候选之前；同层仍保留模型顺序。
+    const safetyOrdered = applyOfficialSourceSafetyOrder(
+      reranked.candidates,
+      assessments,
     );
+    const resources = finalizeResources(applySourceDiversity(safetyOrdered));
     if (resources.length === 0) {
       throw new NodeJobError("SEARCH_PROVIDER_FAILED", true);
     }

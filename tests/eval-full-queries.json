@@ -1,0 +1,122 @@
+[
+  {
+    "id": "wfq-001",
+    "query": "Python",
+    "category": "knowledge",
+    "rationale": "Stable single-keyword knowledge query that exercises graph decomposition, search planning, authority, and source diversity."
+  },
+  {
+    "id": "wfq-002",
+    "query": "machine learning",
+    "category": "knowledge",
+    "rationale": "Broad knowledge query that exercises topic decomposition, prerequisite ordering, and authoritative learning resources."
+  },
+  {
+    "id": "wfq-003",
+    "query": "TCP/IP",
+    "category": "knowledge",
+    "rationale": "Technical concept query that exercises layered structure, standards-oriented sources, and concise resource selection."
+  },
+  {
+    "id": "wfq-004",
+    "query": "React",
+    "category": "knowledge",
+    "rationale": "Framework query that exercises official documentation priority, conceptual decomposition, and ecosystem coverage."
+  },
+  {
+    "id": "wfq-005",
+    "query": "量子计算",
+    "category": "knowledge",
+    "rationale": "Chinese knowledge query that exercises multilingual planning, source quality, and accessible topic decomposition."
+  },
+  {
+    "id": "wfq-006",
+    "query": "Java",
+    "category": "ambiguousEntity",
+    "rationale": "Ambiguous entity query that exercises evidence-assisted disambiguation without a clarification round."
+  },
+  {
+    "id": "wfq-007",
+    "query": "NVIDIA",
+    "category": "ambiguousEntity",
+    "rationale": "Company and technology entity query that exercises intent breadth without inventing a user goal."
+  },
+  {
+    "id": "wfq-008",
+    "query": "Apple",
+    "category": "ambiguousEntity",
+    "rationale": "Highly ambiguous entity query that exercises conservative organization across company, products, and related intent."
+  },
+  {
+    "id": "wfq-009",
+    "query": "VS Code download",
+    "category": "navigateDownload",
+    "rationale": "Compact navigation query that exercises official-source priority, download safety, and mirror filtering."
+  },
+  {
+    "id": "wfq-010",
+    "query": "Python download",
+    "category": "navigateDownload",
+    "rationale": "Download query that exercises official distribution priority and safe cross-platform installation resources."
+  },
+  {
+    "id": "wfq-011",
+    "query": "MacBook Air vs MacBook Pro",
+    "category": "compareShop",
+    "rationale": "Named-product comparison that exercises decision dimensions, current specifications, and non-affiliate evidence."
+  },
+  {
+    "id": "wfq-012",
+    "query": "best laptop for programming",
+    "category": "compareShop",
+    "rationale": "Open-ended shopping query that exercises needs decomposition, current evidence, source trust, and affiliate filtering."
+  },
+  {
+    "id": "wfq-013",
+    "query": "latest AI news",
+    "category": "news",
+    "rationale": "Fresh query that exercises broad search and revision, source independence, duplicate suppression, and freshness ranking."
+  },
+  {
+    "id": "wfq-014",
+    "query": "NVIDIA latest news",
+    "category": "news",
+    "rationale": "Entity-specific news query that exercises freshness, first-party announcements, and independent reporting diversity."
+  },
+  {
+    "id": "wfq-015",
+    "query": "我想做一个网站",
+    "category": "howTo",
+    "rationale": "Chinese goal query that exercises actionable graph decomposition, multilingual search planning, and result organization."
+  },
+  {
+    "id": "wfq-016",
+    "query": "how to start learning guitar",
+    "category": "howTo",
+    "rationale": "Beginner goal query that exercises actionable stages without turning the product into a prescriptive course."
+  },
+  {
+    "id": "wfq-017",
+    "query": "PostgreSQL",
+    "category": "knowledge",
+    "rationale": "Technical product query that exercises official documentation, conceptual structure, and practical entry points."
+  },
+  {
+    "id": "wfq-018",
+    "query": "Mercury",
+    "category": "ambiguousEntity",
+    "rationale": "Multi-meaning entity query that exercises disambiguation across astronomy, chemistry, mythology, and products."
+  },
+  {
+    "id": "wfq-019",
+    "query": "React vs Vue",
+    "category": "compare",
+    "rationale": "Technology comparison that exercises balanced decision criteria, official sources, and recommendation neutrality."
+  },
+  {
+    "id": "wfq-020",
+    "query": "how to deploy a Vite app",
+    "category": "howTo",
+    "rationale": "Deployment goal query that exercises ordered practical steps, official platform guidance, and provider-neutral options."
+  }
+]

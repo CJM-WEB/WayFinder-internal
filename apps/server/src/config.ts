@@ -32,7 +32,7 @@ function boundedInteger(
     .pipe(z.number().int().min(1).max(maximum));
 }
 
-const EnvironmentSchema = z
+const EnvironmentInputSchema = z
   .object({
     PORT: boundedInteger(3_000, 65_535),
     LLM_PROVIDER: z.literal("deepseek"),
@@ -59,9 +59,21 @@ const EnvironmentSchema = z
       MAX_LLM_CONCURRENCY,
       MAX_LLM_CONCURRENCY,
     ),
+    // 严格布尔字符串避免 `Boolean("false") === true` 的部署陷阱。
+    RUN_LOGGING: z
+      .enum(["true", "false"])
+      .default("false")
+      .transform(value => value === "true"),
   })
   // `process.env` 包含操作系统与工具链变量；这里只投影应用明确声明的字段。
-  .strip()
+  .strip();
+
+/** `.env.example` 与部署文档必须和这份输入白名单保持完全一致。 */
+export const SERVER_ENVIRONMENT_VARIABLES = Object.freeze(
+  Object.keys(EnvironmentInputSchema.shape).sort(),
+);
+
+const EnvironmentSchema = EnvironmentInputSchema
   .transform((environment) => ({
     port: environment.PORT,
     llmProvider: environment.LLM_PROVIDER,
@@ -80,6 +92,7 @@ const EnvironmentSchema = z
       llm: environment.LLM_CONCURRENCY,
     },
     runDeadlineMs: RUN_DEADLINE_MS,
+    runLogging: environment.RUN_LOGGING,
   }));
 
 export type ServerConfig = Readonly<z.infer<typeof EnvironmentSchema>>;

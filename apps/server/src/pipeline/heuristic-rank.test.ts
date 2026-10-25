@@ -3,7 +3,7 @@
  *
  * 关键约束：
  * - 五种 Profile 只消费七个可观察信号，权重集中维护且各自总和为 1；
- * - 下载/文档任务先遵守官方来源安全层级，再比较加权分；
+ * - 下载/文档任务先把已知风险站放到普通候选之后，再比较加权分；
  * - 候选 ID 在排序前生成，裁剪后不重编号，完全同分时保持输入顺序。
  */
 import type {
@@ -16,6 +16,7 @@ import type {
 import { describe, expect, expectTypeOf, it } from "vitest";
 
 import {
+  applyOfficialSourceSafetyOrder,
   HEURISTIC_PROFILE_WEIGHTS,
   HEURISTIC_SIGNAL_KEYS,
   heuristicRankCandidates,
@@ -85,6 +86,26 @@ function createAssessment(
     classification: "unknown",
     signals: [],
     ...overrides,
+  };
+}
+
+function createRankedCandidate(
+  hit: CandidateSearchHit,
+  candidateId: string,
+): ResourceCandidate {
+  return {
+    candidateId,
+    hit,
+    heuristicScore: 0,
+    heuristicSignals: {
+      providerQuality: 0,
+      titleRelevance: 0,
+      snippetRelevance: 0,
+      https: 0,
+      domainDiversity: 0,
+      freshness: 0,
+      officialness: 0,
+    },
   };
 }
 
@@ -241,19 +262,41 @@ describe("heuristicRankCandidates", () => {
     ["2026-09-21T00:00:00.000Z", 0.6],
     ["2025-10-21T00:00:00.000Z", 0.3],
     ["2025-10-20T23:59:59.999Z", 0],
-    ["2026-10-21T08:00:00+08:00", 1],
-    ["2026-10-14T00:00:00", 0],
-    ["2026-02-30T00:00:00Z", 0],
-    ["invalid", 0],
     ["2026-10-22T00:00:00.000Z", 0],
     [null, 0],
-  ] as const)("按注入时钟计算 Freshness 桶：%s → %s", (publishedAt, expected) => {
+  ] as const)("把共享 Freshness 桶映射为生产分数：%s → %s", (publishedAt, expected) => {
     const candidate = createCandidate({ publishedAt });
     const result = rank([createAssessment(candidate)], {
       node: createNode("news"),
     });
 
     expect(result[0]?.heuristicSignals.freshness).toBe(expected);
+  });
+
+  it("News 候选仅日期不同时把更新结果排在旧结果之前", () => {
+    const old = createCandidate({
+      canonicalUrl: "https://news.example/item-old",
+      domain: "news.example",
+      publishedAt: "2025-10-20T00:00:00.000Z",
+      url: "https://news.example/item-old",
+    });
+    const recent = createCandidate({
+      canonicalUrl: "https://news.example/item-recent",
+      domain: "news.example",
+      publishedAt: "2026-10-20T00:00:00.000Z",
+      url: "https://news.example/item-recent",
+    });
+
+    const result = rank(
+      [createAssessment(old), createAssessment(recent)],
+      { node: createNode("news") },
+    );
+
+    expect(result.map(item => item.hit)).toEqual([recent, old]);
+    expect(result.map(item => item.candidateId)).toEqual([
+      "candidate_2",
+      "candidate_1",
+    ]);
   });
 
   it("仅在 news Profile 或 Freshness-sensitive 分析中启用 Freshness", () => {
@@ -276,7 +319,7 @@ describe("heuristicRankCandidates", () => {
     ).toBe(1);
   });
 
-  it("下载/文档任务先遵守 official > unknown > risky，再比较分数", () => {
+  it("下载/文档任务先遵守 unknown > risky，再比较分数", () => {
     const risky = createCandidate({
       providerScore: 1,
       title: "TypeScript compiler guide",
@@ -291,14 +334,14 @@ describe("heuristicRankCandidates", () => {
       title: "unrelated",
       url: "http://unknown.example/item",
     });
-    const official = createCandidate({
-      canonicalUrl: "http://official.example/item",
-      domain: "official.example",
+    const secondUnknown = createCandidate({
+      canonicalUrl: "http://second-unknown.example/item",
+      domain: "second-unknown.example",
       providerScore: 0,
       query: "unrelated",
       snippet: "unrelated",
       title: "unrelated",
-      url: "http://official.example/item",
+      url: "http://second-unknown.example/item",
     });
 
     const result = rank(
@@ -311,23 +354,25 @@ describe("heuristicRankCandidates", () => {
           queryKind: "download",
           classification: "unknown",
         }),
-        createAssessment(official, {
+        createAssessment(secondUnknown, {
           queryKind: "download",
-          classification: "official",
-          signals: ["SITE_HOST_MATCH"],
         }),
       ],
       { node: createNode("software") },
     );
 
-    expect(result.map(item => item.hit)).toEqual([official, unknown, risky]);
+    expect(result.map(item => item.hit)).toEqual([
+      unknown,
+      secondUnknown,
+      risky,
+    ]);
     expect(result.map(item => item.candidateId)).toEqual([
-      "candidate_3",
       "candidate_2",
+      "candidate_3",
       "candidate_1",
     ]);
     expect(result.map(item => item.heuristicSignals.officialness)).toEqual([
-      1,
+      0,
       0,
       0,
     ]);
@@ -431,5 +476,114 @@ describe("heuristicRankCandidates", () => {
     expectTypeOf<ReturnType<typeof heuristicRankCandidates>>().toEqualTypeOf<
       ResourceCandidate[]
     >();
+  });
+});
+
+describe("applyOfficialSourceSafetyOrder", () => {
+  it("稳定应用 unknown > risky，并保留同层级的模型顺序", () => {
+    const risky = createCandidate({
+      canonicalUrl: "https://risky.example/download",
+      domain: "risky.example",
+      url: "https://risky.example/download",
+    });
+    const firstUnknown = createCandidate({
+      canonicalUrl: "https://unknown-a.example/download",
+      domain: "unknown-a.example",
+      url: "https://unknown-a.example/download",
+    });
+    const matched = createCandidate({
+      canonicalUrl: "https://matched.example/download",
+      domain: "matched.example",
+      url: "https://matched.example/download",
+    });
+    const secondUnknown = createCandidate({
+      canonicalUrl: "https://unknown-b.example/download",
+      domain: "unknown-b.example",
+      url: "https://unknown-b.example/download",
+    });
+    const assessments = [
+      createAssessment(risky, {
+        queryKind: "download",
+        classification: "risky",
+      }),
+      createAssessment(firstUnknown, { queryKind: "download" }),
+      createAssessment(matched, {
+        queryKind: "download",
+      }),
+      createAssessment(secondUnknown, { queryKind: "download" }),
+    ];
+    const candidates = [
+      createRankedCandidate(risky, "candidate_1"),
+      createRankedCandidate(firstUnknown, "candidate_2"),
+      createRankedCandidate(matched, "candidate_3"),
+      createRankedCandidate(secondUnknown, "candidate_4"),
+    ];
+    const candidateSnapshot = structuredClone(candidates);
+    const assessmentSnapshot = structuredClone(assessments);
+    const ordered = applyOfficialSourceSafetyOrder(candidates, assessments);
+
+    expect(
+      ordered.map(candidate => candidate.candidateId),
+    ).toEqual(["candidate_2", "candidate_3", "candidate_4", "candidate_1"]);
+    expect(ordered[0]).toBe(candidates[1]);
+    expect(ordered[1]).toBe(candidates[2]);
+    expect(ordered[2]).toBe(candidates[3]);
+    expect(ordered[3]).toBe(candidates[0]);
+    expect(candidates).toEqual(candidateSnapshot);
+    expect(assessments).toEqual(assessmentSnapshot);
+  });
+
+  it("普通任务保持输入顺序，不让分类结果扩大适用范围", () => {
+    const first = createCandidate();
+    const second = createCandidate({
+      canonicalUrl: "https://second.example/item",
+      domain: "second.example",
+      url: "https://second.example/item",
+    });
+    const candidates = [
+      createRankedCandidate(first, "candidate_1"),
+      createRankedCandidate(second, "candidate_2"),
+    ];
+
+    const ordered = applyOfficialSourceSafetyOrder(candidates, [
+      createAssessment(first, { classification: "risky" }),
+      createAssessment(second),
+    ]);
+
+    expect(ordered).toEqual(candidates);
+    expect(ordered[0]).toBe(candidates[0]);
+    expect(ordered[1]).toBe(candidates[1]);
+  });
+
+  it("候选与 Assessment 不一致时只抛固定内部错误，不泄露 URL", () => {
+    const candidate = createCandidate({
+      canonicalUrl: "https://secret.example/private-path",
+      domain: "secret.example",
+      url: "https://secret.example/private-path",
+    });
+
+    expect(() =>
+      applyOfficialSourceSafetyOrder(
+        [createRankedCandidate(candidate, "candidate_1")],
+        [],
+      ),
+    ).toThrowError("Official Source Assessment 与候选不一致");
+    try {
+      applyOfficialSourceSafetyOrder(
+        [createRankedCandidate(candidate, "candidate_1")],
+        [],
+      );
+    } catch (error: unknown) {
+      expect(String(error)).not.toContain(candidate.canonicalUrl);
+    }
+    expect(() =>
+      applyOfficialSourceSafetyOrder(
+        [
+          createRankedCandidate(candidate, "candidate_1"),
+          createRankedCandidate(candidate, "candidate_2"),
+        ],
+        [createAssessment(candidate)],
+      ),
+    ).toThrowError("Official Source Assessment 与候选不一致");
   });
 });

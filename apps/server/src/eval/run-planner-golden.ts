@@ -40,6 +40,7 @@ import type {
   PlannerGoldenQuery,
   PlannerGoldenQueryResult,
 } from "./planner-golden.js";
+import { encodeMarkdownArtifactText } from "./markdown-artifact.js";
 
 const EXPECTED_GOLDEN_QUERY_COUNT = 6;
 const REPOSITORY_ROOT = fileURLToPath(
@@ -242,15 +243,8 @@ function createRunId(now = new Date()): string {
   return `${timestamp}-${randomUUID().slice(0, 8)}`;
 }
 
-/**
- * 将每个 Unicode code point 转成数字实体，保证模型文本只能显示为纯文本，
- * 不能形成 Markdown Link/Image 或 HTML Tag 并在打开报告时触发外部请求。
- */
-export function encodeMarkdownText(value: string): string {
-  return [...value]
-    .map(codePoint => `&#${String(codePoint.codePointAt(0))};`)
-    .join("");
-}
+// 保留既有导出名，共用第三个 Eval Markdown 消费者触发的单一编码实现。
+export const encodeMarkdownText = encodeMarkdownArtifactText;
 
 function formatFallback(result: PlannerGoldenCompletedResult): string {
   return result.fallback === null

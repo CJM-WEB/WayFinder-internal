@@ -55,7 +55,7 @@ export function startNodeJobs(
         tavilyProvider: input.providers.searchProvider,
         rerankProvider: input.providers.llmProvider,
       },
-      input.runScope.signal,
+      input.runScope,
     ),
   }));
 }
