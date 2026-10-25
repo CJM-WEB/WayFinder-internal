@@ -1,1 +1,38 @@
-[]
+[
+  {
+    "id": "wfq-001",
+    "query": "Python",
+    "category": "knowledge",
+    "rationale": "Stable single-keyword knowledge query that exercises graph decomposition, search planning, authority, and source diversity."
+  },
+  {
+    "id": "wfq-006",
+    "query": "Java",
+    "category": "ambiguousEntity",
+    "rationale": "Ambiguous entity query that exercises evidence-assisted disambiguation without a clarification round."
+  },
+  {
+    "id": "wfq-009",
+    "query": "VS Code download",
+    "category": "navigateDownload",
+    "rationale": "Compact navigation query that exercises official-source priority, download safety, and mirror filtering."
+  },
+  {
+    "id": "wfq-012",
+    "query": "best laptop for programming",
+    "category": "compareShop",
+    "rationale": "Open-ended shopping query that exercises needs decomposition, current evidence, source trust, and affiliate filtering."
+  },
+  {
+    "id": "wfq-013",
+    "query": "latest AI news",
+    "category": "news",
+    "rationale": "Fresh query that exercises broad search and revision, source independence, duplicate suppression, and freshness ranking."
+  },
+  {
+    "id": "wfq-015",
+    "query": "我想做一个网站",
+    "category": "howTo",
+    "rationale": "Chinese goal query that exercises actionable graph decomposition, multilingual search planning, and result organization."
+  }
+]

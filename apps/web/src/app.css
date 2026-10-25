@@ -1,0 +1,994 @@
+:root {
+  color: #15271f;
+  background: #f4f8f4;
+  font-family:
+    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+.app-shell {
+  width: min(1180px, calc(100% - 32px));
+  margin: 0 auto;
+  padding: 32px 0;
+}
+
+.app-header {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 24px;
+  margin-bottom: 20px;
+}
+
+.app-header__intro p,
+.app-header__intro h1,
+.graph-node__content p,
+.graph-node__content h3 {
+  margin: 0;
+}
+
+.app-header__intro p {
+  margin-bottom: 6px;
+  color: #4c695b;
+  font-size: 0.82rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.app-header__intro h1 {
+  font-size: clamp(2rem, 5vw, 3.5rem);
+  letter-spacing: -0.055em;
+}
+
+.app-summary {
+  display: flex;
+  gap: 10px;
+  margin: 0;
+}
+
+.app-summary div {
+  min-width: 110px;
+  padding: 10px 14px;
+  border: 1px solid #d7e2da;
+  border-radius: 14px;
+  background: rgb(255 255 255 / 78%);
+}
+
+.app-summary dt {
+  color: #61786c;
+  font-size: 0.72rem;
+}
+
+.app-summary dd {
+  margin: 3px 0 0;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+/*
+ * Omnibox 只提供一个提交入口；搜索期间仍保持可编辑，便于新 Query 立即替换旧 Run。
+ * 表单使用原生 submit 语义承接 Enter，不为键盘路径增加第二套事件处理。
+ */
+.omnibox {
+  margin-bottom: 20px;
+  padding: 18px;
+  border: 1px solid #d4e0d7;
+  border-radius: 20px;
+  background: #fff;
+  box-shadow: 0 12px 32px rgb(37 71 52 / 8%);
+}
+
+.omnibox > label {
+  display: block;
+  margin-bottom: 8px;
+  color: #385647;
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.omnibox__controls {
+  display: flex;
+  gap: 10px;
+}
+
+.omnibox__controls input {
+  min-width: 0;
+  flex: 1;
+  padding: 13px 15px;
+  border: 1px solid #b9cbbf;
+  border-radius: 14px;
+  color: #15271f;
+  background: #fbfdfb;
+}
+
+.omnibox__controls input:focus-visible {
+  border-color: #3b7655;
+  outline: 3px solid rgb(59 118 85 / 18%);
+}
+
+.omnibox__controls button {
+  padding: 0 22px;
+  border: 0;
+  border-radius: 14px;
+  color: #fff;
+  background: #285f43;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.omnibox__controls button:hover {
+  background: #1f4d36;
+}
+
+.omnibox__hint,
+.omnibox__error {
+  margin: 8px 2px 0;
+  font-size: 0.76rem;
+}
+
+.omnibox__hint {
+  color: #60776a;
+}
+
+.omnibox__error {
+  color: #8a3129;
+}
+
+/* H1 入口只由隐藏 Eval Query 激活；控件不进入正常产品导航。 */
+.h1-evaluation {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  margin-bottom: 20px;
+  padding: 16px 18px;
+  border: 1px solid #b9cbbf;
+  border-radius: 18px;
+  background: #eef5f0;
+}
+
+.h1-evaluation h2,
+.h1-evaluation p {
+  margin: 0;
+}
+
+.h1-evaluation h2 {
+  font-size: 1rem;
+}
+
+.h1-evaluation > div > p:last-child {
+  margin-top: 5px;
+  color: #587064;
+  font-size: 0.78rem;
+}
+
+.h1-evaluation__eyebrow {
+  color: #4c695b;
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.h1-evaluation__conditions {
+  display: flex;
+  gap: 8px;
+}
+
+.h1-evaluation__conditions button {
+  padding: 8px 12px;
+  border: 1px solid #9db4a5;
+  border-radius: 10px;
+  color: #315441;
+  background: #fff;
+  cursor: pointer;
+  font-size: 0.76rem;
+  font-weight: 750;
+}
+
+.h1-evaluation__conditions button[aria-pressed="true"] {
+  border-color: #315f47;
+  color: #fff;
+  background: #315f47;
+}
+
+/* H2 页面与 H1 分离，只以中性 A/B 控件切换同一个生产 Resource Panel。 */
+.h2-evaluation__controls {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 24px;
+  margin-bottom: 20px;
+  padding: 18px 20px;
+  border: 1px solid #b9cbbf;
+  border-radius: 18px;
+  background: #eef5f0;
+}
+
+.h2-evaluation__controls h2,
+.h2-evaluation__controls p,
+.h2-evaluation__loader h1,
+.h2-evaluation__loader p {
+  margin: 0;
+}
+
+.h2-evaluation__controls h2 {
+  font-size: 1rem;
+}
+
+.h2-evaluation__controls p,
+.h2-evaluation__loader p {
+  margin-top: 6px;
+  color: #587064;
+  font-size: 0.82rem;
+}
+
+.h2-evaluation__conditions {
+  display: flex;
+  gap: 8px;
+}
+
+.h2-evaluation__conditions button {
+  min-width: 96px;
+  padding: 9px 14px;
+  border: 1px solid #9db4a5;
+  border-radius: 10px;
+  color: #315441;
+  background: #fff;
+  cursor: pointer;
+  font-size: 0.78rem;
+  font-weight: 750;
+}
+
+.h2-evaluation__conditions button[aria-pressed="true"] {
+  border-color: #315f47;
+  color: #fff;
+  background: #315f47;
+}
+
+.h2-evaluation__panel {
+  display: grid;
+  min-height: 0;
+}
+
+.h2-evaluation__panel .resource-panel {
+  width: min(100%, 720px);
+  justify-self: center;
+  border: 1px solid #e3ebe5;
+  border-radius: 20px;
+  box-shadow: 0 18px 45px rgb(37 71 52 / 10%);
+}
+
+.h2-evaluation--loader {
+  display: grid;
+  min-height: 100vh;
+  place-content: center;
+}
+
+.h2-evaluation__loader {
+  width: min(100%, 620px);
+  padding: 32px;
+  border: 1px solid #d4e0d7;
+  border-radius: 22px;
+  background: #fff;
+  box-shadow: 0 18px 45px rgb(37 71 52 / 10%);
+}
+
+.h2-evaluation__loader label {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 24px;
+  font-size: 0.82rem;
+  font-weight: 750;
+}
+
+.h2-evaluation__loader input {
+  min-width: 0;
+  max-width: 280px;
+}
+
+.h2-evaluation__loader [role="alert"] {
+  color: #8a3129;
+}
+
+.graph-section {
+  overflow: hidden;
+  border: 1px solid #d4e0d7;
+  border-radius: 24px;
+  background: #fff;
+  box-shadow: 0 18px 45px rgb(37 71 52 / 10%);
+}
+
+.graph-section__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 18px 22px;
+  border-bottom: 1px solid #e3ebe5;
+}
+
+.graph-section__header h2,
+.graph-section__header p {
+  margin: 0;
+}
+
+.graph-section__header h2 {
+  font-size: 1.05rem;
+}
+
+.graph-section__header p {
+  color: #687d72;
+  font-size: 0.86rem;
+}
+
+.graph-canvas {
+  width: 100%;
+  height: clamp(520px, calc(100vh - 210px), 760px);
+  min-height: 520px;
+}
+
+/* Flat 条件与 Graph 画布占据相同工作区；只替换左侧 Presenter（呈现器）。 */
+.h1-flat-list {
+  height: clamp(520px, calc(100vh - 210px), 760px);
+  min-height: 520px;
+  overflow-y: auto;
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  margin: 0;
+  padding: 22px;
+  list-style: none;
+  background: #f8fbf9;
+}
+
+.h1-flat-list--empty {
+  place-items: center;
+  color: #61786c;
+}
+
+.h1-flat-list__item {
+  overflow: hidden;
+  border: 1px solid var(--node-status-border);
+  border-radius: 16px;
+  background: var(--node-status-surface);
+}
+
+.h1-flat-list__node {
+  display: grid;
+  width: 100%;
+  gap: 7px;
+  padding: 15px 17px;
+  border: 0;
+  color: inherit;
+  text-align: left;
+  background: transparent;
+  cursor: pointer;
+}
+
+.h1-flat-list__node[aria-pressed="true"] {
+  box-shadow: inset 0 0 0 3px rgb(72 125 94 / 20%);
+}
+
+.h1-flat-list__eyebrow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: #587064;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.h1-flat-list__status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  color: var(--node-status-text);
+  background: var(--node-status-badge);
+}
+
+.h1-flat-list__title {
+  color: #17291f;
+  font-weight: 800;
+}
+
+.h1-flat-list__detail,
+.h1-flat-list__relationships {
+  color: #63796d;
+  font-size: 0.78rem;
+}
+
+.h1-flat-list__relationships {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 11px 17px 14px 38px;
+  border-top: 1px solid rgb(117 151 131 / 25%);
+  background: rgb(255 255 255 / 62%);
+}
+
+.h1-flat-list__relationships span {
+  margin-right: 7px;
+  color: #315441;
+  font-weight: 750;
+}
+
+/* Compact 仍渲染完整 Product Graph，只收紧首屏高度，不截断 Node 或 Edge。 */
+.graph-section--compact .graph-canvas,
+.graph-section--compact .resource-panel {
+  height: clamp(340px, calc(100vh - 350px), 460px);
+  min-height: 340px;
+}
+
+.graph-section--compact .graph-empty {
+  min-height: 340px;
+}
+
+/* Graph 与 Resource Panel 共享结果页高度；画布保持可缩放，面板独立滚动。 */
+.graph-workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(300px, 360px);
+}
+
+.resource-panel {
+  height: clamp(520px, calc(100vh - 210px), 760px);
+  min-height: 520px;
+  overflow-y: auto;
+  padding: 22px;
+  border-left: 1px solid #e3ebe5;
+  background: #fbfdfb;
+}
+
+.resource-panel--empty {
+  display: grid;
+  align-items: center;
+}
+
+.resource-panel--empty h2,
+.resource-panel--empty p,
+.resource-panel__header h2,
+.resource-panel__header p,
+.resource-card h3,
+.resource-card h4,
+.resource-card p {
+  margin: 0;
+}
+
+.resource-panel--empty > div {
+  padding: 22px;
+  border: 1px dashed #c9d8ce;
+  border-radius: 18px;
+  color: #60776a;
+  background: #fff;
+}
+
+.resource-panel--empty h2 {
+  margin-bottom: 8px;
+  color: #1b3125;
+  font-size: 1.2rem;
+}
+
+.resource-panel__eyebrow {
+  margin: 0 0 7px;
+  color: #648071;
+  font-size: 0.7rem;
+  font-weight: 800;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+}
+
+.resource-panel__header {
+  padding-bottom: 18px;
+  border-bottom: 1px solid #e0e9e3;
+}
+
+.resource-panel__title-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.resource-panel__title-row h2 {
+  color: #17291f;
+  font-size: 1.25rem;
+  line-height: 1.25;
+}
+
+.resource-panel__header > p:last-child {
+  margin-top: 8px;
+  color: #63796d;
+  font-size: 0.8rem;
+}
+
+/*
+ * 六态 Token（视觉标记）同时服务 Graph Node 与 Resource Panel。
+ * 标签与符号承担非颜色语义；这里的色彩只强化扫描效率，不构成唯一状态信号。
+ */
+.graph-node--planned,
+.graph-node__status--planned,
+.resource-panel__status--planned,
+.h1-flat-list__item--planned {
+  --node-status-text: #52685d;
+  --node-status-badge: #e8eeea;
+  --node-status-border: #aabbb0;
+  --node-status-surface: #f7faf8;
+}
+
+.graph-node--searching,
+.graph-node__status--searching,
+.resource-panel__status--searching,
+.h1-flat-list__item--searching {
+  --node-status-text: #245b85;
+  --node-status-badge: #deefff;
+  --node-status-border: #83b8de;
+  --node-status-surface: #f4faff;
+}
+
+.graph-node--filtering,
+.graph-node__status--filtering,
+.resource-panel__status--filtering,
+.h1-flat-list__item--filtering {
+  --node-status-text: #62458a;
+  --node-status-badge: #eee6ff;
+  --node-status-border: #b9a0df;
+  --node-status-surface: #faf7ff;
+}
+
+.graph-node--ready,
+.graph-node__status--ready,
+.resource-panel__status--ready,
+.h1-flat-list__item--ready {
+  --node-status-text: #276343;
+  --node-status-badge: #def1e4;
+  --node-status-border: #8fc3a1;
+  --node-status-surface: #f5fbf7;
+}
+
+.graph-node--partial,
+.graph-node__status--partial,
+.resource-panel__status--partial,
+.h1-flat-list__item--partial {
+  --node-status-text: #79560a;
+  --node-status-badge: #fff1c9;
+  --node-status-border: #dfbd63;
+  --node-status-surface: #fffbef;
+}
+
+.graph-node--failed,
+.graph-node__status--failed,
+.resource-panel__status--failed,
+.h1-flat-list__item--failed {
+  --node-status-text: #8a3129;
+  --node-status-badge: #ffe2de;
+  --node-status-border: #df9c94;
+  --node-status-surface: #fff7f5;
+}
+
+.resource-panel__status {
+  flex: none;
+  padding: 4px 9px;
+  border-radius: 999px;
+  background: var(--node-status-badge);
+  color: var(--node-status-text);
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.resource-panel__notice,
+.resource-panel__outcome {
+  margin: 18px 0 0;
+  padding: 14px;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  line-height: 1.55;
+}
+
+.resource-panel__notice {
+  color: #415a4d;
+  background: #edf3ef;
+}
+
+/* partial 与 failed 使用独立标题、文字和列表；色彩只作为额外扫描线索。 */
+.resource-panel__outcome--warning {
+  border-color: #dfbd63;
+  color: #644807;
+  background: #fffbef;
+}
+
+.resource-panel__outcome--error {
+  border-color: #df9c94;
+  color: #762a23;
+  background: #fff0ed;
+}
+
+.resource-panel__outcome h3 {
+  margin: 0;
+  font-size: 0.86rem;
+}
+
+.resource-panel__outcome ul {
+  display: grid;
+  gap: 5px;
+  margin: 7px 0 0;
+  padding-left: 20px;
+  font-size: 0.8rem;
+}
+
+.resource-list {
+  display: grid;
+  gap: 14px;
+  padding-top: 16px;
+}
+
+.resource-card {
+  padding: 16px;
+  border: 1px solid #d9e4dc;
+  border-radius: 16px;
+  background: #fff;
+  box-shadow: 0 7px 18px rgb(37 71 52 / 7%);
+}
+
+.resource-card__header {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 9px;
+}
+
+.resource-card__rank {
+  display: inline-grid;
+  min-width: 28px;
+  height: 28px;
+  place-items: center;
+  border-radius: 9px;
+  color: #315441;
+  background: #e8f1eb;
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+
+.resource-card h3 {
+  color: #1c3025;
+  font-size: 0.98rem;
+  line-height: 1.35;
+}
+
+.resource-card__meta {
+  display: grid;
+  gap: 6px;
+  margin: 13px 0;
+}
+
+.resource-card__meta div {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr);
+  gap: 8px;
+}
+
+.resource-card__meta dt {
+  color: #71867a;
+  font-size: 0.72rem;
+}
+
+.resource-card__meta dd {
+  overflow: hidden;
+  margin: 0;
+  color: #344f40;
+  font-size: 0.76rem;
+  text-overflow: ellipsis;
+  text-transform: lowercase;
+  white-space: nowrap;
+}
+
+.resource-card section + section {
+  margin-top: 12px;
+}
+
+.resource-card h4 {
+  margin-bottom: 4px;
+  color: #547062;
+  font-size: 0.72rem;
+}
+
+.resource-card p {
+  color: #3f574a;
+  font-size: 0.8rem;
+  line-height: 1.55;
+}
+
+/* Open 是唯一外跳入口；按钮与错误说明共用动作区，避免把 URL 暴露为可绕过校验的链接。 */
+.resource-card__actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 15px;
+  padding-top: 13px;
+  border-top: 1px solid #e6ede8;
+}
+
+.resource-card__actions button {
+  padding: 7px 13px;
+  border: 1px solid #315f47;
+  border-radius: 9px;
+  color: #fff;
+  background: #315f47;
+  cursor: pointer;
+  font-size: 0.78rem;
+  font-weight: 750;
+}
+
+.resource-card__actions button:hover:not(:disabled) {
+  background: #244b37;
+}
+
+.resource-card__actions button:focus-visible {
+  outline: 3px solid rgb(49 95 71 / 24%);
+  outline-offset: 2px;
+}
+
+.resource-card__actions button:disabled {
+  border-color: #aab9b0;
+  color: #62746a;
+  background: #e8eeea;
+  cursor: not-allowed;
+}
+
+.resource-card__actions p {
+  color: #8a3129;
+}
+
+/* Show More 只展开本轮 retained Resource；视觉上与单个 Resource 的 Open 动作区分。 */
+.resource-panel__show-more {
+  width: 100%;
+  margin-top: 14px;
+  padding: 10px 14px;
+  border: 1px solid #b7cbbd;
+  border-radius: 10px;
+  color: #315441;
+  background: #eef5f0;
+  cursor: pointer;
+  font-size: 0.8rem;
+  font-weight: 750;
+}
+
+.resource-panel__show-more:hover,
+.resource-panel__show-more:focus-visible {
+  border-color: #315f47;
+  background: #e3eee6;
+}
+
+.resource-panel__show-more:focus-visible {
+  outline: 3px solid rgb(49 95 71 / 24%);
+  outline-offset: 2px;
+}
+
+.react-flow__node.selected .graph-node__content {
+  border-color: #315f47;
+  box-shadow:
+    0 0 0 3px rgb(72 125 94 / 16%),
+    0 12px 28px rgb(37 71 52 / 18%);
+}
+
+.graph-empty {
+  display: grid;
+  min-height: 520px;
+  margin: 0;
+  place-items: center;
+  color: #61786c;
+}
+
+.graph-node {
+  width: 240px;
+  height: 112px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.graph-node__content {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  flex-direction: column;
+  justify-content: center;
+  padding: 15px 17px;
+  border: 1px solid var(--node-status-border);
+  border-radius: 16px;
+  background: var(--node-status-surface);
+  box-shadow: 0 8px 22px rgb(37 71 52 / 12%);
+}
+
+.graph-node--related .graph-node__content {
+  border-style: dashed;
+}
+
+.graph-node__eyebrow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 9px;
+  color: #587064;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.graph-node__status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: var(--node-status-badge);
+  color: var(--node-status-text);
+  letter-spacing: 0;
+}
+
+.graph-node__status-marker {
+  font-size: 0.86rem;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.graph-node__content h3 {
+  overflow: hidden;
+  color: #17291f;
+  font-size: 1rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.graph-node__content p {
+  margin-top: 6px;
+  color: #63796d;
+  font-size: 0.78rem;
+}
+
+.graph-node__handle {
+  width: 8px;
+  height: 8px;
+  border: 2px solid #fff;
+  background: #759783;
+  pointer-events: none;
+}
+
+.react-flow__edge.graph-edge--recommended .react-flow__edge-path {
+  stroke: #4c745e;
+  stroke-width: 2;
+}
+
+.react-flow__edge.graph-edge--related .react-flow__edge-path {
+  stroke: #82968b;
+  stroke-width: 1.6;
+  stroke-dasharray: 6 5;
+}
+
+.react-flow__edge-text {
+  fill: #526a5d;
+  font-size: 11px;
+}
+
+.react-flow__controls {
+  overflow: hidden;
+  border: 1px solid #d2ded6;
+  border-radius: 12px;
+  box-shadow: 0 8px 20px rgb(37 71 52 / 12%);
+}
+
+.react-flow__controls-button {
+  border-bottom-color: #e0e9e2;
+  background: #fff;
+}
+
+@media (max-width: 720px) {
+  .app-shell {
+    width: min(100% - 20px, 1180px);
+    padding: 20px 0;
+  }
+
+  .app-header,
+  .graph-section__header,
+  .h1-evaluation {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .app-summary {
+    width: 100%;
+  }
+
+  .app-summary div {
+    min-width: 0;
+    flex: 1;
+  }
+
+  .graph-canvas,
+  .graph-empty {
+    min-height: 500px;
+    height: calc(100vh - 280px);
+  }
+
+  .graph-section--compact .graph-canvas,
+  .graph-section--compact .graph-empty {
+    height: 380px;
+    min-height: 320px;
+  }
+
+  .graph-section--compact .resource-panel {
+    height: auto;
+    min-height: 320px;
+  }
+
+  .h1-evaluation__conditions {
+    width: 100%;
+  }
+
+  .h1-evaluation__conditions button {
+    flex: 1;
+  }
+
+  .h2-evaluation__controls {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .h2-evaluation__conditions,
+  .h2-evaluation__loader label {
+    width: 100%;
+  }
+
+  .h2-evaluation__conditions button {
+    flex: 1;
+  }
+
+  .h2-evaluation__loader label {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .h1-flat-list {
+    height: auto;
+    min-height: 500px;
+  }
+
+  .graph-workspace {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .resource-panel {
+    height: auto;
+    min-height: 320px;
+    border-top: 1px solid #e3ebe5;
+    border-left: 0;
+  }
+}

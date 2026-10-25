@@ -2,5 +2,22 @@
   "name": "@wayfinder/contracts",
   "version": "0.1.0",
   "private": true,
-  "type": "module"
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc --project tsconfig.build.json && node --input-type=module --eval \"await import('./dist/index.js')\"",
+    "lint": "eslint src scripts --max-warnings=0",
+    "schema:check": "node scripts/generate-json-schema.mts --check",
+    "schema:generate": "node scripts/generate-json-schema.mts --write",
+    "test": "vitest run",
+    "typecheck": "tsc --project tsconfig.build.json --noEmit && tsc --project tsconfig.json --noEmit && tsc --project tsconfig.tools.json --noEmit"
+  },
+  "dependencies": {
+    "zod": "4.6.7"
+  }
 }

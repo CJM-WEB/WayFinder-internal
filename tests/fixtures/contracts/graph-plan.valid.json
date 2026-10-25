@@ -1,0 +1,31 @@
+{
+  "analysis": {
+    "intent": "navigate",
+    "topic": "VS Code download",
+    "freshnessSensitive": false,
+    "ambiguityLevel": "low",
+    "broadSearchQueries": [],
+    "strategy": "plan_first",
+    "presentationMode": "compact"
+  },
+  "nodes": [
+    {
+      "id": "vscode-download",
+      "title": "VS Code 官方下载",
+      "description": "找到适合当前系统的 Visual Studio Code 官方下载入口。",
+      "nodeType": "primary",
+      "layer": 0,
+      "searchPlan": {
+        "queries": [
+          "Visual Studio Code official download",
+          "site:code.visualstudio.com download VS Code"
+        ],
+        "maxResults": 10,
+        "rankingProfile": "software",
+        "providerHints": ["general"]
+      },
+      "status": "planned"
+    }
+  ],
+  "edges": []
+}

@@ -2,5 +2,28 @@
   "name": "@wayfinder/web",
   "version": "0.1.0",
   "private": true,
-  "type": "module"
+  "type": "module",
+  "scripts": {
+    "build": "tsc --project tsconfig.build.json --noEmit && vite build",
+    "dev": "vite",
+    "lint": "eslint src e2e vite.config.mjs playwright.config.ts --max-warnings=0",
+    "test": "vitest run src",
+    "test:e2e": "playwright test --config playwright.config.ts",
+    "typecheck": "tsc --project tsconfig.build.json --noEmit && tsc --project tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@dagrejs/dagre": "3.1.1",
+    "@wayfinder/contracts": "workspace:*",
+    "@xyflow/react": "12.12.0",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "zustand": "5.0.15"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.64.1",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "6.1.2",
+    "vite": "8.3.4"
+  }
 }

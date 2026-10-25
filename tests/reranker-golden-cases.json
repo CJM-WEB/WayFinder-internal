@@ -1,0 +1,239 @@
+[
+  {
+    "id": "wfq-001",
+    "category": "knowledge",
+    "rankingProfile": "knowledge",
+    "nodeTitle": "理解 Python",
+    "nodeDescription": "选择权威、清晰且覆盖核心语言概念的入门资料。",
+    "query": "Python",
+    "expectedTopCandidateId": "candidate_1",
+    "rationale": "Stable single-keyword knowledge query that exercises graph decomposition, search planning, authority, and source diversity.",
+    "candidates": [
+      {
+        "candidateId": "candidate_1",
+        "title": "Python language tutorial",
+        "canonicalUrl": "https://python.example/tutorial",
+        "domain": "python.example",
+        "snippet": "Maintainer-authored tutorial for the Python language.",
+        "content": "The language maintainers explain syntax, data structures, modules, errors, classes, and the standard library with maintained examples."
+      },
+      {
+        "candidateId": "candidate_2",
+        "title": "Python in ten minutes",
+        "canonicalUrl": "https://quick-guide.example/python",
+        "domain": "quick-guide.example",
+        "snippet": "A brief community overview of common Python syntax.",
+        "content": "A short overview lists variables and loops but omits sources, error handling, modules, and version information."
+      },
+      {
+        "candidateId": "candidate_3",
+        "title": "Python keyword collection",
+        "canonicalUrl": "https://content-list.example/python",
+        "domain": "content-list.example",
+        "snippet": "An undated list of Python terms.",
+        "content": "The page repeats definitions without authorship, examples, maintenance history, or links to primary documentation."
+      }
+    ]
+  },
+  {
+    "id": "wfq-006",
+    "category": "ambiguousEntity",
+    "rankingProfile": "general",
+    "nodeTitle": "辨析 Java 的常见含义",
+    "nodeDescription": "用可靠来源覆盖编程语言、平台与地理实体，帮助用户自行选择意图。",
+    "query": "Java",
+    "expectedTopCandidateId": "candidate_1",
+    "rationale": "Ambiguous entity query that exercises evidence-assisted disambiguation without a clarification round.",
+    "candidates": [
+      {
+        "candidateId": "candidate_1",
+        "title": "Java overview and common meanings",
+        "canonicalUrl": "https://reference.example/java-disambiguation",
+        "domain": "reference.example",
+        "snippet": "A sourced overview distinguishing the programming platform, language, and island.",
+        "content": "The reference page clearly separates the Java programming language and platform from the Indonesian island and links to primary sources for each meaning."
+      },
+      {
+        "candidateId": "candidate_2",
+        "title": "Java platform documentation",
+        "canonicalUrl": "https://java.example/platform",
+        "domain": "java.example",
+        "snippet": "Official documentation for the Java software platform.",
+        "content": "The official documentation accurately covers the software platform but does not acknowledge the query's other common meanings."
+      },
+      {
+        "candidateId": "candidate_3",
+        "title": "Travel notes from Java",
+        "canonicalUrl": "https://travel-notes.example/java",
+        "domain": "travel-notes.example",
+        "snippet": "Personal travel notes about several locations on Java island.",
+        "content": "A personal itinerary describes selected destinations but provides no broad disambiguation or authoritative geographic overview."
+      }
+    ]
+  },
+  {
+    "id": "wfq-009",
+    "category": "navigateDownload",
+    "rankingProfile": "software",
+    "nodeTitle": "安全下载 VS Code",
+    "nodeDescription": "优先选择官方、可验证且支持当前系统的下载入口。",
+    "query": "VS Code download",
+    "expectedTopCandidateId": "candidate_1",
+    "rationale": "Compact navigation query that exercises official-source priority, download safety, and mirror filtering.",
+    "candidates": [
+      {
+        "candidateId": "candidate_1",
+        "title": "Download Visual Studio Code",
+        "canonicalUrl": "https://vscode.example/download",
+        "domain": "vscode.example",
+        "snippet": "Official downloads for supported operating systems.",
+        "content": "The publisher-owned page identifies supported systems, current releases, package formats, integrity information, and license terms."
+      },
+      {
+        "candidateId": "candidate_2",
+        "title": "VS Code fast installer mirror",
+        "canonicalUrl": "https://download-mirror.example/vscode",
+        "domain": "download-mirror.example",
+        "snippet": "A third-party mirror offering a repackaged installer.",
+        "content": "The mirror does not establish publisher identity and provides no checksum, signature, or verifiable relationship to the software project."
+      },
+      {
+        "candidateId": "candidate_3",
+        "title": "VS Code installation walkthrough",
+        "canonicalUrl": "https://community-guide.example/vscode-install",
+        "domain": "community-guide.example",
+        "snippet": "Community instructions that refer users to the official download.",
+        "content": "The guide explains installation steps but is not the software publisher or an authoritative download source."
+      }
+    ]
+  },
+  {
+    "id": "wfq-012",
+    "category": "compareShop",
+    "rankingProfile": "shopping",
+    "nodeTitle": "比较适合编程的笔记本电脑",
+    "nodeDescription": "选择有可核对规格、实测数据和场景分析的购买参考。",
+    "query": "best laptop for programming",
+    "expectedTopCandidateId": "candidate_1",
+    "rationale": "Open-ended shopping query that exercises needs decomposition, current evidence, source trust, and affiliate filtering.",
+    "candidates": [
+      {
+        "candidateId": "candidate_1",
+        "title": "Programming laptops tested across common workloads",
+        "canonicalUrl": "https://lab-review.example/programming-laptops",
+        "domain": "lab-review.example",
+        "snippet": "Independent comparison with build, battery, compile, display, and thermal measurements.",
+        "content": "The review publishes its test method, current model specifications, workload results, limitations, and suitability for several programming scenarios."
+      },
+      {
+        "candidateId": "candidate_2",
+        "title": "Ten best coding laptop deals",
+        "canonicalUrl": "https://affiliate-list.example/coding-laptops",
+        "domain": "affiliate-list.example",
+        "snippet": "A ranked shopping list with promotional links.",
+        "content": "The list contains promotional claims and affiliate links but no disclosed test method, measurements, or scenario-specific comparison."
+      },
+      {
+        "candidateId": "candidate_3",
+        "title": "Developer Laptop A specifications",
+        "canonicalUrl": "https://manufacturer.example/laptop-a",
+        "domain": "manufacturer.example",
+        "snippet": "Official specifications for one current laptop model.",
+        "content": "The manufacturer provides authoritative specifications for one model but no independent measurements or comparison with alternatives."
+      }
+    ]
+  },
+  {
+    "id": "wfq-013",
+    "category": "news",
+    "rankingProfile": "news",
+    "nodeTitle": "查看最新 AI 新闻",
+    "nodeDescription": "优先选择新鲜的一手信息，并区分原创报道与转载。",
+    "query": "latest AI news",
+    "expectedTopCandidateId": "candidate_1",
+    "rationale": "Fresh query that exercises broad search and revision, source independence, duplicate suppression, and freshness ranking.",
+    "candidates": [
+      {
+        "candidateId": "candidate_1",
+        "title": "AI research organization publishes new release",
+        "canonicalUrl": "https://ai-lab.example/news/release",
+        "domain": "ai-lab.example",
+        "snippet": "The organization announces a release with dated technical notes.",
+        "publishedAt": "2026-10-22T01:00:00Z",
+        "content": "The organization publishes a dated primary announcement, technical details, limitations, and links to supporting documentation."
+      },
+      {
+        "candidateId": "candidate_2",
+        "title": "New AI release announcement repost",
+        "canonicalUrl": "https://repost.example/ai-release-copy-1",
+        "domain": "repost.example",
+        "snippet": "A same-day repost of the primary announcement.",
+        "publishedAt": "2026-10-22T02:00:00Z",
+        "content": "This page reproduces the announcement without independent reporting, added evidence, or clear attribution beyond a brief link."
+      },
+      {
+        "candidateId": "candidate_3",
+        "title": "AI release announcement mirror",
+        "canonicalUrl": "https://repost.example/ai-release-copy-2",
+        "domain": "repost.example",
+        "snippet": "Another same-day copy of the primary announcement.",
+        "publishedAt": "2026-10-22T02:05:00Z",
+        "content": "The mirror repeats the primary announcement and adds no independent reporting, verification, or original evidence."
+      },
+      {
+        "candidateId": "candidate_4",
+        "title": "AI release announcement syndicated copy",
+        "canonicalUrl": "https://repost.example/ai-release-copy-3",
+        "domain": "repost.example",
+        "snippet": "A syndicated copy of the same primary announcement.",
+        "publishedAt": "2026-10-22T02:10:00Z",
+        "content": "The syndicated page republishes the announcement without additional sourcing, interviews, or independent analysis."
+      },
+      {
+        "candidateId": "candidate_5",
+        "title": "Independent analysis of the AI release",
+        "canonicalUrl": "https://independent-news.example/ai-release-analysis",
+        "domain": "independent-news.example",
+        "snippet": "An independent report checks the announcement against technical material.",
+        "publishedAt": "2026-10-22T03:00:00Z",
+        "content": "The report links to the primary announcement, checks technical claims against supporting documentation, and clearly separates reported facts from analysis."
+      }
+    ]
+  },
+  {
+    "id": "wfq-015",
+    "category": "howTo",
+    "rankingProfile": "general",
+    "nodeTitle": "规划并制作一个网站",
+    "nodeDescription": "选择覆盖目标、实现、发布与维护步骤的可执行指南。",
+    "query": "我想做一个网站",
+    "expectedTopCandidateId": "candidate_1",
+    "rationale": "Chinese goal query that exercises actionable graph decomposition, multilingual search planning, and result organization.",
+    "candidates": [
+      {
+        "candidateId": "candidate_1",
+        "title": "从需求到上线的网站制作指南",
+        "canonicalUrl": "https://web-guide.example/zh/build-a-site",
+        "domain": "web-guide.example",
+        "snippet": "分阶段说明目标、内容、技术选择、实现、部署和维护。",
+        "content": "指南先帮助读者明确网站目标与受众，再比较可访问的实现路径，并提供开发、测试、部署、安全和后续维护步骤。"
+      },
+      {
+        "candidateId": "candidate_2",
+        "title": "五分钟生成网站",
+        "canonicalUrl": "https://instant-site.example/zh",
+        "domain": "instant-site.example",
+        "snippet": "宣传单一建站产品的快速注册流程。",
+        "content": "页面主要推广付费产品，只展示注册和模板选择，没有需求分析、技术取舍、测试、安全或迁移说明。"
+      },
+      {
+        "candidateId": "candidate_3",
+        "title": "HTML 标签速查表",
+        "canonicalUrl": "https://markup-reference.example/zh/html",
+        "domain": "markup-reference.example",
+        "snippet": "常用 HTML 标签及简短示例。",
+        "content": "速查表能辅助编码，但没有覆盖网站规划、样式、交互、发布或维护的完整过程。"
+      }
+    ]
+  }
+]

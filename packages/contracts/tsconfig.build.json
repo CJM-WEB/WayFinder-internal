@@ -1,0 +1,18 @@
+{
+  // 仅构建生产源码；测试继续由完整检查配置校验。
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "outDir": "dist",
+    "rootDir": "src",
+    // Workspace 消费方必须从同一次 Contract 构建获得类型声明，避免复制公共类型。
+    "declaration": true,
+    // Zod 的声明使用跨浏览器与 Node.js 均支持的 URL；DOM 只在本轮构建检查中补充该标准类型。
+    // 完整 tsconfig 仍保持 Node-only，两轮检查共同阻止源码误用单一运行环境的全局对象。
+    "lib": ["ES2023", "DOM"],
+    // 覆盖测试配置继承的 Node 类型，避免生产源码误用环境全局。
+    "types": []
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["src/**/*.test.ts"]
+}

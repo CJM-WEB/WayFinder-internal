@@ -1,0 +1,899 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "version": {
+      "type": "string",
+      "const": "h2-evaluation.v1"
+    },
+    "query": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2000
+    },
+    "conditions": {
+      "type": "array",
+      "prefixItems": [
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "enum": [
+                "A",
+                "B"
+              ]
+            },
+            "source": {
+              "type": "string",
+              "enum": [
+                "node_specific",
+                "raw_query"
+              ]
+            },
+            "node": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "title": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "description": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "nodeType": {
+                      "type": "string",
+                      "enum": [
+                        "primary",
+                        "related",
+                        "disambiguation"
+                      ]
+                    },
+                    "layer": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "searchPlan": {
+                      "type": "object",
+                      "properties": {
+                        "queries": {
+                          "minItems": 1,
+                          "maxItems": 3,
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        },
+                        "maxResults": {
+                          "type": "integer",
+                          "minimum": 6,
+                          "maximum": 20
+                        },
+                        "rankingProfile": {
+                          "type": "string",
+                          "enum": [
+                            "knowledge",
+                            "news",
+                            "shopping",
+                            "software",
+                            "general"
+                          ]
+                        },
+                        "providerHints": {
+                          "minItems": 1,
+                          "maxItems": 3,
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "enum": [
+                              "general",
+                              "news",
+                              "shopping",
+                              "academic",
+                              "code",
+                              "community",
+                              "finance",
+                              "images"
+                            ]
+                          },
+                          "uniqueItems": true
+                        }
+                      },
+                      "required": [
+                        "queries",
+                        "maxResults",
+                        "rankingProfile",
+                        "providerHints"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "status": {
+                      "type": "string",
+                      "const": "ready"
+                    },
+                    "resources": {
+                      "minItems": 1,
+                      "maxItems": 8,
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "title": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "url": {
+                            "type": "string",
+                            "format": "uri",
+                            "pattern": "^[Hh][Tt][Tt][Pp][Ss]?:\\/\\/"
+                          },
+                          "canonicalUrl": {
+                            "type": "string",
+                            "format": "uri",
+                            "pattern": "^[Hh][Tt][Tt][Pp][Ss]?:\\/\\/"
+                          },
+                          "domain": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "sourceType": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "summary": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "whySelected": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "rank": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 8
+                          },
+                          "scores": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {
+                              "type": "number",
+                              "minimum": 0,
+                              "maximum": 1
+                            }
+                          },
+                          "searchProvider": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "publishedAt": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "format": "date-time",
+                                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "title",
+                          "url",
+                          "canonicalUrl",
+                          "domain",
+                          "sourceType",
+                          "summary",
+                          "whySelected",
+                          "rank",
+                          "searchProvider"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "warnings": {
+                      "maxItems": 0,
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "enum": [
+                          "SEARCH_PROVIDER_PARTIAL",
+                          "EXTRACTION_FAILED",
+                          "RERANK_FAILED"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "title",
+                    "description",
+                    "nodeType",
+                    "layer",
+                    "searchPlan",
+                    "status",
+                    "resources",
+                    "warnings"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "title": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "description": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "nodeType": {
+                      "type": "string",
+                      "enum": [
+                        "primary",
+                        "related",
+                        "disambiguation"
+                      ]
+                    },
+                    "layer": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "searchPlan": {
+                      "type": "object",
+                      "properties": {
+                        "queries": {
+                          "minItems": 1,
+                          "maxItems": 3,
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        },
+                        "maxResults": {
+                          "type": "integer",
+                          "minimum": 6,
+                          "maximum": 20
+                        },
+                        "rankingProfile": {
+                          "type": "string",
+                          "enum": [
+                            "knowledge",
+                            "news",
+                            "shopping",
+                            "software",
+                            "general"
+                          ]
+                        },
+                        "providerHints": {
+                          "minItems": 1,
+                          "maxItems": 3,
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "enum": [
+                              "general",
+                              "news",
+                              "shopping",
+                              "academic",
+                              "code",
+                              "community",
+                              "finance",
+                              "images"
+                            ]
+                          },
+                          "uniqueItems": true
+                        }
+                      },
+                      "required": [
+                        "queries",
+                        "maxResults",
+                        "rankingProfile",
+                        "providerHints"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "status": {
+                      "type": "string",
+                      "const": "partial"
+                    },
+                    "resources": {
+                      "minItems": 1,
+                      "maxItems": 8,
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "title": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "url": {
+                            "type": "string",
+                            "format": "uri",
+                            "pattern": "^[Hh][Tt][Tt][Pp][Ss]?:\\/\\/"
+                          },
+                          "canonicalUrl": {
+                            "type": "string",
+                            "format": "uri",
+                            "pattern": "^[Hh][Tt][Tt][Pp][Ss]?:\\/\\/"
+                          },
+                          "domain": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "sourceType": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "summary": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "whySelected": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "rank": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 8
+                          },
+                          "scores": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {
+                              "type": "number",
+                              "minimum": 0,
+                              "maximum": 1
+                            }
+                          },
+                          "searchProvider": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "publishedAt": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "format": "date-time",
+                                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "title",
+                          "url",
+                          "canonicalUrl",
+                          "domain",
+                          "sourceType",
+                          "summary",
+                          "whySelected",
+                          "rank",
+                          "searchProvider"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "warnings": {
+                      "minItems": 1,
+                      "maxItems": 3,
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "enum": [
+                          "SEARCH_PROVIDER_PARTIAL",
+                          "EXTRACTION_FAILED",
+                          "RERANK_FAILED"
+                        ]
+                      },
+                      "uniqueItems": true
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "title",
+                    "description",
+                    "nodeType",
+                    "layer",
+                    "searchPlan",
+                    "status",
+                    "resources",
+                    "warnings"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
+            }
+          },
+          "required": [
+            "id",
+            "source",
+            "node"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "enum": [
+                "A",
+                "B"
+              ]
+            },
+            "source": {
+              "type": "string",
+              "enum": [
+                "node_specific",
+                "raw_query"
+              ]
+            },
+            "node": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "title": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "description": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "nodeType": {
+                      "type": "string",
+                      "enum": [
+                        "primary",
+                        "related",
+                        "disambiguation"
+                      ]
+                    },
+                    "layer": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "searchPlan": {
+                      "type": "object",
+                      "properties": {
+                        "queries": {
+                          "minItems": 1,
+                          "maxItems": 3,
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        },
+                        "maxResults": {
+                          "type": "integer",
+                          "minimum": 6,
+                          "maximum": 20
+                        },
+                        "rankingProfile": {
+                          "type": "string",
+                          "enum": [
+                            "knowledge",
+                            "news",
+                            "shopping",
+                            "software",
+                            "general"
+                          ]
+                        },
+                        "providerHints": {
+                          "minItems": 1,
+                          "maxItems": 3,
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "enum": [
+                              "general",
+                              "news",
+                              "shopping",
+                              "academic",
+                              "code",
+                              "community",
+                              "finance",
+                              "images"
+                            ]
+                          },
+                          "uniqueItems": true
+                        }
+                      },
+                      "required": [
+                        "queries",
+                        "maxResults",
+                        "rankingProfile",
+                        "providerHints"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "status": {
+                      "type": "string",
+                      "const": "ready"
+                    },
+                    "resources": {
+                      "minItems": 1,
+                      "maxItems": 8,
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "title": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "url": {
+                            "type": "string",
+                            "format": "uri",
+                            "pattern": "^[Hh][Tt][Tt][Pp][Ss]?:\\/\\/"
+                          },
+                          "canonicalUrl": {
+                            "type": "string",
+                            "format": "uri",
+                            "pattern": "^[Hh][Tt][Tt][Pp][Ss]?:\\/\\/"
+                          },
+                          "domain": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "sourceType": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "summary": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "whySelected": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "rank": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 8
+                          },
+                          "scores": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {
+                              "type": "number",
+                              "minimum": 0,
+                              "maximum": 1
+                            }
+                          },
+                          "searchProvider": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "publishedAt": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "format": "date-time",
+                                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "title",
+                          "url",
+                          "canonicalUrl",
+                          "domain",
+                          "sourceType",
+                          "summary",
+                          "whySelected",
+                          "rank",
+                          "searchProvider"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "warnings": {
+                      "maxItems": 0,
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "enum": [
+                          "SEARCH_PROVIDER_PARTIAL",
+                          "EXTRACTION_FAILED",
+                          "RERANK_FAILED"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "title",
+                    "description",
+                    "nodeType",
+                    "layer",
+                    "searchPlan",
+                    "status",
+                    "resources",
+                    "warnings"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "title": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "description": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "nodeType": {
+                      "type": "string",
+                      "enum": [
+                        "primary",
+                        "related",
+                        "disambiguation"
+                      ]
+                    },
+                    "layer": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "searchPlan": {
+                      "type": "object",
+                      "properties": {
+                        "queries": {
+                          "minItems": 1,
+                          "maxItems": 3,
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        },
+                        "maxResults": {
+                          "type": "integer",
+                          "minimum": 6,
+                          "maximum": 20
+                        },
+                        "rankingProfile": {
+                          "type": "string",
+                          "enum": [
+                            "knowledge",
+                            "news",
+                            "shopping",
+                            "software",
+                            "general"
+                          ]
+                        },
+                        "providerHints": {
+                          "minItems": 1,
+                          "maxItems": 3,
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "enum": [
+                              "general",
+                              "news",
+                              "shopping",
+                              "academic",
+                              "code",
+                              "community",
+                              "finance",
+                              "images"
+                            ]
+                          },
+                          "uniqueItems": true
+                        }
+                      },
+                      "required": [
+                        "queries",
+                        "maxResults",
+                        "rankingProfile",
+                        "providerHints"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "status": {
+                      "type": "string",
+                      "const": "partial"
+                    },
+                    "resources": {
+                      "minItems": 1,
+                      "maxItems": 8,
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "title": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "url": {
+                            "type": "string",
+                            "format": "uri",
+                            "pattern": "^[Hh][Tt][Tt][Pp][Ss]?:\\/\\/"
+                          },
+                          "canonicalUrl": {
+                            "type": "string",
+                            "format": "uri",
+                            "pattern": "^[Hh][Tt][Tt][Pp][Ss]?:\\/\\/"
+                          },
+                          "domain": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "sourceType": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "summary": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "whySelected": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "rank": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 8
+                          },
+                          "scores": {
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {
+                              "type": "number",
+                              "minimum": 0,
+                              "maximum": 1
+                            }
+                          },
+                          "searchProvider": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "publishedAt": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "format": "date-time",
+                                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "title",
+                          "url",
+                          "canonicalUrl",
+                          "domain",
+                          "sourceType",
+                          "summary",
+                          "whySelected",
+                          "rank",
+                          "searchProvider"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "warnings": {
+                      "minItems": 1,
+                      "maxItems": 3,
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "enum": [
+                          "SEARCH_PROVIDER_PARTIAL",
+                          "EXTRACTION_FAILED",
+                          "RERANK_FAILED"
+                        ]
+                      },
+                      "uniqueItems": true
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "title",
+                    "description",
+                    "nodeType",
+                    "layer",
+                    "searchPlan",
+                    "status",
+                    "resources",
+                    "warnings"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
+            }
+          },
+          "required": [
+            "id",
+            "source",
+            "node"
+          ],
+          "additionalProperties": false
+        }
+      ],
+      "items": false,
+      "minItems": 2,
+      "maxItems": 2
+    }
+  },
+  "required": [
+    "version",
+    "query",
+    "conditions"
+  ],
+  "additionalProperties": false
+}

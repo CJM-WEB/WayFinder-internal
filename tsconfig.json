@@ -1,0 +1,14 @@
+{
+  // 根配置检查 Node.js 工具链测试与共享测试基础设施，不生成产物或扫描本地私密文档。
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "lib": ["ES2023"],
+    "types": ["node"],
+    // 根级测试与 Server 开发检查保持一致，直接读取 Contract 源码；生产构建仍从 dist 解析声明。
+    "paths": {
+      "@wayfinder/contracts": ["./packages/contracts/src/index.ts"]
+    }
+  },
+  "include": ["tests/**/*.ts", "tests/**/*.mts"]
+}

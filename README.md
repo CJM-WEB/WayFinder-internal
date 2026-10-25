@@ -6,25 +6,26 @@ WayFinder 是一个 AI-native Browser 方向的 Web MVP。它把搜索结果组�
 
 ## Repository role
 
-当前仓库是 WayFinder 的公开开发与展示仓库，只包含允许公开且能支持构建、运行、测试和协作的工程资产。本地规格、实验材料、运行数据和个人工作记录不会进入 Git。
+当前仓库是 WayFinder 的永久私有开发源，包含构建、运行、测试和受控协作所需的工程资产。
+本地规格、实验材料、运行数据和个人工作记录不会进入 Git；未来公开版本必须通过文件白名单
+导出到独立仓库和独立 Git 历史，不能把当前仓库或其完整历史直接公开。
 
 ## Repository layout
 
 ```text
 apps/
-  web/                 React + Vite 前端
+  web/                 React + Vite 前端及 Playwright E2E
   server/              Fastify 后端与搜索编排
 packages/
   contracts/           前后端共享的 Zod 数据契约
 tests/
   fixtures/            稳定测试样例
-  e2e/                 Playwright 端到端测试
 data/
   runs/                本地 Run Log；内容不进入 Git
 docs/                   预留的公开文档目录；本地资料不进入 Git
 ```
 
-项目使用 pnpm workspace 管理 Monorepo（单仓多包）。当前阶段只建立工程骨架；应用依赖、源码和运行命令将在 Contracts 阶段开始补充。
+项目使用 pnpm workspace 管理 Monorepo（单仓多包）。三个 Workspace 已接通严格 TypeScript 与真实质量门禁；产品依赖和功能由对应 D1 Issue 逐步补充。
 
 ## Pinned toolchain
 
@@ -68,6 +69,7 @@ pnpm --version
    node --version
    pnpm --version
    pnpm install --frozen-lockfile
+   pnpm --filter @wayfinder/web exec playwright install chromium
    ```
 
 5. 创建本地环境文件：
@@ -102,6 +104,7 @@ pnpm --version
    node --version
    pnpm --version
    pnpm install --frozen-lockfile
+   pnpm --filter @wayfinder/web exec playwright install chromium
    ```
 
 5. 创建本地环境文件：
@@ -126,18 +129,23 @@ pnpm install --frozen-lockfile
 
 ## Development commands
 
-根目录脚本会递归调用 Workspace 中已经存在的同名脚本：
+根质量脚本按固定包名逐个调用三个 Workspace，并使用 `--fail-if-no-match` 防止包名错误或 Workspace 缺失被静默跳过。`pnpm dev` 暂时只启动已经提供开发服务的 Workspace。
 
 | Command | Purpose |
 |---|---|
 | `pnpm dev` | 启动可用的开发服务 |
 | `pnpm typecheck` | 运行 TypeScript 类型检查 |
 | `pnpm lint` | 运行静态检查 |
+| `pnpm run schema:generate` | 从六个公共 Zod 根 Schema 显式更新 JSON Schema 产物 |
+| `pnpm run schema:check` | 只读检查 JSON Schema 是否缺失、变化或出现额外产物 |
 | `pnpm test` | 运行单元测试 |
 | `pnpm build` | 构建所有应用和 Package |
-| `pnpm run ci` | 按 CI 顺序运行 Lint、Typecheck、Tests 与 Build |
+| `pnpm start` | 从根 `.env`（若存在）启动单进程生产构建 |
+| `pnpm run test:production-smoke` | 在 `pnpm build` 后验证单进程生产产物与渐进 NDJSON |
+| `pnpm run test:e2e` | 用本地 Fixture 在 Chromium 中运行 Browser-like E2E |
+| `pnpm run ci` | 按顺序运行静态检查、测试、构建、Production Smoke 与 E2E |
 
-在对应 Package 脚本尚未实现时，根命令可能不会执行实际任务；不能把这种空运行误认为验证通过。
+当前自动化测试已覆盖公共 Contract、JSON Schema 生成器、各 Workspace 工程链路，以及一条无 Secret 的 Browser-like E2E；它仍不能替代真实 Provider Eval 与真人 Smoke Test（冒烟测试）。
 
 ## Continuous integration
 
@@ -156,6 +164,7 @@ Checkout
   → 按 .nvmrc 安装 Node.js
   → 按 package.json 启用固定版本 pnpm
   → pnpm install --frozen-lockfile
+  → 安装 lockfile 对应的 Playwright Chromium
   → pnpm run ci
 ```
 
@@ -163,14 +172,74 @@ Checkout
 
 ```bash
 pnpm install --frozen-lockfile
+pnpm --filter @wayfinder/web exec playwright install chromium
 pnpm run ci
 ```
 
-现阶段子 Package 尚未配置真实的 Lint、Typecheck、Test 和 Build 脚本，因此这些质量门禁只是接好统一入口，不能把空运行理解为应用已经通过验证。引入 TypeScript、测试和构建工具后，应在对应 Package 中补齐同名脚本，并同步扩展根 `pnpm run ci`；Workflow 可以继续调用统一入口，不需要复制第二套流程。Contracts 生成器完成后，必须加入 JSON Schema drift check。
+三个生产 Workspace 均已配置真实的 Lint、Typecheck、Test 和 Build 脚本；根命令会显式执行每个 Workspace，并在缺包、缺脚本或失败时返回非零状态。根 CI 在类型检查后运行只读 `schema:check`，人工修改、遗漏或增加受检产物都会阻断后续 Test 与 Build；构建通过后先运行无 Secret 的 Production Smoke（生产冒烟测试），再运行固定 Chromium 的 Fixture E2E。
+
+受跟踪的 JSON Schema 位于 `packages/contracts/json-schema/`，由 Zod 4 原生转换器生成。它们只表达 Zod 输入侧可表示的结构投影；`trim()` 后长度、`superRefine()` 和跨对象关系仍必须由运行时 Zod Schema 校验，不能用 JSON Schema 通过替代真实入口的 Zod parse。
 
 真实 Provider / LLM 调用、Golden Eval 与 Full Eval 不放在普通 CI 中，避免外部网络波动、凭据暴露和不受控成本。相关模块变更时仍须在受控环境运行相应 Eval。CI 失败时先修复第一个失败门禁，不能通过删测试或反复重跑等待偶然绿色；CI 绿色也不能替代人工 Diff 审核。
 
 当前 Job 运行在 Linux，不能单独证明 macOS 和 Windows 兼容。项目通过固定 Node.js、pnpm 与 lockfile 降低平台差异；出现真实平台问题后再评估 Runner Matrix。
+
+## Single-process production build
+
+生产构建由一个 Node.js 进程中的同一个 Fastify 实例提供 `/health`、`POST /api/search`、
+Vite `index.html` 与 `/assets/*`。必须从仓库根构建，避免只生成 Server 而缺少 Web 产物：
+
+```bash
+pnpm build
+pnpm run test:production-smoke
+pnpm start
+```
+
+`pnpm start` 使用 Node.js 的 `--env-file-if-exists` 从仓库根读取 `.env`；生产环境也可以不创建
+该文件，改由 systemd `EnvironmentFile` 或受控 Secret 存储注入。生产 Secret 文件权限应为
+`0600`，不得把值写入仓库、命令行、日志或前端。
+
+| 环境变量 | 要求 | 用途 |
+|---|---|---|
+| `LLM_PROVIDER` | 必填，固定 `deepseek` | 已验证的大语言模型提供方 |
+| `LLM_MODEL` | 必填，固定 `deepseek-flash` | 已验证的模型 |
+| `LLM_API_KEY` | 必填 Secret，示例留空 | DeepSeek 凭据 |
+| `TAVILY_API_KEY` | 必填 Secret，示例留空 | Tavily 凭据 |
+| `PORT` | 可选，默认 `3000` | Node 回环监听端口 |
+| `SEARCH_TIMEOUT_MS` / `EXTRACT_TIMEOUT_MS` | 可选、有界 | Search / Extract 单次超时 |
+| `PLANNER_TIMEOUT_MS` / `RERANK_TIMEOUT_MS` | 可选、有界 | LLM 阶段单次超时 |
+| `SEARCH_CONCURRENCY` / `EXTRACT_CONCURRENCY` / `LLM_CONCURRENCY` | 可选、只能向下调整 | 进程级并发上限 |
+| `RUN_LOGGING` | 可选，默认 `false` | 仅本地受控诊断；共享部署保持关闭 |
+
+腾讯云 Ubuntu 目标使用同机 Nginx 作为唯一公网入口；Node 只监听 `127.0.0.1:3000`，安全组
+只开放 80/443，不开放 3000。Nginx 必须把静态资源和 API 全部反代给同一个 Node 进程：
+
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:3000;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
+
+location = /api/search {
+    proxy_pass http://127.0.0.1:3000;
+    proxy_http_version 1.1;
+    proxy_set_header Connection "";
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_buffering off;
+    proxy_cache off;
+    gzip off;
+    proxy_read_timeout 30s;
+    proxy_pass_header X-Accel-Buffering;
+}
+```
+
+首次接入或修改正式域名、HTTPS、CDN、WAF、Nginx 后，必须使用不含敏感内容的受控 Query
+重新验证 NDJSON 首事件在终态前到达，并确认响应仍保留 `application/x-ndjson`、
+`no-cache, no-transform`、`X-Accel-Buffering: no` 且没有固定 `Content-Length`。
 
 ## Cross-platform development
 
@@ -198,15 +267,14 @@ test(graph): cover cycle repair cases
 
 每个 Commit 应只包含一个可独立理解和回滚的逻辑改动；需要解释时在正文说明原因、验证和风险。
 
-## Fork and contributor workflow
+## Private collaboration workflow
 
-1. 在 GitHub Fork 本仓库。
-2. 克隆自己的 Fork，并把本仓库配置为 `upstream`。
-3. 从最新 `main` 创建短生命周期 Feature Branch。
-4. 使用与项目一致的 Node.js、pnpm 和 frozen lockfile。
-5. 一个 Pull Request 只解决一个核心问题，并按需要补充测试、Eval 与文档。
-6. PR 描述必须说明 What、Why、Spec / Contract Impact、Validation、Quality / Latency / Cost 影响与风险。
-7. 不得提交密钥、真实 Run Log、Provider 原始响应、个人信息或其他本地资料。
+1. 只向获批成员授予当前私有仓库访问权限，不使用 Public Fork 传播源码或历史。
+2. 从人员指定的基线分支创建短生命周期 Feature Branch。
+3. 使用与项目一致的 Node.js、pnpm 和 frozen lockfile。
+4. 一个 Pull Request 只解决一个核心问题，并按需要补充测试、Eval 与文档。
+5. PR 描述必须说明 What、Why、Spec / Contract Impact、Validation、Quality / Latency / Cost 影响与风险。
+6. 不得提交密钥、真实 Run Log、Provider 原始响应、个人信息或其他本地资料。
 
 ## Local-only files and secrets
 
