@@ -18,8 +18,9 @@ export type StructuredLLMInput = Readonly<{
 }>;
 
 /**
- * timeoutMs 由调用方按阶段剩余预算与 Run 剩余预算的最小值计算；
- * Port 只冻结单次调用不能超过共享 LLM 硬上限。
+ * timeoutMs 是调用方按阶段剩余预算与 Run 剩余预算计算出的当前剩余额度；进程级
+ * 并发装饰器还必须扣除取得真实 Provider 槽位前的排队时间。Port 只冻结最终传入的
+ * 单次调用不能超过共享 LLM 硬上限。
  */
 export type LLMCallOptions = Readonly<{
   signal: AbortSignal;

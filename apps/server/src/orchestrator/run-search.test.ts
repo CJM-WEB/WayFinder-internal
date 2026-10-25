@@ -258,6 +258,8 @@ describe("createRunSearchHandler", () => {
         searchProvider,
         llmProvider,
         concurrency: { search: 6, extract: 3, llm: 3 },
+        // Run Scope 与排队装饰器共用固定时钟，避免真实微任务延迟污染预算断言。
+        now: clock.now,
       }),
     });
     const payloads: StreamEventPayload[] = [];
