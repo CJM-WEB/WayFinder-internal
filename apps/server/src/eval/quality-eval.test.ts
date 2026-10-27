@@ -172,7 +172,7 @@ const projectedCallCounts = {
 } as const;
 
 const runLog = RunLogRecordSchema.parse({
-  schemaVersion: "run-log.v1",
+  schemaVersion: "run-log.v2",
   createdAt: "2026-10-23T00:00:00.000Z",
   identifiers: {
     logId: "11111111-1111-4111-8111-111111111111",
@@ -205,11 +205,32 @@ const runLog = RunLogRecordSchema.parse({
     plannerPrompt: "graph-planner.v1",
     reviserPrompt: "graph-reviser.v1",
     rerankerPrompt: "resource-reranker.v1",
+    rankFusion: "rank-fusion.v1",
   },
   providers: { search: "tavily", llm: "deepseek" },
   cache: {
     search: { hitCount: 0, missCount: 2 },
     extract: { hitCount: 0, missCount: 2 },
+  },
+  ranking: {
+    llmSuccess: {
+      nodeCount: 2,
+      finalCandidateCount: 8,
+      providerTop1OverrideCount: 1,
+      heuristicTop1OverrideCount: 0,
+      providerTop3FinalOverlapCount: 5,
+      heuristicTop3FinalOverlapCount: 6,
+      top3ComparisonSlots: 6,
+    },
+    fallback: {
+      nodeCount: 0,
+      finalCandidateCount: 0,
+      providerTop1OverrideCount: 0,
+      heuristicTop1OverrideCount: 0,
+      providerTop3FinalOverlapCount: 0,
+      heuristicTop3FinalOverlapCount: 0,
+      top3ComparisonSlots: 0,
+    },
   },
   tokens: {
     status: "complete",
@@ -285,7 +306,7 @@ describe("WAY-86 Quality Eval 数据集", () => {
 
 describe("WAY-86 Quality Eval 查询投影", () => {
   it("保留计划、Top 3、官方排名、跨 Node 重复、多样性与 Run Log 遥测", async () => {
-    expect(QUALITY_EVAL_SCHEMA_VERSION).toBe("quality-eval.v4");
+    expect(QUALITY_EVAL_SCHEMA_VERSION).toBe("quality-eval.v5");
     const payloads: StreamEventPayload[] = [
       { type: "query.analysis", data: plan.analysis },
       { type: "graph.plan", data: plan },
@@ -306,6 +327,12 @@ describe("WAY-86 Quality Eval 查询投影", () => {
       readRunLog: () => runLog,
     });
 
+    // 匿名性回归：Ranking 投影只能包含聚合计数，不能泄漏候选身份或页面正文。
+    const serializedRanking = JSON.stringify(projected.telemetry?.ranking);
+    expect(serializedRanking).not.toContain("code.visualstudio.com");
+    expect(serializedRanking).not.toContain("candidate_");
+    expect(serializedRanking).not.toContain("官方");
+
     expect(projected).toMatchObject({
       schemaVersion: QUALITY_EVAL_SCHEMA_VERSION,
       comparisonKey: `${QUALITY_EVAL_DATASET_VERSION}:${QUERY.id}`,
@@ -316,6 +343,8 @@ describe("WAY-86 Quality Eval 查询投影", () => {
       telemetry: {
         timingsMs: runLog.timingsMs,
         counts: projectedCallCounts,
+        versions: { rankFusion: "rank-fusion.v1" },
+        ranking: runLog.ranking,
         tokens: runLog.tokens,
         estimatedCost: runLog.estimatedCost,
       },

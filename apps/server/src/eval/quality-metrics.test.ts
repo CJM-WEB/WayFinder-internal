@@ -150,6 +150,27 @@ function createTelemetry(totalMs: number) {
       searchHttpAttempts: 1,
       extractHttpAttempts: 1,
     },
+    versions: { rankFusion: "rank-fusion.v1" },
+    ranking: {
+      llmSuccess: {
+        nodeCount: 1,
+        finalCandidateCount: 3,
+        providerTop1OverrideCount: 1,
+        heuristicTop1OverrideCount: 0,
+        providerTop3FinalOverlapCount: 3,
+        heuristicTop3FinalOverlapCount: 3,
+        top3ComparisonSlots: 3,
+      },
+      fallback: {
+        nodeCount: 0,
+        finalCandidateCount: 0,
+        providerTop1OverrideCount: 0,
+        heuristicTop1OverrideCount: 0,
+        providerTop3FinalOverlapCount: 0,
+        heuristicTop3FinalOverlapCount: 0,
+        top3ComparisonSlots: 0,
+      },
+    },
     tokens: {
       status: "complete",
       observations: 1,

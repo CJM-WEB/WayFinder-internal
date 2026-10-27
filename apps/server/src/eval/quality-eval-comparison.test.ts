@@ -13,7 +13,16 @@ const BASELINE_COMMIT = "a".repeat(40);
 const CANDIDATE_COMMIT = "b".repeat(40);
 const BLOCKS = ["A1", "B1", "B2", "A2"] as const;
 
-function createTelemetry(value: number) {
+function createTelemetry(value: number, ranked = false) {
+  const emptyMode = {
+    nodeCount: 0,
+    finalCandidateCount: 0,
+    providerTop1OverrideCount: 0,
+    heuristicTop1OverrideCount: 0,
+    providerTop3FinalOverlapCount: 0,
+    heuristicTop3FinalOverlapCount: 0,
+    top3ComparisonSlots: 0,
+  } as const;
   return {
     timingsMs: {
       planning: 0,
@@ -23,26 +32,45 @@ function createTelemetry(value: number) {
     },
     counts: {
       logicalSearchCalls: value,
-      logicalExtractCalls: value,
-      extractUrlCount: value,
-      logicalLlmCalls: value,
+      logicalExtractCalls: 0,
+      extractUrlCount: 0,
+      logicalLlmCalls: 1,
       searchHttpAttempts: value,
-      extractHttpAttempts: value,
+      extractHttpAttempts: 0,
+    },
+    versions: { rankFusion: "rank-fusion.v1" },
+    ranking: {
+      llmSuccess: ranked
+        ? {
+            nodeCount: 1,
+            finalCandidateCount: 1,
+            providerTop1OverrideCount: 0,
+            heuristicTop1OverrideCount: 0,
+            providerTop3FinalOverlapCount: 1,
+            heuristicTop3FinalOverlapCount: 1,
+            top3ComparisonSlots: 1,
+          }
+        : emptyMode,
+      fallback: emptyMode,
     },
     tokens: {
       status: "complete",
-      observations: 0,
-      inputTokens: 0,
-      outputTokens: 0,
-      totalTokens: 0,
+      observations: 1,
+      inputTokens: value,
+      outputTokens: value,
+      totalTokens: value * 2,
     },
     estimatedCost: { status: "unavailable", reason: "pricing_not_frozen" },
   } as const;
 }
 
-function createReport(commit: string, runIndex: number) {
+function createReport(
+  commit: string,
+  runIndex: number,
+  includeRankedResult = true,
+) {
   return QualityEvalReportSchema.parse({
-    schemaVersion: "quality-eval.v5",
+    schemaVersion: "quality-eval.v6",
     issue: "WAY-86",
     evaluationRunId: `2026-10-23T00-00-0${runIndex}-000Z-0000000${runIndex}-0000-4000-8000-00000000000${runIndex}`,
     completedAt: `2026-10-23T00:00:0${runIndex}.000Z`,
@@ -61,6 +89,7 @@ function createReport(commit: string, runIndex: number) {
         reviser: "graph-reviser.v1",
         reranker: "resource-reranker.v1",
       },
+      ranking: "rank-fusion.v1",
       providers: {
         search: "serpapi_bing",
         llm: "deepseek",
@@ -90,9 +119,98 @@ function createReport(commit: string, runIndex: number) {
     },
     results: Array.from({ length: 20 }, (_, index) => {
       const id = `wfq-${String(index + 1).padStart(3, "0")}`;
-      const deadlineFailure = index === 0;
+      if (includeRankedResult && index === 0) {
+        const plan = {
+          analysis: {
+            intent: "learn",
+            topic: "Query 1",
+            freshnessSensitive: false,
+            ambiguityLevel: "low",
+            broadSearchQueries: [],
+            strategy: "plan_first",
+            presentationMode: "compact",
+          },
+          nodes: [
+            {
+              id: "node-1",
+              title: "测试节点",
+              description: "冻结比较 Fixture 的最终可见节点。",
+              nodeType: "primary",
+              layer: 0,
+              status: "planned",
+              searchPlan: {
+                queries: ["Query 1"],
+                maxResults: 20,
+                rankingProfile: "knowledge",
+                providerHints: ["general"],
+              },
+            },
+          ],
+          edges: [],
+        } as const;
+        return {
+          schemaVersion: "quality-eval.v5",
+          comparisonKey: `wayfinder-regression.v1:${id}`,
+          query: {
+            id,
+            query: "Query 1",
+            category: "knowledge",
+            rationale: "固定比较 Fixture。",
+          },
+          executionStatus: "completed",
+          finalStatus: "complete",
+          errorCode: null,
+          freshnessReferenceAt: "2026-10-23T00:00:00.000Z",
+          plan,
+          nodes: [
+            {
+              id: "node-1",
+              status: "ready",
+              warnings: [],
+              errorCode: null,
+              resourceCount: 1,
+              topResources: [
+                {
+                  id: "resource_1",
+                  title: "测试资源",
+                  url: "https://example.com/",
+                  canonicalUrl: "https://example.com/",
+                  domain: "example.com",
+                  sourceType: "web",
+                  summary: "测试摘要。",
+                  whySelected: "用于冻结匿名比较覆盖率。",
+                  rank: 1,
+                  searchProvider: "serpapi_bing",
+                  publishedAt: null,
+                },
+              ],
+              officialSource: { status: "notApplicable" },
+              diversity: { distinctExactDomainCount: 1 },
+              freshness: { status: "notApplicable" },
+            },
+          ],
+          duplicateResources: [],
+          metrics: {
+            version: "quality-metrics.v1",
+            schemaValidity: "valid",
+            nodeCount: 1,
+            resourceCount: 1,
+            duplicateRate: {
+              status: "measured",
+              duplicateOccurrences: 0,
+              totalOccurrences: 1,
+              value: 0,
+            },
+            officialSource: { status: "notApplicable" },
+            deadlineCompliance: { status: "within" },
+          },
+          metricFailure: null,
+          telemetry: createTelemetry(index, true),
+        };
+      }
+      const deadlineFailure = index === 1;
       return {
-        schemaVersion: "quality-eval.v4",
+        schemaVersion: "quality-eval.v5",
         comparisonKey: `wayfinder-regression.v1:${id}`,
         query: {
           id,
@@ -148,7 +266,105 @@ function createInput(): TestInput {
   };
 }
 
+function createLegacyReport(commit: string, runIndex: number): unknown {
+  const legacy = structuredClone(createReport(commit, runIndex)) as Record<
+    string,
+    unknown
+  >;
+  legacy.schemaVersion = "quality-eval.v5";
+  const source = legacy.source as Record<string, unknown>;
+  delete source.ranking;
+  for (const result of legacy.results as Record<string, unknown>[]) {
+    result.schemaVersion = "quality-eval.v4";
+    const telemetry = result.telemetry;
+    if (telemetry !== null) {
+      delete (telemetry as Record<string, unknown>).versions;
+      delete (telemetry as Record<string, unknown>).ranking;
+    }
+  }
+  return legacy;
+}
+
 describe("WAY-90 Quality Eval A-B-B-A 比较", () => {
+  it("严格接收 WAY-107 legacy 基线并显式标记 Ranking 证据不完整", () => {
+    const compared = compareQualityEvalBlocks({
+      baselineCommit: BASELINE_COMMIT,
+      candidateCommit: CANDIDATE_COMMIT,
+      blocks: BLOCKS.map((block, index) => ({
+        block,
+        report: block.startsWith("A")
+          ? createLegacyReport(BASELINE_COMMIT, index + 1)
+          : createReport(CANDIDATE_COMMIT, index + 1),
+      })),
+    });
+
+    expect(compared).toMatchObject({
+      status: "inconclusive",
+      reason: "telemetry_incomplete",
+      blocks: [
+        {
+          block: "A1",
+          rankingVersion: "pre-fusion.v0",
+          ranking: { status: "partial", observedRankedNodeCount: 0 },
+        },
+        { block: "B1", rankingVersion: "rank-fusion.v1" },
+        { block: "B2", rankingVersion: "rank-fusion.v1" },
+        {
+          block: "A2",
+          rankingVersion: "pre-fusion.v0",
+          ranking: { status: "partial", observedRankedNodeCount: 0 },
+        },
+      ],
+    });
+  });
+
+  it("20 条都有遥测但没有最终可见 Node 时仍判为 inconclusive", () => {
+    const input = createInput();
+    input.blocks[1]!.report = createReport(CANDIDATE_COMMIT, 2, false);
+
+    const compared = compareQualityEvalBlocks(input);
+
+    expect(compared.status).toBe("inconclusive");
+    expect(compared.blocks[1]).toMatchObject({
+      block: "B1",
+      status: "partial",
+      ranking: {
+        status: "unavailable",
+        reason: "noRankingEligibleNodes",
+        observedTelemetryQueryCount: 20,
+      },
+    });
+  });
+
+  it("最终可见 Node 与 Ranking 观测数不一致时拒绝 comparable", () => {
+    const input = createInput();
+    input.blocks[1]!.report.results[0]!.telemetry!.ranking =
+      createTelemetry(0).ranking;
+
+    const compared = compareQualityEvalBlocks(input);
+
+    expect(compared.status).toBe("inconclusive");
+    expect(compared.blocks[1]).toMatchObject({
+      block: "B1",
+      status: "partial",
+      ranking: {
+        status: "partial",
+        expectedRankedNodeCount: 1,
+        observedRankedNodeCount: 0,
+        incompleteQueryCount: 1,
+      },
+    });
+  });
+
+  it("Search-only Block 出现任一 Extract 事实时使用固定错误拒绝", () => {
+    const input = createInput();
+    input.blocks[1]!.report.results[2]!.telemetry!.counts.logicalExtractCalls = 1;
+
+    expect(() => compareQualityEvalBlocks(input)).toThrow(
+      "Search-only Block 出现 Extract 调用或耗时",
+    );
+  });
+
   it("完整汇总四个 Block，并把失败 Query 的零调用视为有效测量", () => {
     const compared = compareQualityEvalBlocks(createInput());
 
@@ -157,23 +373,65 @@ describe("WAY-90 Quality Eval A-B-B-A 比较", () => {
     expect(JSON.stringify(compared).toLowerCase()).not.toMatch(
       /keep|revert/u,
     );
-    expect(compared.blocks[0]).toEqual({
+    expect(compared.blocks[0]).toMatchObject({
       block: "A1",
       condition: "A",
       evaluationRunId:
         "2026-10-23T00-00-01-000Z-00000001-0000-4000-8000-000000000001",
       sourceCommit: BASELINE_COMMIT,
-      expectedQueryCount: 20,
-      observedTelemetryCount: 20,
-      missingQueryIds: [],
       status: "complete",
-      totals: {
-        logicalSearchCalls: 190,
-        logicalExtractCalls: 190,
-        extractUrlCount: 190,
-        logicalLlmCalls: 190,
-        searchHttpAttempts: 190,
-        extractHttpAttempts: 190,
+      latency: { status: "complete", p50Ms: 0, sampleCount: 20 },
+      providerUsage: {
+        status: "complete",
+        expectedQueryCount: 20,
+        observedQueryCount: 20,
+        totals: {
+          logicalSearchCalls: 190,
+          logicalExtractCalls: 0,
+          extractUrlCount: 0,
+          logicalLlmCalls: 20,
+          searchHttpAttempts: 190,
+          extractHttpAttempts: 0,
+        },
+      },
+      ranking: {
+        status: "complete",
+        expectedQueryCount: 20,
+        observedTelemetryQueryCount: 20,
+        expectedRankedNodeCount: 1,
+        observedRankedNodeCount: 1,
+        incompleteQueryCount: 0,
+        totals: {
+          observedNodeCount: 1,
+          llmSuccessNodeCount: 1,
+          fallbackNodeCount: 0,
+          finalCandidateCount: 1,
+        },
+        rates: {
+          llmSuccess: {
+            providerTop1Override: {
+              status: "measured",
+              numerator: 0,
+              denominator: 1,
+              value: 0,
+            },
+            providerTop3FinalOverlap: {
+              status: "measured",
+              numerator: 1,
+              denominator: 1,
+              value: 1,
+            },
+          },
+        },
+      },
+      tokens: {
+        status: "complete",
+        totals: { observations: 20, totalTokens: 380 },
+      },
+      cache: { status: "notMeasured", mode: "cold_disabled" },
+      estimatedCost: {
+        status: "unavailable",
+        reason: "pricing_not_frozen",
       },
     });
   });
@@ -191,15 +449,19 @@ describe("WAY-90 Quality Eval A-B-B-A 比较", () => {
     expect(compared.blocks[1]).toMatchObject({
       block: "B1",
       status: "partial",
-      observedTelemetryCount: 19,
-      missingQueryIds: ["wfq-005"],
-      observedTotals: { logicalSearchCalls: 186 },
+      providerUsage: {
+        status: "partial",
+        observedQueryCount: 19,
+        missingQueryIds: ["wfq-005"],
+        observedTotals: { logicalSearchCalls: 186 },
+      },
     });
-    expect(compared.blocks[1]).not.toHaveProperty("totals");
+    expect(compared.blocks[1]?.providerUsage).not.toHaveProperty("totals");
   });
 
   it("全部缺失时明确标为 unavailable，不生成任何总计", () => {
     const input = createInput();
+    input.blocks[2]!.report = createReport(CANDIDATE_COMMIT, 3, false);
     for (const result of input.blocks[2]!.report.results) {
       result.telemetry = null;
     }
@@ -209,13 +471,22 @@ describe("WAY-90 Quality Eval A-B-B-A 比较", () => {
     expect(compared.blocks[2]).toMatchObject({
       block: "B2",
       status: "unavailable",
-      observedTelemetryCount: 0,
-      missingQueryIds: Array.from({ length: 20 }, (_, index) =>
-        `wfq-${String(index + 1).padStart(3, "0")}`,
-      ),
+      providerUsage: {
+        status: "unavailable",
+        observedQueryCount: 0,
+        missingQueryIds: Array.from({ length: 20 }, (_, index) =>
+          `wfq-${String(index + 1).padStart(3, "0")}`,
+        ),
+      },
+      ranking: {
+        status: "unavailable",
+        reason: "noRankingEligibleNodes",
+      },
     });
-    expect(compared.blocks[2]).not.toHaveProperty("totals");
-    expect(compared.blocks[2]).not.toHaveProperty("observedTotals");
+    expect(compared.blocks[2]?.providerUsage).not.toHaveProperty("totals");
+    expect(compared.blocks[2]?.providerUsage).not.toHaveProperty(
+      "observedTotals",
+    );
   });
 
   it.each([
@@ -347,8 +618,14 @@ describe("WAY-90 Quality Eval A-B-B-A 比较", () => {
 
   it("拒绝会让聚合结果失真的安全整数溢出", () => {
     const input = createInput();
-    input.blocks[0]!.report.results[0]!.telemetry =
-      createTelemetry(Number.MAX_SAFE_INTEGER);
+    const telemetry = createTelemetry(0, true);
+    input.blocks[0]!.report.results[0]!.telemetry = {
+      ...telemetry,
+      counts: {
+        ...telemetry.counts,
+        logicalSearchCalls: Number.MAX_SAFE_INTEGER,
+      },
+    };
     input.blocks[0]!.report.results[1]!.telemetry = createTelemetry(1);
 
     expect(() => compareQualityEvalBlocks(input)).toThrow("安全整数范围");

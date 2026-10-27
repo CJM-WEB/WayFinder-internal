@@ -90,7 +90,7 @@ function createInput(
 }
 
 describe("rerankCandidatesWithFallback 成功路径", () => {
-  it("按 Decision 顺序合并允许字段，并保持 Candidate 身份与输入不变", async () => {
+  it("合并 Decision 后执行三路融合，并保持 Candidate 身份与输入不变", async () => {
     const candidates = [createCandidate(1), createCandidate(2)];
     const snapshot = structuredClone(candidates);
     const provider = new FakeLLMProvider([
@@ -106,12 +106,13 @@ describe("rerankCandidatesWithFallback 成功路径", () => {
       createInput(provider, { candidates }),
     );
 
+    expect(outcome.kind).toBe("llm_success");
     expect(outcome.warnings).toEqual([]);
     expect(outcome.candidates.map(candidate => candidate.candidateId)).toEqual([
-      "candidate_2",
       "candidate_1",
+      "candidate_2",
     ]);
-    expect(outcome.candidates[0]).toMatchObject({
+    expect(outcome.candidates[1]).toMatchObject({
       hit: candidates[1]!.hit,
       heuristicScore: candidates[1]!.heuristicScore,
       heuristicSignals: candidates[1]!.heuristicSignals,
@@ -119,7 +120,7 @@ describe("rerankCandidatesWithFallback 成功路径", () => {
       summary: "Summary for candidate_2",
       whySelected: "Why candidate_2 fits this node",
     });
-    expect(outcome.candidates[1]?.sourceType).toBe("documentation");
+    expect(outcome.candidates[0]?.sourceType).toBe("documentation");
     expect(candidates).toEqual(snapshot);
   });
 
@@ -130,13 +131,17 @@ describe("rerankCandidatesWithFallback 成功路径", () => {
       rerankCandidatesWithFallback(
         createInput(provider, { candidates: [], pages: [] }),
       ),
-    ).resolves.toEqual({ candidates: [], warnings: [] });
+    ).resolves.toEqual({
+      kind: "llm_success",
+      candidates: [],
+      warnings: [],
+    });
     expect(provider.calls).toHaveLength(0);
   });
 });
 
 describe("rerankCandidatesWithFallback 普通失败", () => {
-  it("LLM 使用 Provider 顺序，但失败时回退到同一集合的 Heuristic 顺序", async () => {
+  it("LLM 使用 Provider 顺序，失败时按同集合的 11:2 双路融合", async () => {
     const providerOrdered = [createCandidate(1), createCandidate(2)];
     const heuristicOrdered = [providerOrdered[1]!, providerOrdered[0]!];
     const provider = new FakeLLMProvider([
@@ -150,7 +155,8 @@ describe("rerankCandidatesWithFallback 普通失败", () => {
       }),
     );
 
-    expect(outcome.candidates).toEqual(heuristicOrdered);
+    expect(outcome.kind).toBe("fallback");
+    expect(outcome.candidates).toEqual(providerOrdered);
     expect(outcome.warnings).toEqual(["RERANK_FAILED"]);
   });
 
@@ -219,6 +225,24 @@ describe("rerankCandidatesWithFallback 普通失败", () => {
       { ranking: [createDecision("candidate_1", 0.9)] },
     ],
     [
+      "Candidate ID 重复",
+      {
+        ranking: [
+          createDecision("candidate_1", 0.9),
+          createDecision("candidate_1", 0.8),
+        ],
+      },
+    ],
+    [
+      "Candidate ID 未知",
+      {
+        ranking: [
+          createDecision("candidate_1", 0.9),
+          createDecision("candidate_unknown", 0.8),
+        ],
+      },
+    ],
+    [
       "Profile Score 非法",
       {
         ranking: [
@@ -233,7 +257,7 @@ describe("rerankCandidatesWithFallback 普通失败", () => {
         ],
       },
     ],
-  ])("%s 回退到原 Heuristic 顺序并只产生 RERANK_FAILED", async (_name, response) => {
+  ])("%s 回退到 11:2 融合并只产生 RERANK_FAILED", async (_name, response) => {
     const candidates = [createCandidate(1), createCandidate(2)];
     const pages = [
       {
@@ -248,6 +272,7 @@ describe("rerankCandidatesWithFallback 普通失败", () => {
     );
 
     expect(outcome).toEqual({
+      kind: "fallback",
       candidates,
       warnings: ["RERANK_FAILED"],
     });
@@ -276,6 +301,7 @@ describe("rerankCandidatesWithFallback 普通失败", () => {
     );
 
     expect(outcome.warnings).toEqual(["RERANK_FAILED"]);
+    expect(outcome.kind).toBe("fallback");
     expect(provider.calls).toHaveLength(0);
   });
 });

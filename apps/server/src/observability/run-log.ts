@@ -23,6 +23,8 @@ import { z } from "zod";
 import { GRAPH_PLANNER_PROMPT_VERSION } from "../ai/prompts/graph-planner.v1.js";
 import { GRAPH_REVISER_PROMPT_VERSION } from "../ai/prompts/graph-reviser.v1.js";
 import { RESOURCE_RERANKER_PROMPT_VERSION } from "../ai/prompts/resource-reranker.v1.js";
+import { RANK_FUSION_VERSION } from "../pipeline/rank-fusion.js";
+import type { RankingObservation } from "../pipeline/ranking-observation.js";
 import type { RunLogObservation } from "./run-log-context.js";
 
 const UniqueWarningCodesSchema = z
@@ -43,12 +45,46 @@ const ProviderIdentifierSchema = z
   .string()
   .regex(/^[a-z0-9][a-z0-9._-]{0,63}$/);
 
+const RankingModeMetricsSchema = z
+  .strictObject({
+    nodeCount: NonNegativeIntegerSchema,
+    finalCandidateCount: NonNegativeIntegerSchema,
+    providerTop1OverrideCount: NonNegativeIntegerSchema,
+    heuristicTop1OverrideCount: NonNegativeIntegerSchema,
+    providerTop3FinalOverlapCount: NonNegativeIntegerSchema,
+    heuristicTop3FinalOverlapCount: NonNegativeIntegerSchema,
+    top3ComparisonSlots: NonNegativeIntegerSchema,
+  })
+  .superRefine((metrics, context) => {
+    const invalid =
+      metrics.providerTop1OverrideCount > metrics.nodeCount ||
+      metrics.heuristicTop1OverrideCount > metrics.nodeCount ||
+      metrics.providerTop3FinalOverlapCount > metrics.top3ComparisonSlots ||
+      metrics.heuristicTop3FinalOverlapCount > metrics.top3ComparisonSlots ||
+      metrics.top3ComparisonSlots > metrics.finalCandidateCount ||
+      metrics.finalCandidateCount > metrics.nodeCount * 6 ||
+      (metrics.nodeCount > 0 &&
+        (metrics.finalCandidateCount < metrics.nodeCount ||
+          metrics.top3ComparisonSlots < metrics.nodeCount));
+    if (invalid) {
+      context.addIssue({
+        code: "custom",
+        message: "Run Log 匿名排序聚合不变量无效",
+      });
+    }
+  });
+
+const RankingMetricsSchema = z.strictObject({
+  llmSuccess: RankingModeMetricsSchema,
+  fallback: RankingModeMetricsSchema,
+});
+
 /**
  * 严格内部 Schema 是最终隐私白名单。即使调用方持有原始业务对象，文件 Sink 也只能接收
  * 这里列出的聚合字段；新增字段必须经过显式代码与测试审核。
  */
 export const RunLogRecordSchema = z.strictObject({
-  schemaVersion: z.literal("run-log.v1"),
+  schemaVersion: z.literal("run-log.v2"),
   createdAt: z.iso.datetime({ offset: true }),
   identifiers: z.strictObject({
     logId: z.uuid(),
@@ -96,6 +132,7 @@ export const RunLogRecordSchema = z.strictObject({
     plannerPrompt: z.literal(GRAPH_PLANNER_PROMPT_VERSION),
     reviserPrompt: z.literal(GRAPH_REVISER_PROMPT_VERSION),
     rerankerPrompt: z.literal(RESOURCE_RERANKER_PROMPT_VERSION),
+    rankFusion: z.literal(RANK_FUSION_VERSION),
   }),
   providers: z.strictObject({
     search: ProviderIdentifierSchema,
@@ -111,6 +148,7 @@ export const RunLogRecordSchema = z.strictObject({
       missCount: NonNegativeIntegerSchema,
     }),
   }),
+  ranking: RankingMetricsSchema,
   tokens: z.strictObject({
     status: z.enum(["not_used", "complete", "partial", "unavailable"]),
     observations: NonNegativeIntegerSchema,
@@ -156,6 +194,7 @@ export type RunLogRecorder = Readonly<{
     durationMs: number,
     resultCount: number,
   ) => void;
+  recordRanking: (observation: RankingObservation) => void;
   recordEvent: (payload: StreamEventPayload) => void;
   recordInterrupted: (cancelled: boolean) => void;
   finish: () => Promise<void>;
@@ -163,6 +202,7 @@ export type RunLogRecorder = Readonly<{
 
 type MutableCounts = z.infer<typeof RunLogRecordSchema>["counts"];
 type MutableCacheMetrics = z.infer<typeof RunLogRecordSchema>["cache"];
+type MutableRankingMetrics = z.infer<typeof RunLogRecordSchema>["ranking"];
 
 function appendUnique<T>(target: T[], value: T): void {
   if (!target.includes(value)) target.push(value);
@@ -224,6 +264,19 @@ export function createRunLogRecorder(
   const cache: MutableCacheMetrics = {
     search: { hitCount: 0, missCount: 0 },
     extract: { hitCount: 0, missCount: 0 },
+  };
+  const emptyRankingMode = (): MutableRankingMetrics["llmSuccess"] => ({
+    nodeCount: 0,
+    finalCandidateCount: 0,
+    providerTop1OverrideCount: 0,
+    heuristicTop1OverrideCount: 0,
+    providerTop3FinalOverlapCount: 0,
+    heuristicTop3FinalOverlapCount: 0,
+    top3ComparisonSlots: 0,
+  });
+  const ranking: MutableRankingMetrics = {
+    llmSuccess: emptyRankingMode(),
+    fallback: emptyRankingMode(),
   };
   const warningCodes: NodeWarningCode[] = [];
   const errorCodes: AppErrorCode[] = [];
@@ -307,6 +360,48 @@ export function createRunLogRecorder(
     }
   };
 
+  /** 输入类型不含候选身份；运行时再次核对计数，非法观测按旁路 fail-open 忽略。 */
+  const recordRanking = (observation: RankingObservation): void => {
+    if (finished) return;
+    const integerValues = [
+      observation.candidateCount,
+      observation.providerTop3FinalOverlap,
+      observation.heuristicTop3FinalOverlap,
+      observation.top3ComparisonSlots,
+    ];
+    if (
+      (observation.fusionMode !== "llm_success" &&
+        observation.fusionMode !== "fallback") ||
+      integerValues.some(value => !Number.isSafeInteger(value) || value < 0) ||
+      observation.candidateCount < 1 ||
+      observation.candidateCount > 6 ||
+      observation.top3ComparisonSlots !==
+        Math.min(3, observation.candidateCount) ||
+      observation.providerTop3FinalOverlap > observation.top3ComparisonSlots ||
+      observation.heuristicTop3FinalOverlap > observation.top3ComparisonSlots
+    ) {
+      return;
+    }
+
+    const mode =
+      observation.fusionMode === "llm_success"
+        ? ranking.llmSuccess
+        : ranking.fallback;
+    mode.nodeCount += 1;
+    mode.finalCandidateCount += observation.candidateCount;
+    mode.providerTop1OverrideCount += observation.providerTop1Overridden
+      ? 1
+      : 0;
+    mode.heuristicTop1OverrideCount += observation.heuristicTop1Overridden
+      ? 1
+      : 0;
+    mode.providerTop3FinalOverlapCount +=
+      observation.providerTop3FinalOverlap;
+    mode.heuristicTop3FinalOverlapCount +=
+      observation.heuristicTop3FinalOverlap;
+    mode.top3ComparisonSlots += observation.top3ComparisonSlots;
+  };
+
   const recordResult = (result: ResultGraph): void => {
     counts.plannedNodes = result.graph.nodes.length;
     counts.edges = result.graph.edges.length;
@@ -384,7 +479,7 @@ export function createRunLogRecorder(
           ? null
           : readNonNegativeDuration(now, nodeProcessingStartedAt);
       const record = RunLogRecordSchema.parse({
-        schemaVersion: "run-log.v1",
+        schemaVersion: "run-log.v2",
         createdAt,
         identifiers: { logId, queryId, planId },
         outcome,
@@ -403,12 +498,14 @@ export function createRunLogRecorder(
           plannerPrompt: GRAPH_PLANNER_PROMPT_VERSION,
           reviserPrompt: GRAPH_REVISER_PROMPT_VERSION,
           rerankerPrompt: RESOURCE_RERANKER_PROMPT_VERSION,
+          rankFusion: RANK_FUSION_VERSION,
         },
         providers: {
           search: input.searchProviderId,
           llm: input.llmProviderId,
         },
         cache,
+        ranking,
         tokens: {
           status: readTokenStatus(
             counts.logicalLlmCalls,
@@ -433,6 +530,7 @@ export function createRunLogRecorder(
     recordNodeProcessingStarted,
     recordProviderCallStarted,
     recordProviderCallFinished,
+    recordRanking,
     recordEvent,
     recordInterrupted,
     finish,

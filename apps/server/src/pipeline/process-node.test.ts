@@ -206,12 +206,17 @@ describe("processNode 成功与局部降级", () => {
     });
     const rerankProvider = new FakeLLMProvider([createRerankOutput()]);
     const events: StreamEventPayload[] = [];
+    const rankingObservations: unknown[] = [];
     const remainingBudgets = [20_000, 4_000];
     const signal = new AbortController().signal;
 
     const result = await processNode(
       createNode(),
-      createContext(searchProvider, rerankProvider, events),
+      createContext(searchProvider, rerankProvider, events, {
+        observeRanking: observation => {
+          rankingObservations.push(observation);
+        },
+      }),
       createRunScope(
         signal,
         () => remainingBudgets.shift() ?? 4_000,
@@ -240,6 +245,17 @@ describe("processNode 成功与局部降级", () => {
       timeoutMs: 4_000,
     });
     expect(remainingBudgets).toEqual([]);
+    expect(rankingObservations).toEqual([
+      {
+        fusionMode: "llm_success",
+        candidateCount: 1,
+        providerTop1Overridden: false,
+        heuristicTop1Overridden: false,
+        providerTop3FinalOverlap: 1,
+        heuristicTop3FinalOverlap: 1,
+        top3ComparisonSlots: 1,
+      },
+    ]);
     expect(events.map(event => event.type)).toEqual([
       "node.status",
       "node.status",
@@ -260,6 +276,30 @@ describe("processNode 成功与局部降级", () => {
     expect(terminalEvents(events)).toHaveLength(1);
     expect(events.every(event => StreamEventPayloadSchema.safeParse(event).success))
       .toBe(true);
+  });
+
+  it("排序观察 Sink 失败时保持业务结果与终态不变", async () => {
+    const hit = createHit();
+    const searchProvider = new FakeSearchProvider({
+      searchResponses: { [hit.query]: [hit] },
+    });
+    const rerankProvider = new FakeLLMProvider([createRerankOutput()]);
+    const events: StreamEventPayload[] = [];
+
+    const result = await processNode(
+      createNode(),
+      createContext(searchProvider, rerankProvider, events, {
+        observeRanking: () => {
+          throw new Error("ranking sink unavailable");
+        },
+      }),
+      createRunScope(),
+    );
+
+    // 旁路可观测性不得把已经完成的检索节点改写为 failed。
+    expectCompletedExecution(result, events);
+    expect(result.status).toBe("ready");
+    expect(result.warnings).toEqual([]);
   });
 
   it("按阶段顺序合并 Search 与 Rerank Warning，并以完整 Resource 返回 partial", async () => {
@@ -598,7 +638,7 @@ describe("WAY-58 单 Node 高风险检索矩阵", () => {
     ]);
   });
 
-  it("Rerank 成功后风险评估不覆盖模型顺序", async () => {
+  it("三路融合后只应用一次风险层级，同层保持融合顺序且不删除", async () => {
     const query = "site:code.visualstudio.com Visual Studio Code download";
     const baseNode = createNode([query]);
     const node: GraphPlanNode = {
@@ -676,9 +716,9 @@ describe("WAY-58 单 Node 高风险检索矩阵", () => {
     expect(result.warnings).toEqual([]);
     expect(result.status).toBe("ready");
     expect(result.resources.map(resource => resource.canonicalUrl)).toEqual([
-      risky.canonicalUrl,
       unknown.canonicalUrl,
       siteMatched.canonicalUrl,
+      risky.canonicalUrl,
     ]);
     expect(node).toEqual(nodeSnapshot);
     expect(searchProvider.searchCalls).toHaveLength(1);
@@ -1065,11 +1105,17 @@ describe("processNode 失败与取消", () => {
       ],
     });
     const events: StreamEventPayload[] = [];
+    const rankingObservations: unknown[] = [];
     const emitError = new Error("stream transport closed");
     const baseContext = createContext(
       searchProvider,
       new FakeLLMProvider([createRerankOutput()]),
       events,
+      {
+        observeRanking: observation => {
+          rankingObservations.push(observation);
+        },
+      },
     );
 
     await expect(
@@ -1093,6 +1139,7 @@ describe("processNode 失败与取消", () => {
     expect(terminalEvents(events).map(event => event.type)).toEqual([
       "node.ready",
     ]);
+    expect(rankingObservations).toEqual([]);
   });
 
   it("failed 终态 Emit 失败时只尝试一次，并作为传输故障上抛", async () => {

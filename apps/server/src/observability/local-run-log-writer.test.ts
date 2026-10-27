@@ -26,7 +26,7 @@ const createdRoots: string[] = [];
 
 function createRecord(): RunLogRecord {
   return RunLogRecordSchema.parse({
-    schemaVersion: "run-log.v1",
+    schemaVersion: "run-log.v2",
     createdAt: "2026-10-22T00:00:00.000Z",
     identifiers: {
       logId: "00000000-0000-4000-8000-000000000001",
@@ -64,11 +64,32 @@ function createRecord(): RunLogRecord {
       plannerPrompt: "graph-planner.v1",
       reviserPrompt: "graph-reviser.v1",
       rerankerPrompt: "resource-reranker.v1",
+      rankFusion: "rank-fusion.v1",
     },
     providers: { search: "fake-search", llm: "fake-llm" },
     cache: {
       search: { hitCount: 0, missCount: 0 },
       extract: { hitCount: 0, missCount: 0 },
+    },
+    ranking: {
+      llmSuccess: {
+        nodeCount: 0,
+        finalCandidateCount: 0,
+        providerTop1OverrideCount: 0,
+        heuristicTop1OverrideCount: 0,
+        providerTop3FinalOverlapCount: 0,
+        heuristicTop3FinalOverlapCount: 0,
+        top3ComparisonSlots: 0,
+      },
+      fallback: {
+        nodeCount: 0,
+        finalCandidateCount: 0,
+        providerTop1OverrideCount: 0,
+        heuristicTop1OverrideCount: 0,
+        providerTop3FinalOverlapCount: 0,
+        heuristicTop3FinalOverlapCount: 0,
+        top3ComparisonSlots: 0,
+      },
     },
     tokens: {
       status: "not_used",

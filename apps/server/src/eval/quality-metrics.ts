@@ -31,12 +31,18 @@ const QualityEvalCallCountsSchema = RunLogRecordSchema.shape.counts.pick({
   extractHttpAttempts: true,
 });
 
+const QualityEvalVersionSchema = RunLogRecordSchema.shape.versions.pick({
+  rankFusion: true,
+});
+
 export const QualityEvalTelemetrySchema = RunLogRecordSchema.pick({
   timingsMs: true,
+  ranking: true,
   tokens: true,
   estimatedCost: true,
 }).extend({
   counts: QualityEvalCallCountsSchema,
+  versions: QualityEvalVersionSchema,
 });
 
 export const QualityEvalOfficialSourceSchema = z.discriminatedUnion("status", [

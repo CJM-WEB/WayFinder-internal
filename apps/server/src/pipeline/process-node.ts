@@ -31,6 +31,11 @@ import {
   type OfficialSourcePolicy,
 } from "./official-source.js";
 import { rerankCandidatesWithFallback } from "./rerank-candidates.js";
+import { applyTrustedRiskSafetyOrder } from "./rank-fusion.js";
+import {
+  createRankingObservation,
+  type RankingObservation,
+} from "./ranking-observation.js";
 import { finalizeResources } from "./resource-finalizer.js";
 
 type NodeJobRejectedCode = Exclude<
@@ -95,6 +100,8 @@ export type ProcessNodeContext = Readonly<{
   rerankTimeoutMs: number;
   /** Emit 只接收无 Envelope 的严格业务 Payload；Run Event Writer 负责补齐 Envelope。 */
   emit: (payload: NodeStreamEventPayload) => Promise<void>;
+  /** 匿名排序观测是旁路能力，失败不得改变 Node 结果。 */
+  observeRanking?: (observation: RankingObservation) => void;
   language?: string;
 }>;
 
@@ -169,6 +176,7 @@ export async function processNode(
   const { signal } = runScope;
   const warnings: NodeWarningCode[] = [];
   let result: SuccessfulResultGraphNode;
+  let rankingObservation: RankingObservation | undefined;
 
   try {
     signal.throwIfAborted();
@@ -245,8 +253,22 @@ export async function processNode(
     });
     appendUniqueWarnings(warnings, reranked.warnings);
 
-    // 风险域在本任务仅保留为 Assessment 信号，不删除候选或覆盖已批准排序权重。
-    const resources = finalizeResources(reranked.candidates);
+    // Safety 只在融合后稳定应用一次；它隔离已知风险，但不删除或重新评分。
+    const safetyOrdered = applyTrustedRiskSafetyOrder(
+      reranked.candidates,
+      assessments,
+    );
+    try {
+      rankingObservation = createRankingObservation({
+        fusionMode: reranked.kind,
+        providerOrder: providerOrdered,
+        heuristicOrder: preRanked,
+        finalOrder: safetyOrdered,
+      });
+    } catch {
+      // 观测投影同样属于旁路；内部身份核对异常不能覆盖已经完成的业务排序。
+    }
+    const resources = finalizeResources(safetyOrdered);
     if (resources.length === 0) {
       throw new NodeJobError("SEARCH_PROVIDER_FAILED", true);
     }
@@ -297,5 +319,12 @@ export async function processNode(
     resources: result.resources,
     warnings: result.warnings,
   });
+  try {
+    if (rankingObservation !== undefined) {
+      context.observeRanking?.(rankingObservation);
+    }
+  } catch {
+    // 只有终态成功送达后才记录；旁路 Sink 故障仍不能覆盖已交付的业务结果。
+  }
   return result;
 }

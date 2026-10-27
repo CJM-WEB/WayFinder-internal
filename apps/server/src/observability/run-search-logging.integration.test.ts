@@ -188,6 +188,26 @@ describe("Run Search Logging Integration", () => {
         search: { hitCount: 0, missCount: 1 },
         extract: { hitCount: 0, missCount: 0 },
       },
+      ranking: {
+        llmSuccess: {
+          nodeCount: 1,
+          finalCandidateCount: 1,
+          providerTop1OverrideCount: 0,
+          heuristicTop1OverrideCount: 0,
+          providerTop3FinalOverlapCount: 1,
+          heuristicTop3FinalOverlapCount: 1,
+          top3ComparisonSlots: 1,
+        },
+        fallback: {
+          nodeCount: 0,
+          finalCandidateCount: 0,
+          providerTop1OverrideCount: 0,
+          heuristicTop1OverrideCount: 0,
+          providerTop3FinalOverlapCount: 0,
+          heuristicTop3FinalOverlapCount: 0,
+          top3ComparisonSlots: 0,
+        },
+      },
       tokens: {
         status: "complete",
         observations: 2,
@@ -200,6 +220,10 @@ describe("Run Search Logging Integration", () => {
       cache: {
         search: { hitCount: 1, missCount: 0 },
         extract: { hitCount: 0, missCount: 0 },
+      },
+      ranking: {
+        llmSuccess: { nodeCount: 1 },
+        fallback: { nodeCount: 0 },
       },
     });
     const serialized = JSON.stringify(records);

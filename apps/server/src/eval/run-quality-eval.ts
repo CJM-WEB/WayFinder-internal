@@ -39,6 +39,7 @@ import type { RunLogRecord } from "../observability/run-log.js";
 import { createConcurrencyLimitedProviders } from "../orchestrator/provider-concurrency.js";
 import { createRunSearchHandler } from "../orchestrator/run-search.js";
 import { SerpApiBingSearchProvider } from "../search/providers/serpapi-bing.js";
+import { RANK_FUSION_VERSION } from "../pipeline/rank-fusion.js";
 import {
   QUALITY_EVAL_DATASET_VERSION,
   QualityEvalQueryResultSchema,
@@ -66,7 +67,7 @@ const RUN_ID_PATTERN =
   /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z-[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 
 /** Provider 与运行策略已迁移到 Search-only，不能复用旧 Tavily + Extract 报告版本。 */
-export const QUALITY_EVAL_REPORT_SCHEMA_VERSION = "quality-eval.v5" as const;
+export const QUALITY_EVAL_REPORT_SCHEMA_VERSION = "quality-eval.v6" as const;
 
 export type QualityEvalCliOptions = Readonly<{
   dataset: QualityEvalDatasetKind;
@@ -100,6 +101,7 @@ export const QualityEvalReportSchema = z.strictObject({
       reviser: z.literal(GRAPH_REVISER_PROMPT_VERSION),
       reranker: z.literal(RESOURCE_RERANKER_PROMPT_VERSION),
     }),
+    ranking: z.literal(RANK_FUSION_VERSION),
     providers: z.strictObject({
       search: z.literal("serpapi_bing"),
       llm: z.literal(DEEPSEEK_LLM_PROVIDER_ID),
@@ -570,6 +572,7 @@ async function runQualityEval(
           reviser: GRAPH_REVISER_PROMPT_VERSION,
           reranker: RESOURCE_RERANKER_PROMPT_VERSION,
         },
+        ranking: RANK_FUSION_VERSION,
         providers: {
           search: "serpapi_bing",
           llm: DEEPSEEK_LLM_PROVIDER_ID,

@@ -306,6 +306,9 @@ export function createRunSearchHandler(
             // processNode 会在真正进入 Rerank 前按同一 Run Scope 再次收窄。
             rerankTimeoutMs: dependencies.rerankTimeoutMs,
             emit: terminalEvents.emitNode,
+            ...(recorder === undefined
+              ? {}
+              : { observeRanking: recorder.recordRanking }),
             language: dependencies.language,
           },
           providers,
