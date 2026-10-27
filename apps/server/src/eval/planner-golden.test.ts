@@ -435,21 +435,21 @@ describe("Planner Golden 取消与程序错误边界", () => {
     ).rejects.toBe(programmingError);
   });
 
-  it("拒绝突破 20 秒硬上限的测试配置", async () => {
+  it("拒绝突破 40 秒硬上限的测试配置", async () => {
     await expect(
       evaluatePlannerGoldenQuery(
         createInput(new FakeLLMProvider([createCompactPlan("plan_first")]), {
-          runDeadlineMs: 20_001,
+          runDeadlineMs: 40_001,
         }),
       ),
     ).rejects.toThrow(RangeError);
   });
 
-  it("拒绝突破 15 秒硬上限的 LLM 阶段配置", async () => {
+  it("拒绝突破 30 秒硬上限的 LLM 阶段配置", async () => {
     await expect(
       evaluatePlannerGoldenQuery(
         createInput(new FakeLLMProvider([createCompactPlan("plan_first")]), {
-          llmStageTimeoutMs: 15_001,
+          llmStageTimeoutMs: 30_001,
         }),
       ),
     ).rejects.toThrow(RangeError);

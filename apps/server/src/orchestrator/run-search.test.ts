@@ -161,11 +161,11 @@ function createDependencies(
         ],
       }),
       llmProvider: new FakeLLMProvider(llmResponses),
-      concurrency: { search: 6, extract: 3, llm: 3 },
+      concurrency: { search: 6, llm: 3 },
     }),
     officialSourcePolicy: { knownRiskyDownloadDomains: [] },
-    llmStageTimeoutMs: 15_000,
-    rerankTimeoutMs: 12_000,
+    llmStageTimeoutMs: 30_000,
+    rerankTimeoutMs: 24_000,
     language: "en",
     normalizeQuery: (query: string) => query.normalize("NFKC").toLowerCase(),
     onPlannerValidationDiagnostic: () => undefined,
@@ -175,7 +175,7 @@ function createDependencies(
 }
 
 describe("createRunSearchHandler", () => {
-  it("六个外部阶段共享同一 Run Scope，且迟到 Rerank 不能改写已完成 Graph", async () => {
+  it("五个 Search-only 外部阶段共享同一 Run Scope，且迟到 Rerank 不能改写已完成 Graph", async () => {
     vi.useFakeTimers();
     const clock = createFixedClock("2026-10-22T08:00:00.000Z");
     const initialPlan = createEvidenceAssistedPlan("初始计划");
@@ -242,22 +242,13 @@ describe("createRunSearchHandler", () => {
         if (request.query === SECOND_QUERY) return [nodeHit];
         throw new Error(`Deadline 矩阵未配置 Query：${request.query}`);
       },
-      extract: async (canonicalUrls, signal) => {
-        observedSignals.push({ stage: "extract", signal });
-        clock.advanceBy(10_000);
-        vi.advanceTimersByTime(10_000);
-        return canonicalUrls.map(canonicalUrl => ({
-          canonicalUrl,
-          content: "TypeScript project configuration reference.",
-        }));
-      },
     };
     const handler = createRunSearchHandler({
       ...createDependencies(clock, []),
       providers: createConcurrencyLimitedProviders({
         searchProvider,
         llmProvider,
-        concurrency: { search: 6, extract: 3, llm: 3 },
+        concurrency: { search: 6, llm: 3 },
         // Run Scope 与排队装饰器共用固定时钟，避免真实微任务延迟污染预算断言。
         now: clock.now,
       }),
@@ -289,7 +280,6 @@ describe("createRunSearchHandler", () => {
         "reviser",
         "search:typescript-guide",
         "search:typescript-project",
-        "extract",
         "rerank",
       ]);
       const sharedSignal = observedSignals[0]?.signal;
@@ -297,8 +287,8 @@ describe("createRunSearchHandler", () => {
       expect(observedSignals.every(item => item.signal === sharedSignal)).toBe(
         true,
       );
-      // Broad Search 与 Extract 已消耗 17 秒，Rerank 只能拿到同一 Run 的最后 3 秒。
-      expect(llmTimeouts).toEqual([15_000, 13_000, 3_000]);
+      // Broad Search 后仍有 33 秒，Reviser 受 30 秒上限收窄，Rerank 再受 24 秒上限收窄。
+      expect(llmTimeouts).toEqual([30_000, 30_000, 24_000]);
       expect(vi.getTimerCount()).toBe(1);
       expect(payloads).toContainEqual({
         type: "node.failed",
@@ -306,7 +296,8 @@ describe("createRunSearchHandler", () => {
         error: { code: "SEARCH_PROVIDER_FAILED", retryable: true },
       });
 
-      await vi.advanceTimersByTimeAsync(2_999);
+      // 自定义 LLM 故意忽略阶段 timeout，因此要等绝对 Run Deadline 的剩余 33 秒。
+      await vi.advanceTimersByTimeAsync(32_999);
       expect(handlerFinished).toBe(false);
       expect(payloads.some(payload => payload.type === "complete")).toBe(false);
 
@@ -378,7 +369,7 @@ describe("createRunSearchHandler", () => {
       providers: createConcurrencyLimitedProviders({
         searchProvider: new FakeSearchProvider({ searchResponses: {} }),
         llmProvider,
-        concurrency: { search: 6, extract: 3, llm: 3 },
+        concurrency: { search: 6, llm: 3 },
       }),
     });
     const payloads: StreamEventPayload[] = [];
@@ -392,7 +383,7 @@ describe("createRunSearchHandler", () => {
 
     try {
       await plannerEntered.promise;
-      await vi.advanceTimersByTimeAsync(20_000);
+      await vi.advanceTimersByTimeAsync(40_000);
       await pending;
 
       expect(payloads).toEqual([
@@ -476,7 +467,7 @@ describe("createRunSearchHandler", () => {
         payloads.push(structuredClone(payload));
         if (payload.type === "graph.plan") {
           // 只推进统一时钟，不让真实 Timer 取得执行权，稳定覆盖延迟窗口。
-          clock.advanceBy(20_000);
+          clock.advanceBy(40_000);
         }
       },
     });
@@ -531,7 +522,7 @@ describe("createRunSearchHandler", () => {
     const handler = createRunSearchHandler({
       ...dependencies,
       normalizeQuery: query => {
-        clock.advanceBy(20_000);
+        clock.advanceBy(40_000);
         return query;
       },
     });
@@ -697,8 +688,8 @@ describe("createRunSearchHandler", () => {
       emit: async payload => {
         payloads.push(payload);
         if (payload.type === "query.analysis") {
-          // 模拟首条计划事件写入背压期间时钟越过 20 秒。
-          clock.advanceBy(20_000);
+          // 模拟首条计划事件写入背压期间时钟越过 40 秒。
+          clock.advanceBy(40_000);
         }
       },
     });
@@ -740,7 +731,7 @@ describe("createRunSearchHandler", () => {
     const providers = createConcurrencyLimitedProviders({
       searchProvider: rawSearchProvider,
       llmProvider: new FakeLLMProvider([createTwoNodePlan()]),
-      concurrency: { search: 6, extract: 3, llm: 3 },
+      concurrency: { search: 6, llm: 3 },
     });
     const dependencies = createDependencies(clock, []);
     const handler = createRunSearchHandler({

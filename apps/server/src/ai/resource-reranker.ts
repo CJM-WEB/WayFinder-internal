@@ -15,7 +15,7 @@ import type {
 } from "@wayfinder/contracts";
 import { z } from "zod";
 
-import { MAX_PRERANK_CANDIDATES_PER_NODE } from "../pipeline/heuristic-rank.js";
+import { MAX_RERANK_CANDIDATES_PER_NODE } from "../pipeline/candidate-guard.js";
 import {
   assertBoundedLLMTimeout,
   LLMProviderError,
@@ -126,7 +126,7 @@ const RERANK_OUTPUT_SCHEMA = z.strictObject({
   ranking: z
     .array(RERANK_DECISION_SCHEMA)
     .min(1)
-    .max(MAX_PRERANK_CANDIDATES_PER_NODE),
+    .max(MAX_RERANK_CANDIDATES_PER_NODE),
 });
 
 const RERANK_PROVIDER_SCHEMA = z.toJSONSchema(RERANK_OUTPUT_SCHEMA, {
@@ -166,7 +166,7 @@ export type RerankResourcesInput = Readonly<{
   provider: LLMProvider;
   /** 整次 Run 统一的取消/绝对截止 Signal。 */
   signal: AbortSignal;
-  /** 调用方分配给 Reranker 的阶段预算，范围为 1..15000ms。 */
+  /** 调用方分配给 Reranker 的阶段预算，范围为 1..30000ms。 */
   timeoutMs: number;
   /** 轻量时钟注入只用于确定性预算测试；生产默认使用单调时钟。 */
   now?: () => number;
@@ -333,10 +333,10 @@ function createStructuredInput(
 ): StructuredLLMInput {
   if (
     candidates.length < 1 ||
-    candidates.length > MAX_PRERANK_CANDIDATES_PER_NODE
+    candidates.length > MAX_RERANK_CANDIDATES_PER_NODE
   ) {
     throw new TypeError(
-      `Resource Reranker Candidate 数量必须为 1 到 ${MAX_PRERANK_CANDIDATES_PER_NODE}`,
+      `Resource Reranker Candidate 数量必须为 1 到 ${MAX_RERANK_CANDIDATES_PER_NODE}`,
     );
   }
 

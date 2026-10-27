@@ -105,7 +105,7 @@ function createInput(
     llmProvider,
     searchProvider,
     runScope,
-    llmStageTimeoutMs: 15_000,
+    llmStageTimeoutMs: 30_000,
     onPlannerValidationDiagnostic: () => undefined,
     onRevisionValidationDiagnostic: () => undefined,
     ...overrides,
@@ -142,7 +142,7 @@ describe("resolveValidatedGraphPlanForRun", () => {
       expect(llmProvider.calls).toHaveLength(1);
       expect(llmProvider.calls[0]?.options).toEqual({
         signal: runScope.signal,
-        timeoutMs: 15_000,
+        timeoutMs: 30_000,
       });
       expect(searchProvider.searchCalls).toHaveLength(0);
       expect(searchProvider.extractCalls).toHaveLength(0);
@@ -200,8 +200,8 @@ describe("resolveValidatedGraphPlanForRun", () => {
         runScope.signal,
       ]);
       expect(scriptedLLM.calls.map(call => call.options.timeoutMs)).toEqual([
-        15_000,
-        13_000,
+        30_000,
+        30_000,
       ]);
       expect(scriptedSearch.searchCalls).toEqual([
         {
@@ -427,7 +427,7 @@ describe("resolveValidatedGraphPlanForRun", () => {
     );
 
     expect(calls).toEqual([runScope.signal]);
-    await vi.advanceTimersByTimeAsync(20_000);
+    await vi.advanceTimersByTimeAsync(40_000);
     const deadlineReason = runScope.signal.reason;
     deferred.reject(new LLMProviderError("provider_failure", true));
 

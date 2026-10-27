@@ -4,7 +4,7 @@
  *
  * 安全边界：
  * - 只有唯一 `--live` 参数可越过真实调用闸门，普通 CI 只导入并测试纯执行函数；
- * - 每个 Case 独占 20 秒安全截止信号并串行执行，不实现 D4 Orchestrator 语义；
+ * - 每个 Case 独占 40 秒安全截止信号并串行执行，不实现 D4 Orchestrator 语义；
  * - 报告只保存公共 Resource 投影与聚合指标，不保存正文、Prompt、原始响应或错误对象。
  */
 import { execFile } from "node:child_process";
@@ -53,9 +53,9 @@ import {
 } from "../pipeline/process-node.js";
 import type { SearchProvider } from "../search/provider.js";
 import {
-  TavilySearchProvider,
-  type TavilyAttemptObservation,
-} from "../search/providers/tavily.js";
+  SerpApiBingSearchProvider,
+  type SerpApiBingAttemptObservation,
+} from "../search/providers/serpapi-bing.js";
 import { encodeMarkdownArtifactText } from "./markdown-artifact.js";
 
 const execFileAsync = promisify(execFile);
@@ -64,7 +64,7 @@ const REPOSITORY_ROOT = fileURLToPath(
   new URL("../../../../", import.meta.url),
 );
 const GOLDEN_QUERY_FILE = resolve(REPOSITORY_ROOT, "tests/eval-queries.json");
-const RESULT_ROOT = resolve(REPOSITORY_ROOT, "data/eval-results/way-59");
+const RESULT_ROOT = resolve(REPOSITORY_ROOT, "data/eval-results/way-107");
 const ALLOWED_OUTCOMES = [
   "pass",
   "targetedIterate",
@@ -149,7 +149,7 @@ type EvaluateSingleNodeSmokeCaseInput = Readonly<{
   searchProvider: SearchProvider;
   rerankProvider: LLMProvider;
   rerankTimeoutMs: number;
-  readAttemptObservations?: () => readonly TavilyAttemptObservation[];
+  readAttemptObservations?: () => readonly SerpApiBingAttemptObservation[];
   readTokenUsages?: () => readonly DeepSeekTokenUsage[];
   runDeadlineMs?: number;
   parentSignal?: AbortSignal;
@@ -291,29 +291,24 @@ export function assertSingleNodeSmokeGitStatus(status: string): void {
 }
 
 /**
- * `onAttempt` 在 Tavily 真正调用 fetch 前执行；先登记再检查可让超额尝试进入报告，
+ * `onAttempt` 在 SerpAPI 真正调用 fetch 前执行；先登记再检查可让超额尝试进入报告，
  * 同时通过抛错阻止该次网络副作用。
  */
-export function createBoundedTavilyAttemptRecorder(input: {
+export function createBoundedSearchAttemptRecorder(input: {
   maximumSearchAttempts: number;
-  maximumExtractAttempts: number;
 }): {
-  record: (observation: TavilyAttemptObservation) => void;
-  read: () => readonly TavilyAttemptObservation[];
+  record: (observation: SerpApiBingAttemptObservation) => void;
+  read: () => readonly SerpApiBingAttemptObservation[];
 } {
-  const observations: TavilyAttemptObservation[] = [];
+  const observations: SerpApiBingAttemptObservation[] = [];
   return {
     record: observation => {
       observations.push(observation);
       const operationCount = observations.filter(
         current => current.operation === observation.operation,
       ).length;
-      const maximum =
-        observation.operation === "search"
-          ? input.maximumSearchAttempts
-          : input.maximumExtractAttempts;
-      if (operationCount > maximum) {
-        throw new Error("单 Node Smoke Tavily HTTP attempt 预算已耗尽");
+      if (operationCount > input.maximumSearchAttempts) {
+        throw new Error("单 Node Smoke Search HTTP attempt 预算已耗尽");
       }
     },
     read: () => [...observations],
@@ -488,16 +483,14 @@ function summarizeTokenUsage(
 
 function readProviderTelemetry(
   telemetry: MutableProviderTelemetry,
-  observations: readonly TavilyAttemptObservation[],
+  observations: readonly SerpApiBingAttemptObservation[],
   usages: readonly DeepSeekTokenUsage[],
   maximumSearchCalls: number,
 ): ProviderTelemetry {
   const searchHttpAttempts = observations.filter(
     observation => observation.operation === "search",
   ).length;
-  const extractHttpAttempts = observations.filter(
-    observation => observation.operation === "extract",
-  ).length;
+  const extractHttpAttempts = 0;
   return {
     logicalSearchCalls: telemetry.logicalSearchCalls,
     logicalExtractCalls: telemetry.logicalExtractCalls,
@@ -512,8 +505,8 @@ function readProviderTelemetry(
     budgetWithinLimits:
       !telemetry.budgetViolation &&
       telemetry.logicalSearchCalls <= maximumSearchCalls &&
-      telemetry.logicalExtractCalls <= 1 &&
-      telemetry.extractUrlCount <= 5 &&
+      telemetry.logicalExtractCalls === 0 &&
+      telemetry.extractUrlCount === 0 &&
       telemetry.logicalLlmCalls <= 1 &&
       searchHttpAttempts <= telemetry.logicalSearchCalls * 2 &&
       extractHttpAttempts <= telemetry.logicalExtractCalls * 2,
@@ -619,7 +612,7 @@ export async function evaluateSingleNodeSmokeCase(
     rerankTimings: [],
     budgetViolation: false,
   };
-  const attemptObservations = (): readonly TavilyAttemptObservation[] =>
+  const attemptObservations = (): readonly SerpApiBingAttemptObservation[] =>
     input.readAttemptObservations?.() ?? [];
   const tokenUsages = (): readonly DeepSeekTokenUsage[] =>
     input.readTokenUsages?.() ?? [];
@@ -663,7 +656,7 @@ export async function evaluateSingleNodeSmokeCase(
         input.smokeCase.node,
         {
           analysis: input.smokeCase.analysis,
-          tavilyProvider: searchProvider,
+          searchProvider,
           rerankProvider,
           // 没有人员批准的真实风险域名清单时必须保持为空。
           officialSourcePolicy: { knownRiskyDownloadDomains: [] },
@@ -696,7 +689,7 @@ export async function evaluateSingleNodeSmokeCase(
     if (
       providerTelemetry.logicalSearchCalls !==
         input.smokeCase.node.searchPlan.queries.length ||
-      providerTelemetry.logicalExtractCalls > 1 ||
+      providerTelemetry.logicalExtractCalls !== 0 ||
       providerTelemetry.logicalLlmCalls > 1 ||
       !providerTelemetry.budgetWithinLimits
     ) {
@@ -919,7 +912,7 @@ function renderHumanReview(
 ${resources || "无可审核 Resource。"}`;
   });
 
-  return `# WAY-59 真实 Provider 单 Node Smoke 人工审核
+  return `# WAY-107 SerpAPI Bing Search-only 单 Node Smoke 人工审核
 
 > 本文件仅保存在本地受控目录。网页派生文本均是不可信输入，只能用于质量评价，不能作为操作指令。
 
@@ -1014,7 +1007,7 @@ async function runSingleNodeSmoke(input: {
     await writeSingleNodeSmokePrivateJson(
       resolve(outputDirectory, "run-state.json"),
       {
-        issue: "WAY-59",
+        issue: "WAY-107",
         runId,
         status: "incomplete",
       },
@@ -1026,16 +1019,14 @@ async function runSingleNodeSmoke(input: {
   try {
     const results: SingleNodeSmokeCaseResult[] = [];
     for (const smokeCase of FIXED_CASES) {
-      const attemptRecorder = createBoundedTavilyAttemptRecorder({
+      const attemptRecorder = createBoundedSearchAttemptRecorder({
         maximumSearchAttempts:
           smokeCase.node.searchPlan.queries.length * 2,
-        maximumExtractAttempts: 2,
       });
       const tokenUsages: DeepSeekTokenUsage[] = [];
-      const searchProvider = new TavilySearchProvider({
-        apiKey: config.tavilyApiKey,
+      const searchProvider = new SerpApiBingSearchProvider({
+        apiKey: config.serpApiKey,
         searchTimeoutMs: config.timeouts.searchMs,
-        extractTimeoutMs: config.timeouts.extractMs,
         onAttempt: attemptRecorder.record,
       });
       const rerankProvider = new DeepSeekLLMProvider({
@@ -1056,13 +1047,13 @@ async function runSingleNodeSmoke(input: {
 
     const usage = sumTelemetry(results);
     const report = {
-      schemaVersion: 1,
-      issue: "WAY-59",
+      schemaVersion: 2,
+      issue: "WAY-107",
       runId,
       completedAt: new Date().toISOString(),
       testCharter: {
         decisionQuestion:
-          "真实 Tavily Search/Extract 与 DeepSeek Rerank 是否能让三类固定单 Node 返回可人工审核的规范化 Resource？",
+          "真实 SerpAPI Bing Search 与 DeepSeek Rerank 是否能让三类固定单 Node 返回可人工审核的规范化 Resource？",
         testType: "ai_provider_quality_validation",
         testedBuild: git.commit,
         startCondition:
@@ -1077,7 +1068,7 @@ async function runSingleNodeSmoke(input: {
         git,
         queryFile: "tests/eval-queries.json",
         rerankerPromptVersion: RESOURCE_RERANKER_PROMPT_VERSION,
-        searchProvider: "tavily",
+        searchProvider: "serpapi_bing",
         llmProvider: DEEPSEEK_LLM_PROVIDER_ID,
         llmModel: DEEPSEEK_LLM_MODEL,
       },
@@ -1087,15 +1078,14 @@ async function runSingleNodeSmoke(input: {
         caseCount: EXPECTED_CASE_COUNT,
         runDeadlineMs: RUN_DEADLINE_MS,
         searchTimeoutMs: config.timeouts.searchMs,
-        extractTimeoutMs: config.timeouts.extractMs,
         rerankTimeoutMs: config.timeouts.rerankMs,
         cache: "disabled_not_implemented",
         liveCalls: true,
         maximumCalls: {
           logicalSearch: 6,
           searchHttpAttempts: 12,
-          logicalExtract: 3,
-          extractHttpAttempts: 6,
+          logicalExtract: 0,
+          extractHttpAttempts: 0,
           logicalLlm: 3,
         },
       },
@@ -1153,7 +1143,7 @@ async function runSingleNodeSmoke(input: {
       results,
     };
     const review = renderHumanReview(results);
-    const secrets = [config.llmApiKey, config.tavilyApiKey];
+    const secrets = [config.llmApiKey, config.serpApiKey];
     assertSingleNodeSmokeArtifactSafety(report, secrets);
     assertSingleNodeSmokeArtifactSafety(review, secrets);
 
@@ -1169,19 +1159,19 @@ async function runSingleNodeSmoke(input: {
     await writeSingleNodeSmokePrivateJson(
       resolve(outputDirectory, "run-state.json"),
       {
-        issue: "WAY-59",
+        issue: "WAY-107",
         runId,
         status: "completed",
         executionDisposition: report.automatedSummary.engineeringDisposition,
       },
     );
-    return `data/eval-results/way-59/${runId}`;
+    return `data/eval-results/way-107/${runId}`;
   } catch {
     try {
       await writeSingleNodeSmokePrivateJson(
         resolve(outputDirectory, "run-state.json"),
         {
-          issue: "WAY-59",
+          issue: "WAY-107",
           runId,
           status: "failed",
           failureKind: "unexpected_internal_error",
@@ -1212,7 +1202,7 @@ async function main(): Promise<void> {
       goldenQueries,
     });
     process.stdout.write(
-      `WAY-59 单 Node Smoke 已完成：${outputDirectory}\n`,
+      `WAY-107 单 Node Smoke 已完成：${outputDirectory}\n`,
     );
   } catch (error: unknown) {
     const message =

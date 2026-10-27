@@ -65,7 +65,7 @@ export type PlanOrCompactFallbackInput = Readonly<{
   provider: LLMProvider;
   /** 整次 Run 共用的父取消信号；deadline 也必须通过此 Signal 传播。 */
   signal: AbortSignal;
-  /** 首次调用与重试共享的 Planner 总阶段预算，最大 15 秒。 */
+  /** 首次调用与重试共享的 Planner 总阶段预算，最大 30 秒。 */
   timeoutMs: number;
   /** 轻量时钟注入只用于确定性预算测试；生产默认使用单调时钟。 */
   now?: () => number;

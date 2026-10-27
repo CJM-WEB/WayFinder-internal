@@ -404,7 +404,7 @@ describe("reviseGraphPlan 普通失败", () => {
   });
 });
 describe("reviseGraphPlan 程序错误与取消边界", () => {
-  it.each([0, 15_001, 1.5, Number.NaN])(
+  it.each([0, 30_001, 1.5, Number.NaN])(
     "timeoutMs=%s 时在调用前拒绝",
     async timeoutMs => {
       const provider = new FakeLLMProvider([createRevisedPlan()]);

@@ -1,5 +1,5 @@
 /**
- * 模块职责：把 Rerank/fallback 与 Diversity 共同产出的有序 ResourceCandidate，
+ * 模块职责：把 Rerank/fallback 产出的有序 ResourceCandidate，
  * 转换成公共 Contract 唯一认可的 Resource[]，供默认 Top 3 与 Show More 共用。
  *
  * 边界说明：本模块不重新评分、不重排、不补位，也不决定 Node 终态或 Warning。
@@ -15,8 +15,9 @@ import {
 } from "@wayfinder/contracts";
 
 const FALLBACK_SOURCE_TYPE = "web";
+const FALLBACK_SUMMARY = "该搜索结果未提供可用摘要，请打开页面查看。";
 const FALLBACK_WHY_SELECTED =
-  "该结果通过上游确定性质量与安全筛选，并按当前排序保留。";
+  "该结果来自 Bing Organic Results，并按当前确定性排序保留。";
 const FINAL_RESOURCE_LIST_SCHEMA = ResourceSchema.array().max(
   MAX_RETAINED_RESOURCES_PER_NODE,
 );
@@ -66,10 +67,8 @@ function readReliablePublishedAt(
 function createResource(candidate: ResourceCandidate, rank: number): Resource {
   const summary =
     readTrimmedText(candidate.summary) ??
-    readTrimmedText(candidate.hit.snippet);
-  if (summary === null) {
-    throw new TypeError("Resource Finalizer 缺少可用 summary");
-  }
+    readTrimmedText(candidate.hit.snippet) ??
+    FALLBACK_SUMMARY;
 
   const canonicalUrl = candidate.hit.canonicalUrl;
   const publishedAt = readReliablePublishedAt(candidate.hit.publishedAt);

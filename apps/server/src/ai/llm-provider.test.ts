@@ -33,7 +33,7 @@ describe("LLMProvider Port", () => {
     },
   );
 
-  it.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 15_001])(
+  it.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 30_001])(
     "在外部调用前拒绝无界或非法 timeoutMs：%s",
     timeoutMs => {
       expect(() => assertBoundedLLMTimeout(timeoutMs)).toThrow(RangeError);

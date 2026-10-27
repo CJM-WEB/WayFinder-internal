@@ -1,6 +1,6 @@
 /**
  * 模块职责：把 WAY-50 的候选评估转换为可解释、可复现的 Heuristic Ranking
- *（启发式粗排）结果，并裁剪到后续 Rerank 的单 Node 候选预算。
+ *（启发式粗排）结果。候选集合已由 Candidate Guard 冻结，本阶段只允许重排。
  *
  * 安全边界：候选标题与摘要只参与 Unicode 字面词覆盖率计算，不能改变 Profile、
  * 权重、安全层级或预算。该阶段不执行 Extract，也不伪造尚不可观察的语义质量信号。
@@ -13,8 +13,6 @@ import type {
 } from "@wayfinder/contracts";
 import { classifyFreshness } from "./freshness.js";
 import type { OfficialSourceAssessment } from "./official-source.js";
-
-export const MAX_PRERANK_CANDIDATES_PER_NODE = 6;
 
 export const HEURISTIC_SIGNAL_KEYS = [
   "providerQuality",
@@ -208,66 +206,6 @@ function calculateOfficialness(
   return 0;
 }
 
-/** 下载/文档任务的已知风险隔离优先于分数，落实 WAY-50 留给本阶段的不变量。 */
-function calculateSafetyTier(
-  assessment: OfficialSourceAssessment,
-): number {
-  if (!isOfficialnessRelevant(assessment)) {
-    return 0;
-  }
-
-  switch (assessment.classification) {
-    case "unknown":
-      return 1;
-    case "risky":
-      return 0;
-  }
-}
-
-/**
- * 在粗排和模型重排后复用同一个稳定风险层级。函数只重排现有候选：不重新评分、
- * 不修改输入，也不把内部 URL 写入不变量错误；模型分数不能把已知风险站提到普通候选之前。
- */
-export function applyOfficialSourceSafetyOrder(
-  candidates: readonly ResourceCandidate[],
-  assessments: readonly OfficialSourceAssessment[],
-): ResourceCandidate[] {
-  const assessmentByCanonicalUrl = new Map<string, OfficialSourceAssessment>();
-  for (const assessment of assessments) {
-    const canonicalUrl = assessment.candidate.canonicalUrl;
-    if (assessmentByCanonicalUrl.has(canonicalUrl)) {
-      throw new TypeError("Official Source Assessment 与候选不一致");
-    }
-    assessmentByCanonicalUrl.set(canonicalUrl, assessment);
-  }
-
-  const seenCandidateUrls = new Set<string>();
-  return candidates
-    .map((candidate, originalIndex) => {
-      if (seenCandidateUrls.has(candidate.hit.canonicalUrl)) {
-        throw new TypeError("Official Source Assessment 与候选不一致");
-      }
-      seenCandidateUrls.add(candidate.hit.canonicalUrl);
-      const assessment = assessmentByCanonicalUrl.get(
-        candidate.hit.canonicalUrl,
-      );
-      if (assessment === undefined) {
-        throw new TypeError("Official Source Assessment 与候选不一致");
-      }
-      return {
-        candidate,
-        originalIndex,
-        safetyTier: calculateSafetyTier(assessment),
-      };
-    })
-    .sort(
-      (left, right) =>
-        right.safetyTier - left.safetyTier ||
-        left.originalIndex - right.originalIndex,
-    )
-    .map(entry => entry.candidate);
-}
-
 function calculateWeightedScore(
   signals: HeuristicSignals,
   weights: HeuristicProfileWeights,
@@ -355,6 +293,5 @@ export function heuristicRankCandidates(
     )
     .map(entry => entry.candidate);
 
-  return applyOfficialSourceSafetyOrder(rankedByScore, input.assessments)
-    .slice(0, MAX_PRERANK_CANDIDATES_PER_NODE);
+  return rankedByScore;
 }

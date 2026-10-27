@@ -98,6 +98,68 @@ function createPartialResult(plan: GraphPlan): ResultGraph {
 }
 
 describe("Run Log Recorder", () => {
+  it("分开聚合三路与 fallback，并忽略非法匿名排序观测", async () => {
+    const records: RunLogRecord[] = [];
+    let idIndex = 0;
+    const recorder = createRunLogRecorder({
+      sink: { write: async record => { records.push(record); } },
+      searchProviderId: "fake-search",
+      llmProviderId: "fake-llm",
+      startedAt: Date.parse("2026-10-22T00:00:00.000Z"),
+      createId: () => IDS[idIndex++]!,
+    });
+
+    recorder.recordRanking({
+      fusionMode: "llm_success",
+      candidateCount: 4,
+      providerTop1Overridden: true,
+      heuristicTop1Overridden: false,
+      providerTop3FinalOverlap: 2,
+      heuristicTop3FinalOverlap: 3,
+      top3ComparisonSlots: 3,
+    });
+    recorder.recordRanking({
+      fusionMode: "fallback",
+      candidateCount: 2,
+      providerTop1Overridden: false,
+      heuristicTop1Overridden: true,
+      providerTop3FinalOverlap: 2,
+      heuristicTop3FinalOverlap: 2,
+      top3ComparisonSlots: 2,
+    });
+    recorder.recordRanking({
+      fusionMode: "fallback",
+      candidateCount: 2,
+      providerTop1Overridden: false,
+      heuristicTop1Overridden: false,
+      providerTop3FinalOverlap: 3,
+      heuristicTop3FinalOverlap: 2,
+      top3ComparisonSlots: 2,
+    });
+    await recorder.finish();
+
+    expect(records[0]?.ranking).toEqual({
+      llmSuccess: {
+        nodeCount: 1,
+        finalCandidateCount: 4,
+        providerTop1OverrideCount: 1,
+        heuristicTop1OverrideCount: 0,
+        providerTop3FinalOverlapCount: 2,
+        heuristicTop3FinalOverlapCount: 3,
+        top3ComparisonSlots: 3,
+      },
+      fallback: {
+        nodeCount: 1,
+        finalCandidateCount: 2,
+        providerTop1OverrideCount: 0,
+        heuristicTop1OverrideCount: 1,
+        providerTop3FinalOverlapCount: 2,
+        heuristicTop3FinalOverlapCount: 2,
+        top3ComparisonSlots: 2,
+      },
+    });
+  });
+
   it("只输出随机标识、阶段耗时、聚合计数和稳定 Code", async () => {
     const records: RunLogRecord[] = [];
     let nowMs = Date.parse("2026-10-22T00:00:00.000Z");
@@ -145,6 +207,15 @@ describe("Run Log Recorder", () => {
       missCount: 0,
     });
     recorder.recordProviderCallFinished("extract", 0, 1);
+    recorder.recordRanking({
+      fusionMode: "llm_success",
+      candidateCount: 3,
+      providerTop1Overridden: true,
+      heuristicTop1Overridden: false,
+      providerTop3FinalOverlap: 3,
+      heuristicTop3FinalOverlap: 3,
+      top3ComparisonSlots: 3,
+    });
     recorder.recordEvent({
       type: "complete",
       data: {
@@ -190,6 +261,26 @@ describe("Run Log Recorder", () => {
         search: { hitCount: 0, missCount: 1 },
         extract: { hitCount: 1, missCount: 0 },
       },
+      ranking: {
+        llmSuccess: {
+          nodeCount: 1,
+          finalCandidateCount: 3,
+          providerTop1OverrideCount: 1,
+          heuristicTop1OverrideCount: 0,
+          providerTop3FinalOverlapCount: 3,
+          heuristicTop3FinalOverlapCount: 3,
+          top3ComparisonSlots: 3,
+        },
+        fallback: {
+          nodeCount: 0,
+          finalCandidateCount: 0,
+          providerTop1OverrideCount: 0,
+          heuristicTop1OverrideCount: 0,
+          providerTop3FinalOverlapCount: 0,
+          heuristicTop3FinalOverlapCount: 0,
+          top3ComparisonSlots: 0,
+        },
+      },
       tokens: {
         status: "complete",
         observations: 1,
@@ -208,7 +299,7 @@ describe("Run Log Recorder", () => {
 
   it("严格拒绝未列入白名单的敏感字段", () => {
     const base = RunLogRecordSchema.parse({
-      schemaVersion: "run-log.v1",
+      schemaVersion: "run-log.v2",
       createdAt: "2026-10-22T00:00:00.000Z",
       identifiers: {
         logId: IDS[0],
@@ -246,11 +337,32 @@ describe("Run Log Recorder", () => {
         plannerPrompt: "graph-planner.v1",
         reviserPrompt: "graph-reviser.v1",
         rerankerPrompt: "resource-reranker.v1",
+        rankFusion: "rank-fusion.v1",
       },
       providers: { search: "fake-search", llm: "fake-llm" },
       cache: {
         search: { hitCount: 0, missCount: 0 },
         extract: { hitCount: 0, missCount: 0 },
+      },
+      ranking: {
+        llmSuccess: {
+          nodeCount: 0,
+          finalCandidateCount: 0,
+          providerTop1OverrideCount: 0,
+          heuristicTop1OverrideCount: 0,
+          providerTop3FinalOverlapCount: 0,
+          heuristicTop3FinalOverlapCount: 0,
+          top3ComparisonSlots: 0,
+        },
+        fallback: {
+          nodeCount: 0,
+          finalCandidateCount: 0,
+          providerTop1OverrideCount: 0,
+          heuristicTop1OverrideCount: 0,
+          providerTop3FinalOverlapCount: 0,
+          heuristicTop3FinalOverlapCount: 0,
+          top3ComparisonSlots: 0,
+        },
       },
       tokens: {
         status: "not_used",
@@ -275,6 +387,15 @@ describe("Run Log Recorder", () => {
       RunLogRecordSchema.parse({
         ...base,
         authorization: "Bearer secret",
+      }),
+    ).toThrow();
+    expect(() =>
+      RunLogRecordSchema.parse({
+        ...base,
+        ranking: {
+          ...base.ranking,
+          candidateId: "private-candidate",
+        },
       }),
     ).toThrow();
   });

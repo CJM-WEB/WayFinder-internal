@@ -166,7 +166,7 @@ describe("Reranker Golden 固定 Case", () => {
     );
   });
 
-  it("在 News Case 中报告 Diversity 前后顺序与实际移除项", async () => {
+  it("在 News Case 中保留完整模型顺序且不做破坏性 Diversity 删除", async () => {
     const cases = await readResourceRerankerGoldenCases();
     const newsCase = cases.find(goldenCase => goldenCase.id === "wfq-013");
     expect(newsCase).toBeDefined();
@@ -196,9 +196,10 @@ describe("Reranker Golden 固定 Case", () => {
         "candidate_1",
         "candidate_2",
         "candidate_3",
+        "candidate_4",
         "candidate_5",
       ],
-      diversityRemovedCandidateIds: ["candidate_4"],
+      diversityRemovedCandidateIds: [],
     });
   });
 });

@@ -1,5 +1,5 @@
 /**
- * 测试职责：冻结 WAY-59 Live Harness（真实调用执行器）的固定范围、调用预算、
+ * 测试职责：冻结 WAY-107 SerpAPI Search-only Live Harness（真实调用执行器）的固定范围、调用预算、
  * Deadline（截止时间）分类与脱敏边界。全部 Provider 都是 Fake，不读取 Secret 或网络。
  */
 import type { NormalizedSearchHit } from "@wayfinder/contracts";
@@ -18,7 +18,7 @@ import {
   assertSingleNodeSmokeCasesMatchGoldenQueries,
   assertSingleNodeSmokeGitStatus,
   assertSingleNodeSmokeLiveMode,
-  createBoundedTavilyAttemptRecorder,
+  createBoundedSearchAttemptRecorder,
   createSingleNodeSmokePrivateOutputDirectory,
   encodeSingleNodeSmokeReviewText,
   evaluateSingleNodeSmokeCase,
@@ -178,19 +178,16 @@ describe("单 Node Smoke 安全闸门", () => {
     expect(encoded).not.toContain("`");
   });
 
-  it("在超额 Tavily attempt 发出前同步拒绝", () => {
-    const recorder = createBoundedTavilyAttemptRecorder({
+  it("在超额 Search attempt 发出前同步拒绝", () => {
+    const recorder = createBoundedSearchAttemptRecorder({
       maximumSearchAttempts: 2,
-      maximumExtractAttempts: 1,
     });
     recorder.record({ operation: "search", attempt: 1 });
     recorder.record({ operation: "search", attempt: 2 });
-    recorder.record({ operation: "extract", attempt: 1 });
-
     expect(() =>
       recorder.record({ operation: "search", attempt: 2 }),
     ).toThrow("attempt 预算已耗尽");
-    expect(recorder.read()).toHaveLength(4);
+    expect(recorder.read()).toHaveLength(3);
   });
 
   it("在 POSIX 上收紧私有输出目录和 JSON 文件权限", async () => {
@@ -289,7 +286,6 @@ describe("单 Node Smoke 纯执行器", () => {
       readAttemptObservations: () => [
         { operation: "search", attempt: 1 },
         { operation: "search", attempt: 1 },
-        { operation: "extract", attempt: 1 },
       ],
       readTokenUsages: () => [
         { inputTokens: 100, outputTokens: 40, totalTokens: 140 },
@@ -313,11 +309,11 @@ describe("单 Node Smoke 纯执行器", () => {
       },
       telemetry: {
         logicalSearchCalls: 2,
-        logicalExtractCalls: 1,
-        extractUrlCount: 2,
+        logicalExtractCalls: 0,
+        extractUrlCount: 0,
         logicalLlmCalls: 1,
         searchHttpAttempts: 2,
-        extractHttpAttempts: 1,
+        extractHttpAttempts: 0,
         tokenUsage: {
           inputTokens: 100,
           outputTokens: 40,
@@ -333,7 +329,7 @@ describe("单 Node Smoke 纯执行器", () => {
     expect(serialized).not.toContain("EXTRACT_BODY_SENTINEL");
   });
 
-  it("精确记录 Extract 降级 Warning，仍保留可审核 Resource", async () => {
+  it("忽略兼容 Provider 的 Extract 失败，并保持 Search-only ready", async () => {
     const fixture = createKnowledgeFixture(new Error("private provider body"));
     const result = await evaluateSingleNodeSmokeCase({
       ...fixture,
@@ -342,13 +338,13 @@ describe("单 Node Smoke 纯执行器", () => {
 
     expect(result).toMatchObject({
       executionStatus: "completed",
-      nodeStatus: "partial",
-      terminalEventType: "node.partial",
+      nodeStatus: "ready",
+      terminalEventType: "node.ready",
       terminalEventCount: 1,
-      warnings: ["EXTRACTION_FAILED"],
+      warnings: [],
       telemetry: {
         logicalSearchCalls: 2,
-        logicalExtractCalls: 1,
+        logicalExtractCalls: 0,
         logicalLlmCalls: 1,
       },
     });
@@ -401,10 +397,10 @@ describe("单 Node Smoke 纯执行器", () => {
     let currentTime = 0;
     const result = await evaluateSingleNodeSmokeCase({
       ...fixture,
-      rerankTimeoutMs: 15_000,
+      rerankTimeoutMs: 30_000,
       now: () => {
         const value = currentTime;
-        currentTime += 1_000;
+        currentTime += 2_000;
         return value;
       },
     });
@@ -412,7 +408,7 @@ describe("单 Node Smoke 纯执行器", () => {
     expect(result.executionStatus).toBe("completed");
     expect(fixture.rerankProvider.calls).toHaveLength(1);
     expect(fixture.rerankProvider.calls[0]?.options.timeoutMs).toBeLessThan(
-      15_000,
+      30_000,
     );
     expect(fixture.rerankProvider.calls[0]?.options.timeoutMs).toBeGreaterThan(
       0,
@@ -427,17 +423,9 @@ describe("单 Node Smoke 纯执行器", () => {
       capabilities: [...fixture.searchProvider.capabilities],
       async search(request, signal) {
         const hits = await fixture.searchProvider.search(request, signal);
-        currentTime += 2_000;
+        // 两条 Search 同步占用墙钟，令 Timer 尚未调度时绝对 Deadline 已经过期。
+        currentTime += 22_000;
         return hits;
-      },
-      async extract(canonicalUrls, signal) {
-        const pages = await fixture.searchProvider.extract(
-          canonicalUrls,
-          signal,
-        );
-        // 模拟同步处理占用事件循环，使 timer 尚未调度但绝对墙钟已经过期。
-        currentTime += 17_000;
-        return pages;
       },
     };
 
@@ -445,8 +433,8 @@ describe("单 Node Smoke 纯执行器", () => {
       smokeCase: fixture.smokeCase,
       searchProvider: timeAdvancingSearchProvider,
       rerankProvider: fixture.rerankProvider,
-      rerankTimeoutMs: 15_000,
-      runDeadlineMs: 20_000,
+      rerankTimeoutMs: 30_000,
+      runDeadlineMs: 40_000,
       now: () => currentTime,
     });
 
@@ -456,7 +444,7 @@ describe("单 Node Smoke 纯执行器", () => {
       warnings: [],
       telemetry: {
         logicalSearchCalls: 2,
-        logicalExtractCalls: 1,
+        logicalExtractCalls: 0,
         logicalLlmCalls: 0,
         budgetWithinLimits: true,
       },

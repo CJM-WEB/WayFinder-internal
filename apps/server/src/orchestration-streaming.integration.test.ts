@@ -4,7 +4,7 @@
  *
  * 测试边界：只在 LLM、Search Provider 与 Clock 边界注入确定性 Fake；主矩阵使用
  * Fastify inject，Route → Reader 与断连证据使用临时本机 loopback。全部场景都不访问
- * 外部网络、不读取环境变量或 Secret，也不等待真实 20 秒。
+ * 外部网络、不读取环境变量或 Secret，也不等待真实 40 秒。
  */
 import {
   calculateSearchPlanMaxResults,
@@ -168,7 +168,7 @@ class DeadlineAdvancingSearchProvider implements SearchProvider {
     signal: AbortSignal,
   ): Promise<NormalizedSearchHit[]> {
     signal.throwIfAborted();
-    this.clock.advanceBy(20_000);
+    this.clock.advanceBy(40_000);
     return [createHit()];
   }
 
@@ -258,7 +258,7 @@ function createScenarioServer(input: ScenarioInput): FastifyInstance {
   const providers = createConcurrencyLimitedProviders({
     searchProvider: input.searchProvider,
     llmProvider: new FakeLLMProvider(llmResponses),
-    concurrency: { search: 6, extract: 3, llm: 3 },
+    concurrency: { search: 6, llm: 3 },
   });
   const server = Fastify({ logger: false });
   registerSearchRoute(
@@ -266,13 +266,13 @@ function createScenarioServer(input: ScenarioInput): FastifyInstance {
     createRunSearchHandler({
       providers,
       officialSourcePolicy: { knownRiskyDownloadDomains: [] },
-      llmStageTimeoutMs: 15_000,
-      rerankTimeoutMs: 12_000,
+      llmStageTimeoutMs: 30_000,
+      rerankTimeoutMs: 24_000,
       language: "en",
       normalizeQuery: query => {
         // 固定时钟只在测试专用入口推进，用同一生产状态机证明 GraphPlan 前 Deadline。
         if (input.expireBeforePlan === true) {
-          input.clock.advanceBy(20_000);
+          input.clock.advanceBy(40_000);
         }
         return query.normalize("NFKC").toLowerCase();
       },
@@ -539,13 +539,13 @@ describe("Orchestration + NDJSON 服务端回归矩阵", () => {
     const providers = createConcurrencyLimitedProviders({
       searchProvider: new RejectedAndLateSearchProvider(lateSearch),
       llmProvider: new FakeLLMProvider([plan]),
-      concurrency: { search: 6, extract: 3, llm: 3 },
+      concurrency: { search: 6, llm: 3 },
     });
     const handler = createRunSearchHandler({
       providers,
       officialSourcePolicy: { knownRiskyDownloadDomains: [] },
-      llmStageTimeoutMs: 15_000,
-      rerankTimeoutMs: 12_000,
+      llmStageTimeoutMs: 30_000,
+      rerankTimeoutMs: 24_000,
       language: "en",
       normalizeQuery: query => query.normalize("NFKC").toLowerCase(),
       onPlannerValidationDiagnostic: () => undefined,
@@ -564,7 +564,7 @@ describe("Orchestration + NDJSON 服务端回归矩阵", () => {
           payload.nodeId === "typescript-guide"
         ) {
           // 终态已由账本同步占位后再到期，Deadline 快照不能把它改写。
-          clock.advanceBy(20_000);
+          clock.advanceBy(40_000);
         }
       },
     });

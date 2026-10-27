@@ -1,5 +1,5 @@
 /**
- * Runner 职责：从三个固定 Golden Case 中选择一个，受控生成 WAY-84 H2 本地评估工件。
+ * Runner 职责：从三个固定 Golden Case 中选择一个，受控生成 WAY-107 SerpAPI H2 本地工件。
  *
  * 安全边界：
  * - 只有同时提供 `--live`、固定 Case 与条件顺序才允许真实 Provider 调用；
@@ -23,9 +23,9 @@ import {
 } from "../ai/providers/deepseek-llm-provider.js";
 import { parseServerConfig } from "../config.js";
 import {
-  TavilySearchProvider,
-  type TavilyAttemptObservation,
-} from "../search/providers/tavily.js";
+  SerpApiBingSearchProvider,
+  type SerpApiBingAttemptObservation,
+} from "../search/providers/serpapi-bing.js";
 import {
   evaluateH2RetrievalBaseline,
   type H2ConditionOrder,
@@ -33,7 +33,7 @@ import {
 import {
   assertSingleNodeSmokeArtifactSafety,
   assertSingleNodeSmokeGitStatus,
-  createBoundedTavilyAttemptRecorder,
+  createBoundedSearchAttemptRecorder,
   getSingleNodeSmokeCases,
   writeSingleNodeSmokePrivateJson,
   type SingleNodeSmokeCase,
@@ -43,7 +43,12 @@ const execFileAsync = promisify(execFile);
 const REPOSITORY_ROOT = fileURLToPath(
   new URL("../../../../", import.meta.url),
 );
-const H2_RESULT_RELATIVE_DIRECTORY = join("data", "eval-results", "way-84");
+const H2_RESULT_RELATIVE_DIRECTORY = join(
+  "data",
+  "eval-results",
+  "way-107",
+  "h2",
+);
 const H2_RUN_ID_PATTERN =
   /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
 
@@ -83,7 +88,7 @@ async function ensureRealDirectory(
 }
 
 /**
- * 逐层验证 data/eval-results/way-84，并只新建由内部 UUID 组成的私有 Run 目录。
+ * 逐层验证 WAY-107/H2 目录，并只新建由内部 UUID 组成的私有 Run 目录。
  * realpath 复核同时防止仓库父路径别名造成固定目录判断失真。
  */
 export async function createH2PrivateOutputDirectory(
@@ -97,12 +102,14 @@ export async function createH2PrivateOutputDirectory(
   const root = resolve(repositoryRoot);
   const dataDirectory = join(root, "data");
   const evalDirectory = join(dataDirectory, "eval-results");
+  const way107Directory = join(evalDirectory, "way-107");
   const resultRoot = join(root, H2_RESULT_RELATIVE_DIRECTORY);
   const outputDirectory = join(resultRoot, runId);
   const realRepositoryRoot = await realpath(root);
 
   await ensureRealDirectory(dataDirectory, 0o755);
   await ensureRealDirectory(evalDirectory, 0o755);
+  await ensureRealDirectory(way107Directory, 0o700);
   await ensureRealDirectory(resultRoot, 0o700);
   await ensureRealDirectory(outputDirectory, 0o700, true);
 
@@ -222,7 +229,8 @@ async function runH2Baseline(options: H2BaselineCliOptions): Promise<string> {
     );
   try {
     await writeState({
-      issue: "WAY-84",
+      issue: "WAY-107",
+      searchProvider: "serpapi_bing",
       runId,
       status: "incomplete",
       caseId: options.caseId,
@@ -234,16 +242,14 @@ async function runH2Baseline(options: H2BaselineCliOptions): Promise<string> {
   }
 
   try {
-    const attemptRecorder = createBoundedTavilyAttemptRecorder({
+    const attemptRecorder = createBoundedSearchAttemptRecorder({
       maximumSearchAttempts:
         (smokeCase.node.searchPlan.queries.length + 1) * 2,
-      maximumExtractAttempts: 4,
     });
     const tokenUsages: DeepSeekTokenUsage[] = [];
-    const searchProvider = new TavilySearchProvider({
-      apiKey: config.tavilyApiKey,
+    const searchProvider = new SerpApiBingSearchProvider({
+      apiKey: config.serpApiKey,
       searchTimeoutMs: config.timeouts.searchMs,
-      extractTimeoutMs: config.timeouts.extractMs,
       onAttempt: attemptRecorder.record,
     });
     const rerankProvider = new DeepSeekLLMProvider({
@@ -257,32 +263,34 @@ async function runH2Baseline(options: H2BaselineCliOptions): Promise<string> {
         rerankProvider,
         rerankTimeoutMs: config.timeouts.rerankMs,
         conditionOrder: options.conditionOrder,
-        readAttemptObservations: (): readonly TavilyAttemptObservation[] =>
+        readAttemptObservations: (): readonly SerpApiBingAttemptObservation[] =>
           attemptRecorder.read(),
         readTokenUsages: () => tokenUsages,
       }),
     );
     assertSingleNodeSmokeArtifactSafety(artifact, [
       config.llmApiKey,
-      config.tavilyApiKey,
+      config.serpApiKey,
     ]);
     await writeSingleNodeSmokePrivateJson(
       resolve(outputDirectory, "h2-evaluation-artifact.json"),
       artifact,
     );
     await writeState({
-      issue: "WAY-84",
+      issue: "WAY-107",
+      searchProvider: "serpapi_bing",
       runId,
       status: "completed",
       caseId: options.caseId,
       commit,
       conditionOrder: options.conditionOrder,
     });
-    return `data/eval-results/way-84/${runId}`;
+    return `data/eval-results/way-107/h2/${runId}`;
   } catch {
     try {
       await writeState({
-        issue: "WAY-84",
+        issue: "WAY-107",
+        searchProvider: "serpapi_bing",
         runId,
         status: "failed",
         caseId: options.caseId,
@@ -301,7 +309,7 @@ async function main(): Promise<void> {
   try {
     const options = parseH2BaselineCliArgs(process.argv.slice(2));
     const outputDirectory = await runH2Baseline(options);
-    process.stdout.write(`WAY-84 H2 Baseline 已完成：${outputDirectory}\n`);
+    process.stdout.write(`WAY-107 SerpAPI H2 Baseline 已完成：${outputDirectory}\n`);
   } catch (error: unknown) {
     const message =
       error instanceof Error

@@ -204,11 +204,11 @@ pnpm start
 | `LLM_PROVIDER` | 必填，固定 `deepseek` | 已验证的大语言模型提供方 |
 | `LLM_MODEL` | 必填，固定 `deepseek-flash` | 已验证的模型 |
 | `LLM_API_KEY` | 必填 Secret，示例留空 | DeepSeek 凭据 |
-| `TAVILY_API_KEY` | 必填 Secret，示例留空 | Tavily 凭据 |
+| `SERPAPI_API_KEY` | 必填 Secret，示例留空 | SerpAPI 凭据（固定使用 Bing Search） |
 | `PORT` | 可选，默认 `3000` | Node 回环监听端口 |
-| `SEARCH_TIMEOUT_MS` / `EXTRACT_TIMEOUT_MS` | 可选、有界 | Search / Extract 单次超时 |
-| `PLANNER_TIMEOUT_MS` / `RERANK_TIMEOUT_MS` | 可选、有界 | LLM 阶段单次超时 |
-| `SEARCH_CONCURRENCY` / `EXTRACT_CONCURRENCY` / `LLM_CONCURRENCY` | 可选、只能向下调整 | 进程级并发上限 |
+| `SEARCH_TIMEOUT_MS` | 可选，默认 `16000`、上限 `40000` | Search 单次超时 |
+| `PLANNER_TIMEOUT_MS` / `RERANK_TIMEOUT_MS` | 可选，默认 `30000 / 24000`、上限 `30000` | LLM 阶段单次超时 |
+| `SEARCH_CONCURRENCY` / `LLM_CONCURRENCY` | 可选、只能向下调整 | 进程级并发上限 |
 | `RUN_LOGGING` | 可选，默认 `false` | 仅本地受控诊断；共享部署保持关闭 |
 
 腾讯云 Ubuntu 目标使用同机 Nginx 作为唯一公网入口；Node 只监听 `127.0.0.1:3000`，安全组
@@ -232,13 +232,13 @@ location = /api/search {
     proxy_buffering off;
     proxy_cache off;
     gzip off;
-    proxy_read_timeout 30s;
+    proxy_read_timeout 60s;
     proxy_pass_header X-Accel-Buffering;
 }
 ```
 
 首次接入或修改正式域名、HTTPS、CDN、WAF、Nginx 后，必须使用不含敏感内容的受控 Query
-重新验证 NDJSON 首事件在终态前到达，并确认响应仍保留 `application/x-ndjson`、
+`proxy_read_timeout` 必须始终大于 40 秒全局 Run Deadline。重新验证 NDJSON 首事件在终态前到达，并确认响应仍保留 `application/x-ndjson`、
 `no-cache, no-transform`、`X-Accel-Buffering: no` 且没有固定 `Content-Length`。
 
 ## Cross-platform development

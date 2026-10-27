@@ -18,8 +18,10 @@ import {
   LLMProviderError,
   type LLMProvider,
 } from "../ai/llm-provider.js";
-import type { RerankResourcesInput } from "../ai/resource-reranker.js";
-import { rerankCandidatesWithFallback } from "./rerank-candidates.js";
+import {
+  rerankCandidatesWithFallback,
+  type RerankCandidatesWithFallbackInput,
+} from "./rerank-candidates.js";
 
 function createNode(): GraphNodeCore {
   return {
@@ -74,8 +76,8 @@ function createDecision(candidateId: string, score: number) {
 
 function createInput(
   provider: LLMProvider,
-  overrides: Partial<RerankResourcesInput> = {},
-): RerankResourcesInput {
+  overrides: Partial<RerankCandidatesWithFallbackInput> = {},
+): RerankCandidatesWithFallbackInput {
   return {
     node: createNode(),
     candidates: [createCandidate(1), createCandidate(2)],
@@ -88,7 +90,7 @@ function createInput(
 }
 
 describe("rerankCandidatesWithFallback 成功路径", () => {
-  it("按 Decision 顺序合并允许字段，并保持 Candidate 身份与输入不变", async () => {
+  it("合并 Decision 后执行三路融合，并保持 Candidate 身份与输入不变", async () => {
     const candidates = [createCandidate(1), createCandidate(2)];
     const snapshot = structuredClone(candidates);
     const provider = new FakeLLMProvider([
@@ -104,12 +106,13 @@ describe("rerankCandidatesWithFallback 成功路径", () => {
       createInput(provider, { candidates }),
     );
 
+    expect(outcome.kind).toBe("llm_success");
     expect(outcome.warnings).toEqual([]);
     expect(outcome.candidates.map(candidate => candidate.candidateId)).toEqual([
-      "candidate_2",
       "candidate_1",
+      "candidate_2",
     ]);
-    expect(outcome.candidates[0]).toMatchObject({
+    expect(outcome.candidates[1]).toMatchObject({
       hit: candidates[1]!.hit,
       heuristicScore: candidates[1]!.heuristicScore,
       heuristicSignals: candidates[1]!.heuristicSignals,
@@ -117,7 +120,7 @@ describe("rerankCandidatesWithFallback 成功路径", () => {
       summary: "Summary for candidate_2",
       whySelected: "Why candidate_2 fits this node",
     });
-    expect(outcome.candidates[1]?.sourceType).toBe("documentation");
+    expect(outcome.candidates[0]?.sourceType).toBe("documentation");
     expect(candidates).toEqual(snapshot);
   });
 
@@ -128,12 +131,89 @@ describe("rerankCandidatesWithFallback 成功路径", () => {
       rerankCandidatesWithFallback(
         createInput(provider, { candidates: [], pages: [] }),
       ),
-    ).resolves.toEqual({ candidates: [], warnings: [] });
+    ).resolves.toEqual({
+      kind: "llm_success",
+      candidates: [],
+      warnings: [],
+    });
     expect(provider.calls).toHaveLength(0);
   });
 });
 
 describe("rerankCandidatesWithFallback 普通失败", () => {
+  it("LLM 使用 Provider 顺序，失败时按同集合的 11:2 双路融合", async () => {
+    const providerOrdered = [createCandidate(1), createCandidate(2)];
+    const heuristicOrdered = [providerOrdered[1]!, providerOrdered[0]!];
+    const provider = new FakeLLMProvider([
+      new LLMProviderError("provider_failure", true),
+    ]);
+
+    const outcome = await rerankCandidatesWithFallback(
+      createInput(provider, {
+        candidates: providerOrdered,
+        fallbackCandidates: heuristicOrdered,
+      }),
+    );
+
+    expect(outcome.kind).toBe("fallback");
+    expect(outcome.candidates).toEqual(providerOrdered);
+    expect(outcome.warnings).toEqual(["RERANK_FAILED"]);
+  });
+
+  it("拒绝 Provider 与 fallback 使用不同候选集合", async () => {
+    const provider = new FakeLLMProvider([]);
+    const candidates = [createCandidate(1), createCandidate(2)];
+
+    await expect(
+      rerankCandidatesWithFallback(
+        createInput(provider, {
+          candidates,
+          fallbackCandidates: [candidates[0]!],
+        }),
+      ),
+    ).rejects.toThrow("候选集合不一致");
+    expect(provider.calls).toHaveLength(0);
+  });
+
+  it("拒绝 fallback 复用 Candidate ID 却替换 canonical URL", async () => {
+    const provider = new FakeLLMProvider([]);
+    const candidates = [createCandidate(1), createCandidate(2)];
+    const replacedIdentity = {
+      ...candidates[1]!,
+      hit: {
+        ...candidates[1]!.hit,
+        url: "https://attacker.invalid/replaced",
+        canonicalUrl: "https://attacker.invalid/replaced",
+        domain: "attacker.invalid",
+      },
+    };
+
+    await expect(
+      rerankCandidatesWithFallback(
+        createInput(provider, {
+          candidates,
+          fallbackCandidates: [candidates[0]!, replacedIdentity],
+        }),
+      ),
+    ).rejects.toThrow("候选集合不一致");
+    expect(provider.calls).toHaveLength(0);
+  });
+
+  it("拒绝 fallback 用重复 Candidate ID 冒充完整集合", async () => {
+    const provider = new FakeLLMProvider([]);
+    const candidates = [createCandidate(1), createCandidate(2)];
+
+    await expect(
+      rerankCandidatesWithFallback(
+        createInput(provider, {
+          candidates,
+          fallbackCandidates: [candidates[0]!, candidates[0]!],
+        }),
+      ),
+    ).rejects.toThrow("候选集合不一致");
+    expect(provider.calls).toHaveLength(0);
+  });
+
   it.each([
     [
       "Provider 失败",
@@ -143,6 +223,24 @@ describe("rerankCandidatesWithFallback 普通失败", () => {
     [
       "Candidate 映射非法",
       { ranking: [createDecision("candidate_1", 0.9)] },
+    ],
+    [
+      "Candidate ID 重复",
+      {
+        ranking: [
+          createDecision("candidate_1", 0.9),
+          createDecision("candidate_1", 0.8),
+        ],
+      },
+    ],
+    [
+      "Candidate ID 未知",
+      {
+        ranking: [
+          createDecision("candidate_1", 0.9),
+          createDecision("candidate_unknown", 0.8),
+        ],
+      },
     ],
     [
       "Profile Score 非法",
@@ -159,7 +257,7 @@ describe("rerankCandidatesWithFallback 普通失败", () => {
         ],
       },
     ],
-  ])("%s 回退到原 Heuristic 顺序并只产生 RERANK_FAILED", async (_name, response) => {
+  ])("%s 回退到 11:2 融合并只产生 RERANK_FAILED", async (_name, response) => {
     const candidates = [createCandidate(1), createCandidate(2)];
     const pages = [
       {
@@ -174,6 +272,7 @@ describe("rerankCandidatesWithFallback 普通失败", () => {
     );
 
     expect(outcome).toEqual({
+      kind: "fallback",
       candidates,
       warnings: ["RERANK_FAILED"],
     });
@@ -202,6 +301,7 @@ describe("rerankCandidatesWithFallback 普通失败", () => {
     );
 
     expect(outcome.warnings).toEqual(["RERANK_FAILED"]);
+    expect(outcome.kind).toBe("fallback");
     expect(provider.calls).toHaveLength(0);
   });
 });
