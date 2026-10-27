@@ -37,6 +37,14 @@ export type {
   TavilySearchProviderOptions,
 } from "./search/providers/tavily.js";
 export {
+  SerpApiBingProviderError,
+  SerpApiBingSearchProvider,
+} from "./search/providers/serpapi-bing.js";
+export type {
+  SerpApiBingAttemptObservation,
+  SerpApiBingSearchProviderOptions,
+} from "./search/providers/serpapi-bing.js";
+export {
   selectSearchProvider,
 } from "./search/router.js";
 export type {
