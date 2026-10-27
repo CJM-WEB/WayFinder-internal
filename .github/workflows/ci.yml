@@ -25,7 +25,8 @@ concurrency:
 jobs:
   quality:
     name: Install and quality gates
-    runs-on: ubuntu-latest
+    # 固定已核对浏览器运行库的软件镜像，避免 latest 迁移后破坏免 apt 安装前提。
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
 
     steps:
@@ -56,8 +57,9 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Install pinned Chromium for browser E2E
-        # Playwright 版本由 Web package 与 lockfile 固定；只安装 WAY-85 所需的 Chromium。
-        run: pnpm --filter @wayfinder/web exec playwright install --with-deps chromium
+        # GitHub Hosted Runner 已包含 Chromium 所需系统库；这里只安装 lockfile 固定版本的
+        # 浏览器，避免 `--with-deps` 重复运行 apt 并受镜像下载波动拖满 Job 时限。
+        run: pnpm --filter @wayfinder/web exec playwright install chromium
 
       - name: 运行确定性质量门禁
         # Package 脚本为必需项，根命令还会按固定包名逐个执行；

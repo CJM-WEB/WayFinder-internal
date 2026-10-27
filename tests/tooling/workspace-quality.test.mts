@@ -340,10 +340,16 @@ describe("Browser E2E 质量门禁", () => {
     );
     expect(webScripts.test).toBe("vitest run src");
     expect(rootScripts.ci).toContain("&& pnpm run test:e2e");
+    expect(workflow).toContain("runs-on: ubuntu-24.04");
+    expect(workflow).not.toContain("runs-on: ubuntu-latest");
     expect(workflow).toContain(
-      "pnpm --filter @wayfinder/web exec playwright install --with-deps chromium",
+      "pnpm --filter @wayfinder/web exec playwright install chromium",
     );
-    expect(workflow.indexOf("playwright install --with-deps chromium"))
+    // Hosted Runner 已提供系统库；禁止重新引入会触发 apt 网络下载的 --with-deps。
+    expect(workflow).not.toMatch(
+      /^\s*run:\s*.*playwright.*--with-deps.*$/mu,
+    );
+    expect(workflow.indexOf("playwright install chromium"))
       .toBeLessThan(workflow.indexOf("pnpm run ci"));
     if (!isRecord(webPackage) || !isRecord(webPackage.devDependencies)) {
       throw new Error("Web package 缺少 devDependencies");
