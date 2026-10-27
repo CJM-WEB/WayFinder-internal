@@ -1,5 +1,5 @@
 /**
- * 测试职责：冻结唯一 20 秒 Absolute Run Deadline（绝对运行截止时间），
+ * 测试职责：冻结唯一 40 秒 Absolute Run Deadline（绝对运行截止时间），
  * 覆盖统一 Signal、单调剩余预算、父取消竞争与 Scope（作用域）资源释放。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -45,24 +45,24 @@ describe("createAbsoluteRunDeadline", () => {
       scope.signal,
     ]);
     expect(observedByStages.map(stage => stage.remainingMs)).toEqual([
-      20_000,
-      20_000,
-      20_000,
-      20_000,
+      40_000,
+      40_000,
+      40_000,
+      40_000,
     ]);
 
     nowMs = 10_001;
-    expect(scope.requirePositiveRemainingMs()).toBe(10_999);
+    expect(scope.requirePositiveRemainingMs()).toBe(30_999);
     nowMs = 16_501;
-    expect(scope.requirePositiveRemainingMs()).toBe(4_499);
+    expect(scope.requirePositiveRemainingMs()).toBe(24_499);
     // 异常测试时钟回拨也不能恢复已经消耗的 Run 预算。
     nowMs = 0;
-    expect(scope.requirePositiveRemainingMs()).toBe(4_499);
+    expect(scope.requirePositiveRemainingMs()).toBe(24_499);
 
     scope.dispose();
   });
 
-  it("恰好 20 秒后以稳定 TimeoutError 中止，且先发生的父取消不会被覆盖", async () => {
+  it("恰好 40 秒后以稳定 TimeoutError 中止，且先发生的父取消不会被覆盖", async () => {
     const parent = new AbortController();
     const scope = createAbsoluteRunDeadline({
       parentSignal: parent.signal,

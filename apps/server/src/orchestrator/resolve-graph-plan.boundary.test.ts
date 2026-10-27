@@ -82,7 +82,7 @@ function resolveWithScope(runScope: GraphPlanRunScope): Promise<GraphPlan> {
     llmProvider: UNUSED_LLM_PROVIDER,
     searchProvider: UNUSED_SEARCH_PROVIDER,
     runScope,
-    llmStageTimeoutMs: 15_000,
+    llmStageTimeoutMs: 30_000,
     onPlannerValidationDiagnostic: () => undefined,
     onRevisionValidationDiagnostic: () => undefined,
   });
@@ -104,7 +104,7 @@ describe("resolveValidatedGraphPlanForRun 最终门禁", () => {
     vi.mocked(planOrCompactFallback).mockResolvedValueOnce(invalidPlan);
     const runScope: GraphPlanRunScope = {
       signal: new AbortController().signal,
-      requirePositiveRemainingMs: () => 20_000,
+      requirePositiveRemainingMs: () => 40_000,
     };
 
     await expect(resolveWithScope(runScope)).rejects.toThrow(
@@ -115,7 +115,7 @@ describe("resolveValidatedGraphPlanForRun 最终门禁", () => {
   it("Validator 执行期间跨过 Deadline 时不返回迟到计划", async () => {
     vi.mocked(planOrCompactFallback).mockResolvedValueOnce(PLAN);
     const deadlineReason = new DOMException(
-      "WayFinder Run 超过 20000ms 绝对截止时间",
+      "WayFinder Run 超过 40000ms 绝对截止时间",
       "TimeoutError",
     );
     let validationCompleted = false;
@@ -129,7 +129,7 @@ describe("resolveValidatedGraphPlanForRun 最终门禁", () => {
         if (validationCompleted) {
           throw deadlineReason;
         }
-        return 20_000;
+        return 40_000;
       },
     };
 

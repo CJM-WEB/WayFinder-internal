@@ -259,6 +259,31 @@ describe("SerpApiBingSearchProvider 有界重试", () => {
     expect(fetchImplementation).toHaveBeenCalledTimes(2);
   });
 
+  it("未显式配置时第二次尝试使用翻倍后的 5 秒默认 Timeout", async () => {
+    const timeoutSpy = vi.spyOn(AbortSignal, "timeout");
+    const fetchImplementation = vi
+      .fn<typeof fetch>()
+      .mockRejectedValueOnce(createFetchNetworkError("ECONNRESET"))
+      .mockResolvedValueOnce(successfulSearchResponse());
+    const provider = new SerpApiBingSearchProvider({
+      apiKey: "test-serpapi-key",
+      searchTimeoutMs: 10_000,
+      fetchImplementation,
+    });
+
+    try {
+      await expect(
+        provider.search(SEARCH_REQUEST, createRunSignal()),
+      ).resolves.toHaveLength(1);
+      expect(timeoutSpy.mock.calls.map(([timeoutMs]) => timeoutMs)).toEqual([
+        10_000,
+        5_000,
+      ]);
+    } finally {
+      timeoutSpy.mockRestore();
+    }
+  });
+
   it("连续两次 Provider Timeout 后返回稳定的可重试错误", async () => {
     const fetchImplementation = vi.fn<typeof fetch>((_input, init) =>
       waitUntilAborted(init),

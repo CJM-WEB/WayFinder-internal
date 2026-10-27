@@ -70,7 +70,7 @@ function createReport(
   includeRankedResult = true,
 ) {
   return QualityEvalReportSchema.parse({
-    schemaVersion: "quality-eval.v7",
+    schemaVersion: "quality-eval.v8",
     issue: "WAY-86",
     evaluationRunId: `2026-10-23T00-00-0${runIndex}-000Z-0000000${runIndex}-0000-4000-8000-00000000000${runIndex}`,
     completedAt: `2026-10-23T00:00:0${runIndex}.000Z`,
@@ -100,7 +100,7 @@ function createReport(
       execution: "sequential",
       repetitionsPerQuery: 1,
       cache: "cold_disabled",
-      runDeadlineMs: 20_000,
+      runDeadlineMs: 40_000,
       language: "und",
       queryNormalization: "nfkc_trim_lowercase",
       riskyDownloadDomainPolicy: "not_frozen_empty",
@@ -359,6 +359,17 @@ function createV6LegacyReport(commit: string, runIndex: number): unknown {
   return legacy;
 }
 
+/** 外层 v7/query v6 代表旧 20 秒真实运行策略，不能伪装成当前 40 秒证据。 */
+function createV7LegacyReport(commit: string, runIndex: number): unknown {
+  const legacy = structuredClone(createReport(commit, runIndex)) as Record<
+    string,
+    unknown
+  >;
+  legacy.schemaVersion = "quality-eval.v7";
+  (legacy.runPolicy as Record<string, unknown>).runDeadlineMs = 20_000;
+  return legacy;
+}
+
 /** 用真实的未完成语义制造覆盖缺口，禁止在 completed 结果上伪造 null。 */
 function replaceWithUnmeasuredFailure(
   report: ReturnType<typeof createReport>,
@@ -448,6 +459,30 @@ describe("WAY-90 Quality Eval A-B-B-A 比较", () => {
       },
     });
     expect(legacy).toEqual(snapshot);
+  });
+
+  it("拒绝把 outer v7 的 20 秒运行策略伪装为当前 40 秒证据", () => {
+    const legacy = createV7LegacyReport(BASELINE_COMMIT, 1);
+    expect(QualityEvalReportSchema.safeParse(legacy).success).toBe(false);
+
+    expect(() =>
+      compareQualityEvalBlocks({
+        baselineCommit: BASELINE_COMMIT,
+        candidateCommit: CANDIDATE_COMMIT,
+        blocks: BLOCKS.map((block, index) => ({
+          block,
+          report:
+            block === "A1"
+              ? legacy
+              : createReport(
+                  block.startsWith("A")
+                    ? BASELINE_COMMIT
+                    : CANDIDATE_COMMIT,
+                  index + 1,
+                ),
+        })),
+      }),
+    ).toThrow("Quality Eval A1 报告不符合严格 Schema");
   });
 
   it("20 条都有遥测但没有最终可见 Node 时仍判为 inconclusive", () => {

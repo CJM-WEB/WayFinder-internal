@@ -71,7 +71,7 @@ function createTelemetry(index: number) {
 
 function createReport() {
   return QualityEvalReportSchema.parse({
-    schemaVersion: "quality-eval.v7",
+    schemaVersion: "quality-eval.v8",
     issue: "WAY-86",
     evaluationRunId:
       "2026-10-23T09-00-00-000Z-11111111-1111-4111-8111-111111111111",
@@ -102,7 +102,7 @@ function createReport() {
       execution: "sequential",
       repetitionsPerQuery: 1,
       cache: "cold_disabled",
-      runDeadlineMs: 20_000,
+      runDeadlineMs: 40_000,
       language: "und",
       queryNormalization: "nfkc_trim_lowercase",
       riskyDownloadDomainPolicy: "not_frozen_empty",

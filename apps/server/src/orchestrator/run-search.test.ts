@@ -164,8 +164,8 @@ function createDependencies(
       concurrency: { search: 6, llm: 3 },
     }),
     officialSourcePolicy: { knownRiskyDownloadDomains: [] },
-    llmStageTimeoutMs: 15_000,
-    rerankTimeoutMs: 12_000,
+    llmStageTimeoutMs: 30_000,
+    rerankTimeoutMs: 24_000,
     language: "en",
     normalizeQuery: (query: string) => query.normalize("NFKC").toLowerCase(),
     onPlannerValidationDiagnostic: () => undefined,
@@ -287,8 +287,8 @@ describe("createRunSearchHandler", () => {
       expect(observedSignals.every(item => item.signal === sharedSignal)).toBe(
         true,
       );
-      // Broad Search 后尚余 13 秒，Rerank 再受配置的 12 秒上限收窄。
-      expect(llmTimeouts).toEqual([15_000, 13_000, 12_000]);
+      // Broad Search 后仍有 33 秒，Reviser 受 30 秒上限收窄，Rerank 再受 24 秒上限收窄。
+      expect(llmTimeouts).toEqual([30_000, 30_000, 24_000]);
       expect(vi.getTimerCount()).toBe(1);
       expect(payloads).toContainEqual({
         type: "node.failed",
@@ -296,7 +296,8 @@ describe("createRunSearchHandler", () => {
         error: { code: "SEARCH_PROVIDER_FAILED", retryable: true },
       });
 
-      await vi.advanceTimersByTimeAsync(12_999);
+      // 自定义 LLM 故意忽略阶段 timeout，因此要等绝对 Run Deadline 的剩余 33 秒。
+      await vi.advanceTimersByTimeAsync(32_999);
       expect(handlerFinished).toBe(false);
       expect(payloads.some(payload => payload.type === "complete")).toBe(false);
 
@@ -382,7 +383,7 @@ describe("createRunSearchHandler", () => {
 
     try {
       await plannerEntered.promise;
-      await vi.advanceTimersByTimeAsync(20_000);
+      await vi.advanceTimersByTimeAsync(40_000);
       await pending;
 
       expect(payloads).toEqual([
@@ -466,7 +467,7 @@ describe("createRunSearchHandler", () => {
         payloads.push(structuredClone(payload));
         if (payload.type === "graph.plan") {
           // 只推进统一时钟，不让真实 Timer 取得执行权，稳定覆盖延迟窗口。
-          clock.advanceBy(20_000);
+          clock.advanceBy(40_000);
         }
       },
     });
@@ -521,7 +522,7 @@ describe("createRunSearchHandler", () => {
     const handler = createRunSearchHandler({
       ...dependencies,
       normalizeQuery: query => {
-        clock.advanceBy(20_000);
+        clock.advanceBy(40_000);
         return query;
       },
     });
@@ -687,8 +688,8 @@ describe("createRunSearchHandler", () => {
       emit: async payload => {
         payloads.push(payload);
         if (payload.type === "query.analysis") {
-          // 模拟首条计划事件写入背压期间时钟越过 20 秒。
-          clock.advanceBy(20_000);
+          // 模拟首条计划事件写入背压期间时钟越过 40 秒。
+          clock.advanceBy(40_000);
         }
       },
     });

@@ -198,7 +198,7 @@ describe("DeepSeekLLMProvider Structured Output", () => {
     await expect(
       provider.structured(INPUT, {
         signal: new AbortController().signal,
-        timeoutMs: 15_001,
+        timeoutMs: 30_001,
       }),
     ).rejects.toThrow(RangeError);
     expect(transport).not.toHaveBeenCalled();

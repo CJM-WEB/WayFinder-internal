@@ -2,9 +2,9 @@
  * 模块职责：创建整次搜索唯一的 Absolute Run Deadline（绝对运行截止时间）。
  *
  * 关键边界：
- * - 只创建一个 20 秒 Timer（计时器）与一个共享 AbortSignal（中止信号）；
+ * - 只创建一个 40 秒 Timer（计时器）与一个共享 AbortSignal（中止信号）；
  * - 父 Signal 的取消原因保持对象身份，Deadline 使用本 Scope（作用域）唯一的原因；
- * - 剩余预算始终从同一个 deadlineAt 计算，任何阶段都不能重新获得 20 秒；
+ * - 剩余预算始终从同一个 deadlineAt 计算，任何阶段都不能重新获得 40 秒；
  * - dispose() 必须释放 Timer 与父 Signal Listener（监听器），且可以安全重复调用。
  */
 import { RUN_DEADLINE_MS } from "../config.js";
@@ -45,7 +45,7 @@ function createDeadlineReason(): DOMException {
 }
 
 /**
- * 创建固定 20 秒的 Run Scope。调用方必须在 runSearch() 入口立即创建，并在
+ * 创建固定 40 秒的 Run Scope。调用方必须在 runSearch() 入口立即创建，并在
  * finally 中调用 dispose()；阶段代码只能消费返回值，不能另建 Run Deadline。
  */
 export function createAbsoluteRunDeadline(

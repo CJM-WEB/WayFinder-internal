@@ -166,7 +166,7 @@ export type RerankResourcesInput = Readonly<{
   provider: LLMProvider;
   /** 整次 Run 统一的取消/绝对截止 Signal。 */
   signal: AbortSignal;
-  /** 调用方分配给 Reranker 的阶段预算，范围为 1..15000ms。 */
+  /** 调用方分配给 Reranker 的阶段预算，范围为 1..30000ms。 */
   timeoutMs: number;
   /** 轻量时钟注入只用于确定性预算测试；生产默认使用单调时钟。 */
   now?: () => number;

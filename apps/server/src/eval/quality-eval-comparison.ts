@@ -3,7 +3,7 @@
  * 与成本事实汇总为可审核结果，并在 A-B-B-A 条件或覆盖率不完整时拒绝比较。
  *
  * 关键边界：
- * - 当前报告严格读取 `quality-eval.v7`；旧 v5/v6 只经显式内存归一化读取；
+ * - 当前报告严格读取 `quality-eval.v8`；旧 v5/v6/v7 只经显式内存归一化读取；
  * - `0` 是有效测量值，`telemetry: null` 才表示缺失；
  * - 本模块只判断报告能否比较，不自动给出 Keep / Revert 产品结论。
  */
@@ -96,12 +96,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * 旧 outer v5/query v4 没有 Ranking telemetry，outer v6/query v5 没有计划请求诊断。
- * 两者都只在内存中显式补齐可由旧报告既有事实确定性重建的字段，原对象保持不变。
+ * 旧 outer v5/query v4 没有 Ranking telemetry，outer v6/query v5 没有计划请求诊断；
+ * outer v7/query v6 只缺少新的 40 秒运行策略版本。归一化不会改写旧 runPolicy，
+ * 因此真实 20 秒报告仍会被严格拒绝，不得伪装成 40 秒证据。
  */
 function normalizeLegacyReport(
   value: Record<string, unknown>,
-  outerVersion: "quality-eval.v5" | "quality-eval.v6",
+  outerVersion: "quality-eval.v5" | "quality-eval.v6" | "quality-eval.v7",
 ): unknown {
   const source = value.source;
   const runPolicy = value.runPolicy;
@@ -111,7 +112,7 @@ function normalizeLegacyReport(
     !isRecord(runPolicy) ||
     !Array.isArray(results) ||
     (outerVersion === "quality-eval.v5" && "ranking" in source) ||
-    (outerVersion === "quality-eval.v6" && source.ranking !== "rank-fusion.v1")
+    (outerVersion !== "quality-eval.v5" && source.ranking !== "rank-fusion.v1")
   ) {
     throw new TypeError("legacy_report_invalid");
   }
@@ -124,11 +125,13 @@ function normalizeLegacyReport(
   const expectedQueryVersion =
     outerVersion === "quality-eval.v5"
       ? "quality-eval.v4"
-      : "quality-eval.v5";
+      : outerVersion === "quality-eval.v6"
+        ? "quality-eval.v5"
+        : "quality-eval.v6";
 
   return {
     ...value,
-    schemaVersion: "quality-eval.v7",
+    schemaVersion: "quality-eval.v8",
     source:
       outerVersion === "quality-eval.v5"
         ? { ...source, ranking: "rank-fusion.v1" }
@@ -149,7 +152,7 @@ function normalizeLegacyReport(
       }
       const metrics = result.metrics;
       let normalizedMetrics = metrics;
-      if (metrics !== null) {
+      if (metrics !== null && outerVersion !== "quality-eval.v7") {
         const parsedPlan = GraphPlanSchema.safeParse(result.plan);
         if (
           !isRecord(metrics) ||
@@ -173,7 +176,7 @@ function normalizeLegacyReport(
         schemaVersion: "quality-eval.v6",
         metrics: normalizedMetrics,
         telemetry:
-          outerVersion === "quality-eval.v6"
+          outerVersion !== "quality-eval.v5"
             ? telemetry
             : telemetry === null
               ? null
@@ -195,7 +198,8 @@ function parseReport(
     const legacyVersion =
       isRecord(value) &&
       (value.schemaVersion === "quality-eval.v5" ||
-        value.schemaVersion === "quality-eval.v6")
+        value.schemaVersion === "quality-eval.v6" ||
+        value.schemaVersion === "quality-eval.v7")
         ? value.schemaVersion
         : null;
     let candidate = value;

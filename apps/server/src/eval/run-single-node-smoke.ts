@@ -4,7 +4,7 @@
  *
  * 安全边界：
  * - 只有唯一 `--live` 参数可越过真实调用闸门，普通 CI 只导入并测试纯执行函数；
- * - 每个 Case 独占 20 秒安全截止信号并串行执行，不实现 D4 Orchestrator 语义；
+ * - 每个 Case 独占 40 秒安全截止信号并串行执行，不实现 D4 Orchestrator 语义；
  * - 报告只保存公共 Resource 投影与聚合指标，不保存正文、Prompt、原始响应或错误对象。
  */
 import { execFile } from "node:child_process";

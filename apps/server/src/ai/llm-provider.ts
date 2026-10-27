@@ -7,7 +7,7 @@
  * - Adapter 只能抛出这里定义的脱敏错误，不能把 Provider 响应正文带入业务层。
  */
 /** 当前所有 LLM Structured Output 阶段共用的单次调用硬上限。 */
-export const MAX_LLM_CALL_TIMEOUT_MS = 15_000 as const;
+export const MAX_LLM_CALL_TIMEOUT_MS = 30_000 as const;
 
 /** Provider Structured Output 所需的最小、SDK 无关输入。 */
 export type StructuredLLMInput = Readonly<{

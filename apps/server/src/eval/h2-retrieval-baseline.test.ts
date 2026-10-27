@@ -427,7 +427,7 @@ describe("H2 Retrieval Baseline 执行器", () => {
       evaluateH2RetrievalBaseline({
         ...fixture,
         rerankTimeoutMs: 12_000,
-        runDeadlineMs: 20_001,
+        runDeadlineMs: 40_001,
       }),
     ).rejects.toThrow("runDeadlineMs");
   });

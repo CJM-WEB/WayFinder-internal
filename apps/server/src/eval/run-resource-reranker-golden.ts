@@ -51,7 +51,7 @@ const RESULT_ROOT = resolve(
   REPOSITORY_ROOT,
   "data/eval-results/way-55",
 );
-const GOLDEN_RUN_DEADLINE_MS = 20_000;
+const GOLDEN_RUN_DEADLINE_MS = 40_000;
 
 const GoldenCandidateSchema = z.strictObject({
   candidateId: z.string().regex(/^[A-Za-z0-9_-]+$/),
@@ -150,9 +150,9 @@ const GoldenEnvironmentSchema = z.object({
   RERANK_TIMEOUT_MS: z
     .string()
     .regex(/^[1-9]\d*$/)
-    .default("12000")
+    .default("24000")
     .transform(value => Number.parseInt(value, 10))
-    .pipe(z.number().int().min(1).max(15_000)),
+    .pipe(z.number().int().min(1).max(30_000)),
 });
 
 export type ResourceRerankerGoldenCase = z.infer<

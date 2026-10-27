@@ -5,7 +5,7 @@
  * 安全边界：
  * - CLI Guard（闸门）先于 Git、文件、环境、Provider 与网络副作用；
  * - 正式 Eval 只允许基于已提交且干净的工作树，不进入普通无 Secret CI；
- * - 每个 Query 复用生产 20 秒绝对 Deadline，但 Suite 不共享一个 20 秒 Deadline；
+ * - 每个 Query 复用生产 40 秒绝对 Deadline，但 Suite 不共享一个 40 秒 Deadline；
  * - 不启用跨 Query Cache，避免前序 Query 污染后序延迟、调用量与成本证据；
  * - 写入前执行严格 Schema 和递归敏感值扫描，错误只输出固定脱敏文案。
  */
@@ -70,7 +70,7 @@ const RUN_ID_PATTERN =
   /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z-[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 
 /** Provider 与运行策略已迁移到 Search-only，不能复用旧 Tavily + Extract 报告版本。 */
-export const QUALITY_EVAL_REPORT_SCHEMA_VERSION = "quality-eval.v7" as const;
+export const QUALITY_EVAL_REPORT_SCHEMA_VERSION = "quality-eval.v8" as const;
 
 export type QualityEvalCliOptions = Readonly<{
   dataset: QualityEvalDatasetKind;

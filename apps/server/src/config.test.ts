@@ -52,9 +52,9 @@ describe("parseServerConfig", () => {
       llmApiKey: "test-llm-key",
       serpApiKey: "test-serpapi-key",
       timeouts: {
-        searchMs: 8_000,
-        plannerMs: 15_000,
-        rerankMs: 12_000,
+        searchMs: 16_000,
+        plannerMs: 30_000,
+        rerankMs: 24_000,
       },
       concurrency: {
         search: 6,
@@ -63,7 +63,7 @@ describe("parseServerConfig", () => {
       runDeadlineMs: RUN_DEADLINE_MS,
       runLogging: false,
     });
-    expect(RUN_DEADLINE_MS).toBe(20_000);
+    expect(RUN_DEADLINE_MS).toBe(40_000);
   });
 
   it("只接受严格 Run Log 布尔值，并保持共享部署默认关闭", () => {
@@ -106,18 +106,18 @@ describe("parseServerConfig", () => {
     const config = parseServerConfig({
       ...REQUIRED_ENVIRONMENT,
       PORT: "65535",
-      SEARCH_TIMEOUT_MS: "20000",
-      PLANNER_TIMEOUT_MS: "15000",
-      RERANK_TIMEOUT_MS: "15000",
+      SEARCH_TIMEOUT_MS: "40000",
+      PLANNER_TIMEOUT_MS: "30000",
+      RERANK_TIMEOUT_MS: "30000",
       SEARCH_CONCURRENCY: "1",
       LLM_CONCURRENCY: "1",
     });
 
     expect(config.port).toBe(65_535);
     expect(config.timeouts).toEqual({
-      searchMs: 20_000,
-      plannerMs: 15_000,
-      rerankMs: 15_000,
+      searchMs: 40_000,
+      plannerMs: 30_000,
+      rerankMs: 30_000,
     });
     expect(config.concurrency).toEqual({ search: 1, llm: 1 });
   });
@@ -127,8 +127,9 @@ describe("parseServerConfig", () => {
     ["PORT", "65536"],
     ["PORT", "3000.5"],
     ["SEARCH_TIMEOUT_MS", "0"],
-    ["PLANNER_TIMEOUT_MS", "15001"],
-    ["RERANK_TIMEOUT_MS", "15001"],
+    ["SEARCH_TIMEOUT_MS", "40001"],
+    ["PLANNER_TIMEOUT_MS", "30001"],
+    ["RERANK_TIMEOUT_MS", "30001"],
     ["RERANK_TIMEOUT_MS", "NaN"],
     ["SEARCH_CONCURRENCY", "7"],
     ["LLM_CONCURRENCY", "4"],

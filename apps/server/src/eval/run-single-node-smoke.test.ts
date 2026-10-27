@@ -397,10 +397,10 @@ describe("单 Node Smoke 纯执行器", () => {
     let currentTime = 0;
     const result = await evaluateSingleNodeSmokeCase({
       ...fixture,
-      rerankTimeoutMs: 15_000,
+      rerankTimeoutMs: 30_000,
       now: () => {
         const value = currentTime;
-        currentTime += 1_000;
+        currentTime += 2_000;
         return value;
       },
     });
@@ -408,7 +408,7 @@ describe("单 Node Smoke 纯执行器", () => {
     expect(result.executionStatus).toBe("completed");
     expect(fixture.rerankProvider.calls).toHaveLength(1);
     expect(fixture.rerankProvider.calls[0]?.options.timeoutMs).toBeLessThan(
-      15_000,
+      30_000,
     );
     expect(fixture.rerankProvider.calls[0]?.options.timeoutMs).toBeGreaterThan(
       0,
@@ -424,7 +424,7 @@ describe("单 Node Smoke 纯执行器", () => {
       async search(request, signal) {
         const hits = await fixture.searchProvider.search(request, signal);
         // 两条 Search 同步占用墙钟，令 Timer 尚未调度时绝对 Deadline 已经过期。
-        currentTime += 11_000;
+        currentTime += 22_000;
         return hits;
       },
     };
@@ -433,8 +433,8 @@ describe("单 Node Smoke 纯执行器", () => {
       smokeCase: fixture.smokeCase,
       searchProvider: timeAdvancingSearchProvider,
       rerankProvider: fixture.rerankProvider,
-      rerankTimeoutMs: 15_000,
-      runDeadlineMs: 20_000,
+      rerankTimeoutMs: 30_000,
+      runDeadlineMs: 40_000,
       now: () => currentTime,
     });
 

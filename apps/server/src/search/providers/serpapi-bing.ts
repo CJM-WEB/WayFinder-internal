@@ -22,7 +22,7 @@ import type { SearchProvider } from "../provider.js";
 const SERPAPI_BING_SEARCH_URL = "https://serpapi.com/search.json";
 const SERPAPI_BING_MAX_RESULTS = 20;
 const MAX_ATTEMPTS = 2;
-const DEFAULT_SEARCH_RETRY_TIMEOUT_MS = 2_500;
+const DEFAULT_SEARCH_RETRY_TIMEOUT_MS = 5_000;
 
 const RETRYABLE_HTTP_STATUSES = new Set([408, 429, 500, 502, 503, 504]);
 const NETWORK_ERROR_CODES = new Set([

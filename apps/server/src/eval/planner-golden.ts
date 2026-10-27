@@ -3,7 +3,7 @@
  * 生成可机器比较的确定性指标，并保留人工语义审核所需的完整 GraphPlan。
  *
  * 关键边界：
- * - 每条 Query 独占一个最多 20 秒的绝对 Run deadline，所有外部调用共享同一 Signal；
+ * - 每条 Query 独占一个最多 40 秒的绝对 Run deadline，所有外部调用共享同一 Signal；
  * - 只在模型实际选择 evidence_assisted 时执行一次 Broad Discovery 与一次 Reviser；
  * - 预期普通失败可以回退 Initial Plan，但必须显式记录且建议 targetedIterate；
  * - Evidence、URL、网页正文和原始错误永不进入报告，语义质量不由代码擅自判分。
@@ -170,7 +170,7 @@ export type EvaluatePlannerGoldenQueryInput = Readonly<{
   readSearchHttpAttemptCount?: () => number;
   /** 可选父 Signal 用于受控取消；绝对 deadline 仍由本函数单独创建。 */
   signal?: AbortSignal;
-  /** 仅允许测试缩短；生产入口固定不传并使用 20 秒。 */
+  /** 仅允许测试缩短；生产入口固定不传并使用 40 秒。 */
   runDeadlineMs?: number;
   /** Initial Planner 与 Reviser 共用的单阶段 LLM 上限；生产传入已校验配置。 */
   llmStageTimeoutMs?: number;

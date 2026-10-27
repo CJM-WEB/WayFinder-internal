@@ -125,7 +125,7 @@ function buildSuccessfulNode(
 }
 
 /**
- * 两个条件串行共享同一 Provider Port，并分别获得相同且不超过 20 秒的绝对 Run Deadline。
+ * 两个条件串行共享同一 Provider Port，并分别获得相同且不超过 40 秒的绝对 Run Deadline。
  * conditionOrder 可用于受控交叉安排；页面只获得中性 A/B，不根据来源改变任何 UI。
  */
 export async function evaluateH2RetrievalBaseline(
