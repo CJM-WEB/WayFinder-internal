@@ -42,7 +42,7 @@ function createTelemetry(value: number) {
 
 function createReport(commit: string, runIndex: number) {
   return QualityEvalReportSchema.parse({
-    schemaVersion: "quality-eval.v4",
+    schemaVersion: "quality-eval.v5",
     issue: "WAY-86",
     evaluationRunId: `2026-10-23T00-00-0${runIndex}-000Z-0000000${runIndex}-0000-4000-8000-00000000000${runIndex}`,
     completedAt: `2026-10-23T00:00:0${runIndex}.000Z`,
@@ -62,7 +62,7 @@ function createReport(commit: string, runIndex: number) {
         reranker: "resource-reranker.v1",
       },
       providers: {
-        search: "tavily",
+        search: "serpapi_bing",
         llm: "deepseek",
         llmModel: "deepseek-flash",
       },
@@ -77,11 +77,10 @@ function createReport(commit: string, runIndex: number) {
       riskyDownloadDomainPolicy: "not_frozen_empty",
       timeoutsMs: {
         search: 2_500,
-        extract: 3_700,
         planner: 10_000,
         rerank: 10_000,
       },
-      concurrency: { search: 6, extract: 3, llm: 3 },
+      concurrency: { search: 6, llm: 3 },
     },
     artifactPolicy: {
       localOnly: true,

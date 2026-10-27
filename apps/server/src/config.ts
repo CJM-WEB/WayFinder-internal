@@ -13,7 +13,6 @@ import { MAX_LLM_CALL_TIMEOUT_MS } from "./ai/llm-provider.js";
 
 export const RUN_DEADLINE_MS = 20_000 as const;
 export const MAX_SEARCH_CONCURRENCY = 6 as const;
-export const MAX_EXTRACT_CONCURRENCY = 3 as const;
 export const MAX_LLM_CONCURRENCY = 3 as const;
 
 /**
@@ -38,9 +37,8 @@ const EnvironmentInputSchema = z
     LLM_PROVIDER: z.literal("deepseek"),
     LLM_MODEL: z.literal("deepseek-flash"),
     LLM_API_KEY: z.string().trim().min(1),
-    TAVILY_API_KEY: z.string().trim().min(1),
+    SERPAPI_API_KEY: z.string().trim().min(1),
     SEARCH_TIMEOUT_MS: boundedInteger(8_000, RUN_DEADLINE_MS),
-    EXTRACT_TIMEOUT_MS: boundedInteger(10_000, RUN_DEADLINE_MS),
     PLANNER_TIMEOUT_MS: boundedInteger(
       MAX_LLM_CALL_TIMEOUT_MS,
       MAX_LLM_CALL_TIMEOUT_MS,
@@ -50,10 +48,6 @@ const EnvironmentInputSchema = z
     SEARCH_CONCURRENCY: boundedInteger(
       MAX_SEARCH_CONCURRENCY,
       MAX_SEARCH_CONCURRENCY,
-    ),
-    EXTRACT_CONCURRENCY: boundedInteger(
-      MAX_EXTRACT_CONCURRENCY,
-      MAX_EXTRACT_CONCURRENCY,
     ),
     LLM_CONCURRENCY: boundedInteger(
       MAX_LLM_CONCURRENCY,
@@ -79,16 +73,14 @@ const EnvironmentSchema = EnvironmentInputSchema
     llmProvider: environment.LLM_PROVIDER,
     llmModel: environment.LLM_MODEL,
     llmApiKey: environment.LLM_API_KEY,
-    tavilyApiKey: environment.TAVILY_API_KEY,
+    serpApiKey: environment.SERPAPI_API_KEY,
     timeouts: {
       searchMs: environment.SEARCH_TIMEOUT_MS,
-      extractMs: environment.EXTRACT_TIMEOUT_MS,
       plannerMs: environment.PLANNER_TIMEOUT_MS,
       rerankMs: environment.RERANK_TIMEOUT_MS,
     },
     concurrency: {
       search: environment.SEARCH_CONCURRENCY,
-      extract: environment.EXTRACT_CONCURRENCY,
       llm: environment.LLM_CONCURRENCY,
     },
     runDeadlineMs: RUN_DEADLINE_MS,

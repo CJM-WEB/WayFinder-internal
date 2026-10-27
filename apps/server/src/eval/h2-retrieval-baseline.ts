@@ -22,7 +22,7 @@ import type { LLMProvider } from "../ai/llm-provider.js";
 import { RUN_DEADLINE_MS } from "../config.js";
 import type { DeepSeekTokenUsage } from "../ai/providers/deepseek-llm-provider.js";
 import type { SearchProvider } from "../search/provider.js";
-import type { TavilyAttemptObservation } from "../search/providers/tavily.js";
+import type { SerpApiBingAttemptObservation } from "../search/providers/serpapi-bing.js";
 import {
   evaluateSingleNodeSmokeCase,
   type SingleNodeSmokeCase,
@@ -40,7 +40,7 @@ export type EvaluateH2RetrievalBaselineInput = Readonly<{
   rerankProvider: LLMProvider;
   rerankTimeoutMs: number;
   conditionOrder?: H2ConditionOrder;
-  readAttemptObservations?: () => readonly TavilyAttemptObservation[];
+  readAttemptObservations?: () => readonly SerpApiBingAttemptObservation[];
   readTokenUsages?: () => readonly DeepSeekTokenUsage[];
   runDeadlineMs?: number;
   parentSignal?: AbortSignal;

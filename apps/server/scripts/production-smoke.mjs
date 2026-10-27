@@ -90,13 +90,6 @@ const searchProvider = {
       },
     ];
   },
-  async extract(canonicalUrls, signal) {
-    signal.throwIfAborted();
-    return canonicalUrls.map(canonicalUrl => ({
-      canonicalUrl,
-      content: "The guide explains the TypeScript compiler options.",
-    }));
-  },
 };
 
 let llmCall = 0;
@@ -164,7 +157,7 @@ const config = parseServerConfig({
   LLM_PROVIDER: "deepseek",
   LLM_MODEL: "deepseek-flash",
   LLM_API_KEY: "fake-smoke-llm-key",
-  TAVILY_API_KEY: "fake-smoke-search-key",
+  SERPAPI_API_KEY: "fake-smoke-search-key",
 });
 let server;
 

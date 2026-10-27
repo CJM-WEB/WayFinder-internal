@@ -46,11 +46,6 @@ function canonicalizeUrl(input: string): URL | null {
   return parsedUrl;
 }
 
-/** 标题只做 trim、连续空白折叠和小写化；V0 不做标点或语义相似度处理。 */
-function createTitleKey(title: string): string {
-  return title.trim().replace(/\s+/gu, " ").toLowerCase();
-}
-
 /**
  * 显式投影业务允许字段，同时重新派生 canonicalUrl 与 domain。
  * 可选字段必须保持“缺失”语义，不能写入 undefined 破坏 exactOptionalPropertyTypes。
@@ -80,15 +75,14 @@ function projectCandidate(
 }
 
 /**
- * 按输入顺序保留第一个合法候选。canonical URL 或规范化标题与已保留候选重复时，
- * 丢弃当前项且不合并字段；因此非法项和被丢弃项不会污染后续去重集合。
+ * 按输入顺序保留第一个合法 canonical URL。标题相同不代表页面相同，因此不参与
+ * 去重；丢弃项不合并字段，也不会污染后续去重集合。
  */
 export function canonicalizeAndDeduplicateCandidates(
   hits: readonly NormalizedSearchHit[],
 ): CandidateSearchHit[] {
   const candidates: CandidateSearchHit[] = [];
   const seenCanonicalUrls = new Set<string>();
-  const seenTitleKeys = new Set<string>();
 
   for (const hit of hits) {
     const canonicalUrl = canonicalizeUrl(hit.url);
@@ -97,17 +91,11 @@ export function canonicalizeAndDeduplicateCandidates(
     }
 
     const candidate = projectCandidate(hit, canonicalUrl);
-    const titleKey = createTitleKey(candidate.title);
-
-    if (
-      seenCanonicalUrls.has(candidate.canonicalUrl) ||
-      seenTitleKeys.has(titleKey)
-    ) {
+    if (seenCanonicalUrls.has(candidate.canonicalUrl)) {
       continue;
     }
 
     seenCanonicalUrls.add(candidate.canonicalUrl);
-    seenTitleKeys.add(titleKey);
     candidates.push(candidate);
   }
 

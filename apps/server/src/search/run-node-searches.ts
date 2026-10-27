@@ -3,7 +3,7 @@
  * 并同时返回 Node 汇总与逐 Query（查询）结算。
  *
  * 关键边界：
- * - V0 的所有 providerHints 只选择 Tavily，每条 Query 恰好调用一次；
+ * - V0 的所有 providerHints 只选择唯一 Search Provider，每条 Query 恰好调用一次；
  * - Provider 已负责单次调用的 Timeout 与有界重试，本层只共享 Run Signal；
  * - 原始调用合并后没有 Hit 就是搜索失败，URL 可用性过滤属于后续 Pipeline。
  */
@@ -40,7 +40,7 @@ export type RunNodeSearchesInput = {
   /** 该值来自 GraphPlan.analysis，确保 Planner 分析仍是单一事实来源。 */
   freshnessSensitive: boolean;
   /** V0 唯一真实 Provider；Selector 仍隔离具体 Adapter 与业务编排。 */
-  tavilyProvider: SearchProvider;
+  searchProvider: SearchProvider;
   /** 整次 Run 共享的取消与绝对 Deadline Signal。 */
   signal: AbortSignal;
   language?: string;
@@ -59,7 +59,7 @@ function createProviderRequest(
     maxResults: calculateSearchPlanMaxResults(
       input.node.searchPlan.queries.length,
     ),
-    // V0 所有 Hint 都映射到 Tavily 的通用搜索能力。
+    // V0 所有 Hint 都映射到唯一 Provider 的通用搜索能力。
     capability: "general",
     freshnessSensitive: input.freshnessSensitive,
     ...(input.language === undefined ? {} : { language: input.language }),
@@ -76,7 +76,7 @@ export async function runNodeSearches(
 
   const provider = selectSearchProvider({
     providerHints: input.node.searchPlan.providerHints,
-    tavilyProvider: input.tavilyProvider,
+    searchProvider: input.searchProvider,
   });
   const settled = await Promise.allSettled(
     input.node.searchPlan.queries.map(query =>

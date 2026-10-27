@@ -47,7 +47,7 @@ function createTelemetry(index: number) {
 
 function createReport() {
   return QualityEvalReportSchema.parse({
-    schemaVersion: "quality-eval.v4",
+    schemaVersion: "quality-eval.v5",
     issue: "WAY-86",
     evaluationRunId:
       "2026-10-23T09-00-00-000Z-11111111-1111-4111-8111-111111111111",
@@ -68,7 +68,7 @@ function createReport() {
         reranker: "resource-reranker.v1",
       },
       providers: {
-        search: "tavily",
+        search: "serpapi_bing",
         llm: "deepseek",
         llmModel: "deepseek-flash",
       },
@@ -83,11 +83,10 @@ function createReport() {
       riskyDownloadDomainPolicy: "not_frozen_empty",
       timeoutsMs: {
         search: 2_500,
-        extract: 3_700,
         planner: 10_000,
         rerank: 10_000,
       },
-      concurrency: { search: 6, extract: 3, llm: 3 },
+      concurrency: { search: 6, llm: 3 },
     },
     artifactPolicy: {
       localOnly: true,

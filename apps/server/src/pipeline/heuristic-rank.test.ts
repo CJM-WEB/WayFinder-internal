@@ -3,8 +3,8 @@
  *
  * 关键约束：
  * - 五种 Profile 只消费七个可观察信号，权重集中维护且各自总和为 1；
- * - 下载/文档任务先把已知风险站放到普通候选之后，再比较加权分；
- * - 候选 ID 在排序前生成，裁剪后不重编号，完全同分时保持输入顺序。
+ * - 风险分类只参与 Assessment，不在本阶段覆盖已批准 Heuristic 权重；
+ * - 候选 ID 在排序前生成，排序后不重编号，完全同分时保持输入顺序。
  */
 import type {
   CandidateSearchHit,
@@ -16,14 +16,13 @@ import type {
 import { describe, expect, expectTypeOf, it } from "vitest";
 
 import {
-  applyOfficialSourceSafetyOrder,
   HEURISTIC_PROFILE_WEIGHTS,
   HEURISTIC_SIGNAL_KEYS,
   heuristicRankCandidates,
-  MAX_PRERANK_CANDIDATES_PER_NODE,
   type HeuristicRankInput,
   type HeuristicSignals,
 } from "./heuristic-rank.js";
+import { MAX_RERANK_CANDIDATES_PER_NODE } from "./candidate-guard.js";
 import type { OfficialSourceAssessment } from "./official-source.js";
 
 function createAnalysis(
@@ -86,26 +85,6 @@ function createAssessment(
     classification: "unknown",
     signals: [],
     ...overrides,
-  };
-}
-
-function createRankedCandidate(
-  hit: CandidateSearchHit,
-  candidateId: string,
-): ResourceCandidate {
-  return {
-    candidateId,
-    hit,
-    heuristicScore: 0,
-    heuristicSignals: {
-      providerQuality: 0,
-      titleRelevance: 0,
-      snippetRelevance: 0,
-      https: 0,
-      domainDiversity: 0,
-      freshness: 0,
-      officialness: 0,
-    },
   };
 }
 
@@ -188,7 +167,7 @@ describe("heuristicRankCandidates", () => {
         ),
       ),
     ).toEqual([1, 1, 1, 1, 1]);
-    expect(MAX_PRERANK_CANDIDATES_PER_NODE).toBe(6);
+    expect(MAX_RERANK_CANDIDATES_PER_NODE).toBe(6);
   });
 
   it("计算可解释信号、保留六位小数，并且不修改输入", () => {
@@ -319,7 +298,7 @@ describe("heuristicRankCandidates", () => {
     ).toBe(1);
   });
 
-  it("下载/文档任务先遵守 unknown > risky，再比较分数", () => {
+  it("下载/文档风险分类不覆盖 Heuristic 分数顺序", () => {
     const risky = createCandidate({
       providerScore: 1,
       title: "TypeScript compiler guide",
@@ -362,14 +341,14 @@ describe("heuristicRankCandidates", () => {
     );
 
     expect(result.map(item => item.hit)).toEqual([
+      risky,
       unknown,
       secondUnknown,
-      risky,
     ]);
     expect(result.map(item => item.candidateId)).toEqual([
+      "candidate_1",
       "candidate_2",
       "candidate_3",
-      "candidate_1",
     ]);
     expect(result.map(item => item.heuristicSignals.officialness)).toEqual([
       0,
@@ -401,13 +380,20 @@ describe("heuristicRankCandidates", () => {
       }),
     ]);
 
-    expect(result.map(item => item.heuristicSignals.officialness)).toEqual([
-      0.25,
-      0,
-    ]);
+    expect(
+      Object.fromEntries(
+        result.map(item => [
+          item.hit.canonicalUrl,
+          item.heuristicSignals.officialness,
+        ]),
+      ),
+    ).toEqual({
+      [weak.canonicalUrl]: 0.25,
+      [other.canonicalUrl]: 0,
+    });
   });
 
-  it("按同域候选数计算多样性，裁剪到 6 条并保留原始 ID 与同分顺序", () => {
+  it("按同域候选数计算多样性，但不在 Heuristic 阶段改变候选集合", () => {
     const candidates = Array.from({ length: 8 }, (_, index) =>
       createCandidate({
         canonicalUrl: `https://same.example/item-${index + 1}`,
@@ -421,7 +407,7 @@ describe("heuristicRankCandidates", () => {
 
     const result = rank(candidates.map(candidate => createAssessment(candidate)));
 
-    expect(result).toHaveLength(6);
+    expect(result).toHaveLength(8);
     expect(result.map(item => item.candidateId)).toEqual([
       "candidate_1",
       "candidate_2",
@@ -429,6 +415,8 @@ describe("heuristicRankCandidates", () => {
       "candidate_4",
       "candidate_5",
       "candidate_6",
+      "candidate_7",
+      "candidate_8",
     ]);
     expect(result.every(item => item.heuristicSignals.domainDiversity === 1 / 8))
       .toBe(true);
@@ -476,114 +464,5 @@ describe("heuristicRankCandidates", () => {
     expectTypeOf<ReturnType<typeof heuristicRankCandidates>>().toEqualTypeOf<
       ResourceCandidate[]
     >();
-  });
-});
-
-describe("applyOfficialSourceSafetyOrder", () => {
-  it("稳定应用 unknown > risky，并保留同层级的模型顺序", () => {
-    const risky = createCandidate({
-      canonicalUrl: "https://risky.example/download",
-      domain: "risky.example",
-      url: "https://risky.example/download",
-    });
-    const firstUnknown = createCandidate({
-      canonicalUrl: "https://unknown-a.example/download",
-      domain: "unknown-a.example",
-      url: "https://unknown-a.example/download",
-    });
-    const matched = createCandidate({
-      canonicalUrl: "https://matched.example/download",
-      domain: "matched.example",
-      url: "https://matched.example/download",
-    });
-    const secondUnknown = createCandidate({
-      canonicalUrl: "https://unknown-b.example/download",
-      domain: "unknown-b.example",
-      url: "https://unknown-b.example/download",
-    });
-    const assessments = [
-      createAssessment(risky, {
-        queryKind: "download",
-        classification: "risky",
-      }),
-      createAssessment(firstUnknown, { queryKind: "download" }),
-      createAssessment(matched, {
-        queryKind: "download",
-      }),
-      createAssessment(secondUnknown, { queryKind: "download" }),
-    ];
-    const candidates = [
-      createRankedCandidate(risky, "candidate_1"),
-      createRankedCandidate(firstUnknown, "candidate_2"),
-      createRankedCandidate(matched, "candidate_3"),
-      createRankedCandidate(secondUnknown, "candidate_4"),
-    ];
-    const candidateSnapshot = structuredClone(candidates);
-    const assessmentSnapshot = structuredClone(assessments);
-    const ordered = applyOfficialSourceSafetyOrder(candidates, assessments);
-
-    expect(
-      ordered.map(candidate => candidate.candidateId),
-    ).toEqual(["candidate_2", "candidate_3", "candidate_4", "candidate_1"]);
-    expect(ordered[0]).toBe(candidates[1]);
-    expect(ordered[1]).toBe(candidates[2]);
-    expect(ordered[2]).toBe(candidates[3]);
-    expect(ordered[3]).toBe(candidates[0]);
-    expect(candidates).toEqual(candidateSnapshot);
-    expect(assessments).toEqual(assessmentSnapshot);
-  });
-
-  it("普通任务保持输入顺序，不让分类结果扩大适用范围", () => {
-    const first = createCandidate();
-    const second = createCandidate({
-      canonicalUrl: "https://second.example/item",
-      domain: "second.example",
-      url: "https://second.example/item",
-    });
-    const candidates = [
-      createRankedCandidate(first, "candidate_1"),
-      createRankedCandidate(second, "candidate_2"),
-    ];
-
-    const ordered = applyOfficialSourceSafetyOrder(candidates, [
-      createAssessment(first, { classification: "risky" }),
-      createAssessment(second),
-    ]);
-
-    expect(ordered).toEqual(candidates);
-    expect(ordered[0]).toBe(candidates[0]);
-    expect(ordered[1]).toBe(candidates[1]);
-  });
-
-  it("候选与 Assessment 不一致时只抛固定内部错误，不泄露 URL", () => {
-    const candidate = createCandidate({
-      canonicalUrl: "https://secret.example/private-path",
-      domain: "secret.example",
-      url: "https://secret.example/private-path",
-    });
-
-    expect(() =>
-      applyOfficialSourceSafetyOrder(
-        [createRankedCandidate(candidate, "candidate_1")],
-        [],
-      ),
-    ).toThrowError("Official Source Assessment 与候选不一致");
-    try {
-      applyOfficialSourceSafetyOrder(
-        [createRankedCandidate(candidate, "candidate_1")],
-        [],
-      );
-    } catch (error: unknown) {
-      expect(String(error)).not.toContain(candidate.canonicalUrl);
-    }
-    expect(() =>
-      applyOfficialSourceSafetyOrder(
-        [
-          createRankedCandidate(candidate, "candidate_1"),
-          createRankedCandidate(candidate, "candidate_2"),
-        ],
-        [createAssessment(candidate)],
-      ),
-    ).toThrowError("Official Source Assessment 与候选不一致");
   });
 });

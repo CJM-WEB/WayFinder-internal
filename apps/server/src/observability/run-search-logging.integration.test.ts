@@ -144,7 +144,7 @@ describe("Run Search Logging Integration", () => {
       providers: createConcurrencyLimitedProviders({
         searchProvider: cachedSearchProvider,
         llmProvider,
-        concurrency: { search: 6, extract: 3, llm: 3 },
+        concurrency: { search: 6, llm: 3 },
       }),
       officialSourcePolicy: { knownRiskyDownloadDomains: [] },
       llmStageTimeoutMs: 15_000,
@@ -181,12 +181,12 @@ describe("Run Search Logging Integration", () => {
         plannedNodes: 1,
         resources: 1,
         logicalSearchCalls: 1,
-        logicalExtractCalls: 1,
+        logicalExtractCalls: 0,
         logicalLlmCalls: 2,
       },
       cache: {
         search: { hitCount: 0, missCount: 1 },
-        extract: { hitCount: 0, missCount: 1 },
+        extract: { hitCount: 0, missCount: 0 },
       },
       tokens: {
         status: "complete",
@@ -199,7 +199,7 @@ describe("Run Search Logging Integration", () => {
     expect(records[1]).toMatchObject({
       cache: {
         search: { hitCount: 1, missCount: 0 },
-        extract: { hitCount: 1, missCount: 0 },
+        extract: { hitCount: 0, missCount: 0 },
       },
     });
     const serialized = JSON.stringify(records);
@@ -236,7 +236,7 @@ describe("Run Search Logging Integration", () => {
             ),
           }),
         }),
-        concurrency: { search: 6, extract: 3, llm: 3 },
+        concurrency: { search: 6, llm: 3 },
       }),
       officialSourcePolicy: { knownRiskyDownloadDomains: [] },
       llmStageTimeoutMs: 15_000,
@@ -295,7 +295,7 @@ describe("Run Search Logging Integration", () => {
             ),
           }),
         }),
-        concurrency: { search: 6, extract: 3, llm: 3 },
+        concurrency: { search: 6, llm: 3 },
       }),
       officialSourcePolicy: { knownRiskyDownloadDomains: [] },
       llmStageTimeoutMs: 15_000,

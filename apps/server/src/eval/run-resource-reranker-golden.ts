@@ -36,7 +36,6 @@ import {
   type ResourceRerankDecision,
 } from "../ai/resource-reranker.js";
 import type { LLMProvider } from "../ai/llm-provider.js";
-import { applySourceDiversity } from "../pipeline/diversity.js";
 
 const execFileAsync = promisify(execFile);
 const EXPECTED_CASE_COUNT = 6;
@@ -344,25 +343,9 @@ export async function evaluateResourceRerankerGoldenCase(input: {
       ...(input.now === undefined ? {} : { now: input.now }),
     });
     const preDiversityOrder = decisions.map(decision => decision.candidateId);
-    const candidateById = new Map(
-      runtime.candidates.map(candidate => [candidate.candidateId, candidate]),
-    );
-    const rerankedCandidates = preDiversityOrder.map(candidateId => {
-      const candidate = candidateById.get(candidateId);
-      if (candidate === undefined) {
-        // rerankResources 已校验完整唯一映射；这里是 Golden Harness 的内部不变量。
-        throw new TypeError("Golden Reranker Candidate 映射不变量被破坏");
-      }
-      return candidate;
-    });
-    const diversifiedCandidates = applySourceDiversity(rerankedCandidates);
-    const actualOrder = diversifiedCandidates.map(
-      candidate => candidate.candidateId,
-    );
-    const actualIds = new Set(actualOrder);
-    const diversityRemovedCandidateIds = preDiversityOrder.filter(
-      candidateId => !actualIds.has(candidateId),
-    );
+    // WAY-107 不再进行破坏性同域删除；保留报告字段只为兼容既有工件读取。
+    const actualOrder = [...preDiversityOrder];
+    const diversityRemovedCandidateIds: string[] = [];
     return {
       id: input.goldenCase.id,
       category: input.goldenCase.category,

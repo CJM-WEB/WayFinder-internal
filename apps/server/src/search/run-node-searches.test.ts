@@ -2,7 +2,7 @@
  * 测试职责：冻结 WAY-47 的 Node Search（节点搜索）编排与逐 Query 结算语义。
  *
  * 关键约束：
- * - V0 不按 providerHints 扩增调用；每条 Query 恰好调用一次 Tavily，能力固定为 general；
+ * - V0 不按 providerHints 扩增调用；每条 Query 恰好调用一次唯一 Provider，能力固定为 general；
  * - Node 汇总与逐 Query 明细都保持原 Query 顺序，局部失败只产生一个 Node Warning；
  * - 合并后没有 Hit 必须抛出结构化失败，Run 取消则原样传播取消 reason。
  */
@@ -25,7 +25,7 @@ type SearchResponse = readonly NormalizedSearchHit[] | Error;
 function createHit(query: string, suffix: string): NormalizedSearchHit {
   const url = `https://example.com/${suffix}`;
   return {
-    provider: "tavily",
+    provider: "serpapi_bing",
     query,
     title: `结果 ${suffix}`,
     url,
@@ -50,7 +50,7 @@ function createRecordingProvider(
   }> = [];
 
   return {
-    id: "tavily",
+    id: "serpapi_bing",
     capabilities: ["general"] satisfies SearchCapability[],
     calls,
     async search(request, signal) {
@@ -79,7 +79,7 @@ const NODE: Pick<GraphPlanNode, "id" | "searchPlan"> = {
 };
 
 describe("runNodeSearches", () => {
-  it("把每条 Query 恰好一次映射到统一 Tavily 请求", async () => {
+  it("把每条 Query 恰好一次映射到统一 Search Provider 请求", async () => {
     const signal = new AbortController().signal;
     const provider = createRecordingProvider({
       "query-a": [createHit("query-a", "a")],
@@ -90,7 +90,7 @@ describe("runNodeSearches", () => {
       node: NODE,
       freshnessSensitive: true,
       language: "zh-CN",
-      tavilyProvider: provider,
+      searchProvider: provider,
       signal,
     });
 
@@ -138,7 +138,7 @@ describe("runNodeSearches", () => {
     await runNodeSearches({
       node: nodeWithUntrustedBudget,
       freshnessSensitive: false,
-      tavilyProvider: provider,
+      searchProvider: provider,
       signal: new AbortController().signal,
     });
 
@@ -159,7 +159,7 @@ describe("runNodeSearches", () => {
     const outcome = await runNodeSearches({
       node: NODE,
       freshnessSensitive: false,
-      tavilyProvider: provider,
+      searchProvider: provider,
       signal: new AbortController().signal,
     });
 
@@ -183,7 +183,7 @@ describe("runNodeSearches", () => {
     const outcome = await runNodeSearches({
       node: NODE,
       freshnessSensitive: false,
-      tavilyProvider: provider,
+      searchProvider: provider,
       signal: new AbortController().signal,
     });
 
@@ -221,7 +221,7 @@ describe("runNodeSearches", () => {
       runNodeSearches({
         node: NODE,
         freshnessSensitive: false,
-        tavilyProvider: provider,
+        searchProvider: provider,
         signal: new AbortController().signal,
       }),
     ).rejects.toMatchObject({
@@ -244,7 +244,7 @@ describe("runNodeSearches", () => {
       runNodeSearches({
         node: NODE,
         freshnessSensitive: false,
-        tavilyProvider: provider,
+        searchProvider: provider,
         signal: controller.signal,
       }),
     ).rejects.toBe(reason);
@@ -255,7 +255,7 @@ describe("runNodeSearches", () => {
     const controller = new AbortController();
     const reason = new Error("user cancelled");
     const provider: SearchProvider = {
-      id: "tavily",
+      id: "serpapi_bing",
       capabilities: ["general"],
       search(_request, signal) {
         return new Promise((_resolve, reject) => {
@@ -269,7 +269,7 @@ describe("runNodeSearches", () => {
     const outcomePromise = runNodeSearches({
       node: NODE,
       freshnessSensitive: false,
-      tavilyProvider: provider,
+      searchProvider: provider,
       signal: controller.signal,
     });
     controller.abort(reason);

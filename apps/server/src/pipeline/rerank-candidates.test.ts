@@ -18,8 +18,10 @@ import {
   LLMProviderError,
   type LLMProvider,
 } from "../ai/llm-provider.js";
-import type { RerankResourcesInput } from "../ai/resource-reranker.js";
-import { rerankCandidatesWithFallback } from "./rerank-candidates.js";
+import {
+  rerankCandidatesWithFallback,
+  type RerankCandidatesWithFallbackInput,
+} from "./rerank-candidates.js";
 
 function createNode(): GraphNodeCore {
   return {
@@ -74,8 +76,8 @@ function createDecision(candidateId: string, score: number) {
 
 function createInput(
   provider: LLMProvider,
-  overrides: Partial<RerankResourcesInput> = {},
-): RerankResourcesInput {
+  overrides: Partial<RerankCandidatesWithFallbackInput> = {},
+): RerankCandidatesWithFallbackInput {
   return {
     node: createNode(),
     candidates: [createCandidate(1), createCandidate(2)],
@@ -134,6 +136,78 @@ describe("rerankCandidatesWithFallback 成功路径", () => {
 });
 
 describe("rerankCandidatesWithFallback 普通失败", () => {
+  it("LLM 使用 Provider 顺序，但失败时回退到同一集合的 Heuristic 顺序", async () => {
+    const providerOrdered = [createCandidate(1), createCandidate(2)];
+    const heuristicOrdered = [providerOrdered[1]!, providerOrdered[0]!];
+    const provider = new FakeLLMProvider([
+      new LLMProviderError("provider_failure", true),
+    ]);
+
+    const outcome = await rerankCandidatesWithFallback(
+      createInput(provider, {
+        candidates: providerOrdered,
+        fallbackCandidates: heuristicOrdered,
+      }),
+    );
+
+    expect(outcome.candidates).toEqual(heuristicOrdered);
+    expect(outcome.warnings).toEqual(["RERANK_FAILED"]);
+  });
+
+  it("拒绝 Provider 与 fallback 使用不同候选集合", async () => {
+    const provider = new FakeLLMProvider([]);
+    const candidates = [createCandidate(1), createCandidate(2)];
+
+    await expect(
+      rerankCandidatesWithFallback(
+        createInput(provider, {
+          candidates,
+          fallbackCandidates: [candidates[0]!],
+        }),
+      ),
+    ).rejects.toThrow("候选集合不一致");
+    expect(provider.calls).toHaveLength(0);
+  });
+
+  it("拒绝 fallback 复用 Candidate ID 却替换 canonical URL", async () => {
+    const provider = new FakeLLMProvider([]);
+    const candidates = [createCandidate(1), createCandidate(2)];
+    const replacedIdentity = {
+      ...candidates[1]!,
+      hit: {
+        ...candidates[1]!.hit,
+        url: "https://attacker.invalid/replaced",
+        canonicalUrl: "https://attacker.invalid/replaced",
+        domain: "attacker.invalid",
+      },
+    };
+
+    await expect(
+      rerankCandidatesWithFallback(
+        createInput(provider, {
+          candidates,
+          fallbackCandidates: [candidates[0]!, replacedIdentity],
+        }),
+      ),
+    ).rejects.toThrow("候选集合不一致");
+    expect(provider.calls).toHaveLength(0);
+  });
+
+  it("拒绝 fallback 用重复 Candidate ID 冒充完整集合", async () => {
+    const provider = new FakeLLMProvider([]);
+    const candidates = [createCandidate(1), createCandidate(2)];
+
+    await expect(
+      rerankCandidatesWithFallback(
+        createInput(provider, {
+          candidates,
+          fallbackCandidates: [candidates[0]!, candidates[0]!],
+        }),
+      ),
+    ).rejects.toThrow("候选集合不一致");
+    expect(provider.calls).toHaveLength(0);
+  });
+
   it.each([
     [
       "Provider 失败",

@@ -204,11 +204,11 @@ pnpm start
 | `LLM_PROVIDER` | 必填，固定 `deepseek` | 已验证的大语言模型提供方 |
 | `LLM_MODEL` | 必填，固定 `deepseek-flash` | 已验证的模型 |
 | `LLM_API_KEY` | 必填 Secret，示例留空 | DeepSeek 凭据 |
-| `TAVILY_API_KEY` | 必填 Secret，示例留空 | Tavily 凭据 |
+| `SERPAPI_API_KEY` | 必填 Secret，示例留空 | SerpAPI 凭据（固定使用 Bing Search） |
 | `PORT` | 可选，默认 `3000` | Node 回环监听端口 |
-| `SEARCH_TIMEOUT_MS` / `EXTRACT_TIMEOUT_MS` | 可选、有界 | Search / Extract 单次超时 |
+| `SEARCH_TIMEOUT_MS` | 可选、有界 | Search 单次超时 |
 | `PLANNER_TIMEOUT_MS` / `RERANK_TIMEOUT_MS` | 可选、有界 | LLM 阶段单次超时 |
-| `SEARCH_CONCURRENCY` / `EXTRACT_CONCURRENCY` / `LLM_CONCURRENCY` | 可选、只能向下调整 | 进程级并发上限 |
+| `SEARCH_CONCURRENCY` / `LLM_CONCURRENCY` | 可选、只能向下调整 | 进程级并发上限 |
 | `RUN_LOGGING` | 可选，默认 `false` | 仅本地受控诊断；共享部署保持关闭 |
 
 腾讯云 Ubuntu 目标使用同机 Nginx 作为唯一公网入口；Node 只监听 `127.0.0.1:3000`，安全组

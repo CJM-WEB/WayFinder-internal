@@ -15,7 +15,7 @@ import type {
 } from "@wayfinder/contracts";
 import { z } from "zod";
 
-import { MAX_PRERANK_CANDIDATES_PER_NODE } from "../pipeline/heuristic-rank.js";
+import { MAX_RERANK_CANDIDATES_PER_NODE } from "../pipeline/candidate-guard.js";
 import {
   assertBoundedLLMTimeout,
   LLMProviderError,
@@ -126,7 +126,7 @@ const RERANK_OUTPUT_SCHEMA = z.strictObject({
   ranking: z
     .array(RERANK_DECISION_SCHEMA)
     .min(1)
-    .max(MAX_PRERANK_CANDIDATES_PER_NODE),
+    .max(MAX_RERANK_CANDIDATES_PER_NODE),
 });
 
 const RERANK_PROVIDER_SCHEMA = z.toJSONSchema(RERANK_OUTPUT_SCHEMA, {
@@ -333,10 +333,10 @@ function createStructuredInput(
 ): StructuredLLMInput {
   if (
     candidates.length < 1 ||
-    candidates.length > MAX_PRERANK_CANDIDATES_PER_NODE
+    candidates.length > MAX_RERANK_CANDIDATES_PER_NODE
   ) {
     throw new TypeError(
-      `Resource Reranker Candidate 数量必须为 1 到 ${MAX_PRERANK_CANDIDATES_PER_NODE}`,
+      `Resource Reranker Candidate 数量必须为 1 到 ${MAX_RERANK_CANDIDATES_PER_NODE}`,
     );
   }
 

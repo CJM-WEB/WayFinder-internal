@@ -38,10 +38,9 @@ import { RUN_DEADLINE_MS, parseServerConfig } from "../config.js";
 import type { RunLogRecord } from "../observability/run-log.js";
 import { createConcurrencyLimitedProviders } from "../orchestrator/provider-concurrency.js";
 import { createRunSearchHandler } from "../orchestrator/run-search.js";
-import { TavilySearchProvider } from "../search/providers/tavily.js";
+import { SerpApiBingSearchProvider } from "../search/providers/serpapi-bing.js";
 import {
   QUALITY_EVAL_DATASET_VERSION,
-  QUALITY_EVAL_SCHEMA_VERSION,
   QualityEvalQueryResultSchema,
   evaluateQualityEvalDataset,
   evaluateQualityEvalQuery,
@@ -66,6 +65,9 @@ const RESULT_ROOT = resolve(REPOSITORY_ROOT, "data/eval-results/way-86");
 const RUN_ID_PATTERN =
   /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z-[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 
+/** Provider 与运行策略已迁移到 Search-only，不能复用旧 Tavily + Extract 报告版本。 */
+export const QUALITY_EVAL_REPORT_SCHEMA_VERSION = "quality-eval.v5" as const;
+
 export type QualityEvalCliOptions = Readonly<{
   dataset: QualityEvalDatasetKind;
 }>;
@@ -76,7 +78,7 @@ const GitBaselineSchema = z.strictObject({
 });
 
 export const QualityEvalReportSchema = z.strictObject({
-  schemaVersion: z.literal(QUALITY_EVAL_SCHEMA_VERSION),
+  schemaVersion: z.literal(QUALITY_EVAL_REPORT_SCHEMA_VERSION),
   issue: z.literal("WAY-86"),
   evaluationRunId: z.string().regex(RUN_ID_PATTERN),
   completedAt: z.iso.datetime({ offset: true }),
@@ -99,7 +101,7 @@ export const QualityEvalReportSchema = z.strictObject({
       reranker: z.literal(RESOURCE_RERANKER_PROMPT_VERSION),
     }),
     providers: z.strictObject({
-      search: z.literal("tavily"),
+      search: z.literal("serpapi_bing"),
       llm: z.literal(DEEPSEEK_LLM_PROVIDER_ID),
       llmModel: z.literal(DEEPSEEK_LLM_MODEL),
     }),
@@ -114,13 +116,11 @@ export const QualityEvalReportSchema = z.strictObject({
     riskyDownloadDomainPolicy: z.literal("not_frozen_empty"),
     timeoutsMs: z.strictObject({
       search: z.number().int().min(1).max(RUN_DEADLINE_MS),
-      extract: z.number().int().min(1).max(RUN_DEADLINE_MS),
       planner: z.number().int().min(1).max(RUN_DEADLINE_MS),
       rerank: z.number().int().min(1).max(RUN_DEADLINE_MS),
     }),
     concurrency: z.strictObject({
       search: z.number().int().min(1),
-      extract: z.number().int().min(1),
       llm: z.number().int().min(1),
     }),
   }),
@@ -495,10 +495,9 @@ async function runQualityEval(
   try {
     const providers = createConcurrencyLimitedProviders({
       // 不包 Memory Cache，明确保持跨 Query 冷执行。
-      searchProvider: new TavilySearchProvider({
-        apiKey: config.tavilyApiKey,
+      searchProvider: new SerpApiBingSearchProvider({
+        apiKey: config.serpApiKey,
         searchTimeoutMs: config.timeouts.searchMs,
-        extractTimeoutMs: config.timeouts.extractMs,
       }),
       llmProvider: new DeepSeekLLMProvider({ apiKey: config.llmApiKey }),
       concurrency: config.concurrency,
@@ -546,7 +545,7 @@ async function runQualityEval(
     }
 
     const report: QualityEvalReport = QualityEvalReportSchema.parse({
-      schemaVersion: QUALITY_EVAL_SCHEMA_VERSION,
+      schemaVersion: QUALITY_EVAL_REPORT_SCHEMA_VERSION,
       issue: "WAY-86",
       evaluationRunId,
       completedAt: new Date().toISOString(),
@@ -572,7 +571,7 @@ async function runQualityEval(
           reranker: RESOURCE_RERANKER_PROMPT_VERSION,
         },
         providers: {
-          search: "tavily",
+          search: "serpapi_bing",
           llm: DEEPSEEK_LLM_PROVIDER_ID,
           llmModel: DEEPSEEK_LLM_MODEL,
         },
@@ -587,7 +586,6 @@ async function runQualityEval(
         riskyDownloadDomainPolicy: "not_frozen_empty",
         timeoutsMs: {
           search: config.timeouts.searchMs,
-          extract: config.timeouts.extractMs,
           planner: config.timeouts.plannerMs,
           rerank: config.timeouts.rerankMs,
         },
@@ -603,12 +601,12 @@ async function runQualityEval(
     });
     assertQualityEvalArtifactSafety(report, [
       config.llmApiKey,
-      config.tavilyApiKey,
+      config.serpApiKey,
     ]);
     const operatingSummary = createQualityEvalOperatingSummary(report);
     assertQualityEvalArtifactSafety(operatingSummary, [
       config.llmApiKey,
-      config.tavilyApiKey,
+      config.serpApiKey,
     ]);
     const humanReview = renderQualityEvalHumanReview({
       evaluationRunId,
@@ -622,7 +620,7 @@ async function runQualityEval(
     });
     assertQualityEvalArtifactSafety(humanReview, [
       config.llmApiKey,
-      config.tavilyApiKey,
+      config.serpApiKey,
     ]);
     await writeQualityEvalFinalArtifacts(
       {

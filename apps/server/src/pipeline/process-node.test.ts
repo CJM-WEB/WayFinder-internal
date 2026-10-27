@@ -129,7 +129,7 @@ function createContext(
 ): ProcessNodeContext {
   return {
     analysis: ANALYSIS,
-    tavilyProvider: searchProvider,
+    searchProvider,
     rerankProvider,
     officialSourcePolicy: { knownRiskyDownloadDomains: [] },
     nowMs: Date.parse("2026-10-22T00:00:00.000Z"),
@@ -206,7 +206,7 @@ describe("processNode 成功与局部降级", () => {
     });
     const rerankProvider = new FakeLLMProvider([createRerankOutput()]);
     const events: StreamEventPayload[] = [];
-    const remainingBudgets = [20_000, 10_000, 4_000];
+    const remainingBudgets = [20_000, 4_000];
     const signal = new AbortController().signal;
 
     const result = await processNode(
@@ -234,7 +234,7 @@ describe("processNode 成功与局部降级", () => {
     });
     expect(JSON.stringify(result)).not.toContain("privateProviderValue");
     expect(searchProvider.searchCalls[0]?.signal).toBe(signal);
-    expect(searchProvider.extractCalls[0]?.signal).toBe(signal);
+    expect(searchProvider.extractCalls).toHaveLength(0);
     expect(rerankProvider.calls[0]?.options).toEqual({
       signal,
       timeoutMs: 4_000,
@@ -262,7 +262,7 @@ describe("processNode 成功与局部降级", () => {
       .toBe(true);
   });
 
-  it("按阶段顺序合并三个唯一 Warning，并以完整 Resource 返回 partial", async () => {
+  it("按阶段顺序合并 Search 与 Rerank Warning，并以完整 Resource 返回 partial", async () => {
     const node = createNode(["TypeScript compiler guide", "backup query"]);
     const hit = createHit(node.searchPlan.queries[0]);
     const searchProvider = new FakeSearchProvider({
@@ -270,8 +270,6 @@ describe("processNode 成功与局部降级", () => {
         [node.searchPlan.queries[0]!]: [hit],
         [node.searchPlan.queries[1]!]: new Error("search unavailable"),
       },
-      // 请求的候选没有对应正文，构成局部 Extract 降级。
-      extractResponse: [],
     });
     const rerankProvider = new FakeLLMProvider([
       new LLMProviderError("provider_failure", true),
@@ -289,7 +287,6 @@ describe("processNode 成功与局部降级", () => {
     expect(result.resources).toHaveLength(1);
     expect(result.warnings).toEqual([
       "SEARCH_PROVIDER_PARTIAL",
-      "EXTRACTION_FAILED",
       "RERANK_FAILED",
     ]);
     expect(events.map(event => event.type)).toEqual([
@@ -350,12 +347,12 @@ describe("WAY-58 单 Node 高风险检索矩阵", () => {
     ]);
     expect(searchProvider.searchCalls.every(call => call.signal === signal))
       .toBe(true);
-    expect(searchProvider.extractCalls).toHaveLength(1);
+    expect(searchProvider.extractCalls).toHaveLength(0);
     expect(rerankProvider.calls).toHaveLength(1);
     expect(JSON.stringify({ result, events })).not.toContain(privateCause);
   });
 
-  it("Extract 普通失败时保留 Candidate 并只产生 EXTRACTION_FAILED", async () => {
+  it("Search-only 链路不调用兼容 Extract，也不产生 Extract Warning", async () => {
     const node = createNode();
     const hit = createHit(node.searchPlan.queries[0]);
     const searchProvider = new FakeSearchProvider({
@@ -372,13 +369,13 @@ describe("WAY-58 单 Node 高风险检索矩阵", () => {
     );
 
     expectCompletedExecution(result, events);
-    expect(result.status).toBe("partial");
-    expect(result.warnings).toEqual(["EXTRACTION_FAILED"]);
+    expect(result.status).toBe("ready");
+    expect(result.warnings).toEqual([]);
     expect(result.resources[0]?.summary).toBe(
       "候选 candidate_1 的结构化摘要。",
     );
     expect(searchProvider.searchCalls).toHaveLength(1);
-    expect(searchProvider.extractCalls).toHaveLength(1);
+    expect(searchProvider.extractCalls).toHaveLength(0);
     expect(rerankProvider.calls).toHaveLength(1);
     expect(readPromptCandidates(rerankProvider)[0]).not.toHaveProperty(
       "extractedContent",
@@ -413,15 +410,15 @@ describe("WAY-58 单 Node 高风险检索矩阵", () => {
       summary: hit.snippet,
       sourceType: "web",
       whySelected:
-        "该结果通过上游确定性质量与安全筛选，并按当前排序保留。",
+        "该结果来自 Bing Organic Results，并按当前确定性排序保留。",
     });
     expect(result.resources[0]).not.toHaveProperty("scores");
     expect(searchProvider.searchCalls).toHaveLength(1);
-    expect(searchProvider.extractCalls).toHaveLength(1);
+    expect(searchProvider.extractCalls).toHaveLength(0);
     expect(rerankProvider.calls).toHaveLength(1);
   });
 
-  it("跨 Query 的 canonical 或规范化标题 duplicate 只保留首次结果", async () => {
+  it("跨 Query 仅按 canonical URL 去重，同标题不同 URL 继续保留", async () => {
     const node = createNode(["TypeScript compiler guide", "backup query"]);
     const first = createHit(node.searchPlan.queries[0], {
       title: "TypeScript compiler first result",
@@ -465,7 +462,7 @@ describe("WAY-58 单 Node 高风险检索矩阵", () => {
     });
     const events: StreamEventPayload[] = [];
     const rerankProvider = new FakeLLMProvider([
-      createRerankOutput(["candidate_1", "candidate_2"]),
+      createRerankOutput(["candidate_1", "candidate_2", "candidate_3"]),
     ]);
 
     const result = await processNode(
@@ -476,23 +473,22 @@ describe("WAY-58 单 Node 高风险检索矩阵", () => {
 
     expectCompletedExecution(result, events);
     expect(result.status).toBe("ready");
-    expect(result.resources).toHaveLength(2);
+    expect(result.resources).toHaveLength(3);
     expect(result.resources.map(resource => resource.canonicalUrl)).toEqual([
       canonicalUrl,
+      titleDuplicate.canonicalUrl,
       unique.canonicalUrl,
     ]);
     expect(result.resources[0]).toMatchObject({
       title: first.title,
       searchProvider: first.provider,
     });
-    expect(result.resources[1]?.title).toBe(unique.title);
+    expect(result.resources[1]?.title).toBe(titleDuplicate.title);
+    expect(result.resources[2]?.title).toBe(unique.title);
     expect(searchProvider.searchCalls.map(call => call.request.query)).toEqual(
       node.searchPlan.queries,
     );
-    expect(searchProvider.extractCalls[0]?.canonicalUrls).toEqual([
-      canonicalUrl,
-      unique.canonicalUrl,
-    ]);
+    expect(searchProvider.extractCalls).toHaveLength(0);
     expect(readPromptCandidates(rerankProvider)).toEqual([
       expect.objectContaining({
         candidateId: "candidate_1",
@@ -501,6 +497,11 @@ describe("WAY-58 单 Node 高风险检索矩阵", () => {
       }),
       expect.objectContaining({
         candidateId: "candidate_2",
+        canonicalUrl: titleDuplicate.canonicalUrl,
+        snippet: titleDuplicate.snippet,
+      }),
+      expect.objectContaining({
+        candidateId: "candidate_3",
         canonicalUrl: unique.canonicalUrl,
         snippet: unique.snippet,
       }),
@@ -575,12 +576,8 @@ describe("WAY-58 单 Node 高风险检索矩阵", () => {
       siteMatched.canonicalUrl,
       risky.canonicalUrl,
     ]);
-    expect(searchProvider.extractCalls[0]?.canonicalUrls).toEqual([
-      siteMatched.canonicalUrl,
-      risky.canonicalUrl,
-    ]);
     expect(readPromptCandidates(rerankProvider).map(item => item.candidateId))
-      .toEqual(["candidate_2", "candidate_1"]);
+      .toEqual(["candidate_1", "candidate_2"]);
     expect(searchProvider.searchCalls[0]?.request).toEqual({
       kind: "node",
       nodeId: node.id,
@@ -590,10 +587,9 @@ describe("WAY-58 单 Node 高风险检索矩阵", () => {
       freshnessSensitive: false,
     });
     expect(searchProvider.searchCalls).toHaveLength(1);
-    expect(searchProvider.extractCalls).toHaveLength(1);
+    expect(searchProvider.extractCalls).toHaveLength(0);
     expect(rerankProvider.calls).toHaveLength(1);
     expect(searchProvider.searchCalls[0]?.signal).toBe(signal);
-    expect(searchProvider.extractCalls[0]?.signal).toBe(signal);
     expect(rerankProvider.calls[0]?.options.signal).toBe(signal);
     expect(events.map(event => event.type)).toEqual([
       "node.status",
@@ -602,7 +598,7 @@ describe("WAY-58 单 Node 高风险检索矩阵", () => {
     ]);
   });
 
-  it("Rerank 成功后仍隔离已知风险站，并保留同层级模型顺序", async () => {
+  it("Rerank 成功后风险评估不覆盖模型顺序", async () => {
     const query = "site:code.visualstudio.com Visual Studio Code download";
     const baseNode = createNode([query]);
     const node: GraphPlanNode = {
@@ -680,13 +676,13 @@ describe("WAY-58 单 Node 高风险检索矩阵", () => {
     expect(result.warnings).toEqual([]);
     expect(result.status).toBe("ready");
     expect(result.resources.map(resource => resource.canonicalUrl)).toEqual([
+      risky.canonicalUrl,
       unknown.canonicalUrl,
       siteMatched.canonicalUrl,
-      risky.canonicalUrl,
     ]);
     expect(node).toEqual(nodeSnapshot);
     expect(searchProvider.searchCalls).toHaveLength(1);
-    expect(searchProvider.extractCalls).toHaveLength(1);
+    expect(searchProvider.extractCalls).toHaveLength(0);
     expect(rerankProvider.calls).toHaveLength(1);
     expect(searchProvider.searchCalls[0]?.request).toEqual({
       kind: "node",
@@ -696,16 +692,10 @@ describe("WAY-58 单 Node 高风险检索矩阵", () => {
       capability: "general",
       freshnessSensitive: false,
     });
-    expect(searchProvider.extractCalls[0]?.canonicalUrls).toEqual([
-      siteMatched.canonicalUrl,
-      unknown.canonicalUrl,
-      risky.canonicalUrl,
-    ]);
     expect(searchProvider.searchCalls[0]?.signal).toBe(signal);
-    expect(searchProvider.extractCalls[0]?.signal).toBe(signal);
     expect(rerankProvider.calls[0]?.options.signal).toBe(signal);
     expect(readPromptCandidates(rerankProvider).map(item => item.candidateId))
-      .toEqual(["candidate_3", "candidate_2", "candidate_1"]);
+      .toEqual(["candidate_1", "candidate_2", "candidate_3"]);
     expect(events.map(event => event.type)).toEqual([
       "node.status",
       "node.status",
@@ -713,7 +703,7 @@ describe("WAY-58 单 Node 高风险检索矩阵", () => {
     ]);
   });
 
-  it("Rerank 后对精确 Domain 执行上限二，并稳定保留其他来源", async () => {
+  it("Rerank 后不按同域数量删除候选", async () => {
     const node = createNode();
     const hits = [
       createDistinctHit(1, "same.example"),
@@ -749,17 +739,53 @@ describe("WAY-58 单 Node 高风险检索矩阵", () => {
     expect(result.resources.map(resource => resource.canonicalUrl)).toEqual([
       hits[0]!.canonicalUrl,
       hits[1]!.canonicalUrl,
+      hits[2]!.canonicalUrl,
       hits[3]!.canonicalUrl,
     ]);
-    expect(result.resources.map(resource => resource.rank)).toEqual([1, 2, 3]);
+    expect(result.resources.map(resource => resource.rank)).toEqual([1, 2, 3, 4]);
     expect(result.resources.map(resource => resource.domain)).toEqual([
+      "same.example",
       "same.example",
       "same.example",
       "other.example",
     ]);
     expect(result.warnings).toEqual([]);
-    expect(searchProvider.extractCalls[0]?.canonicalUrls).toHaveLength(4);
+    expect(searchProvider.extractCalls).toHaveLength(0);
     expect(readPromptCandidates(rerankProvider)).toHaveLength(4);
+  });
+
+  it("Provider-first Top 6 冻结候选集合，LLM 不接收第七与第八项", async () => {
+    const node = createNode();
+    const hits = Array.from({ length: 8 }, (_, index) =>
+      createDistinctHit(index + 1, `provider-${index + 1}.example`),
+    );
+    const searchProvider = new FakeSearchProvider({
+      searchResponses: { [node.searchPlan.queries[0]!]: hits },
+    });
+    const rerankProvider = new FakeLLMProvider([
+      createRerankOutput(
+        Array.from({ length: 6 }, (_, index) => `candidate_${index + 1}`),
+      ),
+    ]);
+
+    const result = await processNode(
+      node,
+      createContext(searchProvider, rerankProvider, []),
+      createRunScope(),
+    );
+
+    expect(readPromptCandidates(rerankProvider).map(item => item.candidateId))
+      .toEqual([
+        "candidate_1",
+        "candidate_2",
+        "candidate_3",
+        "candidate_4",
+        "candidate_5",
+        "candidate_6",
+      ]);
+    expect(result.resources.map(resource => resource.canonicalUrl)).toEqual(
+      hits.slice(0, 6).map(hit => hit.canonicalUrl),
+    );
   });
 });
 
@@ -776,13 +802,6 @@ describe("processNode 失败与取消", () => {
       deadlineRead: 2,
       expectedSearchCalls: 1,
       expectedExtractCalls: 0,
-      expectedRerankCalls: 0,
-      expectedStatuses: ["searching", "filtering"],
-    },
-    {
-      deadlineRead: 3,
-      expectedSearchCalls: 1,
-      expectedExtractCalls: 1,
       expectedRerankCalls: 0,
       expectedStatuses: ["searching", "filtering"],
     },
@@ -885,7 +904,7 @@ describe("processNode 失败与取消", () => {
     expect(rerankProvider.calls).toHaveLength(0);
   });
 
-  it("全部候选被确定性过滤后仍是无 Resource 的 Search 失败", async () => {
+  it("空摘要候选不会被语义过滤，并由 Finalizer 使用中性摘要", async () => {
     const node = createNode();
     const hit = createHit(node.searchPlan.queries[0], { snippet: "" });
     const searchProvider = new FakeSearchProvider({
@@ -894,8 +913,7 @@ describe("processNode 失败与取消", () => {
     });
     const events: StreamEventPayload[] = [];
 
-    await expect(
-      processNode(
+    const result = await processNode(
         node,
         createContext(
           searchProvider,
@@ -903,15 +921,15 @@ describe("processNode 失败与取消", () => {
           events,
         ),
         createRunScope(),
-      ),
-    ).rejects.toMatchObject({
-      code: "SEARCH_PROVIDER_FAILED",
-      retryable: true,
-    });
+      );
+    expect(result.status).toBe("ready");
+    expect(result.resources[0]?.summary).toBe(
+      "候选 candidate_1 的结构化摘要。",
+    );
     expect(events.map(event => event.type)).toEqual([
       "node.status",
       "node.status",
-      "node.failed",
+      "node.ready",
     ]);
     expect(terminalEvents(events)).toHaveLength(1);
   });

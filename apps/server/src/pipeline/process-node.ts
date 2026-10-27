@@ -23,20 +23,15 @@ import {
   NodeSearchError,
   runNodeSearches,
 } from "../search/run-node-searches.js";
+import { guardAndShortlistCandidates } from "./candidate-guard.js";
 import { canonicalizeAndDeduplicateCandidates } from "./canonicalize-candidates.js";
-import { applySourceDiversity } from "./diversity.js";
-import { applyDeterministicHardFilters } from "./hard-filter.js";
-import {
-  applyOfficialSourceSafetyOrder,
-  heuristicRankCandidates,
-} from "./heuristic-rank.js";
+import { heuristicRankCandidates } from "./heuristic-rank.js";
 import {
   detectOfficialSourceSignals,
   type OfficialSourcePolicy,
 } from "./official-source.js";
 import { rerankCandidatesWithFallback } from "./rerank-candidates.js";
 import { finalizeResources } from "./resource-finalizer.js";
-import { extractCandidatesSelectively } from "./selective-extract.js";
 
 type NodeJobRejectedCode = Exclude<
   AppErrorCode,
@@ -89,8 +84,8 @@ export class NodeEventEmissionError extends Error {
 export type ProcessNodeContext = Readonly<{
   /** GraphPlan.analysis 是 Query 分析的单一事实来源。 */
   analysis: QueryAnalysis;
-  /** V0 的 Search 与 Extract 共用同一个已规范化 Provider Adapter。 */
-  tavilyProvider: SearchProvider;
+  /** 业务层只依赖通用 Search Port，不感知 SerpAPI 私有字段。 */
+  searchProvider: SearchProvider;
   /** Reranker 只依赖 SDK 无关的 Structured Output Port。 */
   rerankProvider: LLMProvider;
   officialSourcePolicy: OfficialSourcePolicy;
@@ -125,7 +120,7 @@ export function toNodeJobError(error: unknown): NodeJobError {
 }
 
 /**
- * Warning 按阶段首次出现的顺序保留并主动去重。当前三个阶段各自产生不同 code，
+ * Warning 按阶段首次出现的顺序保留并主动去重。当前 Search 与 Rerank 各自产生不同 code，
  * 此处仍守住公共 Contract 的唯一性，避免未来阶段组合变化制造非法 partial Node。
  */
 function appendUniqueWarnings(
@@ -188,7 +183,7 @@ export async function processNode(
     const searchOutcome = await runNodeSearches({
       node,
       freshnessSensitive: context.analysis.freshnessSensitive,
-      tavilyProvider: context.tavilyProvider,
+      searchProvider: context.searchProvider,
       signal,
       ...(context.language === undefined
         ? {}
@@ -206,11 +201,15 @@ export async function processNode(
     const canonicalized = canonicalizeAndDeduplicateCandidates(
       searchOutcome.hits,
     );
-    const filtered = applyDeterministicHardFilters(node, canonicalized);
+    const guarded = guardAndShortlistCandidates(canonicalized);
+    const shortlisted = guarded.accepted;
+    if (shortlisted.length === 0) {
+      throw new NodeJobError("SEARCH_PROVIDER_FAILED", true);
+    }
     const assessments = detectOfficialSourceSignals(
       context.analysis,
       node,
-      filtered.accepted,
+      shortlisted,
       context.officialSourcePolicy,
     );
     const preRanked = heuristicRankCandidates({
@@ -219,36 +218,35 @@ export async function processNode(
       assessments,
       nowMs: context.nowMs,
     });
-
-    // Extract 与 Rerank 的普通已知失败由各自 Wrapper 降级为 Warning；取消继续上抛。
-    runScope.requirePositiveRemainingMs();
-    const extraction = await extractCandidatesSelectively({
-      candidates: preRanked,
-      provider: context.tavilyProvider,
-      signal,
+    const candidateByUrl = new Map(
+      preRanked.map(candidate => [candidate.hit.canonicalUrl, candidate]),
+    );
+    const providerOrdered = shortlisted.map(hit => {
+      const candidate = candidateByUrl.get(hit.canonicalUrl);
+      if (candidate === undefined) {
+        throw new TypeError("Provider 与 Heuristic 候选集合不一致");
+      }
+      return candidate;
     });
-    appendUniqueWarnings(warnings, extraction.warnings);
 
+    // SerpAPI Bing 已返回首屏摘要；生产链路不再远程 Extract，空 pages 是正常输入。
     const rerankTimeoutMs = Math.min(
       context.rerankTimeoutMs,
       runScope.requirePositiveRemainingMs(),
     );
     const reranked = await rerankCandidatesWithFallback({
       node,
-      candidates: preRanked,
-      pages: extraction.pages,
+      candidates: providerOrdered,
+      fallbackCandidates: preRanked,
+      pages: [],
       provider: context.rerankProvider,
       signal,
       timeoutMs: rerankTimeoutMs,
     });
     appendUniqueWarnings(warnings, reranked.warnings);
 
-    // 网页正文与模型分数都不能把已知风险站提升到普通候选之前；同层仍保留模型顺序。
-    const safetyOrdered = applyOfficialSourceSafetyOrder(
-      reranked.candidates,
-      assessments,
-    );
-    const resources = finalizeResources(applySourceDiversity(safetyOrdered));
+    // 风险域在本任务仅保留为 Assessment 信号，不删除候选或覆盖已批准排序权重。
+    const resources = finalizeResources(reranked.candidates);
     if (resources.length === 0) {
       throw new NodeJobError("SEARCH_PROVIDER_FAILED", true);
     }

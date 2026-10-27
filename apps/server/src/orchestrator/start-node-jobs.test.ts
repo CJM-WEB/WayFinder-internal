@@ -94,7 +94,7 @@ describe("startNodeJobs", () => {
     const providers = createConcurrencyLimitedProviders({
       searchProvider: rawSearchProvider,
       llmProvider: unusedLlmProvider,
-      concurrency: { search: 6, extract: 3, llm: 3 },
+      concurrency: { search: 6, llm: 3 },
     });
     const cancelled = createAbortFixture("Node Search 排队期间取消");
     const events: NodeStreamEventPayload[] = [];
@@ -165,7 +165,7 @@ describe("startNodeJobs", () => {
         id: "unused-llm",
         structured: async () => ({}),
       },
-      concurrency: { search: 6, extract: 3, llm: 3 },
+      concurrency: { search: 6, llm: 3 },
     });
 
     expect(() =>

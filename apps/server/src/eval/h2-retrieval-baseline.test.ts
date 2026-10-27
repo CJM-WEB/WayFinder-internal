@@ -201,7 +201,7 @@ describe("H2 Baseline Live 闸门", () => {
 });
 
 describe("H2 Baseline 私有输出目录", () => {
-  it("只在固定 way-84 目录创建内部 Run 目录", async () => {
+  it("只在固定 WAY-107 H2 目录创建内部 Run 目录", async () => {
     const root = await createTemporaryRoot();
     const outputDirectory = await createH2PrivateOutputDirectory(
       root,
@@ -209,12 +209,12 @@ describe("H2 Baseline 私有输出目录", () => {
     );
 
     expect(outputDirectory).toBe(
-      join(root, "data", "eval-results", "way-84", VALID_RUN_ID),
+      join(root, "data", "eval-results", "way-107", "h2", VALID_RUN_ID),
     );
     expect(await readdir(outputDirectory)).toEqual([]);
   });
 
-  it.each(["data", "eval-results", "way-84"] as const)(
+  it.each(["data", "eval-results", "way-107", "h2"] as const)(
     "拒绝 %s 符号链接，不能写入仓库外目录",
     async linkedLevel => {
       if (process.platform === "win32") return;
@@ -222,15 +222,19 @@ describe("H2 Baseline 私有输出目录", () => {
       const outside = await createTemporaryRoot();
       const dataDirectory = join(root, "data");
       const evalDirectory = join(dataDirectory, "eval-results");
-      const resultRoot = join(evalDirectory, "way-84");
+      const way107Directory = join(evalDirectory, "way-107");
+      const resultRoot = join(way107Directory, "h2");
 
       if (linkedLevel === "data") {
         await symlink(outside, dataDirectory, "dir");
       } else if (linkedLevel === "eval-results") {
         await mkdir(dataDirectory);
         await symlink(outside, evalDirectory, "dir");
-      } else {
+      } else if (linkedLevel === "way-107") {
         await mkdir(evalDirectory, { recursive: true });
+        await symlink(outside, way107Directory, "dir");
+      } else {
+        await mkdir(way107Directory, { recursive: true });
         await symlink(outside, resultRoot, "dir");
       }
 

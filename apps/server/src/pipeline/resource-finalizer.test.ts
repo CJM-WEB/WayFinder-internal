@@ -123,7 +123,7 @@ describe("finalizeResources 公共字段", () => {
       sourceType: "web",
       summary: "Snippet 1",
       whySelected:
-        "该结果通过上游确定性质量与安全筛选，并按当前排序保留。",
+        "该结果来自 Bing Organic Results，并按当前确定性排序保留。",
     });
     expect(resource).not.toHaveProperty("scores");
   });
@@ -177,7 +177,6 @@ describe("finalizeResources 防御性校验", () => {
   });
 
   it.each([
-    ["空 summary 来源", { snippet: "   " }, {}],
     ["非法原始 URL", { url: "javascript:alert(1)" }, {}],
     ["空 Provider", { provider: "" }, {}],
     ["越界 scores", {}, { scores: { relevance: 1.1 } }],
@@ -190,5 +189,15 @@ describe("finalizeResources 防御性校验", () => {
     };
 
     expect(() => finalizeResources([invalid])).toThrow();
+  });
+
+  it("空 snippet 与缺失模型摘要时使用固定中性文本", () => {
+    const candidate = createCandidate(1, {
+      hit: { ...createCandidate(1).hit, snippet: "" },
+    });
+
+    expect(finalizeResources([candidate])[0]?.summary).toBe(
+      "该搜索结果未提供可用摘要，请打开页面查看。",
+    );
   });
 });

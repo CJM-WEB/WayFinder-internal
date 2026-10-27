@@ -2,8 +2,8 @@
  * 模块职责：把 WAY-53 的结构化 Rerank 决策合并回既有 Candidate，并在已知普通
  * Rerank 失败时保持 Heuristic 顺序，向后续 Node Pipeline 交付精确 Warning。
  *
- * 边界说明：本模块不构造最终 Resource 或 Node 终态。Diversity、Finalizer 与
- * ready/partial/failed 判定分别属于后续 WAY；这里只返回统一的 Candidate 形状。
+ * 边界说明：本模块不构造最终 Resource 或 Node 终态。Finalizer 与
+ * ready/partial/failed 判定属于后续阶段；这里只返回统一的 Candidate 形状。
  */
 import type {
   NodeWarningCode,
@@ -26,6 +26,40 @@ export type RerankCandidatesOutcome = Readonly<{
   /** 调用方与 Search / Extract Warning 合并后，才能在 WAY-57 决定 Node 终态。 */
   warnings: readonly NodeWarningCode[];
 }>;
+
+export type RerankCandidatesWithFallbackInput = RerankResourcesInput &
+  Readonly<{
+    /** LLM 始终读取 Provider 顺序；普通失败时显式回退到同一集合的 Heuristic 顺序。 */
+    fallbackCandidates?: readonly ResourceCandidate[];
+  }>;
+
+function assertSameCandidateSet(
+  candidates: readonly ResourceCandidate[],
+  fallbackCandidates: readonly ResourceCandidate[] | undefined,
+): void {
+  if (fallbackCandidates === undefined) return;
+
+  const identityById = new Map(
+    candidates.map(candidate => [
+      candidate.candidateId,
+      candidate.hit.canonicalUrl,
+    ]),
+  );
+  const fallbackIds = new Set(
+    fallbackCandidates.map(candidate => candidate.candidateId),
+  );
+  if (
+    identityById.size !== candidates.length ||
+    fallbackIds.size !== fallbackCandidates.length ||
+    fallbackCandidates.length !== candidates.length ||
+    fallbackCandidates.some(
+      candidate =>
+        identityById.get(candidate.candidateId) !== candidate.hit.canonicalUrl,
+    )
+  ) {
+    throw new TypeError("Rerank 与 fallback 候选集合不一致");
+  }
+}
 
 /** Zod 的多 Profile 联合会产生可选键；只投影实际存在的有限数值，禁止断言绕过。 */
 function projectScores(
@@ -79,9 +113,10 @@ function mergeDecisions(
  * Rerank 失败才产生 Warning；取消、绝对 Deadline 与未知程序错误绝不能伪装成降级成功。
  */
 export async function rerankCandidatesWithFallback(
-  input: RerankResourcesInput,
+  input: RerankCandidatesWithFallbackInput,
 ): Promise<RerankCandidatesOutcome> {
   input.signal.throwIfAborted();
+  assertSameCandidateSet(input.candidates, input.fallbackCandidates);
   if (input.candidates.length === 0) {
     return { candidates: [], warnings: [] };
   }
@@ -100,7 +135,7 @@ export async function rerankCandidatesWithFallback(
     }
 
     return {
-      candidates: input.candidates,
+      candidates: input.fallbackCandidates ?? input.candidates,
       warnings: RERANK_FAILED_WARNING,
     };
   }

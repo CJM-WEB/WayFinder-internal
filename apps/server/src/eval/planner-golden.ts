@@ -166,7 +166,7 @@ export type EvaluatePlannerGoldenQueryInput = Readonly<{
   searchProvider: SearchProvider;
   /** Provider 每次完成调用后只追加脱敏聚合 Token；条数不足即整体标记不可用。 */
   readTokenUsages?: () => readonly PlannerGoldenTokenUsage[];
-  /** Tavily Adapter 的脱敏尝试观察器提供实际 HTTP 次数；其他 Provider 可标记不可用。 */
+  /** Adapter 的脱敏尝试观察器提供实际 Search HTTP 次数；缺失时标记不可用。 */
   readSearchHttpAttemptCount?: () => number;
   /** 可选父 Signal 用于受控取消；绝对 deadline 仍由本函数单独创建。 */
   signal?: AbortSignal;

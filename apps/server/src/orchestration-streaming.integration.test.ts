@@ -258,7 +258,7 @@ function createScenarioServer(input: ScenarioInput): FastifyInstance {
   const providers = createConcurrencyLimitedProviders({
     searchProvider: input.searchProvider,
     llmProvider: new FakeLLMProvider(llmResponses),
-    concurrency: { search: 6, extract: 3, llm: 3 },
+    concurrency: { search: 6, llm: 3 },
   });
   const server = Fastify({ logger: false });
   registerSearchRoute(
@@ -539,7 +539,7 @@ describe("Orchestration + NDJSON 服务端回归矩阵", () => {
     const providers = createConcurrencyLimitedProviders({
       searchProvider: new RejectedAndLateSearchProvider(lateSearch),
       llmProvider: new FakeLLMProvider([plan]),
-      concurrency: { search: 6, extract: 3, llm: 3 },
+      concurrency: { search: 6, llm: 3 },
     });
     const handler = createRunSearchHandler({
       providers,

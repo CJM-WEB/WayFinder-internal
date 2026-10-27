@@ -30,7 +30,7 @@ import {
 } from "../ai/providers/deepseek-llm-provider.js";
 import type { DeepSeekTokenUsage } from "../ai/providers/deepseek-llm-provider.js";
 import { parseServerConfig } from "../config.js";
-import { TavilySearchProvider } from "../search/providers/tavily.js";
+import { SerpApiBingSearchProvider } from "../search/providers/serpapi-bing.js";
 import {
   evaluatePlannerGoldenQuery,
   PLANNER_GOLDEN_RUN_DEADLINE_MS,
@@ -101,7 +101,7 @@ type PlannerGoldenSuiteReport = Readonly<{
     reviserPromptVersion: typeof GRAPH_REVISER_PROMPT_VERSION;
     llmProvider: typeof DEEPSEEK_LLM_PROVIDER_ID;
     llmModel: typeof DEEPSEEK_LLM_MODEL;
-    searchProvider: "tavily";
+    searchProvider: "serpapi_bing";
   }>;
   runPolicy: Readonly<{
     repetitionsPerQuery: 1;
@@ -475,14 +475,11 @@ async function runPlannerGolden(): Promise<string> {
         apiKey: config.llmApiKey,
         onTokenUsage: usage => tokenUsages.push(usage),
       });
-      const searchProvider = new TavilySearchProvider({
-        apiKey: config.tavilyApiKey,
+      const searchProvider = new SerpApiBingSearchProvider({
+        apiKey: config.serpApiKey,
         searchTimeoutMs: config.timeouts.searchMs,
-        extractTimeoutMs: config.timeouts.extractMs,
-        onAttempt: ({ operation }) => {
-          if (operation === "search") {
-            searchHttpAttempts += 1;
-          }
+        onAttempt: () => {
+          searchHttpAttempts += 1;
         },
       });
       results.push(
@@ -521,7 +518,7 @@ async function runPlannerGolden(): Promise<string> {
         reviserPromptVersion: GRAPH_REVISER_PROMPT_VERSION,
         llmProvider: DEEPSEEK_LLM_PROVIDER_ID,
         llmModel: DEEPSEEK_LLM_MODEL,
-        searchProvider: "tavily",
+        searchProvider: "serpapi_bing",
       },
       runPolicy: {
         repetitionsPerQuery: 1,
