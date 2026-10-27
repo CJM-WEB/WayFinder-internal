@@ -1,5 +1,5 @@
 /**
- * 测试职责：冻结 WAY-57/58 的单 Node Pipeline、Warning 合并、唯一终态与高风险
+ * 测试职责：冻结 WAY-57/58/109 的单 Node Pipeline、Warning 合并、唯一终态与高风险
  * 检索状态矩阵，全部通过显式 Fake Provider（测试替身）在普通 CI 中确定性运行。
  *
  * 关键约束：ready/partial 返回完整且通过 Contract 的 Node；普通失败只发一次
@@ -544,6 +544,97 @@ describe("WAY-58 单 Node 高风险检索矩阵", () => {
         candidateId: "candidate_3",
         canonicalUrl: unique.canonicalUrl,
         snippet: unique.snippet,
+      }),
+    ]);
+  });
+
+  it("稳定轮询后再去重与过滤，重复和非法项不占 Provider-first Top 6", async () => {
+    const node = createNode(["primary query", "secondary query"]);
+    const primaryQuery = node.searchPlan.queries[0]!;
+    const secondaryQuery = node.searchPlan.queries[1]!;
+    const primaryHits = Array.from({ length: 7 }, (_, index) =>
+      createDistinctHit(
+        index + 1,
+        `primary-${index + 1}.example`,
+        primaryQuery,
+      ),
+    );
+    const duplicatePrimaryFirst = createHit(secondaryQuery, {
+      title: "Canonical duplicate from secondary query",
+      url: "https://PRIMARY-1.example:443/typescript/1?utm_source=secondary#top",
+      canonicalUrl: primaryHits[0]!.canonicalUrl,
+      domain: primaryHits[0]!.domain,
+    });
+    const illegalSecondary = createHit(secondaryQuery, {
+      title: "Illegal URL must not consume a slot",
+      url: "not-a-url",
+      canonicalUrl: "not-a-url",
+      domain: "invalid.example",
+    });
+    const secondaryFirst = createDistinctHit(
+      101,
+      "secondary-1.example",
+      secondaryQuery,
+    );
+    const secondarySecond = createDistinctHit(
+      102,
+      "secondary-2.example",
+      secondaryQuery,
+    );
+    const searchProvider = new FakeSearchProvider({
+      searchResponses: {
+        [primaryQuery]: primaryHits,
+        [secondaryQuery]: [
+          duplicatePrimaryFirst,
+          illegalSecondary,
+          secondaryFirst,
+          secondarySecond,
+        ],
+      },
+    });
+    const rerankProvider = new FakeLLMProvider([
+      createRerankOutput(
+        Array.from({ length: 6 }, (_, index) => `candidate_${index + 1}`),
+      ),
+    ]);
+
+    const result = await processNode(
+      node,
+      createContext(searchProvider, rerankProvider, []),
+      createRunScope(),
+    );
+
+    expect(result.status).toBe("ready");
+    expect(result.resources).toHaveLength(6);
+    expect(searchProvider.searchCalls.map(call => call.request.query)).toEqual([
+      primaryQuery,
+      secondaryQuery,
+    ]);
+    expect(searchProvider.extractCalls).toHaveLength(0);
+    expect(readPromptCandidates(rerankProvider)).toEqual([
+      expect.objectContaining({
+        candidateId: "candidate_1",
+        canonicalUrl: primaryHits[0]!.canonicalUrl,
+      }),
+      expect.objectContaining({
+        candidateId: "candidate_2",
+        canonicalUrl: primaryHits[1]!.canonicalUrl,
+      }),
+      expect.objectContaining({
+        candidateId: "candidate_3",
+        canonicalUrl: primaryHits[2]!.canonicalUrl,
+      }),
+      expect.objectContaining({
+        candidateId: "candidate_4",
+        canonicalUrl: secondaryFirst.canonicalUrl,
+      }),
+      expect.objectContaining({
+        candidateId: "candidate_5",
+        canonicalUrl: primaryHits[3]!.canonicalUrl,
+      }),
+      expect.objectContaining({
+        candidateId: "candidate_6",
+        canonicalUrl: secondarySecond.canonicalUrl,
       }),
     ]);
   });

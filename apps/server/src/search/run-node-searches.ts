@@ -5,7 +5,8 @@
  * 关键边界：
  * - V0 的所有 providerHints 只选择唯一 Search Provider，每条 Query 恰好调用一次；
  * - Provider 已负责单次调用的 Timeout 与有界重试，本层只共享 Run Signal；
- * - 原始调用合并后没有 Hit 就是搜索失败，URL 可用性过滤属于后续 Pipeline。
+ * - 逐 Query 结果按深度稳定轮询，URL 可用性与去重仍属于后续 Pipeline；
+ * - 原始调用合并后没有 Hit 就是搜索失败，不能伪装成局部成功。
  */
 import {
   calculateSearchPlanMaxResults,
@@ -67,6 +68,33 @@ function createProviderRequest(
 }
 
 /**
+ * 按结果深度稳定轮询逐 Query Hit，同时保持 Query 顺序与各 Query 内 Provider 顺序。
+ *
+ * 这里不做 URL 校验、去重或数量截断：这些职责继续由后续确定性 Pipeline 负责，
+ * 从而让重复或非法项被移除后，仍可从更深轮次补入合法候选。
+ */
+function mergeQueryHitsRoundRobin(
+  queryOutcomes: readonly QuerySearchOutcome[],
+): NodeSearchOutcome["hits"] {
+  const hits: NodeSearchOutcome["hits"] = [];
+  const maxDepth = queryOutcomes.reduce(
+    (maximum, outcome) => Math.max(maximum, outcome.hits.length),
+    0,
+  );
+
+  for (let depth = 0; depth < maxDepth; depth += 1) {
+    for (const outcome of queryOutcomes) {
+      const hit = outcome.hits[depth];
+      if (hit !== undefined) {
+        hits.push(hit);
+      }
+    }
+  }
+
+  return hits;
+}
+
+/**
  * 独立结算每条 Query；单次失败不抹掉其他成功结果，但空汇总绝不伪装为 partial。
  */
 export async function runNodeSearches(
@@ -105,7 +133,7 @@ export async function runNodeSearches(
             warnings: ["SEARCH_PROVIDER_PARTIAL"],
           };
     });
-  const hits = queryOutcomes.flatMap(outcome => outcome.hits);
+  const hits = mergeQueryHitsRoundRobin(queryOutcomes);
 
   if (hits.length === 0) {
     throw new NodeSearchError();
