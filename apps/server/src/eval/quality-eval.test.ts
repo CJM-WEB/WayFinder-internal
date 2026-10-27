@@ -1,5 +1,5 @@
 /**
- * 测试职责：冻结 WAY-86/87/90 统一质量评估接口的数据集、完整管线事实、指标与失败语义。
+ * 测试职责：冻结 WAY-86/87/90/110 统一质量评估接口的数据集、完整管线事实、指标与失败语义。
  *
  * 边界说明：测试只使用公共 Contract 对象和 Fake Handler，不读取 Secret、不访问网络，
  * 也不对质量设置通过阈值、通过率或综合分。
@@ -306,7 +306,7 @@ describe("WAY-86 Quality Eval 数据集", () => {
 
 describe("WAY-86 Quality Eval 查询投影", () => {
   it("保留计划、Top 3、官方排名、跨 Node 重复、多样性与 Run Log 遥测", async () => {
-    expect(QUALITY_EVAL_SCHEMA_VERSION).toBe("quality-eval.v5");
+    expect(QUALITY_EVAL_SCHEMA_VERSION).toBe("quality-eval.v6");
     const payloads: StreamEventPayload[] = [
       { type: "query.analysis", data: plan.analysis },
       { type: "graph.plan", data: plan },
@@ -352,6 +352,13 @@ describe("WAY-86 Quality Eval 查询投影", () => {
         schemaValidity: "valid",
         nodeCount: 2,
         resourceCount: 8,
+        plannedRequestDuplication: {
+          totalCount: 2,
+          uniqueCount: 2,
+          intraNodeDuplicateOccurrenceCount: 0,
+          crossNodeSharedGroupCount: 0,
+          crossNodeExtraNodeOccurrenceCount: 0,
+        },
         duplicateRate: {
           status: "measured",
           duplicateOccurrences: 1,
@@ -383,6 +390,22 @@ describe("WAY-86 Quality Eval 查询投影", () => {
         ?.id,
     );
     expect(JSON.stringify(projected)).not.toContain("secret-value");
+    expect(JSON.stringify(projected.metrics?.plannedRequestDuplication)).not
+      .toContain("VS Code official download");
+    const differentActualCalls = QualityEvalQueryResultSchema.parse({
+      ...projected,
+      telemetry: {
+        ...projected.telemetry,
+        counts: {
+          ...projected.telemetry?.counts,
+          logicalSearchCalls: 7,
+          searchHttpAttempts: 7,
+        },
+      },
+    });
+    expect(differentActualCalls.metrics?.plannedRequestDuplication.totalCount)
+      .toBe(2);
+    expect(differentActualCalls.telemetry?.counts.logicalSearchCalls).toBe(7);
     expect(projected.duplicateResources).toEqual([
       {
         canonicalUrlFingerprint: createHash("sha256")
@@ -571,7 +594,7 @@ describe("WAY-86 Quality Eval 查询投影", () => {
     ).toThrow("新鲜度投影与 Plan、参考时间或 Top Resource 不一致");
   });
 
-  it("严格拒绝旧版本、缺少调用计数或缺少新鲜度投影的节点", async () => {
+  it("严格拒绝旧版本、缺少计划诊断、身份字段、调用计数或新鲜度投影", async () => {
     const projected = await evaluateQualityEvalQuery({
       query: QUERY,
       runId: "strict-v4-run",
@@ -600,7 +623,32 @@ describe("WAY-86 Quality Eval 查询投影", () => {
     expect(() =>
       QualityEvalQueryResultSchema.parse({
         ...projected,
-        schemaVersion: "quality-eval.v3",
+        schemaVersion: "quality-eval.v5",
+      }),
+    ).toThrow();
+    const metricsWithoutPlannedRequestDuplication: Record<string, unknown> = {
+      ...projected.metrics,
+    };
+    Reflect.deleteProperty(
+      metricsWithoutPlannedRequestDuplication,
+      "plannedRequestDuplication",
+    );
+    expect(() =>
+      QualityEvalQueryResultSchema.parse({
+        ...projected,
+        metrics: metricsWithoutPlannedRequestDuplication,
+      }),
+    ).toThrow();
+    expect(() =>
+      QualityEvalQueryResultSchema.parse({
+        ...projected,
+        metrics: {
+          ...projected.metrics,
+          plannedRequestDuplication: {
+            ...projected.metrics?.plannedRequestDuplication,
+            nodeId: "private-node",
+          },
+        },
       }),
     ).toThrow();
     expect(() =>
@@ -845,6 +893,46 @@ describe("WAY-86 Quality Eval 查询投影", () => {
     expect(JSON.stringify([cancelled, failed, cancelledWithTelemetry])).not.toContain(
       sensitiveError.message,
     );
+  });
+
+  it("计划请求配置失败只投影固定 Eval 错误，不保留诊断或身份", async () => {
+    const invalidProviderId = "private-provider-identity";
+    const projected = await evaluateQualityEvalQuery({
+      query: QUERY,
+      runId: "invalid-planned-request-policy-run",
+      signal: new AbortController().signal,
+      runDeadlineMs: 20_000,
+      expectedOfficialDomains: ["code.visualstudio.com"],
+      plannedRequestConfig: {
+        providerId: invalidProviderId,
+        language: "und",
+      },
+      handleSearch: async ({ emit }) => {
+        await emit({ type: "graph.plan", data: plan });
+        await emit({
+          type: "complete",
+          data: { finalStatus: "complete", result: resultGraph },
+        });
+      },
+      readRunLog: () => runLog,
+    });
+
+    expect(projected).toMatchObject({
+      executionStatus: "unexpected_internal_error",
+      finalStatus: null,
+      plan: null,
+      nodes: [],
+      metrics: null,
+      metricFailure: {
+        queryId: QUERY.id,
+        metric: "metricsProjection",
+        stage: "metricsProjection",
+        code: "policy_invalid",
+      },
+    });
+    expect(projected.telemetry?.counts).toEqual(projectedCallCounts);
+    expect(JSON.stringify(projected)).not.toContain(invalidProviderId);
+    expect(JSON.stringify(projected)).not.toContain("plannedRequestDuplication");
   });
 
   it("Stream Schema 失败只记录固定 Query、指标、阶段与 Code", async () => {

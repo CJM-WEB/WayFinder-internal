@@ -3,11 +3,13 @@
  * 与成本事实汇总为可审核结果，并在 A-B-B-A 条件或覆盖率不完整时拒绝比较。
  *
  * 关键边界：
- * - 当前报告严格读取 `quality-eval.v6`；WAY-107 v5 基线仅经受限内存归一化读取；
+ * - 当前报告严格读取 `quality-eval.v7`；旧 v5/v6 只经显式内存归一化读取；
  * - `0` 是有效测量值，`telemetry: null` 才表示缺失；
  * - 本模块只判断报告能否比较，不自动给出 Keep / Revert 产品结论。
  */
 import { isDeepStrictEqual } from "node:util";
+
+import { GraphPlanSchema } from "@wayfinder/contracts";
 
 import {
   QualityEvalReportSchema,
@@ -17,11 +19,13 @@ import {
 import {
   assertQualityEvalReportDatasetIntegrity,
   createQualityEvalOperatingSummary,
+  summarizeQualityEvalDuplication,
   summarizeQualityEvalProviderUsage,
   summarizeQualityEvalRanking,
   type QualityEvalOperatingSummary,
   type QualityEvalProviderUsage,
 } from "./quality-eval-operating-summary.js";
+import { measureQualityEvalPlannedRequestDuplication } from "./quality-metrics.js";
 
 const BLOCK_ORDER = ["A1", "B1", "B2", "A2"] as const;
 const COMMIT_PATTERN = /^[0-9a-f]{40}$/u;
@@ -44,6 +48,7 @@ type BlockFacts = Readonly<{
   sourceCommit: string;
   rankingVersion: "pre-fusion.v0" | "rank-fusion.v1";
   latency: QualityEvalOperatingSummary["latency"];
+  duplication: QualityEvalOperatingSummary["duplication"];
   providerUsage: QualityEvalProviderUsage;
   ranking: QualityEvalOperatingSummary["ranking"];
   tokens: QualityEvalOperatingSummary["tokens"];
@@ -91,26 +96,50 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * WAY-107 基线使用 outer v5 / query v4，且没有 Ranking telemetry。这里只为复用
- * 当前严格 Schema 做内存归一化；零观测会令 coverage 不完整，不能冒充新排序证据。
+ * 旧 outer v5/query v4 没有 Ranking telemetry，outer v6/query v5 没有计划请求诊断。
+ * 两者都只在内存中显式补齐可由旧报告既有事实确定性重建的字段，原对象保持不变。
  */
-function normalizeLegacyReport(value: Record<string, unknown>): unknown {
+function normalizeLegacyReport(
+  value: Record<string, unknown>,
+  outerVersion: "quality-eval.v5" | "quality-eval.v6",
+): unknown {
   const source = value.source;
+  const runPolicy = value.runPolicy;
   const results = value.results;
-  if (!isRecord(source) || "ranking" in source || !Array.isArray(results)) {
+  if (
+    !isRecord(source) ||
+    !isRecord(runPolicy) ||
+    !Array.isArray(results) ||
+    (outerVersion === "quality-eval.v5" && "ranking" in source) ||
+    (outerVersion === "quality-eval.v6" && source.ranking !== "rank-fusion.v1")
+  ) {
     throw new TypeError("legacy_report_invalid");
   }
+  const providers = source.providers;
+  if (!isRecord(providers)) throw new TypeError("legacy_provider_invalid");
+  const plannedRequestConfig = {
+    providerId: providers.search,
+    language: runPolicy.language,
+  };
+  const expectedQueryVersion =
+    outerVersion === "quality-eval.v5"
+      ? "quality-eval.v4"
+      : "quality-eval.v5";
 
   return {
     ...value,
-    schemaVersion: "quality-eval.v6",
-    source: { ...source, ranking: "rank-fusion.v1" },
+    schemaVersion: "quality-eval.v7",
+    source:
+      outerVersion === "quality-eval.v5"
+        ? { ...source, ranking: "rank-fusion.v1" }
+        : source,
     results: results.map(result => {
-      if (!isRecord(result) || result.schemaVersion !== "quality-eval.v4") {
+      if (!isRecord(result) || result.schemaVersion !== expectedQueryVersion) {
         throw new TypeError("legacy_query_invalid");
       }
       const telemetry = result.telemetry;
       if (
+        outerVersion === "quality-eval.v5" &&
         telemetry !== null &&
         (!isRecord(telemetry) ||
           "ranking" in telemetry ||
@@ -118,17 +147,41 @@ function normalizeLegacyReport(value: Record<string, unknown>): unknown {
       ) {
         throw new TypeError("legacy_telemetry_invalid");
       }
+      const metrics = result.metrics;
+      let normalizedMetrics = metrics;
+      if (metrics !== null) {
+        const parsedPlan = GraphPlanSchema.safeParse(result.plan);
+        if (
+          !isRecord(metrics) ||
+          metrics.version !== "quality-metrics.v1" ||
+          !parsedPlan.success
+        ) {
+          throw new TypeError("legacy_metrics_invalid");
+        }
+        normalizedMetrics = {
+          ...metrics,
+          version: "quality-metrics.v2",
+          plannedRequestDuplication:
+            measureQualityEvalPlannedRequestDuplication(
+              parsedPlan.data,
+              plannedRequestConfig,
+            ),
+        };
+      }
       return {
         ...result,
-        schemaVersion: "quality-eval.v5",
+        schemaVersion: "quality-eval.v6",
+        metrics: normalizedMetrics,
         telemetry:
-          telemetry === null
-            ? null
-            : {
-                ...telemetry,
-                versions: { rankFusion: "rank-fusion.v1" },
-                ranking: EMPTY_RANKING_METRICS,
-              },
+          outerVersion === "quality-eval.v6"
+            ? telemetry
+            : telemetry === null
+              ? null
+              : {
+                  ...telemetry,
+                  versions: { rankFusion: "rank-fusion.v1" },
+                  ranking: EMPTY_RANKING_METRICS,
+                },
       };
     }),
   };
@@ -139,10 +192,19 @@ function parseReport(
   block: BlockName,
 ): ParsedComparableReport {
   try {
-    const legacy = isRecord(value) && value.schemaVersion === "quality-eval.v5";
-    const parsed = QualityEvalReportSchema.safeParse(
-      legacy ? normalizeLegacyReport(value) : value,
-    );
+    const legacyVersion =
+      isRecord(value) &&
+      (value.schemaVersion === "quality-eval.v5" ||
+        value.schemaVersion === "quality-eval.v6")
+        ? value.schemaVersion
+        : null;
+    let candidate = value;
+    if (legacyVersion !== null) {
+      // legacyVersion 只能由 record 分支生成；再次缩窄以保留 unknown 输入边界。
+      if (!isRecord(value)) throw new TypeError("legacy_report_invalid");
+      candidate = normalizeLegacyReport(value, legacyVersion);
+    }
+    const parsed = QualityEvalReportSchema.safeParse(candidate);
     if (!parsed.success) {
       throw new TypeError("schema_invalid");
     }
@@ -150,7 +212,10 @@ function parseReport(
     assertQualityEvalArtifactSafety(parsed.data, []);
     return {
       report: parsed.data,
-      rankingVersion: legacy ? "pre-fusion.v0" : "rank-fusion.v1",
+      rankingVersion:
+        legacyVersion === "quality-eval.v5"
+          ? "pre-fusion.v0"
+          : "rank-fusion.v1",
     };
   } catch {
     throw new TypeError(`Quality Eval ${block} 报告不符合严格 Schema`);
@@ -179,6 +244,7 @@ function aggregateBlock(
 ): QualityEvalBlockSummary {
   const { report } = parsed;
   const usage = summarizeQualityEvalProviderUsage(report.results);
+  const duplication = summarizeQualityEvalDuplication(report.results);
   const ranking = summarizeQualityEvalRanking(report.results);
   const operating = createQualityEvalOperatingSummary(report);
 
@@ -204,6 +270,7 @@ function aggregateBlock(
     sourceCommit: report.source.git.commit,
     rankingVersion: parsed.rankingVersion,
     latency: operating.latency,
+    duplication,
     providerUsage: usage,
     ranking,
     tokens: operating.tokens,
@@ -212,15 +279,20 @@ function aggregateBlock(
   };
   const complete =
     usage.status === "complete" &&
+    duplication.status === "complete" &&
     ranking.status === "complete" &&
     operating.latency.status === "complete" &&
     operating.tokens.status === "complete";
   const unavailable =
     usage.status === "unavailable" &&
+    duplication.status === "unavailable" &&
     ranking.status === "unavailable" &&
     operating.latency.status === "unavailable" &&
     operating.tokens.status === "unavailable";
-  return { ...facts, status: complete ? "complete" : unavailable ? "unavailable" : "partial" };
+  return {
+    ...facts,
+    status: complete ? "complete" : unavailable ? "unavailable" : "partial",
+  };
 }
 
 /**

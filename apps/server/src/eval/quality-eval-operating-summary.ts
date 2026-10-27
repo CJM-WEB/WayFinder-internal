@@ -11,10 +11,11 @@
 import { z } from "zod";
 
 import type { QualityEvalQueryResult } from "./quality-eval.js";
+import { QualityEvalPlannedRequestDuplicationSchema } from "./quality-metrics.js";
 import type { QualityEvalReport } from "./run-quality-eval.js";
 
 export const QUALITY_EVAL_OPERATING_SUMMARY_VERSION =
-  "quality-eval-operating-summary.v2" as const;
+  "quality-eval-operating-summary.v3" as const;
 
 const CALL_COUNT_KEYS = [
   "logicalSearchCalls",
@@ -87,6 +88,30 @@ const ProviderUsageSchema = z.discriminatedUnion("status", [
   CoverageFactsSchema.extend({
     status: z.literal("partial"),
     observedTotals: CallCountsSchema,
+  }),
+  CoverageFactsSchema.extend({ status: z.literal("unavailable") }),
+]);
+
+const ResourceDuplicationTotalsSchema = z.strictObject({
+  measuredQueryCount: NonNegativeSafeIntegerSchema,
+  noResourceQueryCount: NonNegativeSafeIntegerSchema,
+  duplicateOccurrences: NonNegativeSafeIntegerSchema,
+  totalOccurrences: NonNegativeSafeIntegerSchema,
+});
+
+const DuplicationTotalsSchema = z.strictObject({
+  plannedRequests: QualityEvalPlannedRequestDuplicationSchema,
+  resources: ResourceDuplicationTotalsSchema,
+});
+
+const DuplicationSummarySchema = z.discriminatedUnion("status", [
+  CoverageFactsSchema.extend({
+    status: z.literal("complete"),
+    totals: DuplicationTotalsSchema,
+  }),
+  CoverageFactsSchema.extend({
+    status: z.literal("partial"),
+    observedTotals: DuplicationTotalsSchema,
   }),
   CoverageFactsSchema.extend({ status: z.literal("unavailable") }),
 ]);
@@ -237,6 +262,7 @@ export const QualityEvalOperatingSummarySchema = z.strictObject({
     }),
   }),
   latency: LatencySchema,
+  duplication: DuplicationSummarySchema,
   providerUsage: ProviderUsageSchema,
   ranking: RankingSummarySchema,
   tokens: TokensSchema,
@@ -304,6 +330,105 @@ function addSafeInteger(
     throw new TypeError(`Quality Eval ${label} 总计超出安全整数范围`);
   }
   return next;
+}
+
+function createZeroDuplicationTotals(): z.infer<
+  typeof DuplicationTotalsSchema
+> {
+  return {
+    plannedRequests: {
+      totalCount: 0,
+      uniqueCount: 0,
+      intraNodeDuplicateOccurrenceCount: 0,
+      crossNodeSharedGroupCount: 0,
+      crossNodeExtraNodeOccurrenceCount: 0,
+    },
+    resources: {
+      measuredQueryCount: 0,
+      noResourceQueryCount: 0,
+      duplicateOccurrences: 0,
+      totalOccurrences: 0,
+    },
+  };
+}
+
+/**
+ * 只汇总逐 Query 已验证的计划请求与既有 Resource 重复事实。缺少 Metrics 的 Query
+ * 进入 coverage 缺口，不能按零重复处理；计划数量与实际 Provider 调用保持独立。
+ */
+export function summarizeQualityEvalDuplication(
+  results: readonly QualityEvalQueryResult[],
+): z.infer<typeof DuplicationSummarySchema> {
+  const totals = createZeroDuplicationTotals();
+  const missingQueryIds: string[] = [];
+  let observedQueryCount = 0;
+
+  for (const result of results) {
+    if (result.metrics === null) {
+      missingQueryIds.push(result.query.id);
+      continue;
+    }
+    observedQueryCount += 1;
+    const planned = result.metrics.plannedRequestDuplication;
+    for (const key of Object.keys(
+      totals.plannedRequests,
+    ) as (keyof typeof totals.plannedRequests)[]) {
+      totals.plannedRequests[key] = addSafeInteger(
+        totals.plannedRequests[key],
+        planned[key],
+        "计划请求重复",
+      );
+    }
+
+    const resource = result.metrics.duplicateRate;
+    if (resource.status === "measured") {
+      totals.resources.measuredQueryCount = addSafeInteger(
+        totals.resources.measuredQueryCount,
+        1,
+        "Resource 重复已测 Query",
+      );
+      totals.resources.duplicateOccurrences = addSafeInteger(
+        totals.resources.duplicateOccurrences,
+        resource.duplicateOccurrences,
+        "Resource 重复 occurrence",
+      );
+      totals.resources.totalOccurrences = addSafeInteger(
+        totals.resources.totalOccurrences,
+        resource.totalOccurrences,
+        "Resource 总 occurrence",
+      );
+    } else {
+      totals.resources.noResourceQueryCount = addSafeInteger(
+        totals.resources.noResourceQueryCount,
+        1,
+        "零 Resource Query",
+      );
+    }
+  }
+
+  const facts: ProviderUsageFacts = {
+    expectedQueryCount: results.length,
+    observedQueryCount,
+    missingQueryIds,
+  };
+  if (observedQueryCount === results.length) {
+    return DuplicationSummarySchema.parse({
+      ...facts,
+      status: "complete",
+      totals,
+    });
+  }
+  if (observedQueryCount === 0) {
+    return DuplicationSummarySchema.parse({
+      ...facts,
+      status: "unavailable",
+    });
+  }
+  return DuplicationSummarySchema.parse({
+    ...facts,
+    status: "partial",
+    observedTotals: totals,
+  });
 }
 
 /**
@@ -715,6 +840,7 @@ export function createQualityEvalOperatingSummary(
     },
     quality: summarizeQuality(report.results),
     latency: summarizeLatency(report.results),
+    duplication: summarizeQualityEvalDuplication(report.results),
     providerUsage: summarizeQualityEvalProviderUsage(report.results),
     ranking: summarizeQualityEvalRanking(report.results),
     tokens: summarizeTokens(report.results),

@@ -15,12 +15,159 @@ import {
   GraphPlanSchema,
   MAX_RETAINED_RESOURCES_PER_NODE,
   ResultGraphSchema,
+  calculateSearchPlanMaxResults,
+  type GraphPlan,
 } from "@wayfinder/contracts";
 import { z } from "zod";
 
 import { RunLogRecordSchema } from "../observability/run-log.js";
 
-export const QUALITY_METRICS_VERSION = "quality-metrics.v1" as const;
+export const QUALITY_METRICS_VERSION = "quality-metrics.v2" as const;
+
+/**
+ * Quality Eval 使用的固定生产请求配置。它只参与内存身份计算，不进入新增诊断对象；
+ * 若 Provider 或语言策略变化，必须显式升级评估版本，不能把不同条件混为同一身份。
+ */
+export const QualityEvalPlannedRequestConfigSchema = z.strictObject({
+  providerId: z.literal("serpapi_bing"),
+  language: z.literal("und"),
+});
+
+export type QualityEvalPlannedRequestConfig = Readonly<
+  z.infer<typeof QualityEvalPlannedRequestConfigSchema>
+>;
+
+export const QUALITY_EVAL_PLANNED_REQUEST_CONFIG = Object.freeze({
+  providerId: "serpapi_bing",
+  language: "und",
+} as const satisfies QualityEvalPlannedRequestConfig);
+
+const NonNegativeSafeIntegerSchema = z
+  .number()
+  .int()
+  .min(0)
+  .max(Number.MAX_SAFE_INTEGER);
+
+/**
+ * 计划请求诊断只序列化五个聚合安全整数。Query、Node ID、身份 Key 与分组证据
+ * 只能存在于计算期间；严格对象会拒绝任何额外身份字段。
+ */
+export const QualityEvalPlannedRequestDuplicationSchema = z
+  .strictObject({
+    totalCount: NonNegativeSafeIntegerSchema,
+    uniqueCount: NonNegativeSafeIntegerSchema,
+    intraNodeDuplicateOccurrenceCount: NonNegativeSafeIntegerSchema,
+    crossNodeSharedGroupCount: NonNegativeSafeIntegerSchema,
+    crossNodeExtraNodeOccurrenceCount: NonNegativeSafeIntegerSchema,
+  })
+  .superRefine((diagnostic, context) => {
+    if (
+      diagnostic.totalCount - diagnostic.uniqueCount !==
+      diagnostic.intraNodeDuplicateOccurrenceCount +
+        diagnostic.crossNodeExtraNodeOccurrenceCount
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "计划请求重复 occurrence 分解不一致",
+      });
+    }
+    if (
+      diagnostic.crossNodeSharedGroupCount >
+      diagnostic.crossNodeExtraNodeOccurrenceCount
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "跨 Node 共享组不能多于额外 Node occurrence",
+      });
+    }
+  });
+
+export type QualityEvalPlannedRequestDuplication = Readonly<
+  z.infer<typeof QualityEvalPlannedRequestDuplicationSchema>
+>;
+
+/** 防止聚合过程在未来放宽 GraphPlan 数量边界后静默越过安全整数范围。 */
+function addSafeCount(current: number, value: number): number {
+  const next = current + value;
+  if (!Number.isSafeInteger(next) || next < 0) {
+    throw new RangeError("Quality Eval 计划请求计数超出安全整数范围");
+  }
+  return next;
+}
+
+/**
+ * 从完整 Final GraphPlan 构造 planned Search Request identity 并立即聚合。
+ *
+ * 每个身份组先按 Node 统计 occurrence：同一 Node 的第二次及以后计入 Node 内重复；
+ * 每个额外 Node 的第一次计入跨 Node occurrence。两者互斥，避免重复计数。
+ */
+export function measureQualityEvalPlannedRequestDuplication(
+  plan: GraphPlan,
+  config: unknown,
+): QualityEvalPlannedRequestDuplication {
+  const parsedConfig = QualityEvalPlannedRequestConfigSchema.parse(config);
+  const nodeOccurrencesByIdentity = new Map<string, Map<string, number>>();
+  let totalCount = 0;
+
+  for (const node of plan.nodes) {
+    const maxResults = calculateSearchPlanMaxResults(
+      node.searchPlan.queries.length,
+    );
+    for (const query of node.searchPlan.queries) {
+      // JSON Tuple 只作为内存 Map Key，避免文本分隔符碰撞；该值绝不返回或持久化。
+      const identity = JSON.stringify([
+        parsedConfig.providerId,
+        "node",
+        query,
+        maxResults,
+        "general",
+        plan.analysis.freshnessSensitive,
+        parsedConfig.language,
+      ]);
+      const nodeOccurrences =
+        nodeOccurrencesByIdentity.get(identity) ?? new Map<string, number>();
+      nodeOccurrences.set(
+        node.id,
+        addSafeCount(nodeOccurrences.get(node.id) ?? 0, 1),
+      );
+      nodeOccurrencesByIdentity.set(identity, nodeOccurrences);
+      totalCount = addSafeCount(totalCount, 1);
+    }
+  }
+
+  let intraNodeDuplicateOccurrenceCount = 0;
+  let crossNodeSharedGroupCount = 0;
+  let crossNodeExtraNodeOccurrenceCount = 0;
+  for (const nodeOccurrences of nodeOccurrencesByIdentity.values()) {
+    const distinctNodeCount = nodeOccurrences.size;
+    const groupTotal = [...nodeOccurrences.values()].reduce(
+      (total, count) => addSafeCount(total, count),
+      0,
+    );
+    intraNodeDuplicateOccurrenceCount = addSafeCount(
+      intraNodeDuplicateOccurrenceCount,
+      groupTotal - distinctNodeCount,
+    );
+    if (distinctNodeCount > 1) {
+      crossNodeSharedGroupCount = addSafeCount(
+        crossNodeSharedGroupCount,
+        1,
+      );
+      crossNodeExtraNodeOccurrenceCount = addSafeCount(
+        crossNodeExtraNodeOccurrenceCount,
+        distinctNodeCount - 1,
+      );
+    }
+  }
+
+  return QualityEvalPlannedRequestDuplicationSchema.parse({
+    totalCount,
+    uniqueCount: nodeOccurrencesByIdentity.size,
+    intraNodeDuplicateOccurrenceCount,
+    crossNodeSharedGroupCount,
+    crossNodeExtraNodeOccurrenceCount,
+  });
+}
 
 const QualityEvalCallCountsSchema = RunLogRecordSchema.shape.counts.pick({
   logicalSearchCalls: true,
@@ -102,6 +249,7 @@ export const QualityEvalMetricsSchema = z.strictObject({
   schemaValidity: z.literal("valid"),
   nodeCount: z.number().int().min(1),
   resourceCount: z.number().int().min(0),
+  plannedRequestDuplication: QualityEvalPlannedRequestDuplicationSchema,
   duplicateRate: DuplicateRateSchema,
   officialSource: QualityEvalOfficialSourceSchema,
   deadlineCompliance: DeadlineComplianceSchema,
@@ -171,6 +319,7 @@ export type MeasureQualityEvalMetricsInput = Readonly<{
   telemetry: unknown;
   expectedOfficialDomains: readonly string[];
   runDeadlineMs: number;
+  plannedRequestConfig?: unknown;
 }>;
 
 function readFailureQueryId(value: string): string {
@@ -287,6 +436,22 @@ export function measureQualityEvalMetrics(
     );
   }
 
+  let plannedRequestDuplication: QualityEvalPlannedRequestDuplication;
+  try {
+    plannedRequestDuplication =
+      measureQualityEvalPlannedRequestDuplication(
+        parsedPlan.data,
+        input.plannedRequestConfig ?? QUALITY_EVAL_PLANNED_REQUEST_CONFIG,
+      );
+  } catch {
+    return createFailedMeasurement(
+      input.queryId,
+      "metricsProjection",
+      "metricsProjection",
+      "policy_invalid",
+    );
+  }
+
   const planNodeIds = parsedPlan.data.nodes.map(node => node.id);
   const resultNodeIds = parsedResult.data.graph.nodes.map(node => node.id);
   if (
@@ -373,6 +538,7 @@ export function measureQualityEvalMetrics(
       schemaValidity: "valid",
       nodeCount: parsedPlan.data.nodes.length,
       resourceCount,
+      plannedRequestDuplication,
       duplicateRate:
         resourceCount === 0
           ? { status: "unavailable", reason: "noResources" }

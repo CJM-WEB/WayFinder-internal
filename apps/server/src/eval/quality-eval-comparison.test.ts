@@ -1,5 +1,5 @@
 /**
- * 测试职责：冻结 WAY-90 A-B-B-A 报告的完整度、六项调用总计与可比性门禁。
+ * 测试职责：冻结 WAY-90/110 A-B-B-A 报告的完整度、调用、重复诊断与可比性门禁。
  *
  * 边界说明：Fixture 只使用脱敏失败结果；测试不访问网络、不自动判定产品质量，
  * 也不允许用部分遥测冒充完整总计。
@@ -70,7 +70,7 @@ function createReport(
   includeRankedResult = true,
 ) {
   return QualityEvalReportSchema.parse({
-    schemaVersion: "quality-eval.v6",
+    schemaVersion: "quality-eval.v7",
     issue: "WAY-86",
     evaluationRunId: `2026-10-23T00-00-0${runIndex}-000Z-0000000${runIndex}-0000-4000-8000-00000000000${runIndex}`,
     completedAt: `2026-10-23T00:00:0${runIndex}.000Z`,
@@ -149,7 +149,7 @@ function createReport(
           edges: [],
         } as const;
         return {
-          schemaVersion: "quality-eval.v5",
+          schemaVersion: "quality-eval.v6",
           comparisonKey: `wayfinder-regression.v1:${id}`,
           query: {
             id,
@@ -191,10 +191,17 @@ function createReport(
           ],
           duplicateResources: [],
           metrics: {
-            version: "quality-metrics.v1",
+            version: "quality-metrics.v2",
             schemaValidity: "valid",
             nodeCount: 1,
             resourceCount: 1,
+            plannedRequestDuplication: {
+              totalCount: 1,
+              uniqueCount: 1,
+              intraNodeDuplicateOccurrenceCount: 0,
+              crossNodeSharedGroupCount: 0,
+              crossNodeExtraNodeOccurrenceCount: 0,
+            },
             duplicateRate: {
               status: "measured",
               duplicateOccurrences: 0,
@@ -208,35 +215,80 @@ function createReport(
           telemetry: createTelemetry(index, true),
         };
       }
-      const deadlineFailure = index === 1;
+      const query = `Query ${index + 1}`;
       return {
-        schemaVersion: "quality-eval.v5",
+        schemaVersion: "quality-eval.v6",
         comparisonKey: `wayfinder-regression.v1:${id}`,
         query: {
           id,
-          query: `Query ${index + 1}`,
+          query,
           category: "knowledge",
           rationale: "固定比较 Fixture。",
         },
-        executionStatus: "run_failed",
-        finalStatus: null,
-        errorCode: deadlineFailure
-          ? "RUN_DEADLINE_EXCEEDED"
-          : "PLANNER_FAILED",
-        freshnessReferenceAt: null,
-        plan: null,
-        nodes: [],
-        duplicateResources: [],
-        metrics: null,
-        metricFailure: {
-          queryId: id,
-          metric: deadlineFailure ? "deadlineCompliance" : "execution",
-          stage: deadlineFailure ? "runDeadline" : "pipeline",
-          code: deadlineFailure
-            ? "RUN_DEADLINE_EXCEEDED"
-            : "PLANNER_FAILED",
+        executionStatus: "completed",
+        finalStatus: "partial",
+        errorCode: null,
+        freshnessReferenceAt: "2026-10-23T00:00:00.000Z",
+        plan: {
+          analysis: {
+            intent: "learn",
+            topic: query,
+            freshnessSensitive: false,
+            ambiguityLevel: "low",
+            broadSearchQueries: [],
+            strategy: "plan_first",
+            presentationMode: "compact",
+          },
+          nodes: [
+            {
+              id: `node-${index + 1}`,
+              title: "测试节点",
+              description: "冻结比较 Fixture 的无资源节点。",
+              nodeType: "primary",
+              layer: 0,
+              status: "planned",
+              searchPlan: {
+                queries: [query],
+                maxResults: 20,
+                rankingProfile: "knowledge",
+                providerHints: ["general"],
+              },
+            },
+          ],
+          edges: [],
         },
-        // 第一条失败 Query 的零调用仍是完整测量，不能误判为 unavailable。
+        nodes: [
+          {
+            id: `node-${index + 1}`,
+            status: "failed",
+            warnings: [],
+            errorCode: "SEARCH_PROVIDER_FAILED",
+            resourceCount: 0,
+            topResources: [],
+            officialSource: { status: "notApplicable" },
+            diversity: { distinctExactDomainCount: 0 },
+            freshness: { status: "notApplicable" },
+          },
+        ],
+        duplicateResources: [],
+        metrics: {
+          version: "quality-metrics.v2",
+          schemaValidity: "valid",
+          nodeCount: 1,
+          resourceCount: 0,
+          plannedRequestDuplication: {
+            totalCount: 1,
+            uniqueCount: 1,
+            intraNodeDuplicateOccurrenceCount: 0,
+            crossNodeSharedGroupCount: 0,
+            crossNodeExtraNodeOccurrenceCount: 0,
+          },
+          duplicateRate: { status: "unavailable", reason: "noResources" },
+          officialSource: { status: "notApplicable" },
+          deadlineCompliance: { status: "within" },
+        },
+        metricFailure: null,
+        // 零 Provider 调用仍是完整测量，不能误判为 unavailable。
         telemetry: createTelemetry(index),
       };
     }),
@@ -276,6 +328,12 @@ function createLegacyReport(commit: string, runIndex: number): unknown {
   delete source.ranking;
   for (const result of legacy.results as Record<string, unknown>[]) {
     result.schemaVersion = "quality-eval.v4";
+    const metrics = result.metrics;
+    if (metrics !== null) {
+      const legacyMetrics = metrics as Record<string, unknown>;
+      legacyMetrics.version = "quality-metrics.v1";
+      delete legacyMetrics.plannedRequestDuplication;
+    }
     const telemetry = result.telemetry;
     if (telemetry !== null) {
       delete (telemetry as Record<string, unknown>).versions;
@@ -283,6 +341,50 @@ function createLegacyReport(commit: string, runIndex: number): unknown {
     }
   }
   return legacy;
+}
+
+/** 外层 v6/query v5 保留 Ranking 遥测，仅缺少 WAY-110 计划请求诊断。 */
+function createV6LegacyReport(commit: string, runIndex: number): unknown {
+  const legacy = structuredClone(createReport(commit, runIndex)) as Record<
+    string,
+    unknown
+  >;
+  legacy.schemaVersion = "quality-eval.v6";
+  for (const result of legacy.results as Record<string, unknown>[]) {
+    result.schemaVersion = "quality-eval.v5";
+    const metrics = result.metrics as Record<string, unknown>;
+    metrics.version = "quality-metrics.v1";
+    delete metrics.plannedRequestDuplication;
+  }
+  return legacy;
+}
+
+/** 用真实的未完成语义制造覆盖缺口，禁止在 completed 结果上伪造 null。 */
+function replaceWithUnmeasuredFailure(
+  report: ReturnType<typeof createReport>,
+  index: number,
+): void {
+  const current = report.results[index]!;
+  report.results[index] = {
+    schemaVersion: "quality-eval.v6",
+    comparisonKey: current.comparisonKey,
+    query: current.query,
+    executionStatus: "run_failed",
+    finalStatus: null,
+    errorCode: "PLANNER_FAILED",
+    freshnessReferenceAt: null,
+    plan: null,
+    nodes: [],
+    duplicateResources: [],
+    metrics: null,
+    metricFailure: {
+      queryId: current.query.id,
+      metric: "execution",
+      stage: "pipeline",
+      code: "PLANNER_FAILED",
+    },
+    telemetry: null,
+  };
 }
 
 describe("WAY-90 Quality Eval A-B-B-A 比较", () => {
@@ -316,6 +418,36 @@ describe("WAY-90 Quality Eval A-B-B-A 比较", () => {
         },
       ],
     });
+  });
+
+  it("显式归一化 outer v6/query v5 计划请求诊断，且不修改旧报告", () => {
+    const legacy = createV6LegacyReport(BASELINE_COMMIT, 1);
+    const snapshot = structuredClone(legacy);
+    // 当前外层 Schema 严格拒绝 v6；只有比较器的显式 legacy 路径可以归一化。
+    expect(QualityEvalReportSchema.safeParse(legacy).success).toBe(false);
+    const compared = compareQualityEvalBlocks({
+      baselineCommit: BASELINE_COMMIT,
+      candidateCommit: CANDIDATE_COMMIT,
+      blocks: BLOCKS.map((block, index) => ({
+        block,
+        report:
+          block === "A1"
+            ? legacy
+            : createReport(
+                block.startsWith("A") ? BASELINE_COMMIT : CANDIDATE_COMMIT,
+                index + 1,
+              ),
+      })),
+    });
+
+    expect(compared.status).toBe("comparable");
+    expect(compared.blocks[0]?.duplication).toMatchObject({
+      status: "complete",
+      totals: {
+        plannedRequests: { totalCount: 20, uniqueCount: 20 },
+      },
+    });
+    expect(legacy).toEqual(snapshot);
   });
 
   it("20 条都有遥测但没有最终可见 Node 时仍判为 inconclusive", () => {
@@ -365,7 +497,7 @@ describe("WAY-90 Quality Eval A-B-B-A 比较", () => {
     );
   });
 
-  it("完整汇总四个 Block，并把失败 Query 的零调用视为有效测量", () => {
+  it("完整汇总四个 Block，并保持计划请求与实际调用独立", () => {
     const compared = compareQualityEvalBlocks(createInput());
 
     expect(compared.status).toBe("comparable");
@@ -392,6 +524,26 @@ describe("WAY-90 Quality Eval A-B-B-A 比较", () => {
           logicalLlmCalls: 20,
           searchHttpAttempts: 190,
           extractHttpAttempts: 0,
+        },
+      },
+      duplication: {
+        status: "complete",
+        expectedQueryCount: 20,
+        observedQueryCount: 20,
+        totals: {
+          plannedRequests: {
+            totalCount: 20,
+            uniqueCount: 20,
+            intraNodeDuplicateOccurrenceCount: 0,
+            crossNodeSharedGroupCount: 0,
+            crossNodeExtraNodeOccurrenceCount: 0,
+          },
+          resources: {
+            measuredQueryCount: 1,
+            noResourceQueryCount: 19,
+            duplicateOccurrences: 0,
+            totalOccurrences: 1,
+          },
         },
       },
       ranking: {
@@ -438,7 +590,7 @@ describe("WAY-90 Quality Eval A-B-B-A 比较", () => {
 
   it("单条缺失只输出 observedTotals，并使四 Block 比较为 inconclusive", () => {
     const input = createInput();
-    input.blocks[1]!.report.results[4]!.telemetry = null;
+    replaceWithUnmeasuredFailure(input.blocks[1]!.report, 4);
 
     const compared = compareQualityEvalBlocks(input);
 
@@ -455,6 +607,11 @@ describe("WAY-90 Quality Eval A-B-B-A 比较", () => {
         missingQueryIds: ["wfq-005"],
         observedTotals: { logicalSearchCalls: 186 },
       },
+      duplication: {
+        status: "partial",
+        observedQueryCount: 19,
+        missingQueryIds: ["wfq-005"],
+      },
     });
     expect(compared.blocks[1]?.providerUsage).not.toHaveProperty("totals");
   });
@@ -462,8 +619,8 @@ describe("WAY-90 Quality Eval A-B-B-A 比较", () => {
   it("全部缺失时明确标为 unavailable，不生成任何总计", () => {
     const input = createInput();
     input.blocks[2]!.report = createReport(CANDIDATE_COMMIT, 3, false);
-    for (const result of input.blocks[2]!.report.results) {
-      result.telemetry = null;
+    for (let index = 0; index < input.blocks[2]!.report.results.length; index += 1) {
+      replaceWithUnmeasuredFailure(input.blocks[2]!.report, index);
     }
 
     const compared = compareQualityEvalBlocks(input);
@@ -477,6 +634,10 @@ describe("WAY-90 Quality Eval A-B-B-A 比较", () => {
         missingQueryIds: Array.from({ length: 20 }, (_, index) =>
           `wfq-${String(index + 1).padStart(3, "0")}`,
         ),
+      },
+      duplication: {
+        status: "unavailable",
+        observedQueryCount: 0,
       },
       ranking: {
         status: "unavailable",
