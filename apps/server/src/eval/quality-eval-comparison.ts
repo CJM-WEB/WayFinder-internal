@@ -3,7 +3,7 @@
  * 与成本事实汇总为可审核结果，并在 A-B-B-A 条件或覆盖率不完整时拒绝比较。
  *
  * 关键边界：
- * - 当前报告严格读取 `quality-eval.v8`；旧 v5/v6/v7 只经显式内存归一化读取；
+ * - 当前报告严格读取 `quality-eval.v9`；旧 v5-v8 只经显式内存归一化读取；
  * - `0` 是有效测量值，`telemetry: null` 才表示缺失；
  * - 本模块只判断报告能否比较，不自动给出 Keep / Revert 产品结论。
  */
@@ -65,8 +65,14 @@ export type QualityEvalComparison = Readonly<{
   blocks: readonly QualityEvalBlockSummary[];
 }>;
 
+type ComparableQualityEvalReport = Omit<QualityEvalReport, "runPolicy"> &
+  Readonly<{
+    runPolicy: Omit<QualityEvalReport["runPolicy"], "language"> &
+      Readonly<{ language: "zh-CN" | "und" }>;
+  }>;
+
 type ParsedComparableReport = Readonly<{
-  report: QualityEvalReport;
+  report: ComparableQualityEvalReport;
   rankingVersion: BlockFacts["rankingVersion"];
 }>;
 
@@ -97,12 +103,16 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 /**
  * 旧 outer v5/query v4 没有 Ranking telemetry，outer v6/query v5 没有计划请求诊断；
- * outer v7/query v6 只缺少新的 40 秒运行策略版本。归一化不会改写旧 runPolicy，
- * 因此真实 20 秒报告仍会被严格拒绝，不得伪装成 40 秒证据。
+ * outer v7/v8 使用 query v6 / metrics v2。归一化只升级工件形状，不改写
+ * 旧 runPolicy.language；因此 und 与 zh-CN 会在跨 Block 条件比较时明确不一致。
  */
 function normalizeLegacyReport(
   value: Record<string, unknown>,
-  outerVersion: "quality-eval.v5" | "quality-eval.v6" | "quality-eval.v7",
+  outerVersion:
+    | "quality-eval.v5"
+    | "quality-eval.v6"
+    | "quality-eval.v7"
+    | "quality-eval.v8",
 ): unknown {
   const source = value.source;
   const runPolicy = value.runPolicy;
@@ -110,6 +120,7 @@ function normalizeLegacyReport(
   if (
     !isRecord(source) ||
     !isRecord(runPolicy) ||
+    runPolicy.language !== "und" ||
     !Array.isArray(results) ||
     (outerVersion === "quality-eval.v5" && "ranking" in source) ||
     (outerVersion !== "quality-eval.v5" && source.ranking !== "rank-fusion.v1")
@@ -120,7 +131,9 @@ function normalizeLegacyReport(
   if (!isRecord(providers)) throw new TypeError("legacy_provider_invalid");
   const plannedRequestConfig = {
     providerId: providers.search,
-    language: runPolicy.language,
+    // 这只重建 v1 未序列化的五个聚合计数：全局常量从 und 换为
+    // zh-CN 不改变分组基数；真实历史身份仍保留在 runPolicy.language。
+    language: "zh-CN",
   };
   const expectedQueryVersion =
     outerVersion === "quality-eval.v5"
@@ -131,7 +144,7 @@ function normalizeLegacyReport(
 
   return {
     ...value,
-    schemaVersion: "quality-eval.v8",
+    schemaVersion: "quality-eval.v9",
     source:
       outerVersion === "quality-eval.v5"
         ? { ...source, ranking: "rank-fusion.v1" }
@@ -152,7 +165,11 @@ function normalizeLegacyReport(
       }
       const metrics = result.metrics;
       let normalizedMetrics = metrics;
-      if (metrics !== null && outerVersion !== "quality-eval.v7") {
+      if (
+        metrics !== null &&
+        outerVersion !== "quality-eval.v7" &&
+        outerVersion !== "quality-eval.v8"
+      ) {
         const parsedPlan = GraphPlanSchema.safeParse(result.plan);
         if (
           !isRecord(metrics) ||
@@ -163,17 +180,23 @@ function normalizeLegacyReport(
         }
         normalizedMetrics = {
           ...metrics,
-          version: "quality-metrics.v2",
+          version: "quality-metrics.v3",
           plannedRequestDuplication:
             measureQualityEvalPlannedRequestDuplication(
               parsedPlan.data,
               plannedRequestConfig,
             ),
         };
+      } else if (metrics !== null) {
+        if (!isRecord(metrics) || metrics.version !== "quality-metrics.v2") {
+          throw new TypeError("legacy_metrics_invalid");
+        }
+        // v2 与 v3 的聚合数值形状不变；历史语言身份继续由 runPolicy 保留。
+        normalizedMetrics = { ...metrics, version: "quality-metrics.v3" };
       }
       return {
         ...result,
-        schemaVersion: "quality-eval.v6",
+        schemaVersion: "quality-eval.v7",
         metrics: normalizedMetrics,
         telemetry:
           outerVersion !== "quality-eval.v5"
@@ -199,7 +222,8 @@ function parseReport(
       isRecord(value) &&
       (value.schemaVersion === "quality-eval.v5" ||
         value.schemaVersion === "quality-eval.v6" ||
-        value.schemaVersion === "quality-eval.v7")
+        value.schemaVersion === "quality-eval.v7" ||
+        value.schemaVersion === "quality-eval.v8")
         ? value.schemaVersion
         : null;
     let candidate = value;
@@ -208,14 +232,36 @@ function parseReport(
       if (!isRecord(value)) throw new TypeError("legacy_report_invalid");
       candidate = normalizeLegacyReport(value, legacyVersion);
     }
-    const parsed = QualityEvalReportSchema.safeParse(candidate);
+    const legacyLanguage =
+      legacyVersion !== null &&
+      isRecord(candidate) &&
+      isRecord(candidate.runPolicy) &&
+      candidate.runPolicy.language === "und"
+        ? "und"
+        : null;
+    const validationCandidate =
+      legacyLanguage === null || !isRecord(candidate) || !isRecord(candidate.runPolicy)
+        ? candidate
+        : {
+            ...candidate,
+            // 仅用当前 Schema 验证其余结构；返回的历史报告仍保留 und。
+            runPolicy: { ...candidate.runPolicy, language: "zh-CN" },
+          };
+    const parsed = QualityEvalReportSchema.safeParse(validationCandidate);
     if (!parsed.success) {
       throw new TypeError("schema_invalid");
     }
     // 比较器可能读取历史或人工搬运的报告，不能只凭结构合法就假定已经脱敏。
-    assertQualityEvalArtifactSafety(parsed.data, []);
+    assertQualityEvalArtifactSafety(candidate, []);
+    const report: ComparableQualityEvalReport =
+      legacyLanguage === null
+        ? parsed.data
+        : {
+            ...parsed.data,
+            runPolicy: { ...parsed.data.runPolicy, language: legacyLanguage },
+          };
     return {
-      report: parsed.data,
+      report,
       rankingVersion:
         legacyVersion === "quality-eval.v5"
           ? "pre-fusion.v0"
@@ -227,7 +273,7 @@ function parseReport(
 }
 
 /** 只选择必须跨 Block 相同的实验条件；Git Commit 由 A/B 预登记值单独核对。 */
-function readComparableMetadata(report: QualityEvalReport): unknown {
+function readComparableMetadata(report: ComparableQualityEvalReport): unknown {
   return {
     dataset: report.dataset,
     contracts: report.source.contracts,
@@ -250,7 +296,10 @@ function aggregateBlock(
   const usage = summarizeQualityEvalProviderUsage(report.results);
   const duplication = summarizeQualityEvalDuplication(report.results);
   const ranking = summarizeQualityEvalRanking(report.results);
-  const operating = createQualityEvalOperatingSummary(report);
+  // 摘要器不读取 language；历史 und 仅在比较元数据中保留并守门。
+  const operating = createQualityEvalOperatingSummary(
+    report as QualityEvalReport,
+  );
 
   // SerpAPI Bing-only 链路没有 Extract 阶段；任一非零事实说明实验条件已漂移。
   const extractDrift = report.results.some(result => {
@@ -342,7 +391,8 @@ export function compareQualityEvalBlocks(
     if (report.dataset.kind !== "full") {
       throw new TypeError("Quality Eval 比较只接受完整 Full 报告");
     }
-    assertQualityEvalReportDatasetIntegrity(report);
+    // 完整性校验只读数据集、Query 顺序与 comparisonKey。
+    assertQualityEvalReportDatasetIntegrity(report as QualityEvalReport);
     const expectedCommit =
       BLOCK_ORDER[index]?.startsWith("A") === true
         ? input.baselineCommit

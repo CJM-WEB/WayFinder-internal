@@ -86,7 +86,11 @@ type OpenRequest = Readonly<{
 
 /** 使用临时端口发送真实请求，覆盖 inject 无法模拟的渐进读取与 Response 断连。 */
 function openSearchRequest(address: string): OpenRequest {
-  const payload = JSON.stringify({ runId: "run-67", query: "TypeScript" });
+  const payload = JSON.stringify({
+    runId: "run-67",
+    query: "TypeScript",
+    language: "zh-CN",
+  });
   let resolveResponse: (response: IncomingMessage) => void = () => undefined;
   let rejectResponse: (reason?: unknown) => void = () => undefined;
   const response = new Promise<IncomingMessage>((resolve, reject) => {
@@ -172,8 +176,16 @@ function observeFirstNdjsonLine(
 
 describe("registerSearchRoute", () => {
   it.each([
-    ["空 Query", { runId: "run-67", query: "   " }],
-    ["未知字段", { runId: "run-67", query: "TypeScript", debug: true }],
+    ["空 Query", { runId: "run-67", query: "   ", language: "zh-CN" }],
+    ["缺失 language", { runId: "run-67", query: "TypeScript" }],
+    [
+      "未支持 language",
+      { runId: "run-67", query: "TypeScript", language: "en" },
+    ],
+    [
+      "未知字段",
+      { runId: "run-67", query: "TypeScript", language: "zh-CN", debug: true },
+    ],
   ])("%s 在 Streaming Header 前返回普通 400", async (_name, payload) => {
     const handleSearch = vi.fn<SearchStreamHandler>();
     const server = createServer(handleSearch);
@@ -203,7 +215,11 @@ describe("registerSearchRoute", () => {
       signal,
       emit,
     }) => {
-      expect(input).toEqual({ runId: "run-67", query: "TypeScript" });
+      expect(input).toEqual({
+        runId: "run-67",
+        query: "TypeScript",
+        language: "zh-CN",
+      });
       observedSignal = signal;
       await emit(createStatusPayload("searching"));
       await emit(createStatusPayload("filtering"));
@@ -214,7 +230,11 @@ describe("registerSearchRoute", () => {
       const response = await server.inject({
         method: "POST",
         url: "/api/search",
-        payload: { runId: "run-67", query: "  TypeScript  " },
+        payload: {
+          runId: "run-67",
+          query: "  TypeScript  ",
+          language: "zh-CN",
+        },
       });
 
       expect(response.statusCode).toBe(200);
@@ -255,7 +275,7 @@ describe("registerSearchRoute", () => {
       const response = await server.inject({
         method: "POST",
         url: "/api/search",
-        payload: { runId: "run-67", query: "TypeScript" },
+        payload: { runId: "run-67", query: "TypeScript", language: "zh-CN" },
       });
 
       expect(response.statusCode).toBe(200);
@@ -284,7 +304,7 @@ describe("registerSearchRoute", () => {
       const response = await server.inject({
         method: "POST",
         url: "/api/search",
-        payload: { runId: "run-67", query: "TypeScript" },
+        payload: { runId: "run-67", query: "TypeScript", language: "zh-CN" },
       });
 
       expect(response.statusCode).toBe(500);

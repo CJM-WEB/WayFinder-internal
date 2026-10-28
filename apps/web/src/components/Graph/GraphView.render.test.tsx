@@ -62,7 +62,9 @@ describe("GraphView 渐进快照接线", () => {
     if (plan?.type !== "graph.plan") {
       throw new Error("Python Mock Stream 缺少 graph.plan");
     }
-    graphStore.getState().startRun({ runId: plan.runId, query: "Python" });
+    graphStore
+      .getState()
+      .startRun({ runId: plan.runId, query: "Python", language: "zh-CN" });
     graphStore.getState().applyStreamEvent(plan);
 
     const markup = renderToStaticMarkup(
@@ -125,7 +127,9 @@ describe("GraphView 渐进快照接线", () => {
     if (plan?.type !== "graph.plan") {
       throw new Error("Python Mock Stream 缺少 graph.plan");
     }
-    graphStore.getState().startRun({ runId: plan.runId, query: "Python" });
+    graphStore
+      .getState()
+      .startRun({ runId: plan.runId, query: "Python", language: "zh-CN" });
     graphStore.getState().applyStreamEvent(plan);
 
     renderToStaticMarkup(<GraphView presentationMode="graph" />);

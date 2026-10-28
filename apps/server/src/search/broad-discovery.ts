@@ -14,6 +14,7 @@ import {
   type NormalizedSearchHit,
   type ProviderSearchRequest,
   type QueryAnalysis,
+  type SearchLanguage,
 } from "@wayfinder/contracts";
 
 import type { SearchProvider } from "./provider.js";
@@ -32,7 +33,7 @@ export type DiscoverBroadEvidenceInput = Readonly<{
   provider: SearchProvider;
   /** Orchestrator 创建的统一 Run Signal；本函数不创建或延长其生命周期。 */
   signal: AbortSignal;
-  language?: string;
+  language: SearchLanguage;
 }>;
 
 /** 零 Evidence 的脱敏内部错误；未来 Orchestrator 据此保留 Initial GraphPlan。 */
@@ -57,7 +58,7 @@ function parseEvidenceAssistedAnalysis(
 function createBroadSearchRequest(
   analysis: EvidenceAssistedAnalysis,
   query: string,
-  language: string | undefined,
+  language: SearchLanguage,
 ): ProviderSearchRequest {
   return {
     kind: "broad_discovery",
@@ -65,7 +66,7 @@ function createBroadSearchRequest(
     maxResults: BROAD_DISCOVERY_RESULTS_PER_QUERY,
     capability: "general",
     freshnessSensitive: analysis.freshnessSensitive,
-    ...(language === undefined ? {} : { language }),
+    language,
   };
 }
 

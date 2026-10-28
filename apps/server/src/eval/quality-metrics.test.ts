@@ -74,7 +74,7 @@ function createReadyResult(urls: readonly string[]): ResultGraph {
     query: {
       raw: "VS Code download",
       normalized: "vs code download",
-      language: "und",
+      language: "zh-CN",
     },
     analysis: plan.analysis,
     graph: {
@@ -112,7 +112,7 @@ function createFailedResult(): ResultGraph {
     query: {
       raw: "VS Code download",
       normalized: "vs code download",
-      language: "und",
+      language: "zh-CN",
     },
     analysis: plan.analysis,
     graph: {
@@ -790,7 +790,7 @@ describe("WAY-87 确定性质量指标", () => {
       runDeadlineMs: RUN_DEADLINE_MS,
       plannedRequestConfig: {
         providerId: invalidProviderId,
-        language: "und",
+        language: "zh-CN",
       },
     });
 

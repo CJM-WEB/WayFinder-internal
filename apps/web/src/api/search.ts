@@ -47,6 +47,16 @@ type ActiveRun = Readonly<{
   controller: AbortController;
 }>;
 
+export type StartStreamingSearchInput = Readonly<
+  Pick<SearchRequest, "query" | "language">
+>;
+
+/** 无 runId 的 UI 输入仍复用公共 Contract 字段，不在 Web 复制语义。 */
+const SearchInputSchema = SearchRequestSchema.pick({
+  query: true,
+  language: true,
+});
+
 /** 默认 ID 由浏览器原生能力生成，不额外引入运行时依赖。 */
 const createDefaultRunId = (): SearchRequest["runId"] =>
   globalThis.crypto.randomUUID();
@@ -57,7 +67,7 @@ const createDefaultRunId = (): SearchRequest["runId"] =>
  */
 export function createStartStreamingSearch(
   dependencies: SearchCoordinatorDependencies,
-): (query: string) => Promise<void> {
+): (input: StartStreamingSearchInput) => Promise<void> {
   const fetchImplementation =
     dependencies.fetchImplementation ?? globalThis.fetch.bind(globalThis);
   const readStreamImplementation =
@@ -65,15 +75,15 @@ export function createStartStreamingSearch(
   const createRunId = dependencies.createRunId ?? createDefaultRunId;
   let activeRun: ActiveRun | undefined;
 
-  return async (query: string): Promise<void> => {
+  return async (input: StartStreamingSearchInput): Promise<void> => {
     /**
-     * 先单独校验并规范化 Query，再分配 ID 和取消旧 Run。
-     * 这样空白、超长等无效输入不会破坏仍然有效的当前搜索。
+     * 先同时校验 Query 与 language，再分配 ID 和取消旧 Run。
+     * 这样任一无效字段都不会破坏仍然有效的当前搜索。
      */
-    const normalizedQuery = SearchRequestSchema.shape.query.parse(query);
+    const validatedInput = SearchInputSchema.parse(input);
     const request = SearchRequestSchema.parse({
       runId: createRunId(),
-      query: normalizedQuery,
+      ...validatedInput,
     });
     const controller = new AbortController();
     const previousRun = activeRun;

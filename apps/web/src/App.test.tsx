@@ -20,7 +20,9 @@ import { pythonResultGraphFixture } from "./fixtures/python-result-graph.js";
 import { graphStore } from "./stores/graph-store.js";
 
 const applyPresentationMode = (presentationMode: PresentationMode): void => {
-  graphStore.getState().startRun({ runId: "run-mode", query: "测试模式" });
+  graphStore
+    .getState()
+    .startRun({ runId: "run-mode", query: "测试模式", language: "zh-CN" });
   graphStore.getState().applyStreamEvent(
     StreamEventSchema.parse({
       runId: "run-mode",

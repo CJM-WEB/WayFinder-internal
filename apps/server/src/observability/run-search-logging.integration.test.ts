@@ -149,7 +149,6 @@ describe("Run Search Logging Integration", () => {
       officialSourcePolicy: { knownRiskyDownloadDomains: [] },
       llmStageTimeoutMs: 30_000,
       rerankTimeoutMs: 24_000,
-      language: "en",
       normalizeQuery: query => query.normalize("NFKC"),
       onPlannerValidationDiagnostic: () => undefined,
       onRevisionValidationDiagnostic: () => undefined,
@@ -165,7 +164,7 @@ describe("Run Search Logging Integration", () => {
     for (const runId of ["../../first-secret", "../../second-secret"]) {
       const payloads: StreamEventPayload[] = [];
       await handler({
-        input: { runId, query: PRIVATE_QUERY },
+        input: { runId, query: PRIVATE_QUERY, language: "zh-CN" },
         signal: new AbortController().signal,
         emit: async payload => {
           payloads.push(payload);
@@ -265,7 +264,6 @@ describe("Run Search Logging Integration", () => {
       officialSourcePolicy: { knownRiskyDownloadDomains: [] },
       llmStageTimeoutMs: 30_000,
       rerankTimeoutMs: 24_000,
-      language: "en",
       normalizeQuery: query => query,
       onPlannerValidationDiagnostic: () => undefined,
       onRevisionValidationDiagnostic: () => undefined,
@@ -282,7 +280,11 @@ describe("Run Search Logging Integration", () => {
 
     await expect(
       handler({
-        input: { runId: "run-safe", query: PRIVATE_QUERY },
+        input: {
+          runId: "run-safe",
+          query: PRIVATE_QUERY,
+          language: "zh-CN",
+        },
         signal: new AbortController().signal,
         emit: async payload => {
           payloads.push(payload);
@@ -324,7 +326,6 @@ describe("Run Search Logging Integration", () => {
       officialSourcePolicy: { knownRiskyDownloadDomains: [] },
       llmStageTimeoutMs: 30_000,
       rerankTimeoutMs: 24_000,
-      language: "en",
       normalizeQuery: query => query,
       onPlannerValidationDiagnostic: () => undefined,
       onRevisionValidationDiagnostic: () => undefined,
@@ -338,7 +339,11 @@ describe("Run Search Logging Integration", () => {
 
     const outcome = await Promise.race([
       handler({
-        input: { runId: "run-safe", query: PRIVATE_QUERY },
+        input: {
+          runId: "run-safe",
+          query: PRIVATE_QUERY,
+          language: "zh-CN",
+        },
         signal: new AbortController().signal,
         emit: async payload => {
           payloads.push(payload);

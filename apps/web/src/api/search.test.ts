@@ -83,7 +83,9 @@ const eventForRun = (event: StreamEvent, runId: string): StreamEvent =>
 describe("Query 取消协调器", () => {
   it("每次合法调用只创建一个 ID，并复用同一 Request 与 Signal", async () => {
     const store = createGraphStore();
-    store.getState().startRun({ runId: "old-run", query: "旧查询" });
+    store
+      .getState()
+      .startRun({ runId: "old-run", query: "旧查询", language: "zh-CN" });
     store.getState().setGraph(pythonResultGraphFixture.graph);
     store.getState().selectNode(pythonResultGraphFixture.graph.nodes[0]?.id ?? null);
 
@@ -122,10 +124,14 @@ describe("Query 取消协调器", () => {
       readStreamImplementation,
     });
 
-    await search("  WayFinder  ");
+    await search({ query: "  WayFinder  ", language: "zh-CN" });
 
     expect(createRunId).toHaveBeenCalledOnce();
-    expect(postedBody).toEqual({ runId: "run-73", query: "WayFinder" });
+    expect(postedBody).toEqual({
+      runId: "run-73",
+      query: "WayFinder",
+      language: "zh-CN",
+    });
     expect(fetchImplementation).toHaveBeenCalledWith("/api/search", {
       method: "POST",
       headers: {
@@ -138,6 +144,7 @@ describe("Query 取消协调器", () => {
     expect(store.getState()).toMatchObject({
       activeRunId: "run-73",
       query: "WayFinder",
+      language: "zh-CN",
       nodes: eventOfType("graph.plan").data.nodes,
       isSearching: false,
     });
@@ -161,11 +168,21 @@ describe("Query 取消协调器", () => {
       },
     });
 
-    const validRun = search("有效查询");
+    const validRun = search({ query: "有效查询", language: "zh-CN" });
     await vi.waitFor(() => expect(activeSignal).toBeDefined());
     const beforeInvalid = store.getState();
 
-    await expect(search(" \t\n ")).rejects.toBeDefined();
+    await expect(
+      search({ query: " \t\n ", language: "zh-CN" }),
+    ).rejects.toBeDefined();
+
+    await expect(
+      search({
+        query: "有效查询",
+        // 模拟绕过组件类型的 DOM/运行时输入，它不得产生任何副作用。
+        language: "en",
+      } as never),
+    ).rejects.toBeDefined();
 
     expect(createRunId).toHaveBeenCalledOnce();
     expect(activeSignal?.aborted).toBe(false);
@@ -206,10 +223,10 @@ describe("Query 取消协调器", () => {
       },
     });
 
-    const runA = search("fetch A");
+    const runA = search({ query: "fetch A", language: "zh-CN" });
     await vi.waitFor(() => expect(signals).toHaveLength(1));
 
-    const runB = search("fetch B");
+    const runB = search({ query: "fetch B", language: "zh-CN" });
     await vi.waitFor(() => expect(signals).toHaveLength(2));
 
     expect(signals[0]?.aborted).toBe(true);
@@ -255,11 +272,11 @@ describe("Query 取消协调器", () => {
       },
     });
 
-    const runA = search("相同查询");
+    const runA = search({ query: "相同查询", language: "zh-CN" });
     await entered[0]?.promise;
     const signalA = readers[0]?.signal;
 
-    const runB = search("相同查询");
+    const runB = search({ query: "相同查询", language: "zh-CN" });
     await entered[1]?.promise;
 
     expect(signalA?.aborted).toBe(true);
@@ -292,7 +309,7 @@ describe("Query 取消协调器", () => {
     expect(store.getState().nodes).toEqual(eventOfType("graph.plan").data.nodes);
 
     // A 的迟到 finally 若错误清空所有权，C 将无法取消 B；这里显式冻结身份守卫。
-    const runC = search("第三次查询");
+    const runC = search({ query: "第三次查询", language: "zh-CN" });
     await entered[2]?.promise;
     expect(readers[1]?.signal?.aborted).toBe(true);
     expect(readers[2]?.signal?.aborted).toBe(false);
@@ -324,7 +341,9 @@ describe("Query 取消协调器", () => {
       },
     });
 
-    await expect(search("会失败的查询")).rejects.toBe(failure);
+    await expect(
+      search({ query: "会失败的查询", language: "zh-CN" }),
+    ).rejects.toBe(failure);
     expect(store.getState()).toMatchObject({
       activeRunId: "run-failed",
       isSearching: false,

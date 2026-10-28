@@ -9,7 +9,11 @@
  * - 仅 BroadDiscoveryError / GraphRevisionError 可保留 Initial Plan，取消与程序错误传播；
  * - 本模块不创建或释放 Deadline Scope，也不启动 Node、发送事件或构造 ResultGraph。
  */
-import { GraphPlanSchema, type GraphPlan } from "@wayfinder/contracts";
+import {
+  GraphPlanSchema,
+  type GraphPlan,
+  type SearchLanguage,
+} from "@wayfinder/contracts";
 
 import {
   GraphRevisionError,
@@ -54,7 +58,7 @@ export type ResolveValidatedGraphPlanForRunInput = Readonly<{
     diagnostic: GraphRevisionValidationDiagnostic,
   ) => void;
   onPlannerOutcome?: (outcome: GraphPlannerOutcome) => void;
-  language?: string;
+  language: SearchLanguage;
 }>;
 
 function throwRunReasonIfAborted(runScope: GraphPlanRunScope): void {
@@ -111,7 +115,7 @@ export async function resolveValidatedGraphPlanForRun(
         analysis: initialPlan.analysis,
         provider: input.searchProvider,
         signal: input.runScope.signal,
-        ...(input.language === undefined ? {} : { language: input.language }),
+        language: input.language,
       });
     } catch (error: unknown) {
       throwRunReasonIfAborted(input.runScope);

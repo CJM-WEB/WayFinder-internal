@@ -22,6 +22,7 @@ import type {
   ResourceCandidate,
   ResultGraphNode,
   SearchCapability,
+  SearchLanguage,
 } from "./index.js";
 
 const validProviderRequest: ProviderSearchRequest = {
@@ -31,6 +32,7 @@ const validProviderRequest: ProviderSearchRequest = {
   maxResults: 8,
   capability: "code",
   freshnessSensitive: false,
+  language: "zh-CN",
 };
 
 const consumeNormalizedHit = (hit: NormalizedSearchHit): void => {
@@ -57,7 +59,7 @@ const readCandidateRawMetadata = (
 };
 void readCandidateRawMetadata;
 
-// @ts-expect-error exactOptionalPropertyTypes 要求 language 要么省略，要么是 string。
+// @ts-expect-error Provider 请求必须使用公共 Contract 允许的语言。
 const invalidUndefinedLanguage: ProviderSearchRequest = { ...validProviderRequest, language: undefined };
 void invalidUndefinedLanguage;
 
@@ -68,6 +70,7 @@ const invalidNodeRequest: ProviderSearchRequest = {
   maxResults: 5,
   capability: "general",
   freshnessSensitive: false,
+  language: "zh-CN",
 };
 void invalidNodeRequest;
 
@@ -79,6 +82,7 @@ const invalidBroadRequest: ProviderSearchRequest = {
   maxResults: 5,
   capability: "general",
   freshnessSensitive: true,
+  language: "zh-CN",
 };
 void invalidBroadRequest;
 
@@ -93,7 +97,7 @@ describe("WAY-24 Provider Search 边界", () => {
       maxResults: number;
       capability: SearchCapability;
       freshnessSensitive: boolean;
-      language?: string;
+      language: SearchLanguage;
     }>();
     expectTypeOf<{
       kind: "node";
@@ -102,7 +106,7 @@ describe("WAY-24 Provider Search 边界", () => {
       maxResults: number;
       capability: SearchCapability;
       freshnessSensitive: boolean;
-      language?: string;
+      language: SearchLanguage;
     }>().toMatchTypeOf<
       Extract<ProviderSearchRequest, { kind: "node" }>
     >();
@@ -114,7 +118,7 @@ describe("WAY-24 Provider Search 边界", () => {
       maxResults: number;
       capability: SearchCapability;
       freshnessSensitive: boolean;
-      language?: string;
+      language: SearchLanguage;
     }>();
     expectTypeOf<{
       kind: "broad_discovery";
@@ -122,7 +126,7 @@ describe("WAY-24 Provider Search 边界", () => {
       maxResults: number;
       capability: SearchCapability;
       freshnessSensitive: boolean;
-      language?: string;
+      language: SearchLanguage;
     }>().toMatchTypeOf<
       Extract<ProviderSearchRequest, { kind: "broad_discovery" }>
     >();

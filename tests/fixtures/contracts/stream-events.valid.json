@@ -131,7 +131,7 @@
         "query": {
           "raw": "TypeScript strict mode",
           "normalized": "TypeScript strict mode",
-          "language": "en"
+          "language": "zh-CN"
         },
         "analysis": {
           "intent": "learn",

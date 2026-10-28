@@ -9,14 +9,19 @@
  */
 import { z } from "zod";
 
+/** V0.1 只开放已完整贯穿前后端、Provider 与去重门禁的简体中文。 */
+export const SearchLanguageSchema = z.literal("zh-CN");
+export type SearchLanguage = z.infer<typeof SearchLanguageSchema>;
+
 /**
- * SearchRequest（搜索请求）只描述一次 Run（运行）的入口身份和有效查询内容。
- * Query（查询）先 trim，再按 Unicode code point（码点）校验长度；语言和内容形式不受限制。
+ * SearchRequest（搜索请求）描述一次 Run（运行）的入口身份、有效查询和已校验语言。
+ * Query（查询）先 trim，再按 Unicode code point（码点）校验长度。
  * runId 只要求非空并保留原值；严格对象使未知字段明确失败，防止未声明参数被误认为已生效。
  */
 export const SearchRequestSchema = z.strictObject({
   runId: z.string().min(1),
   query: z.string().trim().min(1).max(2000),
+  language: SearchLanguageSchema,
 });
 export type SearchRequest = z.infer<typeof SearchRequestSchema>;
 
@@ -114,7 +119,7 @@ type ProviderSearchRequestCommon = {
   maxResults: number;
   capability: SearchCapability;
   freshnessSensitive: boolean;
-  language?: string;
+  language: SearchLanguage;
 };
 
 /**
@@ -678,7 +683,7 @@ export type NodeJobOutcome =
 const resultGraphQuerySchema = z.strictObject({
   raw: z.string().min(1).max(2000),
   normalized: z.string().min(1).max(2000),
-  language: z.string().min(2),
+  language: SearchLanguageSchema,
 });
 
 /** 最终图复用最终节点与共享 Edge；根 Schema 统一校验跨对象引用关系。 */

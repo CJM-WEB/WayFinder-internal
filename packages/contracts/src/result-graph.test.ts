@@ -352,7 +352,7 @@ describe("ResultGraph 严格根契约", () => {
     expect(
       ResultGraphSchema.safeParse({
         ...validResultGraph,
-        query: { raw: value, normalized: value, language: "en" },
+        query: { raw: value, normalized: value, language: "zh-CN" },
       }).success,
     ).toBe(true);
   });
@@ -372,9 +372,11 @@ describe("ResultGraph 严格根契约", () => {
     }
   });
 
-  it("query 拒绝过短 language 与未知字段", () => {
+  it("query 只接受简体中文 language 且拒绝未知字段", () => {
     for (const query of [
-      { ...validResultGraph.query, language: "z" },
+      { ...validResultGraph.query, language: "und" },
+      { ...validResultGraph.query, language: "en" },
+      { ...validResultGraph.query, language: "" },
       { ...validResultGraph.query, locale: "zh-CN" },
     ]) {
       expect(

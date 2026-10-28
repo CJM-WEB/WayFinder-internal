@@ -93,16 +93,13 @@ describe("MemoryCachedSearchProvider", () => {
       { ...BASE_REQUEST, maxResults: 5 },
       { ...BASE_REQUEST, capability: "code" },
       { ...BASE_REQUEST, freshnessSensitive: true },
-      { ...BASE_REQUEST, language: "en" },
       {
         kind: "broad_discovery",
         query: BASE_REQUEST.query,
         maxResults: BASE_REQUEST.maxResults,
         capability: BASE_REQUEST.capability,
         freshnessSensitive: BASE_REQUEST.freshnessSensitive,
-        ...(BASE_REQUEST.language === undefined
-          ? {}
-          : { language: BASE_REQUEST.language }),
+        language: BASE_REQUEST.language,
       },
     ];
     for (const variant of variants) {

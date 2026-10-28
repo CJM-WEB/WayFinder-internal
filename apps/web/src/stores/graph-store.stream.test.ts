@@ -57,6 +57,7 @@ const createActiveStore = () => {
   store.getState().startRun({
     runId,
     query: pythonResultGraphFixture.query.raw,
+    language: "zh-CN",
   });
   return store;
 };
@@ -533,6 +534,7 @@ describe("Graph store StreamEvent Reducer", () => {
     store.getState().startRun({
       runId: "new-run",
       query: "new query",
+      language: "zh-CN",
     });
     store.getState().applyStreamEvent(
       replaceEnvelope(eventOfType("query.analysis"), {
@@ -564,7 +566,9 @@ describe("Graph store StreamEvent Reducer", () => {
     store.getState().applyStreamEvent(complete);
     expect(store.getState().selectedNodeId).toBe(selectedNodeId);
 
-    store.getState().startRun({ runId, query: "second run" });
+    store
+      .getState()
+      .startRun({ runId, query: "second run", language: "zh-CN" });
     store.getState().selectNode("missing-node");
     store.getState().applyStreamEvent(plan);
     expect(store.getState().selectedNodeId).toBeNull();

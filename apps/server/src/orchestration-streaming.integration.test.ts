@@ -268,7 +268,6 @@ function createScenarioServer(input: ScenarioInput): FastifyInstance {
       officialSourcePolicy: { knownRiskyDownloadDomains: [] },
       llmStageTimeoutMs: 30_000,
       rerankTimeoutMs: 24_000,
-      language: "en",
       normalizeQuery: query => {
         // 固定时钟只在测试专用入口推进，用同一生产状态机证明 GraphPlan 前 Deadline。
         if (input.expireBeforePlan === true) {
@@ -291,7 +290,7 @@ async function runScenario(input: ScenarioInput): Promise<StreamEvent[]> {
     const response = await server.inject({
       method: "POST",
       url: "/api/search",
-      payload: { runId: RUN_ID, query: QUERY },
+      payload: { runId: RUN_ID, query: QUERY, language: "zh-CN" },
     });
     expect(response.statusCode).toBe(200);
     expect(response.headers["content-type"]).toBe(
@@ -381,11 +380,17 @@ describe("Orchestration + NDJSON 服务端回归矩阵", () => {
 
     try {
       const address = await server.listen({ host: "127.0.0.1", port: 0 });
-      store.getState().startRun({ runId: RUN_ID, query: QUERY });
+      store
+        .getState()
+        .startRun({ runId: RUN_ID, query: QUERY, language: "zh-CN" });
       const response = await globalThis.fetch(`${address}/api/search`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ runId: RUN_ID, query: QUERY }),
+        body: JSON.stringify({
+          runId: RUN_ID,
+          query: QUERY,
+          language: "zh-CN",
+        }),
       });
       await readSearchEventStream({
         response,
@@ -546,7 +551,6 @@ describe("Orchestration + NDJSON 服务端回归矩阵", () => {
       officialSourcePolicy: { knownRiskyDownloadDomains: [] },
       llmStageTimeoutMs: 30_000,
       rerankTimeoutMs: 24_000,
-      language: "en",
       normalizeQuery: query => query.normalize("NFKC").toLowerCase(),
       onPlannerValidationDiagnostic: () => undefined,
       onRevisionValidationDiagnostic: () => undefined,
@@ -555,7 +559,7 @@ describe("Orchestration + NDJSON 服务端回归矩阵", () => {
     const payloads: StreamEventPayload[] = [];
 
     await handler({
-      input: { runId: RUN_ID, query: QUERY },
+      input: { runId: RUN_ID, query: QUERY, language: "zh-CN" },
       signal: new AbortController().signal,
       emit: async payload => {
         payloads.push(structuredClone(payload));
@@ -646,11 +650,19 @@ describe("Orchestration + NDJSON 服务端回归矩阵", () => {
 
     try {
       const address = await server.listen({ host: "127.0.0.1", port: 0 });
-      store.getState().startRun({ runId: runIds[0]!, query: "first query" });
+      store.getState().startRun({
+        runId: runIds[0]!,
+        query: "first query",
+        language: "zh-CN",
+      });
       const responseA = await globalThis.fetch(`${address}/api/search`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ runId: runIds[0], query: "first query" }),
+        body: JSON.stringify({
+          runId: runIds[0],
+          query: "first query",
+          language: "zh-CN",
+        }),
         signal: clientController.signal,
       });
       const readA = readSearchEventStream({
@@ -671,7 +683,11 @@ describe("Orchestration + NDJSON 服务端回归矩阵", () => {
 
       await entered.promise;
       clientController.abort(clientReason);
-      store.getState().startRun({ runId: runIds[1]!, query: "second query" });
+      store.getState().startRun({
+        runId: runIds[1]!,
+        query: "second query",
+        language: "zh-CN",
+      });
       await readSearchEventStream({
         response: responseFromEvents(
           mockEvents.map(event => eventForRun(event, runIds[1]!)),

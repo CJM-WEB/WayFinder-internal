@@ -166,7 +166,6 @@ function createDependencies(
     officialSourcePolicy: { knownRiskyDownloadDomains: [] },
     llmStageTimeoutMs: 30_000,
     rerankTimeoutMs: 24_000,
-    language: "en",
     normalizeQuery: (query: string) => query.normalize("NFKC").toLowerCase(),
     onPlannerValidationDiagnostic: () => undefined,
     onRevisionValidationDiagnostic: () => undefined,
@@ -257,7 +256,7 @@ describe("createRunSearchHandler", () => {
     let emittedResult: ResultGraph | undefined;
     let handlerFinished = false;
     const pending = handler({
-      input: { runId: "run-93-degraded", query: QUERY },
+      input: { runId: "run-93-degraded", query: QUERY, language: "zh-CN" },
       signal: new AbortController().signal,
       emit: async payload => {
         if (payload.type === "complete") {
@@ -374,7 +373,7 @@ describe("createRunSearchHandler", () => {
     });
     const payloads: StreamEventPayload[] = [];
     const pending = handler({
-      input: { runId: "run-93-late-planner", query: QUERY },
+      input: { runId: "run-93-late-planner", query: QUERY, language: "zh-CN" },
       signal: new AbortController().signal,
       emit: async payload => {
         payloads.push(structuredClone(payload));
@@ -415,7 +414,7 @@ describe("createRunSearchHandler", () => {
     );
 
     await handler({
-      input: { runId: "run-70", query: QUERY },
+      input: { runId: "run-70", query: QUERY, language: "zh-CN" },
       signal: new AbortController().signal,
       emit: async payload => {
         payloads.push(structuredClone(payload));
@@ -442,7 +441,7 @@ describe("createRunSearchHandler", () => {
           query: {
             raw: QUERY,
             normalized: "typescript compiler guide",
-            language: "en",
+            language: "zh-CN",
           },
           meta: {
             providersUsed: ["fake-search"],
@@ -461,7 +460,7 @@ describe("createRunSearchHandler", () => {
     );
 
     await handler({
-      input: { runId: "run-70-deadline", query: QUERY },
+      input: { runId: "run-70-deadline", query: QUERY, language: "zh-CN" },
       signal: new AbortController().signal,
       emit: async payload => {
         payloads.push(structuredClone(payload));
@@ -501,7 +500,7 @@ describe("createRunSearchHandler", () => {
     const payloads: StreamEventPayload[] = [];
 
     await handler({
-      input: { runId: "run-70-failed", query: QUERY },
+      input: { runId: "run-70-failed", query: QUERY, language: "zh-CN" },
       signal: new AbortController().signal,
       emit: async payload => {
         payloads.push(payload);
@@ -529,7 +528,7 @@ describe("createRunSearchHandler", () => {
     const payloads: StreamEventPayload[] = [];
 
     await handler({
-      input: { runId: "run-70-pre-plan-deadline", query: QUERY },
+      input: { runId: "run-70-pre-plan-deadline", query: QUERY, language: "zh-CN" },
       signal: new AbortController().signal,
       emit: async payload => {
         payloads.push(payload);
@@ -556,7 +555,7 @@ describe("createRunSearchHandler", () => {
 
     await expect(
       handler({
-        input: { runId: "run-70-cancelled", query: QUERY },
+        input: { runId: "run-70-cancelled", query: QUERY, language: "zh-CN" },
         signal: controller.signal,
         emit: async payload => {
           payloads.push(payload);
@@ -576,7 +575,7 @@ describe("createRunSearchHandler", () => {
 
     await expect(
       handler({
-        input: { runId: "run-70-sink-failed", query: QUERY },
+        input: { runId: "run-70-sink-failed", query: QUERY, language: "zh-CN" },
         signal: new AbortController().signal,
         emit: async payload => {
           payloads.push(payload);
@@ -602,7 +601,7 @@ describe("createRunSearchHandler", () => {
     const payloads: StreamEventPayload[] = [];
 
     const pending = handler({
-      input: { runId: "run-70-plan-cancelled", query: QUERY },
+      input: { runId: "run-70-plan-cancelled", query: QUERY, language: "zh-CN" },
       signal: controller.signal,
       emit: payload => {
         payloads.push(payload);
@@ -633,7 +632,7 @@ describe("createRunSearchHandler", () => {
 
     await expect(
       handler({
-        input: { runId: "run-70-plan-sink-failed", query: QUERY },
+        input: { runId: "run-70-plan-sink-failed", query: QUERY, language: "zh-CN" },
         signal: new AbortController().signal,
         emit: async payload => {
           payloads.push(payload);
@@ -657,7 +656,7 @@ describe("createRunSearchHandler", () => {
 
     await expect(
       handler({
-        input: { runId: "run-70-complete-sink-failed", query: QUERY },
+        input: { runId: "run-70-complete-sink-failed", query: QUERY, language: "zh-CN" },
         signal: new AbortController().signal,
         emit: async payload => {
           payloads.push(payload);
@@ -683,7 +682,7 @@ describe("createRunSearchHandler", () => {
     const payloads: StreamEventPayload[] = [];
 
     await handler({
-      input: { runId: "run-70-plan-deadline", query: QUERY },
+      input: { runId: "run-70-plan-deadline", query: QUERY, language: "zh-CN" },
       signal: new AbortController().signal,
       emit: async payload => {
         payloads.push(payload);
@@ -743,7 +742,7 @@ describe("createRunSearchHandler", () => {
 
     try {
       await handler({
-        input: { runId: "run-70-fatal", query: QUERY },
+        input: { runId: "run-70-fatal", query: QUERY, language: "zh-CN" },
         signal: new AbortController().signal,
         emit: payload => {
           payloads.push(payload);

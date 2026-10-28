@@ -144,6 +144,28 @@ describe("SerpApiBingSearchProvider.search 请求与规范化", () => {
     expect(new Headers(init?.headers).get("accept")).toBe("application/json");
   });
 
+  it.each([
+    ["缺失 language", { ...SEARCH_REQUEST, language: undefined }],
+    ["未支持 language", { ...SEARCH_REQUEST, language: "en" }],
+  ])("%s 在网络调用前失败", async (_name, rawRequest) => {
+    const fetchImplementation = vi.fn<typeof fetch>();
+    const provider = createProvider(fetchImplementation);
+
+    await expect(
+      provider.search(
+        // 模拟绕过 TypeScript/Route Contract 的运行时输入，验证 Adapter 最后门禁。
+        rawRequest as unknown as ProviderSearchRequest,
+        createRunSignal(),
+      ),
+    ).rejects.toEqual(
+      expect.objectContaining<Partial<SerpApiBingProviderError>>({
+        name: "SerpApiBingProviderError",
+        retryable: false,
+      }),
+    );
+    expect(fetchImplementation).not.toHaveBeenCalled();
+  });
+
   it("单项非法时只丢弃自身，并按原始数组位置保留 Provider Rank", async () => {
     const fetchImplementation = vi.fn<typeof fetch>().mockResolvedValue(
       jsonResponse(

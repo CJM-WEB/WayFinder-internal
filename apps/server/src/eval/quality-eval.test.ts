@@ -113,7 +113,11 @@ const SAFE_SHARED_RESOURCE_ID = `resource_${createHash("sha256")
 const resultGraph = ResultGraphSchema.parse({
   version: "0.1",
   runId: "eval-run",
-  query: { raw: QUERY.query, normalized: "vs code download", language: "und" },
+  query: {
+    raw: QUERY.query,
+    normalized: "vs code download",
+    language: "zh-CN",
+  },
   analysis: plan.analysis,
   graph: {
     nodes: plan.nodes.map(node => ({
@@ -306,7 +310,7 @@ describe("WAY-86 Quality Eval 数据集", () => {
 
 describe("WAY-86 Quality Eval 查询投影", () => {
   it("保留计划、Top 3、官方排名、跨 Node 重复、多样性与 Run Log 遥测", async () => {
-    expect(QUALITY_EVAL_SCHEMA_VERSION).toBe("quality-eval.v6");
+    expect(QUALITY_EVAL_SCHEMA_VERSION).toBe("quality-eval.v7");
     const payloads: StreamEventPayload[] = [
       { type: "query.analysis", data: plan.analysis },
       { type: "graph.plan", data: plan },
@@ -905,7 +909,7 @@ describe("WAY-86 Quality Eval 查询投影", () => {
       expectedOfficialDomains: ["code.visualstudio.com"],
       plannedRequestConfig: {
         providerId: invalidProviderId,
-        language: "und",
+        language: "zh-CN",
       },
       handleSearch: async ({ emit }) => {
         await emit({ type: "graph.plan", data: plan });

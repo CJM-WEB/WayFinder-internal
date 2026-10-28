@@ -128,6 +128,32 @@ input {
   outline: 3px solid rgb(59 118 85 / 18%);
 }
 
+.omnibox__language {
+  display: grid;
+  gap: 4px;
+  min-width: 126px;
+}
+
+.omnibox__language label {
+  color: #60776a;
+  font-size: 0.68rem;
+  font-weight: 800;
+}
+
+.omnibox__language select {
+  height: 100%;
+  padding: 0 12px;
+  border: 1px solid #b9cbbf;
+  border-radius: 14px;
+  color: #15271f;
+  background: #fbfdfb;
+}
+
+.omnibox__language select:focus-visible {
+  border-color: #3b7655;
+  outline: 3px solid rgb(59 118 85 / 18%);
+}
+
 .omnibox__controls button {
   padding: 0 22px;
   border: 0;
@@ -929,6 +955,18 @@ input {
 
   .app-summary div {
     min-width: 0;
+    flex: 1;
+  }
+
+  .omnibox__controls {
+    flex-wrap: wrap;
+  }
+
+  .omnibox__controls input {
+    flex-basis: 100%;
+  }
+
+  .omnibox__language {
     flex: 1;
   }
 

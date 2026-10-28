@@ -663,7 +663,7 @@ export async function evaluateSingleNodeSmokeCase(
           nowMs: Date.parse(referenceTime),
           rerankTimeoutMs: input.rerankTimeoutMs,
           emit,
-          language: "en",
+          language: "zh-CN",
         },
         {
           signal,

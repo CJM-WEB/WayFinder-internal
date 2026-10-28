@@ -15,6 +15,7 @@ import {
   type NodeSearchOutcome,
   type ProviderSearchRequest,
   type QuerySearchOutcome,
+  type SearchLanguage,
 } from "@wayfinder/contracts";
 
 import type { SearchProvider } from "./provider.js";
@@ -44,7 +45,7 @@ export type RunNodeSearchesInput = {
   searchProvider: SearchProvider;
   /** 整次 Run 共享的取消与绝对 Deadline Signal。 */
   signal: AbortSignal;
-  language?: string;
+  language: SearchLanguage;
 };
 
 /** 为一条 Query 构造无 Provider 私有字段的统一请求。 */
@@ -63,7 +64,7 @@ function createProviderRequest(
     // V0 所有 Hint 都映射到唯一 Provider 的通用搜索能力。
     capability: "general",
     freshnessSensitive: input.freshnessSensitive,
-    ...(input.language === undefined ? {} : { language: input.language }),
+    language: input.language,
   };
 }
 

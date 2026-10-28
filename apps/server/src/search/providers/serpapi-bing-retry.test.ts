@@ -19,6 +19,7 @@ const SEARCH_REQUEST: ProviderSearchRequest = {
   maxResults: 1,
   capability: "general",
   freshnessSensitive: false,
+  language: "zh-CN",
 };
 
 function createRunSignal(): AbortSignal {

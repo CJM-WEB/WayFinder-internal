@@ -28,7 +28,7 @@ const searchRequest: ProviderSearchRequest = {
   maxResults: 3,
   capability: "general",
   freshnessSensitive: false,
-  language: "en",
+  language: "zh-CN",
 };
 
 const searchHit: NormalizedSearchHit = {

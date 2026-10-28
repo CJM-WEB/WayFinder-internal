@@ -55,7 +55,7 @@ export function createSearchCacheKey(
     request.maxResults,
     request.capability,
     request.freshnessSensitive,
-    request.language ?? null,
+    request.language,
   ]);
 }
 

@@ -73,7 +73,6 @@ export async function buildProductionServer(
       officialSourcePolicy: { knownRiskyDownloadDomains: [] },
       llmStageTimeoutMs: input.config.timeouts.plannerMs,
       rerankTimeoutMs: input.config.timeouts.rerankMs,
-      language: "und",
       normalizeQuery: query => query.normalize("NFKC").trim().toLowerCase(),
       onPlannerValidationDiagnostic: () => undefined,
       onRevisionValidationDiagnostic: () => undefined,

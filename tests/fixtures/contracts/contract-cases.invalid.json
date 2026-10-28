@@ -46,7 +46,7 @@
       "query": {
         "raw": "TypeScript resources",
         "normalized": "TypeScript resources",
-        "language": "en"
+        "language": "zh-CN"
       },
       "analysis": {
         "intent": "learn",
@@ -126,7 +126,7 @@
       "query": {
         "raw": "TypeScript resources",
         "normalized": "TypeScript resources",
-        "language": "en"
+        "language": "zh-CN"
       },
       "analysis": {
         "intent": "learn",
@@ -206,7 +206,7 @@
       "query": {
         "raw": "Unavailable topic",
         "normalized": "Unavailable topic",
-        "language": "en"
+        "language": "zh-CN"
       },
       "analysis": {
         "intent": "learn",
@@ -294,7 +294,7 @@
       "query": {
         "raw": "Unavailable topic",
         "normalized": "Unavailable topic",
-        "language": "en"
+        "language": "zh-CN"
       },
       "analysis": {
         "intent": "learn",

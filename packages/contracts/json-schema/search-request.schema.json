@@ -10,11 +10,16 @@
       "type": "string",
       "minLength": 1,
       "maxLength": 2000
+    },
+    "language": {
+      "type": "string",
+      "const": "zh-CN"
     }
   },
   "required": [
     "runId",
-    "query"
+    "query",
+    "language"
   ],
   "additionalProperties": false
 }

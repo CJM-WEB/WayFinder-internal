@@ -7,11 +7,18 @@
  * - 搜索期间保持输入可用，新 Query 的取消与 Run 所有权继续由搜索协调器负责。
  */
 import { type FormEvent, useRef, useState } from "react";
-import { SearchRequestSchema } from "@wayfinder/contracts";
+import {
+  SearchLanguageSchema,
+  SearchRequestSchema,
+  type SearchLanguage,
+  type SearchRequest,
+} from "@wayfinder/contracts";
 
 import { resolveSafeHttpUrl } from "../../lib/url.js";
 
-export type StartOmniboxSearch = (query: string) => Promise<void>;
+export type StartOmniboxSearch = (
+  input: Pick<SearchRequest, "query" | "language">,
+) => Promise<void>;
 export type OpenOmniboxUrl = (url: string) => boolean;
 
 export type InvalidOmniboxInputReason =
@@ -85,6 +92,7 @@ export function startOmniboxSubmission(
   rawInput: string,
   startSearch: StartOmniboxSearch,
   openDirectUrl: OpenOmniboxUrl,
+  language: SearchLanguage = "zh-CN",
 ): OmniboxSubmission {
   const input = rawInput.trim();
 
@@ -115,7 +123,7 @@ export function startOmniboxSubmission(
   return {
     kind: "ai_search",
     query: parsedQuery.data,
-    completion: startSearch(parsedQuery.data),
+    completion: startSearch({ query: parsedQuery.data, language }),
   };
 }
 
@@ -127,6 +135,7 @@ export type OmniboxProps = Readonly<{
 /** 统一 Omnibox 不暴露模式、熟练度或其他搜索前置表单。 */
 export function Omnibox({ startSearch, openDirectUrl }: OmniboxProps) {
   const [input, setInput] = useState("");
+  const [language, setLanguage] = useState<SearchLanguage>("zh-CN");
   const [feedback, setFeedback] = useState<string | null>(null);
   const latestSubmission = useRef(0);
 
@@ -142,6 +151,7 @@ export function Omnibox({ startSearch, openDirectUrl }: OmniboxProps) {
         input,
         startSearch,
         openDirectUrl,
+        language,
       );
     } catch {
       setFeedback("无法处理当前输入，请稍后重试。");
@@ -199,6 +209,20 @@ export function Omnibox({ startSearch, openDirectUrl }: OmniboxProps) {
             setFeedback(null);
           }}
         />
+        <div className="omnibox__language">
+          <label htmlFor="wayfinder-language">language</label>
+          <select
+            id="wayfinder-language"
+            name="language"
+            value={language}
+            onChange={event => {
+              // Select 值仍经过公共 Contract，禁止 DOM 或未来 Option 绕过语言门禁。
+              setLanguage(SearchLanguageSchema.parse(event.currentTarget.value));
+            }}
+          >
+            <option value="zh-CN">简体中文</option>
+          </select>
+        </div>
         <button type="submit">搜索</button>
       </div>
       <p

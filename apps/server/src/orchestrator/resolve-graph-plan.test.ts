@@ -106,6 +106,7 @@ function createInput(
     searchProvider,
     runScope,
     llmStageTimeoutMs: 30_000,
+    language: "zh-CN",
     onPlannerValidationDiagnostic: () => undefined,
     onRevisionValidationDiagnostic: () => undefined,
     ...overrides,
@@ -189,7 +190,9 @@ describe("resolveValidatedGraphPlanForRun", () => {
 
     try {
       const result = await resolveValidatedGraphPlanForRun(
-        createInput(llmProvider, searchProvider, runScope, { language: "zh" }),
+      createInput(llmProvider, searchProvider, runScope, {
+        language: "zh-CN",
+      }),
       );
 
       expect(result).toEqual(revisedPlan);
@@ -211,7 +214,7 @@ describe("resolveValidatedGraphPlanForRun", () => {
             maxResults: 5,
             capability: "general",
             freshnessSensitive: true,
-            language: "zh",
+            language: "zh-CN",
           },
           signal: runScope.signal,
         },
@@ -336,6 +339,7 @@ describe("resolveValidatedGraphPlanForRun", () => {
             maxResults: 5,
             capability: "general",
             freshnessSensitive: true,
+            language: "zh-CN",
           },
           signal: runScope.signal,
         },

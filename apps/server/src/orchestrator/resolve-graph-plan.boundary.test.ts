@@ -83,6 +83,7 @@ function resolveWithScope(runScope: GraphPlanRunScope): Promise<GraphPlan> {
     searchProvider: UNUSED_SEARCH_PROVIDER,
     runScope,
     llmStageTimeoutMs: 30_000,
+    language: "zh-CN",
     onPlannerValidationDiagnostic: () => undefined,
     onRevisionValidationDiagnostic: () => undefined,
   });

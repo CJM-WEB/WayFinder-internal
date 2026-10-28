@@ -26,6 +26,7 @@ const REQUEST: ProviderSearchRequest = {
   maxResults: 20,
   capability: "general",
   freshnessSensitive: false,
+  language: "zh-CN",
 };
 
 const STRUCTURED_INPUT: StructuredLLMInput = {

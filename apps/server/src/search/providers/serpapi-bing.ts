@@ -143,7 +143,7 @@ export class SerpApiBingSearchProvider implements SearchProvider {
     assertSearchRequest(request);
 
     const rawResponse = await this.getJson(
-      createSearchUrl(request.query, this.apiKey),
+      createSearchUrl(request.query, request.language, this.apiKey),
       signal,
     );
     const parsedEnvelope = SerpApiBingEnvelopeSchema.safeParse(rawResponse);
@@ -299,17 +299,25 @@ function assertSearchRequest(request: ProviderSearchRequest): void {
   if (request.query.trim().length === 0) {
     throw new SerpApiBingProviderError("SerpAPI Bing Search Query 不能为空");
   }
+  if (request.language !== "zh-CN") {
+    // 这是最后一道 Adapter 边界：非法语言必须在网络调用前失败。
+    throw new SerpApiBingProviderError("SerpAPI Bing Search language 不受支持");
+  }
 }
 
 /**
  * 只发送已批准的第一页 Bing 参数。maxResults 是本地接纳上限，不映射为分页、
  * filters 或 no_cache 参数；URL 仅在 Adapter 内传给 Fetch，禁止写入错误与日志。
  */
-function createSearchUrl(query: string, apiKey: string): URL {
+function createSearchUrl(
+  query: string,
+  language: ProviderSearchRequest["language"],
+  apiKey: string,
+): URL {
   const url = new URL(SERPAPI_BING_SEARCH_URL);
   url.searchParams.set("engine", "bing");
   url.searchParams.set("q", query);
-  url.searchParams.set("mkt", "zh-CN");
+  url.searchParams.set("mkt", language);
   url.searchParams.set("safeSearch", "Strict");
   url.searchParams.set("device", "desktop");
   url.searchParams.set("output", "json");

@@ -61,7 +61,7 @@ function createPartialResult(plan: GraphPlan): ResultGraph {
     query: {
       raw: SENSITIVE_TEXT,
       normalized: SENSITIVE_TEXT,
-      language: "en",
+      language: "zh-CN",
     },
     analysis: plan.analysis,
     graph: {

@@ -5,7 +5,7 @@
     "query": {
       "raw": "VS Code download",
       "normalized": "VS Code download",
-      "language": "en"
+      "language": "zh-CN"
     },
     "analysis": {
       "intent": "navigate",
@@ -65,7 +65,7 @@
     "query": {
       "raw": "Python tutorial",
       "normalized": "Python tutorial",
-      "language": "en"
+      "language": "zh-CN"
     },
     "analysis": {
       "intent": "learn",
@@ -125,7 +125,7 @@
     "query": {
       "raw": "Unavailable topic",
       "normalized": "Unavailable topic",
-      "language": "en"
+      "language": "zh-CN"
     },
     "analysis": {
       "intent": "learn",

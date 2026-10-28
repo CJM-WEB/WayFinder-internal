@@ -14,6 +14,7 @@ import {
   type NodeWarningCode,
   type QueryAnalysis,
   type ResultGraphNode,
+  type SearchLanguage,
   type StreamEventPayload,
 } from "@wayfinder/contracts";
 
@@ -26,6 +27,7 @@ import {
 import { guardAndShortlistCandidates } from "./candidate-guard.js";
 import { canonicalizeAndDeduplicateCandidates } from "./canonicalize-candidates.js";
 import { heuristicRankCandidates } from "./heuristic-rank.js";
+import { preferLocalizedSiblings } from "./prefer-localized-siblings.js";
 import {
   detectOfficialSourceSignals,
   type OfficialSourcePolicy,
@@ -102,7 +104,7 @@ export type ProcessNodeContext = Readonly<{
   emit: (payload: NodeStreamEventPayload) => Promise<void>;
   /** 匿名排序观测是旁路能力，失败不得改变 Node 结果。 */
   observeRanking?: (observation: RankingObservation) => void;
-  language?: string;
+  language: SearchLanguage;
 }>;
 
 /**
@@ -193,9 +195,7 @@ export async function processNode(
       freshnessSensitive: context.analysis.freshnessSensitive,
       searchProvider: context.searchProvider,
       signal,
-      ...(context.language === undefined
-        ? {}
-        : { language: context.language }),
+      language: context.language,
     });
     appendUniqueWarnings(warnings, searchOutcome.warnings);
 
@@ -209,7 +209,9 @@ export async function processNode(
     const canonicalized = canonicalizeAndDeduplicateCandidates(
       searchOutcome.hits,
     );
-    const guarded = guardAndShortlistCandidates(canonicalized);
+    // 语言副本门禁必须早于 Candidate Guard / Top 6，使删除项不占据名额。
+    const localized = preferLocalizedSiblings(canonicalized, context.language);
+    const guarded = guardAndShortlistCandidates(localized);
     const shortlisted = guarded.accepted;
     if (shortlisted.length === 0) {
       throw new NodeJobError("SEARCH_PROVIDER_FAILED", true);

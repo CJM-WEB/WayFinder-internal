@@ -610,6 +610,7 @@ export async function evaluatePlannerGoldenQuery(
           analysis: initialPlan.analysis,
           provider: searchProvider,
           signal,
+          language: "zh-CN",
         });
         evidenceValues = collectEvidenceValues(evidence);
         broadDiscoveryTimingMs = elapsedSince(discoveryStartedAt);

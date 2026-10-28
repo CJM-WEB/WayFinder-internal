@@ -47,7 +47,6 @@ export type CreateRunSearchHandlerInput = Readonly<{
   officialSourcePolicy: OfficialSourcePolicy;
   llmStageTimeoutMs: number;
   rerankTimeoutMs: number;
-  language: string;
   /** Query 规范化属于组合根策略；本层不猜测 Locale 或搜索习惯。 */
   normalizeQuery: (query: string) => string;
   onPlannerValidationDiagnostic: (
@@ -256,7 +255,7 @@ export function createRunSearchHandler(
       const resultQuery: ResultGraph["query"] = {
         raw: input.query,
         normalized: dependencies.normalizeQuery(input.query),
-        language: dependencies.language,
+        language: input.language,
       };
       const plan = await resolveValidatedGraphPlanForRun({
         query: input.query,
@@ -271,7 +270,7 @@ export function createRunSearchHandler(
         ...(dependencies.onPlannerOutcome === undefined
           ? {}
           : { onPlannerOutcome: dependencies.onPlannerOutcome }),
-        language: dependencies.language,
+        language: input.language,
       });
       observeSafely(() => recorder?.recordPlan(plan));
 
@@ -309,7 +308,7 @@ export function createRunSearchHandler(
             ...(recorder === undefined
               ? {}
               : { observeRanking: recorder.recordRanking }),
-            language: dependencies.language,
+            language: input.language,
           },
           providers,
           runScope,

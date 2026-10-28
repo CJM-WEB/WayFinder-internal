@@ -153,6 +153,7 @@ describe("runNodeSearches", () => {
     await runNodeSearches({
       node: nodeWithUntrustedBudget,
       freshnessSensitive: false,
+      language: "zh-CN",
       searchProvider: provider,
       signal: new AbortController().signal,
     });
@@ -176,6 +177,7 @@ describe("runNodeSearches", () => {
     const outcome = await runNodeSearches({
       node: NODE,
       freshnessSensitive: false,
+      language: "zh-CN",
       searchProvider: provider,
       signal: new AbortController().signal,
     });
@@ -201,6 +203,7 @@ describe("runNodeSearches", () => {
     const outcome = await runNodeSearches({
       node: createNode(["query-a"]),
       freshnessSensitive: false,
+      language: "zh-CN",
       searchProvider: provider,
       signal: new AbortController().signal,
     });
@@ -226,6 +229,7 @@ describe("runNodeSearches", () => {
     const outcome = await runNodeSearches({
       node: createNode(["query-a", "query-b", "query-c"]),
       freshnessSensitive: false,
+      language: "zh-CN",
       searchProvider: provider,
       signal: new AbortController().signal,
     });
@@ -248,6 +252,7 @@ describe("runNodeSearches", () => {
     const outcome = await runNodeSearches({
       node: createNode(["query-a", "query-b", "query-c"]),
       freshnessSensitive: false,
+      language: "zh-CN",
       searchProvider: provider,
       signal: new AbortController().signal,
     });
@@ -270,6 +275,7 @@ describe("runNodeSearches", () => {
     const outcome = await runNodeSearches({
       node: NODE,
       freshnessSensitive: false,
+      language: "zh-CN",
       searchProvider: provider,
       signal: new AbortController().signal,
     });
@@ -308,6 +314,7 @@ describe("runNodeSearches", () => {
       runNodeSearches({
         node: NODE,
         freshnessSensitive: false,
+        language: "zh-CN",
         searchProvider: provider,
         signal: new AbortController().signal,
       }),
@@ -331,6 +338,7 @@ describe("runNodeSearches", () => {
       runNodeSearches({
         node: NODE,
         freshnessSensitive: false,
+        language: "zh-CN",
         searchProvider: provider,
         signal: controller.signal,
       }),
@@ -356,6 +364,7 @@ describe("runNodeSearches", () => {
     const outcomePromise = runNodeSearches({
       node: NODE,
       freshnessSensitive: false,
+      language: "zh-CN",
       searchProvider: provider,
       signal: controller.signal,
     });

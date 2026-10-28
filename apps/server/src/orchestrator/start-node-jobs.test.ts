@@ -104,6 +104,7 @@ describe("startNodeJobs", () => {
         officialSourcePolicy: { knownRiskyDownloadDomains: [] },
         nowMs: Date.parse("2026-10-22T00:00:00.000Z"),
         rerankTimeoutMs: 12_000,
+        language: "zh-CN",
         emit: async payload => {
           events.push(structuredClone(payload));
         },
@@ -175,6 +176,7 @@ describe("startNodeJobs", () => {
           officialSourcePolicy: { knownRiskyDownloadDomains: [] },
           nowMs: 0,
           rerankTimeoutMs: 12_000,
+          language: "zh-CN",
           emit: async () => undefined,
         },
         providers,

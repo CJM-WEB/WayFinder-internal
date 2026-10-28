@@ -42,7 +42,7 @@ import {
   type QualityEvalMetricMeasurement,
 } from "./quality-metrics.js";
 
-export const QUALITY_EVAL_SCHEMA_VERSION = "quality-eval.v6" as const;
+export const QUALITY_EVAL_SCHEMA_VERSION = "quality-eval.v7" as const;
 export const QUALITY_EVAL_DATASET_VERSION =
   "wayfinder-regression.v1" as const;
 
@@ -611,7 +611,11 @@ export async function evaluateQualityEvalQuery(
   let streamSchemaInvalid = false;
   try {
     await input.handleSearch({
-      input: { runId: input.runId, query: input.query.query },
+      input: {
+        runId: input.runId,
+        query: input.query.query,
+        language: "zh-CN",
+      },
       signal: input.signal,
       emit: async payload => {
         const parsed = StreamEventPayloadSchema.safeParse(payload);

@@ -27,7 +27,10 @@ describe("Omnibox", () => {
 
     await submission.completion;
     expect(submission.query).toBe("我想学习线性代数");
-    expect(startSearch).toHaveBeenCalledExactlyOnceWith("我想学习线性代数");
+    expect(startSearch).toHaveBeenCalledExactlyOnceWith({
+      query: "我想学习线性代数",
+      language: "zh-CN",
+    });
     expect(openDirectUrl).not.toHaveBeenCalled();
   });
 
@@ -119,11 +122,14 @@ describe("Omnibox", () => {
       throw new Error("非显式 URL 应进入 AI Search");
     }
     await submission.completion;
-    expect(startSearch).toHaveBeenCalledExactlyOnceWith(input);
+    expect(startSearch).toHaveBeenCalledExactlyOnceWith({
+      query: input,
+      language: "zh-CN",
+    });
     expect(openDirectUrl).not.toHaveBeenCalled();
   });
 
-  it("只渲染一个浏览器式文本入口，不要求模式或额外表单", () => {
+  it("渲染单一搜索入口与唯一简体中文选项", () => {
     const markup = renderToStaticMarkup(
       <Omnibox
         startSearch={async () => undefined}
@@ -135,6 +141,8 @@ describe("Omnibox", () => {
     expect(markup).toContain('type="search"');
     expect(markup).toContain('type="submit"');
     expect(markup.match(/<input\b/g)).toHaveLength(1);
-    expect(markup).not.toContain("<select");
+    expect(markup).toContain(">language</label>");
+    expect(markup.match(/<select\b/g)).toHaveLength(1);
+    expect(markup).toContain('<option value="zh-CN" selected="">简体中文</option>');
   });
 });

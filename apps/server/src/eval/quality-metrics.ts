@@ -15,6 +15,7 @@ import {
   GraphPlanSchema,
   MAX_RETAINED_RESOURCES_PER_NODE,
   ResultGraphSchema,
+  SearchLanguageSchema,
   calculateSearchPlanMaxResults,
   type GraphPlan,
 } from "@wayfinder/contracts";
@@ -22,7 +23,7 @@ import { z } from "zod";
 
 import { RunLogRecordSchema } from "../observability/run-log.js";
 
-export const QUALITY_METRICS_VERSION = "quality-metrics.v2" as const;
+export const QUALITY_METRICS_VERSION = "quality-metrics.v3" as const;
 
 /**
  * Quality Eval 使用的固定生产请求配置。它只参与内存身份计算，不进入新增诊断对象；
@@ -30,7 +31,7 @@ export const QUALITY_METRICS_VERSION = "quality-metrics.v2" as const;
  */
 export const QualityEvalPlannedRequestConfigSchema = z.strictObject({
   providerId: z.literal("serpapi_bing"),
-  language: z.literal("und"),
+  language: SearchLanguageSchema,
 });
 
 export type QualityEvalPlannedRequestConfig = Readonly<
@@ -39,7 +40,7 @@ export type QualityEvalPlannedRequestConfig = Readonly<
 
 export const QUALITY_EVAL_PLANNED_REQUEST_CONFIG = Object.freeze({
   providerId: "serpapi_bing",
-  language: "und",
+  language: "zh-CN",
 } as const satisfies QualityEvalPlannedRequestConfig);
 
 const NonNegativeSafeIntegerSchema = z

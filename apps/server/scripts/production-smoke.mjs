@@ -200,6 +200,7 @@ try {
     body: JSON.stringify({
       runId: "run-production-smoke",
       query: "TypeScript compiler guide",
+      language: "zh-CN",
     }),
   });
   assert(response.status === 200 && response.body !== null, "Search Stream 未建立");

@@ -134,6 +134,7 @@ function createContext(
     officialSourcePolicy: { knownRiskyDownloadDomains: [] },
     nowMs: Date.parse("2026-10-22T00:00:00.000Z"),
     rerankTimeoutMs: 10_000,
+    language: "zh-CN",
     async emit(payload) {
       events.push(structuredClone(payload));
     },
@@ -716,6 +717,7 @@ describe("WAY-58 单 Node 高风险检索矩阵", () => {
       maxResults: 20,
       capability: "general",
       freshnessSensitive: false,
+      language: "zh-CN",
     });
     expect(searchProvider.searchCalls).toHaveLength(1);
     expect(searchProvider.extractCalls).toHaveLength(0);
@@ -822,6 +824,7 @@ describe("WAY-58 单 Node 高风险检索矩阵", () => {
       maxResults: 20,
       capability: "general",
       freshnessSensitive: false,
+      language: "zh-CN",
     });
     expect(searchProvider.searchCalls[0]?.signal).toBe(signal);
     expect(rerankProvider.calls[0]?.options.signal).toBe(signal);
@@ -917,6 +920,53 @@ describe("WAY-58 单 Node 高风险检索矩阵", () => {
     expect(result.resources.map(resource => resource.canonicalUrl)).toEqual(
       hits.slice(0, 6).map(hit => hit.canonicalUrl),
     );
+  });
+
+  it("localized sibling 门禁在 Top 6 前释放名额并连续生成 Candidate ID", async () => {
+    const node = createNode();
+    const query = node.searchPlan.queries[0]!;
+    const english = createHit(query, {
+      title: "MySQL",
+      url: "https://www.mysql.com/en/",
+      canonicalUrl: "https://www.mysql.com/en/",
+      domain: "www.mysql.com",
+    });
+    const chinese = createHit(query, {
+      title: "MySQL",
+      url: "https://www.mysql.com/cn/",
+      canonicalUrl: "https://www.mysql.com/cn/",
+      domain: "www.mysql.com",
+    });
+    const unique = Array.from({ length: 5 }, (_, index) =>
+      createDistinctHit(index + 1, `localized-${index + 1}.example`, query),
+    );
+    const searchProvider = new FakeSearchProvider({
+      searchResponses: { [query]: [english, chinese, ...unique] },
+    });
+    const rerankProvider = new FakeLLMProvider([
+      createRerankOutput(
+        Array.from({ length: 6 }, (_, index) => `candidate_${index + 1}`),
+      ),
+    ]);
+
+    const result = await processNode(
+      node,
+      createContext(searchProvider, rerankProvider, []),
+      createRunScope(),
+    );
+    const promptCandidates = readPromptCandidates(rerankProvider);
+
+    expect(promptCandidates.map(candidate => candidate.candidateId)).toEqual(
+      Array.from({ length: 6 }, (_, index) => `candidate_${index + 1}`),
+    );
+    expect(promptCandidates.map(candidate => candidate.canonicalUrl)).toEqual([
+      chinese.canonicalUrl,
+      ...unique.map(hit => hit.canonicalUrl),
+    ]);
+    expect(result.resources).toHaveLength(6);
+    expect(
+      result.resources.some(resource => resource.canonicalUrl === english.canonicalUrl),
+    ).toBe(false);
   });
 });
 
