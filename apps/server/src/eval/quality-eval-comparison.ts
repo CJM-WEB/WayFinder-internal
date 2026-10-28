@@ -3,13 +3,14 @@
  * 与成本事实汇总为可审核结果，并在 A-B-B-A 条件或覆盖率不完整时拒绝比较。
  *
  * 关键边界：
- * - 当前报告严格读取 `quality-eval.v10`；旧 v5-v9 只经显式内存归一化读取；
+ * - 当前报告严格读取 `quality-eval.v11`；旧 v5-v10 只经显式内存归一化读取；
  * - `0` 是有效测量值，`telemetry: null` 才表示缺失；
  * - 本模块只判断报告能否比较，不自动给出 Keep / Revert 产品结论。
  */
 import { isDeepStrictEqual } from "node:util";
 
 import { GraphPlanSchema } from "@wayfinder/contracts";
+import { z } from "zod";
 
 import {
   QualityEvalReportSchema,
@@ -65,11 +66,25 @@ export type QualityEvalComparison = Readonly<{
   blocks: readonly QualityEvalBlockSummary[];
 }>;
 
-type ComparableQualityEvalReport = Omit<QualityEvalReport, "runPolicy"> &
-  Readonly<{
-    runPolicy: Omit<QualityEvalReport["runPolicy"], "language"> &
-      Readonly<{ language: "zh-CN" | "und" }>;
-  }>;
+/** 比较器允许显式迁移后的历史 Prompt 事实，但生产写入 Schema 仍只接受现役版本。 */
+const ComparableQualityEvalReportSchema = QualityEvalReportSchema.extend({
+  source: QualityEvalReportSchema.shape.source.extend({
+    prompts: z.strictObject({
+      planner: z.enum(["graph-planner.v1", "graph-planner.v2"]),
+      reviser: z.enum(["graph-reviser.v1", "graph-reviser.v3"]),
+      searchPlanGenerator: z.literal("search-plan-generator.v1").nullable(),
+      reranker:
+        QualityEvalReportSchema.shape.source.shape.prompts.shape.reranker,
+    }),
+  }),
+  runPolicy: QualityEvalReportSchema.shape.runPolicy.extend({
+    language: z.enum(["zh-CN", "und"]),
+  }),
+});
+
+type ComparableQualityEvalReport = z.infer<
+  typeof ComparableQualityEvalReportSchema
+>;
 
 type ParsedComparableReport = Readonly<{
   report: ComparableQualityEvalReport;
@@ -101,9 +116,37 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/** 旧报告不具备 WAY-113 分阶段时钟，显式补 null，不从聚合 planning 伪造。 */
+function normalizeLegacyTelemetry(
+  telemetry: unknown,
+  addLegacyRanking: boolean,
+): unknown {
+  if (telemetry === null || !isRecord(telemetry)) return telemetry;
+  const timingsMs = telemetry.timingsMs;
+  const normalized = {
+    ...telemetry,
+    planningStages: null,
+    timingsMs: isRecord(timingsMs)
+      ? {
+          ...timingsMs,
+          graphOutlinePlanning: null,
+          searchPlanPlanning: null,
+        }
+      : timingsMs,
+  };
+  return addLegacyRanking
+    ? {
+        ...normalized,
+        versions: { rankFusion: "rank-fusion.v1" },
+        ranking: EMPTY_RANKING_METRICS,
+      }
+    : normalized;
+}
+
 /**
  * 旧 outer v5/query v4 没有 Ranking telemetry，outer v6/query v5 没有计划请求诊断；
- * outer v7/v8 使用 query v6 / metrics v2，outer v9 使用 query v7 / metrics v3。
+ * outer v7/v8 使用 query v6 / metrics v2，outer v9 使用 query v7 / metrics v3，
+ * outer v10 使用 query v8；WAY-113 新增的阶段耗时对历史报告显式投影为 null。
  * 归一化只升级工件形状，不改写历史运行语言身份。
  */
 function normalizeLegacyReport(
@@ -113,7 +156,8 @@ function normalizeLegacyReport(
     | "quality-eval.v6"
     | "quality-eval.v7"
     | "quality-eval.v8"
-    | "quality-eval.v9",
+    | "quality-eval.v9"
+    | "quality-eval.v10",
 ): unknown {
   const source = value.source;
   const runPolicy = value.runPolicy;
@@ -122,7 +166,9 @@ function normalizeLegacyReport(
     !isRecord(source) ||
     !isRecord(runPolicy) ||
     runPolicy.language !==
-      (outerVersion === "quality-eval.v9" ? "zh-CN" : "und") ||
+      (outerVersion === "quality-eval.v9" || outerVersion === "quality-eval.v10"
+        ? "zh-CN"
+        : "und") ||
     !Array.isArray(results) ||
     (outerVersion === "quality-eval.v5" && "ranking" in source) ||
     (outerVersion !== "quality-eval.v5" && source.ranking !== "rank-fusion.v1")
@@ -144,15 +190,24 @@ function normalizeLegacyReport(
         ? "quality-eval.v5"
         : outerVersion === "quality-eval.v9"
           ? "quality-eval.v7"
+          : outerVersion === "quality-eval.v10"
+            ? "quality-eval.v8"
           : "quality-eval.v6";
 
   return {
     ...value,
-    schemaVersion: "quality-eval.v10",
-    source:
-      outerVersion === "quality-eval.v5"
+    schemaVersion: "quality-eval.v11",
+    source: {
+      ...(outerVersion === "quality-eval.v5"
         ? { ...source, ranking: "rank-fusion.v1" }
-        : source,
+        : source),
+      prompts: isRecord(source.prompts)
+        ? {
+            ...source.prompts,
+            searchPlanGenerator: null,
+          }
+        : source.prompts,
+    },
     results: results.map(result => {
       if (!isRecord(result) || result.schemaVersion !== expectedQueryVersion) {
         throw new TypeError("legacy_query_invalid");
@@ -171,7 +226,8 @@ function normalizeLegacyReport(
       let normalizedMetrics = metrics;
       if (metrics !== null && outerVersion !== "quality-eval.v7" &&
         outerVersion !== "quality-eval.v8" &&
-        outerVersion !== "quality-eval.v9") {
+        outerVersion !== "quality-eval.v9" &&
+        outerVersion !== "quality-eval.v10") {
         const parsedPlan = GraphPlanSchema.safeParse(result.plan);
         if (
           !isRecord(metrics) ||
@@ -189,7 +245,11 @@ function normalizeLegacyReport(
               plannedRequestConfig,
             ),
         };
-      } else if (metrics !== null && outerVersion !== "quality-eval.v9") {
+      } else if (
+        metrics !== null &&
+        outerVersion !== "quality-eval.v9" &&
+        outerVersion !== "quality-eval.v10"
+      ) {
         if (!isRecord(metrics) || metrics.version !== "quality-metrics.v2") {
           throw new TypeError("legacy_metrics_invalid");
         }
@@ -203,18 +263,12 @@ function normalizeLegacyReport(
       }
       return {
         ...result,
-        schemaVersion: "quality-eval.v8",
+        schemaVersion: "quality-eval.v9",
         metrics: normalizedMetrics,
-        telemetry:
-          outerVersion !== "quality-eval.v5"
-            ? telemetry
-            : telemetry === null
-              ? null
-              : {
-                  ...telemetry,
-                  versions: { rankFusion: "rank-fusion.v1" },
-                  ranking: EMPTY_RANKING_METRICS,
-                },
+        telemetry: normalizeLegacyTelemetry(
+          telemetry,
+          outerVersion === "quality-eval.v5",
+        ),
       };
     }),
   };
@@ -231,7 +285,8 @@ function parseReport(
         value.schemaVersion === "quality-eval.v6" ||
         value.schemaVersion === "quality-eval.v7" ||
         value.schemaVersion === "quality-eval.v8" ||
-        value.schemaVersion === "quality-eval.v9")
+        value.schemaVersion === "quality-eval.v9" ||
+        value.schemaVersion === "quality-eval.v10")
         ? value.schemaVersion
         : null;
     let candidate = value;
@@ -240,34 +295,13 @@ function parseReport(
       if (!isRecord(value)) throw new TypeError("legacy_report_invalid");
       candidate = normalizeLegacyReport(value, legacyVersion);
     }
-    const legacyLanguage =
-      legacyVersion !== null &&
-      isRecord(candidate) &&
-      isRecord(candidate.runPolicy) &&
-      candidate.runPolicy.language === "und"
-        ? "und"
-        : null;
-    const validationCandidate =
-      legacyLanguage === null || !isRecord(candidate) || !isRecord(candidate.runPolicy)
-        ? candidate
-        : {
-            ...candidate,
-            // 仅用当前 Schema 验证其余结构；返回的历史报告仍保留 und。
-            runPolicy: { ...candidate.runPolicy, language: "zh-CN" },
-          };
-    const parsed = QualityEvalReportSchema.safeParse(validationCandidate);
+    const parsed = ComparableQualityEvalReportSchema.safeParse(candidate);
     if (!parsed.success) {
       throw new TypeError("schema_invalid");
     }
     // 比较器可能读取历史或人工搬运的报告，不能只凭结构合法就假定已经脱敏。
     assertQualityEvalArtifactSafety(candidate, []);
-    const report: ComparableQualityEvalReport =
-      legacyLanguage === null
-        ? parsed.data
-        : {
-            ...parsed.data,
-            runPolicy: { ...parsed.data.runPolicy, language: legacyLanguage },
-          };
+    const report: ComparableQualityEvalReport = parsed.data;
     return {
       report,
       rankingVersion:

@@ -12,9 +12,9 @@ import type {
   ResultGraph,
 } from "@wayfinder/contracts";
 
-import type { GraphPlanValidationDiagnostic } from "../ai/graph-plan-parser.js";
-import type { GraphPlannerOutcome } from "../ai/graph-planner.js";
+import type { GraphOutlineValidationDiagnostic } from "../ai/graph-outline.js";
 import type { GraphRevisionValidationDiagnostic } from "../ai/graph-reviser.js";
+import type { SearchPlanBundleValidationDiagnostic } from "../ai/search-plan-generator.js";
 import {
   assertBoundedLLMTimeout,
   type LLMProvider,
@@ -33,7 +33,10 @@ import type { SearchProvider } from "../search/provider.js";
 import { createAbsoluteRunDeadline } from "./absolute-run-deadline.js";
 import { emitValidatedPlanEvents } from "./emit-validated-plan-events.js";
 import type { ConcurrencyLimitedProviders } from "./provider-concurrency.js";
-import { resolveValidatedGraphPlanForRun } from "./resolve-graph-plan.js";
+import {
+  GraphPlanResolutionError,
+  resolveValidatedGraphPlanForRun,
+} from "./resolve-graph-plan.js";
 import {
   createRunTerminalEventState,
   emitRunFailedWithoutGraphPlan,
@@ -50,12 +53,14 @@ export type CreateRunSearchHandlerInput = Readonly<{
   /** Query 规范化属于组合根策略；本层不猜测 Locale 或搜索习惯。 */
   normalizeQuery: (query: string) => string;
   onPlannerValidationDiagnostic: (
-    diagnostic: GraphPlanValidationDiagnostic,
+    diagnostic: GraphOutlineValidationDiagnostic,
   ) => void;
   onRevisionValidationDiagnostic: (
     diagnostic: GraphRevisionValidationDiagnostic,
   ) => void;
-  onPlannerOutcome?: (outcome: GraphPlannerOutcome) => void;
+  onSearchPlanValidationDiagnostic: (
+    diagnostic: SearchPlanBundleValidationDiagnostic,
+  ) => void;
   /** 缺省即完全关闭；Sink 只接收内部严格白名单记录。 */
   runLogSink?: RunLogSink;
   createRunLogId?: () => string;
@@ -268,9 +273,17 @@ export function createRunSearchHandler(
           dependencies.onPlannerValidationDiagnostic,
         onRevisionValidationDiagnostic:
           dependencies.onRevisionValidationDiagnostic,
-        ...(dependencies.onPlannerOutcome === undefined
+        onSearchPlanValidationDiagnostic:
+          dependencies.onSearchPlanValidationDiagnostic,
+        ...(recorder === undefined
           ? {}
-          : { onPlannerOutcome: dependencies.onPlannerOutcome }),
+          : {
+              onGraphOutlinePlanningFinished:
+                recorder.recordGraphOutlinePlanningFinished,
+              onSearchPlanPlanningFinished:
+                recorder.recordSearchPlanPlanningFinished,
+              onPlanningStageFailed: recorder.recordPlanningStageFailed,
+            }),
         language: input.language,
       });
       observeSafely(() => recorder?.recordPlan(plan));
@@ -357,9 +370,12 @@ export function createRunSearchHandler(
         fatalController.abort(error);
         throw error;
       }
-      // GraphPlan 接纳前的真正 Deadline 仍属于无可用计划的全局失败。
+      // GraphPlan 接纳前的已知规划失败使用稳定映射；未知程序错误保持 UNKNOWN。
       await emitRunFailedWithoutGraphPlan({
-        error: { code: "UNKNOWN", retryable: false },
+        error:
+          error instanceof GraphPlanResolutionError
+            ? error.appError
+            : { code: "UNKNOWN", retryable: false },
         runScope,
         emit: observedEmit,
       });

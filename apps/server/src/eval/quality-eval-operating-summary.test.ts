@@ -23,6 +23,8 @@ function createTelemetry(index: number) {
   return {
     timingsMs: {
       planning: value,
+      graphOutlinePlanning: value,
+      searchPlanPlanning: value,
       nodeProcessing: value,
       total: value,
       provider: { search: value, extract: value, llm: value },
@@ -34,6 +36,30 @@ function createTelemetry(index: number) {
       logicalLlmCalls: value,
       searchHttpAttempts: value,
       extractHttpAttempts: value,
+    },
+    planningStages: {
+      graphOutline: {
+        logicalLlmCalls: value,
+        failureCode: null,
+        tokens: {
+          status: "complete" as const,
+          observations: value,
+          inputTokens: value,
+          outputTokens: value,
+          totalTokens: value,
+        },
+      },
+      searchPlan: {
+        logicalLlmCalls: 0,
+        failureCode: null,
+        tokens: {
+          status: "not_used" as const,
+          observations: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          totalTokens: 0,
+        },
+      },
     },
     versions: { rankFusion: "rank-fusion.v1" as const },
     ranking: {
@@ -72,7 +98,7 @@ function createTelemetry(index: number) {
 
 function createReport() {
   return QualityEvalReportSchema.parse({
-    schemaVersion: "quality-eval.v10",
+    schemaVersion: "quality-eval.v11",
     issue: "WAY-86",
     evaluationRunId:
       "2026-10-23T09-00-00-000Z-11111111-1111-4111-8111-111111111111",
@@ -88,8 +114,9 @@ function createReport() {
       git: { commit: SOURCE_COMMIT, worktreeClean: true },
       contracts: { protocol: "0.1", resultGraph: "0.1" },
       prompts: {
-        planner: "graph-planner.v1",
-        reviser: "graph-reviser.v1",
+        planner: "graph-planner.v2",
+        reviser: "graph-reviser.v3",
+        searchPlanGenerator: "search-plan-generator.v1",
         reranker: "resource-reranker.v1",
       },
       ranking: "rank-fusion.v1",
@@ -123,7 +150,7 @@ function createReport() {
     results: Array.from({ length: 20 }, (_, index) => {
       const id = `wfq-${String(index + 1).padStart(3, "0")}`;
       return {
-        schemaVersion: "quality-eval.v8",
+        schemaVersion: "quality-eval.v9",
         comparisonKey: `wayfinder-regression.v1:${id}`,
         query: {
           id,

@@ -4,8 +4,8 @@
  *
  * 关键边界：
  * - 每条 Query 独占一个最多 40 秒的绝对 Run deadline，所有外部调用共享同一 Signal；
- * - 只在模型实际选择 evidence_assisted 时执行一次 Broad Discovery 与一次 Reviser；
- * - 预期普通失败可以回退 Initial Plan，但必须显式记录且建议 targetedIterate；
+ * - 严格执行 Graph Outline 与全图 SearchPlan 两阶段，可选 Broad/Reviser 只属于第一阶段；
+ * - 任一阶段失败都记为失败样本，不保留旧 Plan、不 repair、不生成 fallback；
  * - Evidence、URL、网页正文和原始错误永不进入报告，语义质量不由代码擅自判分。
  */
 import { createHash } from "node:crypto";
@@ -14,23 +14,46 @@ import { performance } from "node:perf_hooks";
 import { GraphPlanSchema } from "@wayfinder/contracts";
 import type { CandidateSearchHit, GraphPlan } from "@wayfinder/contracts";
 
-import { GraphRevisionError, reviseGraphPlan } from "../ai/graph-reviser.js";
 import {
-  planOrCompactFallback,
-  type GraphPlannerOutcome,
+  GraphOutlineSchema,
+  type GraphOutline,
+  type GraphOutlineValidationDiagnostic,
+} from "../ai/graph-outline.js";
+import {
+  GraphPlannerError,
+  planGraphOutline,
 } from "../ai/graph-planner.js";
-import type { GraphPlanValidationDiagnostic } from "../ai/graph-plan-parser.js";
+import {
+  GraphRevisionError,
+  reviseGraphOutline,
+  type GraphRevisionValidationDiagnostic,
+} from "../ai/graph-reviser.js";
+import {
+  SearchPlanGenerationError,
+  assembleGraphPlan,
+  generateSearchPlanBundle,
+  type SearchPlanBundle,
+  type SearchPlanBundleValidationDiagnostic,
+} from "../ai/search-plan-generator.js";
 import {
   MAX_LLM_CALL_TIMEOUT_MS,
   type LLMProvider,
 } from "../ai/llm-provider.js";
 import { RUN_DEADLINE_MS } from "../config.js";
-import { validateGraphPlan } from "../graph/graph-validator.js";
+import {
+  validateGraphOutline,
+  validateGraphPlan,
+} from "../graph/graph-validator.js";
 import {
   BroadDiscoveryError,
   discoverBroadEvidence,
 } from "../search/broad-discovery.js";
 import type { SearchProvider } from "../search/provider.js";
+import {
+  QUALITY_EVAL_PLANNED_REQUEST_CONFIG,
+  measureQualityEvalPlannedRequestDuplication,
+  type QualityEvalPlannedRequestDuplication,
+} from "./quality-metrics.js";
 
 export const PLANNER_GOLDEN_RUN_DEADLINE_MS = RUN_DEADLINE_MS;
 
@@ -47,16 +70,15 @@ export type PlannerGoldenTokenUsage = Readonly<{
   totalTokens: number;
 }>;
 
-type PlannerGoldenFallback =
-  | Readonly<{
-      stage: "planner";
-      reason: Extract<GraphPlannerOutcome, { kind: "compact_fallback" }>["reason"];
-    }>
-  | Readonly<{ stage: "broad_discovery"; reason: "no_evidence" }>
-  | Readonly<{
-      stage: "graph_reviser";
-      reason: GraphRevisionError["kind"];
-    }>;
+type PlannerGoldenFailure = Readonly<{
+  stage:
+    | "graph_planner"
+    | "broad_discovery"
+    | "graph_reviser"
+    | "search_plan_generator"
+    | "graph_assembly";
+  reason: string;
+}>;
 
 type PlannerGoldenTokenUsageSummary =
   | Readonly<{
@@ -84,6 +106,7 @@ export type PlannerGoldenAutomaticMetrics = Readonly<{
   }>;
   edgeCoverage: number;
   literalDuplicateNodeIdGroups: readonly (readonly string[])[];
+  plannedRequestDuplication: QualityEvalPlannedRequestDuplication;
   searchPlans: readonly Readonly<{
     nodeId: string;
     queryCount: number;
@@ -96,14 +119,17 @@ export type PlannerGoldenAutomaticMetrics = Readonly<{
 export type PlannerGoldenCompletedResult = Readonly<{
   query: PlannerGoldenQuery;
   executionStatus: "completed";
-  /** Planner 自身回退时没有可归因于模型的 Strategy / Presentation Mode。 */
-  strategy: GraphPlan["analysis"]["strategy"] | null;
-  presentationMode: GraphPlan["analysis"]["presentationMode"] | null;
-  /** 两份 Plan 均为报告安全投影；Hash 用于核对未投影原值是否变化。 */
-  initialPlan: GraphPlan;
+  strategy: GraphPlan["analysis"]["strategy"];
+  presentationMode: GraphPlan["analysis"]["presentationMode"];
+  /** Outline、Bundle 与 Plan 均为报告安全投影；Hash 用于核对原值。 */
+  initialOutline: GraphOutline;
+  finalOutline: GraphOutline;
+  searchPlanBundle: SearchPlanBundle;
   finalPlan: GraphPlan;
   planFingerprints: Readonly<{
-    initialSha256: string;
+    initialOutlineSha256: string;
+    finalOutlineSha256: string;
+    searchPlanBundleSha256: string;
     finalSha256: string;
   }>;
   reportSanitization: Readonly<{
@@ -111,9 +137,12 @@ export type PlannerGoldenCompletedResult = Readonly<{
     urlRedactionCount: number;
     truncatedFieldCount: number;
   }>;
-  fallback: PlannerGoldenFallback | null;
-  suggestedOutcome: "targetedIterate" | null;
-  validationDiagnostics: readonly GraphPlanValidationDiagnostic[];
+  suggestedOutcome: null;
+  validationDiagnostics: Readonly<{
+    planner: readonly GraphOutlineValidationDiagnostic[];
+    reviser: readonly GraphRevisionValidationDiagnostic[];
+    searchPlanGenerator: readonly SearchPlanBundleValidationDiagnostic[];
+  }>;
   metrics: PlannerGoldenAutomaticMetrics;
   calls: Readonly<{
     llm: number;
@@ -121,13 +150,23 @@ export type PlannerGoldenCompletedResult = Readonly<{
     searchHttpAttempts: number | "unavailable";
     extract: 0;
   }>;
+  callsByStage: Readonly<{
+    graphOutlinePlanning: Readonly<{ llm: number; search: number }>;
+    searchPlanPlanning: Readonly<{ llm: number; search: 0 }>;
+  }>;
   timingsMs: Readonly<{
+    graphOutlinePlanning: number;
+    searchPlanPlanning: number;
     planner: number;
     broadDiscovery: number | null;
     graphReviser: number | null;
     total: number;
   }>;
   tokenUsage: PlannerGoldenTokenUsageSummary;
+  tokenUsageByStage: Readonly<{
+    graphOutlinePlanning: PlannerGoldenTokenUsageSummary;
+    searchPlanPlanning: PlannerGoldenTokenUsageSummary;
+  }>;
   estimatedCost: Readonly<{
     status: "unavailable";
     reason: "pricing_not_frozen";
@@ -148,16 +187,36 @@ export type PlannerGoldenInterruptedResult = Readonly<{
     searchHttpAttempts: number | "unavailable";
     extract: 0;
   }>;
-  totalTimingMs: number;
+  callsByStage: PlannerGoldenCompletedResult["callsByStage"];
+  timingsMs: Readonly<{
+    graphOutlinePlanning: number | null;
+    searchPlanPlanning: number | null;
+    total: number;
+  }>;
   tokenUsage: PlannerGoldenTokenUsageSummary;
+  tokenUsageByStage: PlannerGoldenCompletedResult["tokenUsageByStage"];
   estimatedCost: Readonly<{
     status: "unavailable";
     reason: "pricing_not_frozen";
   }>;
 }>;
 
+export type PlannerGoldenFailedResult = Readonly<{
+  query: PlannerGoldenQuery;
+  executionStatus: "failed";
+  failure: PlannerGoldenFailure;
+  suggestedOutcome: "targetedIterate";
+  calls: PlannerGoldenInterruptedResult["calls"];
+  callsByStage: PlannerGoldenInterruptedResult["callsByStage"];
+  timingsMs: PlannerGoldenInterruptedResult["timingsMs"];
+  tokenUsage: PlannerGoldenTokenUsageSummary;
+  tokenUsageByStage: PlannerGoldenInterruptedResult["tokenUsageByStage"];
+  estimatedCost: PlannerGoldenInterruptedResult["estimatedCost"];
+}>;
+
 export type PlannerGoldenQueryResult =
   | PlannerGoldenCompletedResult
+  | PlannerGoldenFailedResult
   | PlannerGoldenInterruptedResult;
 
 export type EvaluatePlannerGoldenQueryInput = Readonly<{
@@ -427,8 +486,103 @@ function sanitizeGraphPlanForReport(
   return { plan: projected, summary };
 }
 
-function fingerprintGraphPlan(plan: GraphPlan): string {
-  return createHash("sha256").update(JSON.stringify(plan)).digest("hex");
+function sanitizeGraphOutlineForReport(
+  outline: GraphOutline,
+  evidenceValues: readonly string[],
+): Readonly<{
+  outline: GraphOutline;
+  nodeIdMap: ReadonlyMap<string, string>;
+  summary: ReportSanitization;
+}> {
+  const summary: ReportSanitization = {
+    evidenceRedactionCount: 0,
+    urlRedactionCount: 0,
+    truncatedFieldCount: 0,
+  };
+  const usedNodeIds = new Set<string>();
+  const nodeIdMap = new Map<string, string>();
+  const nodes = outline.nodes.map((node, index) => {
+    const id = uniqueSanitizedId(
+      node.id,
+      index,
+      usedNodeIds,
+      evidenceValues,
+      summary,
+    );
+    nodeIdMap.set(node.id, id);
+    return {
+      ...node,
+      id,
+      title: sanitizeReportText(node.title, 200, evidenceValues, summary),
+      description: sanitizeReportText(
+        node.description,
+        500,
+        evidenceValues,
+        summary,
+      ),
+    };
+  });
+  const usedEdgeIds = new Set<string>();
+  const edges = outline.edges.map((edge, index) => ({
+    ...edge,
+    id: uniqueSanitizedId(
+      edge.id,
+      index,
+      usedEdgeIds,
+      evidenceValues,
+      summary,
+    ),
+    source: nodeIdMap.get(edge.source) ?? "[REDACTED_SOURCE]",
+    target: nodeIdMap.get(edge.target) ?? "[REDACTED_TARGET]",
+  }));
+  const projected = GraphOutlineSchema.parse({
+    analysis: {
+      ...outline.analysis,
+      topic: sanitizeReportText(
+        outline.analysis.topic,
+        200,
+        evidenceValues,
+        summary,
+      ),
+      broadSearchQueries: outline.analysis.broadSearchQueries.map(query =>
+        sanitizeReportText(query, 200, evidenceValues, summary),
+      ),
+    },
+    nodes,
+    edges,
+  });
+  if (!validateGraphOutline(projected).valid) {
+    throw new Error("Golden Eval Outline 报告投影未通过确定性 Validator");
+  }
+  return { outline: projected, nodeIdMap, summary };
+}
+
+function sanitizeSearchPlanBundleForReport(
+  bundle: SearchPlanBundle,
+  nodeIdMap: ReadonlyMap<string, string>,
+  evidenceValues: readonly string[],
+): Readonly<{ bundle: SearchPlanBundle; summary: ReportSanitization }> {
+  const summary: ReportSanitization = {
+    evidenceRedactionCount: 0,
+    urlRedactionCount: 0,
+    truncatedFieldCount: 0,
+  };
+  return {
+    bundle: {
+      plans: bundle.plans.map(plan => ({
+        ...plan,
+        nodeId: nodeIdMap.get(plan.nodeId) ?? "[REDACTED_NODE]",
+        queries: plan.queries.map(query =>
+          sanitizeReportText(query, 200, evidenceValues, summary),
+        ),
+      })),
+    },
+    summary,
+  };
+}
+
+function fingerprintValue(value: unknown): string {
+  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
 
 function collectEvidenceValues(
@@ -526,6 +680,10 @@ function calculateAutomaticMetrics(
         return reportNode.id;
       }),
     ),
+    plannedRequestDuplication: measureQualityEvalPlannedRequestDuplication(
+      parsed.data,
+      QUALITY_EVAL_PLANNED_REQUEST_CONFIG,
+    ),
     searchPlans: parsed.data.nodes.map((node, index) => ({
       nodeId: parsedReportPlan.data.nodes[index]?.id ?? "[REDACTED_NODE]",
       queryCount: node.searchPlan.queries.length,
@@ -566,139 +724,198 @@ export async function evaluatePlannerGoldenQuery(
   const counters: CallCounters = { llm: 0, search: 0 };
   const llmProvider = measureLLMProvider(input.llmProvider, counters);
   const searchProvider = measureSearchProvider(input.searchProvider, counters);
-  const validationDiagnostics: GraphPlanValidationDiagnostic[] = [];
+  const plannerDiagnostics: GraphOutlineValidationDiagnostic[] = [];
+  const reviserDiagnostics: GraphRevisionValidationDiagnostic[] = [];
+  const searchPlanDiagnostics: SearchPlanBundleValidationDiagnostic[] = [];
   let evidenceValues: readonly string[] = [];
-  let plannerOutcome: GraphPlannerOutcome | undefined;
+  let activeStage: PlannerGoldenFailure["stage"] = "graph_planner";
+  let graphOutlineLlmCalls: number | null = null;
+  let graphOutlineSearchCalls: number | null = null;
+  let graphOutlinePlanningStartedAt: number | null = null;
+  let graphOutlinePlanningTimingMs: number | null = null;
+  let searchPlanPlanningStartedAt: number | null = null;
 
   try {
+    signal.throwIfAborted();
+    graphOutlinePlanningStartedAt = performance.now();
     const plannerStartedAt = performance.now();
-    const initialPlan = await planOrCompactFallback({
+    const initialOutline = await planGraphOutline({
       query: input.query.query,
       provider: llmProvider,
       signal,
       timeoutMs: readRemainingLLMTimeoutMs(deadlineAt, llmStageTimeoutMs),
       onValidationDiagnostic: diagnostic => {
-        validationDiagnostics.push(diagnostic);
-      },
-      onOutcome: outcome => {
-        plannerOutcome = outcome;
+        plannerDiagnostics.push(diagnostic);
       },
     });
     const plannerTimingMs = elapsedSince(plannerStartedAt);
-    if (plannerOutcome === undefined) {
-      throw new Error("Golden Eval 未收到 Planner 结果观察");
+    if (!validateGraphOutline(initialOutline).valid) {
+      throw new GraphPlannerError("semantic_validation_failed");
     }
 
-    let finalPlan = initialPlan;
+    let finalOutline = initialOutline;
     let broadDiscoveryTimingMs: number | null = null;
     let graphReviserTimingMs: number | null = null;
-    let fallback: PlannerGoldenFallback | null =
-      plannerOutcome.kind === "compact_fallback"
-        ? {
-            stage: "planner",
-            reason: plannerOutcome.reason,
-          }
-        : null;
 
-    if (
-      plannerOutcome.kind === "success" &&
-      initialPlan.analysis.strategy === "evidence_assisted"
-    ) {
+    if (initialOutline.analysis.strategy === "evidence_assisted") {
+      activeStage = "broad_discovery";
       const discoveryStartedAt = performance.now();
-      try {
-        const evidence = await discoverBroadEvidence({
-          analysis: initialPlan.analysis,
-          provider: searchProvider,
-          signal,
-          language: "zh-CN",
-        });
-        evidenceValues = collectEvidenceValues(evidence);
-        broadDiscoveryTimingMs = elapsedSince(discoveryStartedAt);
+      const evidence = await discoverBroadEvidence({
+        analysis: initialOutline.analysis,
+        provider: searchProvider,
+        signal,
+        language: "zh-CN",
+      });
+      evidenceValues = collectEvidenceValues(evidence);
+      broadDiscoveryTimingMs = elapsedSince(discoveryStartedAt);
 
-        const reviserStartedAt = performance.now();
-        try {
-          finalPlan = await reviseGraphPlan({
-            query: input.query.query,
-            initialPlan,
-            evidence,
-            provider: llmProvider,
-            signal,
-            timeoutMs: readRemainingLLMTimeoutMs(
-              deadlineAt,
-              llmStageTimeoutMs,
-            ),
-            onValidationDiagnostic: ({ diagnostic }) => {
-              validationDiagnostics.push(diagnostic);
-            },
-          });
-          graphReviserTimingMs = elapsedSince(reviserStartedAt);
-        } catch (error: unknown) {
-          graphReviserTimingMs = elapsedSince(reviserStartedAt);
-          if (error instanceof GraphRevisionError) {
-            fallback = { stage: "graph_reviser", reason: error.kind };
-          } else {
-            throw error;
-          }
-        }
-      } catch (error: unknown) {
-        broadDiscoveryTimingMs = elapsedSince(discoveryStartedAt);
-        if (error instanceof BroadDiscoveryError) {
-          fallback = { stage: "broad_discovery", reason: "no_evidence" };
-        } else {
-          throw error;
-        }
+      activeStage = "graph_reviser";
+      const reviserStartedAt = performance.now();
+      finalOutline = await reviseGraphOutline({
+        query: input.query.query,
+        initialOutline,
+        evidence,
+        provider: llmProvider,
+        signal,
+        timeoutMs: readRemainingLLMTimeoutMs(
+          deadlineAt,
+          llmStageTimeoutMs,
+        ),
+        onValidationDiagnostic: diagnostic => {
+          reviserDiagnostics.push(diagnostic);
+        },
+      });
+      graphReviserTimingMs = elapsedSince(reviserStartedAt);
+      if (!validateGraphOutline(finalOutline).valid) {
+        throw new GraphRevisionError("semantic_validation_failed");
       }
     }
 
+    const completedGraphOutlinePlanningTimingMs = elapsedSince(
+      graphOutlinePlanningStartedAt,
+    );
+    graphOutlinePlanningTimingMs = completedGraphOutlinePlanningTimingMs;
+    graphOutlineLlmCalls = counters.llm;
+    graphOutlineSearchCalls = counters.search;
+
+    activeStage = "search_plan_generator";
+    searchPlanPlanningStartedAt = performance.now();
+    const searchPlanBundle = await generateSearchPlanBundle({
+      query: input.query.query,
+      language: "zh-CN",
+      outline: finalOutline,
+      provider: llmProvider,
+      signal,
+      timeoutMs: readRemainingLLMTimeoutMs(deadlineAt, llmStageTimeoutMs),
+      onValidationDiagnostic: diagnostic => {
+        searchPlanDiagnostics.push(diagnostic);
+      },
+    });
+
+    activeStage = "graph_assembly";
+    const finalPlan = assembleGraphPlan(finalOutline, searchPlanBundle);
     signal.throwIfAborted();
-    const initialReportPlan = sanitizeGraphPlanForReport(initialPlan, []);
+    const searchPlanPlanningTimingMs = elapsedSince(
+      searchPlanPlanningStartedAt,
+    );
+    const initialReportOutline = sanitizeGraphOutlineForReport(
+      initialOutline,
+      [],
+    );
+    const finalReportOutline = sanitizeGraphOutlineForReport(
+      finalOutline,
+      evidenceValues,
+    );
+    const reportBundle = sanitizeSearchPlanBundleForReport(
+      searchPlanBundle,
+      finalReportOutline.nodeIdMap,
+      evidenceValues,
+    );
     const finalReportPlan = sanitizeGraphPlanForReport(
       finalPlan,
       evidenceValues,
     );
-    const plannerUsedFallback = fallback?.stage === "planner";
+    const tokenUsages = input.readTokenUsages?.();
+    const tokenUsage = summarizeTokenUsage(tokenUsages, counters.llm);
+    const stageUsages = tokenUsage.status === "available"
+      ? tokenUsages
+      : undefined;
     return {
       query: input.query,
       executionStatus: "completed",
-      strategy: plannerUsedFallback ? null : finalPlan.analysis.strategy,
-      presentationMode: plannerUsedFallback
-        ? null
-        : finalPlan.analysis.presentationMode,
-      initialPlan: initialReportPlan.plan,
+      strategy: finalPlan.analysis.strategy,
+      presentationMode: finalPlan.analysis.presentationMode,
+      initialOutline: initialReportOutline.outline,
+      finalOutline: finalReportOutline.outline,
+      searchPlanBundle: reportBundle.bundle,
       finalPlan: finalReportPlan.plan,
       planFingerprints: {
-        initialSha256: fingerprintGraphPlan(initialPlan),
-        finalSha256: fingerprintGraphPlan(finalPlan),
+        initialOutlineSha256: fingerprintValue(initialOutline),
+        finalOutlineSha256: fingerprintValue(finalOutline),
+        searchPlanBundleSha256: fingerprintValue(searchPlanBundle),
+        finalSha256: fingerprintValue(finalPlan),
       },
       reportSanitization: {
         evidenceRedactionCount:
-          initialReportPlan.summary.evidenceRedactionCount +
+          initialReportOutline.summary.evidenceRedactionCount +
+          finalReportOutline.summary.evidenceRedactionCount +
+          reportBundle.summary.evidenceRedactionCount +
           finalReportPlan.summary.evidenceRedactionCount,
         urlRedactionCount:
-          initialReportPlan.summary.urlRedactionCount +
+          initialReportOutline.summary.urlRedactionCount +
+          finalReportOutline.summary.urlRedactionCount +
+          reportBundle.summary.urlRedactionCount +
           finalReportPlan.summary.urlRedactionCount,
         truncatedFieldCount:
-          initialReportPlan.summary.truncatedFieldCount +
+          initialReportOutline.summary.truncatedFieldCount +
+          finalReportOutline.summary.truncatedFieldCount +
+          reportBundle.summary.truncatedFieldCount +
           finalReportPlan.summary.truncatedFieldCount,
       },
-      fallback,
-      suggestedOutcome: fallback === null ? null : "targetedIterate",
-      validationDiagnostics,
+      suggestedOutcome: null,
+      validationDiagnostics: {
+        planner: plannerDiagnostics,
+        reviser: reviserDiagnostics,
+        searchPlanGenerator: searchPlanDiagnostics,
+      },
       metrics: calculateAutomaticMetrics(finalPlan, finalReportPlan.plan),
       calls: {
         llm: counters.llm,
         search: counters.search,
-        searchHttpAttempts:
-          input.readSearchHttpAttemptCount?.() ?? "unavailable",
+        searchHttpAttempts: input.readSearchHttpAttemptCount === undefined
+          ? ("unavailable" as const)
+          : input.readSearchHttpAttemptCount(),
         extract: 0,
       },
+      callsByStage: {
+        graphOutlinePlanning: {
+          llm: graphOutlineLlmCalls,
+          search: graphOutlineSearchCalls,
+        },
+        searchPlanPlanning: {
+          llm: counters.llm - graphOutlineLlmCalls,
+          search: 0,
+        },
+      },
       timingsMs: {
+        graphOutlinePlanning: completedGraphOutlinePlanningTimingMs,
+        searchPlanPlanning: searchPlanPlanningTimingMs,
         planner: plannerTimingMs,
         broadDiscovery: broadDiscoveryTimingMs,
         graphReviser: graphReviserTimingMs,
         total: elapsedSince(startedAt),
       },
-      tokenUsage: summarizeTokenUsage(input.readTokenUsages?.(), counters.llm),
+      tokenUsage,
+      tokenUsageByStage: {
+        graphOutlinePlanning: summarizeTokenUsage(
+          stageUsages?.slice(0, graphOutlineLlmCalls),
+          graphOutlineLlmCalls,
+        ),
+        searchPlanPlanning: summarizeTokenUsage(
+          stageUsages?.slice(graphOutlineLlmCalls),
+          counters.llm - graphOutlineLlmCalls,
+        ),
+      },
       estimatedCost: {
         status: "unavailable",
         reason: "pricing_not_frozen",
@@ -710,29 +927,96 @@ export async function evaluatePlannerGoldenQuery(
     };
   } catch (error: unknown) {
     const interrupted = signal.aborted || isAbortLike(error);
-    if (!interrupted) {
-      throw error;
-    }
-
-    const deadlineExceeded = deadlineSignal.aborted ||
-      (error instanceof Error && error.name === "TimeoutError");
-    return {
+    const searchHttpAttempts: number | "unavailable" =
+      input.readSearchHttpAttemptCount === undefined
+        ? "unavailable"
+        : input.readSearchHttpAttemptCount();
+    const completedGraphOutlineLlmCalls = graphOutlineLlmCalls ?? counters.llm;
+    const completedGraphOutlineSearchCalls =
+      graphOutlineSearchCalls ?? counters.search;
+    const tokenUsages = input.readTokenUsages?.();
+    const tokenUsage = summarizeTokenUsage(tokenUsages, counters.llm);
+    const stageUsages = tokenUsage.status === "available"
+      ? tokenUsages
+      : undefined;
+    const totalTimingMs = elapsedSince(startedAt);
+    const common = {
       query: input.query,
-      executionStatus: deadlineExceeded ? "deadline_exceeded" : "cancelled",
-      suggestedOutcome: null,
       calls: {
         llm: counters.llm,
         search: counters.search,
-        searchHttpAttempts:
-          input.readSearchHttpAttemptCount?.() ?? "unavailable",
-        extract: 0,
+        searchHttpAttempts,
+        extract: 0 as const,
       },
-      totalTimingMs: elapsedSince(startedAt),
-      tokenUsage: summarizeTokenUsage(input.readTokenUsages?.(), counters.llm),
+      callsByStage: {
+        graphOutlinePlanning: {
+          llm: completedGraphOutlineLlmCalls,
+          search: completedGraphOutlineSearchCalls,
+        },
+        searchPlanPlanning: {
+          llm: counters.llm - completedGraphOutlineLlmCalls,
+          search: 0 as const,
+        },
+      },
+      timingsMs: {
+        graphOutlinePlanning:
+          graphOutlinePlanningTimingMs ??
+          (graphOutlinePlanningStartedAt === null
+            ? null
+            : elapsedSince(graphOutlinePlanningStartedAt)),
+        searchPlanPlanning:
+          searchPlanPlanningStartedAt === null
+            ? null
+            : elapsedSince(searchPlanPlanningStartedAt),
+        total: totalTimingMs,
+      },
+      tokenUsage,
+      tokenUsageByStage: {
+        graphOutlinePlanning: summarizeTokenUsage(
+          stageUsages?.slice(0, completedGraphOutlineLlmCalls),
+          completedGraphOutlineLlmCalls,
+        ),
+        searchPlanPlanning: summarizeTokenUsage(
+          stageUsages?.slice(completedGraphOutlineLlmCalls),
+          counters.llm - completedGraphOutlineLlmCalls,
+        ),
+      },
       estimatedCost: {
-        status: "unavailable",
-        reason: "pricing_not_frozen",
+        status: "unavailable" as const,
+        reason: "pricing_not_frozen" as const,
       },
+    };
+
+    if (interrupted) {
+      const deadlineExceeded = deadlineSignal.aborted ||
+        (input.signal?.aborted !== true &&
+          error instanceof Error &&
+          error.name === "TimeoutError");
+      return {
+        ...common,
+        executionStatus: deadlineExceeded
+          ? "deadline_exceeded"
+          : "cancelled",
+        suggestedOutcome: null,
+      };
+    }
+
+    const reason =
+      error instanceof GraphPlannerError ||
+      error instanceof GraphRevisionError ||
+      error instanceof SearchPlanGenerationError
+        ? error.kind
+        : error instanceof BroadDiscoveryError
+          ? "no_evidence"
+          : null;
+    return {
+      ...common,
+      executionStatus: "failed",
+      failure: {
+        stage: activeStage,
+        reason: reason ?? "unexpected_internal_error",
+      },
+      suggestedOutcome: "targetedIterate",
     };
   }
 }

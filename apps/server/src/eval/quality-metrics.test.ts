@@ -140,6 +140,8 @@ function createTelemetry(totalMs: number) {
   return QualityEvalTelemetrySchema.parse({
     timingsMs: {
       planning: 100,
+      graphOutlinePlanning: 60,
+      searchPlanPlanning: 40,
       nodeProcessing: 200,
       total: totalMs,
       // Provider 耗时可以并发累加，Deadline 指标只能读取 total。
@@ -152,6 +154,30 @@ function createTelemetry(totalMs: number) {
       logicalLlmCalls: 2,
       searchHttpAttempts: 1,
       extractHttpAttempts: 1,
+    },
+    planningStages: {
+      graphOutline: {
+        logicalLlmCalls: 1,
+        failureCode: null,
+        tokens: {
+          status: "complete",
+          observations: 1,
+          inputTokens: 1,
+          outputTokens: 1,
+          totalTokens: 2,
+        },
+      },
+      searchPlan: {
+        logicalLlmCalls: 1,
+        failureCode: null,
+        tokens: {
+          status: "complete",
+          observations: 1,
+          inputTokens: 1,
+          outputTokens: 1,
+          totalTokens: 2,
+        },
+      },
     },
     versions: { rankFusion: "rank-fusion.v1" },
     ranking: {

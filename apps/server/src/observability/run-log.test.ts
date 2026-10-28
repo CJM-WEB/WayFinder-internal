@@ -187,6 +187,9 @@ describe("Run Log Recorder", () => {
       totalTokens: 14,
     });
     recorder.recordProviderCallFinished("llm", 5, 0);
+    recorder.recordGraphOutlinePlanningFinished();
+    nowMs += 3;
+    recorder.recordSearchPlanPlanningFinished();
     recorder.recordPlan(plan);
     recorder.recordNodeProcessingStarted();
     recorder.recordProviderCallStarted("search");
@@ -234,9 +237,11 @@ describe("Run Log Recorder", () => {
       },
       outcome: "partial",
       timingsMs: {
-        planning: 5,
+        planning: 8,
+        graphOutlinePlanning: 5,
+        searchPlanPlanning: 3,
         nodeProcessing: 7,
-        total: 12,
+        total: 15,
         provider: { search: 7, extract: 0, llm: 5 },
       },
       counts: {
@@ -254,6 +259,30 @@ describe("Run Log Recorder", () => {
         extractedPageCount: 1,
         searchHttpAttempts: 1,
         extractHttpAttempts: 0,
+      },
+      planningStages: {
+        graphOutline: {
+          logicalLlmCalls: 1,
+          failureCode: null,
+          tokens: {
+            status: "complete",
+            observations: 1,
+            inputTokens: 10,
+            outputTokens: 4,
+            totalTokens: 14,
+          },
+        },
+        searchPlan: {
+          logicalLlmCalls: 0,
+          failureCode: null,
+          tokens: {
+            status: "not_used",
+            observations: 0,
+            inputTokens: 0,
+            outputTokens: 0,
+            totalTokens: 0,
+          },
+        },
       },
       warningCodes: ["EXTRACTION_FAILED"],
       errorCodes: [],
@@ -299,7 +328,7 @@ describe("Run Log Recorder", () => {
 
   it("严格拒绝未列入白名单的敏感字段", () => {
     const base = RunLogRecordSchema.parse({
-      schemaVersion: "run-log.v2",
+      schemaVersion: "run-log.v3",
       createdAt: "2026-10-22T00:00:00.000Z",
       identifiers: {
         logId: IDS[0],
@@ -309,6 +338,8 @@ describe("Run Log Recorder", () => {
       outcome: "failed",
       timingsMs: {
         planning: null,
+        graphOutlinePlanning: null,
+        searchPlanPlanning: null,
         nodeProcessing: null,
         total: 0,
         provider: { search: 0, extract: 0, llm: 0 },
@@ -329,13 +360,38 @@ describe("Run Log Recorder", () => {
         searchHttpAttempts: 0,
         extractHttpAttempts: 0,
       },
+      planningStages: {
+        graphOutline: {
+          logicalLlmCalls: 0,
+          failureCode: "UNKNOWN",
+          tokens: {
+            status: "not_used",
+            observations: 0,
+            inputTokens: 0,
+            outputTokens: 0,
+            totalTokens: 0,
+          },
+        },
+        searchPlan: {
+          logicalLlmCalls: 0,
+          failureCode: null,
+          tokens: {
+            status: "not_used",
+            observations: 0,
+            inputTokens: 0,
+            outputTokens: 0,
+            totalTokens: 0,
+          },
+        },
+      },
       warningCodes: [],
       errorCodes: ["UNKNOWN"],
       versions: {
         protocol: "0.1",
         resultGraph: "0.1",
-        plannerPrompt: "graph-planner.v1",
-        reviserPrompt: "graph-reviser.v1",
+        plannerPrompt: "graph-planner.v2",
+        reviserPrompt: "graph-reviser.v3",
+        searchPlanGeneratorPrompt: "search-plan-generator.v1",
         rerankerPrompt: "resource-reranker.v1",
         rankFusion: "rank-fusion.v1",
       },
@@ -402,6 +458,7 @@ describe("Run Log Recorder", () => {
 
   it("失败与取消只记录稳定 Code，不保存 Error 对象", async () => {
     const records: RunLogRecord[] = [];
+    let nowMs = Date.parse("2026-10-22T00:00:00.000Z");
     let idIndex = 0;
     const recorder = createRunLogRecorder({
       sink: {
@@ -411,11 +468,17 @@ describe("Run Log Recorder", () => {
       },
       searchProviderId: "fake-search",
       llmProviderId: "fake-llm",
-      startedAt: Date.parse("2026-10-22T00:00:00.000Z"),
+      startedAt: nowMs,
+      now: () => nowMs,
       createId: () => IDS[idIndex++]!,
     });
 
     recorder.recordProviderCallStarted("llm");
+    nowMs += 9;
+    recorder.recordPlanningStageFailed(
+      "graphOutline",
+      "RUN_DEADLINE_EXCEEDED",
+    );
     recorder.recordEvent({
       type: "node.failed",
       nodeId: "node-1",
@@ -432,11 +495,62 @@ describe("Run Log Recorder", () => {
     expect(records[0]).toMatchObject({
       outcome: "failed",
       errorCodes: ["SEARCH_PROVIDER_FAILED", "RUN_DEADLINE_EXCEEDED"],
+      timingsMs: {
+        graphOutlinePlanning: 9,
+        searchPlanPlanning: null,
+      },
+      planningStages: {
+        graphOutline: {
+          logicalLlmCalls: 1,
+          failureCode: "RUN_DEADLINE_EXCEEDED",
+          tokens: { status: "unavailable", observations: 0 },
+        },
+      },
       tokens: { status: "unavailable", observations: 0 },
     });
     expect(JSON.stringify(records[0])).not.toContain("stack");
     expect(JSON.stringify(records[0])).not.toContain("cause");
     expect(JSON.stringify(records[0])).not.toContain("message");
+  });
+
+  it("Stage 2 失败时冻结已完成 Stage 1 与当前阶段耗时", async () => {
+    const records: RunLogRecord[] = [];
+    let nowMs = Date.parse("2026-10-22T00:00:00.000Z");
+    let idIndex = 0;
+    const recorder = createRunLogRecorder({
+      sink: { write: async record => { records.push(record); } },
+      searchProviderId: "fake-search",
+      llmProviderId: "fake-llm",
+      startedAt: nowMs,
+      now: () => nowMs,
+      createId: () => IDS[idIndex++]!,
+    });
+
+    nowMs += 4;
+    recorder.recordGraphOutlinePlanningFinished();
+    recorder.recordProviderCallStarted("llm");
+    nowMs += 6;
+    recorder.recordPlanningStageFailed("searchPlan", "PLANNER_FAILED");
+    recorder.recordEvent({
+      type: "run.failed",
+      error: { code: "PLANNER_FAILED", retryable: false },
+    });
+    await recorder.finish();
+
+    expect(records[0]).toMatchObject({
+      outcome: "failed",
+      timingsMs: {
+        graphOutlinePlanning: 4,
+        searchPlanPlanning: 6,
+      },
+      planningStages: {
+        graphOutline: { failureCode: null },
+        searchPlan: {
+          logicalLlmCalls: 1,
+          failureCode: "PLANNER_FAILED",
+        },
+      },
+    });
   });
 
   it("没有业务终态的用户取消收敛为 REQUEST_ABORTED", async () => {

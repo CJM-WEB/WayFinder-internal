@@ -16,6 +16,8 @@ import type {
   StructuredLLMInput,
 } from "../ai/llm-provider.js";
 import type { SearchProvider } from "../search/provider.js";
+import type { GraphOutline } from "../ai/graph-outline.js";
+import type { SearchPlanBundle } from "../ai/search-plan-generator.js";
 import {
   evaluatePlannerGoldenQuery,
   type PlannerGoldenQuery,
@@ -124,6 +126,31 @@ function createCompactPlan(
   };
 }
 
+function toOutline(plan: GraphPlan): GraphOutline {
+  return {
+    analysis: plan.analysis,
+    nodes: plan.nodes.map(node => ({
+      id: node.id,
+      title: node.title,
+      description: node.description,
+      nodeType: node.nodeType,
+      layer: node.layer,
+      status: node.status,
+    })),
+    edges: plan.edges,
+  };
+}
+
+function toSearchPlanBundle(plan: GraphPlan): SearchPlanBundle {
+  return {
+    plans: plan.nodes.map(node => ({
+      nodeId: node.id,
+      queries: node.searchPlan.queries,
+      rankingProfile: node.searchPlan.rankingProfile,
+    })),
+  };
+}
+
 function createEvidence(request: ProviderSearchRequest): NormalizedSearchHit[] {
   return [
     {
@@ -156,12 +183,13 @@ function createInput(
 }
 
 describe("Planner Golden 单条 Query 编排", () => {
-  it("plan_first 只运行 Planner，并记录自动指标与可用 Token", async () => {
+  it("plan_first 严格运行 Outline 与全图 SearchPlan 两阶段", async () => {
     const plan = createCompactPlan("plan_first");
     const result = await evaluatePlannerGoldenQuery(
-      createInput(new FakeLLMProvider([plan]), {
+      createInput(new FakeLLMProvider([toOutline(plan), toSearchPlanBundle(plan)]), {
         readTokenUsages: () => [
           { inputTokens: 100, outputTokens: 20, totalTokens: 120 },
+          { inputTokens: 80, outputTokens: 10, totalTokens: 90 },
         ],
       }),
     );
@@ -169,9 +197,12 @@ describe("Planner Golden 单条 Query 编排", () => {
     expect(result).toMatchObject({
       executionStatus: "completed",
       strategy: "plan_first",
-      fallback: null,
       suggestedOutcome: null,
-      calls: { llm: 1, search: 0, extract: 0 },
+      calls: { llm: 2, search: 0, extract: 0 },
+      callsByStage: {
+        graphOutlinePlanning: { llm: 1, search: 0 },
+        searchPlanPlanning: { llm: 1, search: 0 },
+      },
       metrics: {
         schemaValid: true,
         validatorValid: true,
@@ -179,13 +210,20 @@ describe("Planner Golden 单条 Query 编排", () => {
         nodeCount: 1,
         edgeCount: 0,
         edgeCoverage: 0,
+        plannedRequestDuplication: {
+          totalCount: 2,
+          uniqueCount: 2,
+          intraNodeDuplicateOccurrenceCount: 0,
+          crossNodeSharedGroupCount: 0,
+          crossNodeExtraNodeOccurrenceCount: 0,
+        },
       },
       tokenUsage: {
         status: "available",
-        callCount: 1,
-        inputTokens: 100,
-        outputTokens: 20,
-        totalTokens: 120,
+        callCount: 2,
+        inputTokens: 180,
+        outputTokens: 30,
+        totalTokens: 210,
       },
       estimatedCost: {
         status: "unavailable",
@@ -206,6 +244,8 @@ describe("Planner Golden 单条 Query 编排", () => {
     expect(review).toContain("推荐顺序合理性 1～5");
     expect(review).toContain("Related 相关性 1～5");
     expect(review).toContain("SearchPlan 质量 1～5");
+    expect(review).toContain("原始主题/实体锚定 1～5");
+    expect(review).toContain("跨 Node 检索意图区分度 1～5");
   });
 
   it("evidence_assisted 仅执行一轮 Discovery 与一次 Reviser", async () => {
@@ -215,11 +255,16 @@ describe("Planner Golden 单条 Query 编排", () => {
       "基于当前生态的 Python 学习路径",
     );
     const result = await evaluatePlannerGoldenQuery(
-      createInput(new FakeLLMProvider([initialPlan, revisedPlan]), {
+      createInput(new FakeLLMProvider([
+        toOutline(initialPlan),
+        toOutline(revisedPlan),
+        toSearchPlanBundle(revisedPlan),
+      ]), {
         readSearchHttpAttemptCount: () => 2,
         readTokenUsages: () => [
           { inputTokens: 100, outputTokens: 20, totalTokens: 120 },
           { inputTokens: 200, outputTokens: 30, totalTokens: 230 },
+          { inputTokens: 150, outputTokens: 25, totalTokens: 175 },
         ],
       }),
     );
@@ -228,19 +273,22 @@ describe("Planner Golden 单条 Query 编排", () => {
       executionStatus: "completed",
       strategy: "evidence_assisted",
       finalPlan: revisedPlan,
-      fallback: null,
       calls: {
-        llm: 2,
+        llm: 3,
         search: 2,
         searchHttpAttempts: 2,
         extract: 0,
       },
+      callsByStage: {
+        graphOutlinePlanning: { llm: 2, search: 2 },
+        searchPlanPlanning: { llm: 1, search: 0 },
+      },
       tokenUsage: {
         status: "available",
-        callCount: 2,
-        inputTokens: 300,
-        outputTokens: 50,
-        totalTokens: 350,
+        callCount: 3,
+        inputTokens: 450,
+        outputTokens: 75,
+        totalTokens: 525,
       },
     });
 
@@ -250,45 +298,47 @@ describe("Planner Golden 单条 Query 编排", () => {
     expect(serialized).not.toContain("PRIVATE_PROVIDER_METADATA");
   });
 
-  it("零 Evidence 时保留 Initial Plan 并建议 targetedIterate", async () => {
+  it("零 Evidence 时失败关闭，不保留 Initial Plan", async () => {
     const initialPlan = createCompactPlan("evidence_assisted");
     const result = await evaluatePlannerGoldenQuery(
-      createInput(new FakeLLMProvider([initialPlan]), {
+      createInput(new FakeLLMProvider([toOutline(initialPlan)]), {
         searchProvider: new FakeSearchProvider(() => []),
       }),
     );
 
     expect(result).toMatchObject({
-      executionStatus: "completed",
-      initialPlan,
-      finalPlan: initialPlan,
-      fallback: { stage: "broad_discovery", reason: "no_evidence" },
+      executionStatus: "failed",
+      failure: { stage: "broad_discovery", reason: "no_evidence" },
       suggestedOutcome: "targetedIterate",
       calls: { llm: 1, search: 2, extract: 0 },
+      timingsMs: {
+        graphOutlinePlanning: expect.any(Number),
+        searchPlanPlanning: null,
+        total: expect.any(Number),
+      },
     });
   });
 
-  it("Reviser 普通失败时保留 Initial Plan，且不吞掉失败分类", async () => {
+  it("Reviser 失败时直接记录失败，不回退 Initial Outline", async () => {
     const initialPlan = createCompactPlan("evidence_assisted");
     const result = await evaluatePlannerGoldenQuery(
       createInput(
         new FakeLLMProvider([
-          initialPlan,
+          toOutline(initialPlan),
           new LLMProviderError("provider_failure", false),
         ]),
       ),
     );
 
     expect(result).toMatchObject({
-      executionStatus: "completed",
-      finalPlan: initialPlan,
-      fallback: { stage: "graph_reviser", reason: "provider_failure" },
+      executionStatus: "failed",
+      failure: { stage: "graph_reviser", reason: "provider_failure" },
       suggestedOutcome: "targetedIterate",
       calls: { llm: 2, search: 2, extract: 0 },
     });
   });
 
-  it("Planner compact fallback 不会被报告为正常成功", async () => {
+  it("Planner 失败时不生成 compact fallback", async () => {
     const result = await evaluatePlannerGoldenQuery(
       createInput(
         new FakeLLMProvider([
@@ -298,15 +348,46 @@ describe("Planner Golden 单条 Query 编排", () => {
     );
 
     expect(result).toMatchObject({
-      executionStatus: "completed",
-      strategy: null,
-      presentationMode: null,
-      fallback: { stage: "planner", reason: "provider_failure" },
+      executionStatus: "failed",
+      failure: { stage: "graph_planner", reason: "provider_failure" },
       suggestedOutcome: "targetedIterate",
       calls: { llm: 1, search: 0, extract: 0 },
       tokenUsage: {
         status: "unavailable",
         reason: "missing_or_invalid_provider_usage",
+      },
+    });
+  });
+
+  it("Generator 失败样本保留两阶段已消耗耗时、调用与 Token 边界", async () => {
+    const plan = createCompactPlan("plan_first");
+    const bundle = toSearchPlanBundle(plan);
+    const item = bundle.plans[0];
+    if (item === undefined) throw new Error("测试 Bundle 必须包含一项");
+    const duplicateBundle: SearchPlanBundle = {
+      plans: [{ ...item, queries: ["MySQL 架构", " mysql 架构 "] }],
+    };
+
+    const result = await evaluatePlannerGoldenQuery(
+      createInput(
+        new FakeLLMProvider([toOutline(plan), duplicateBundle]),
+      ),
+    );
+
+    expect(result).toMatchObject({
+      executionStatus: "failed",
+      failure: {
+        stage: "search_plan_generator",
+        reason: "duplicate_query",
+      },
+      callsByStage: {
+        graphOutlinePlanning: { llm: 1, search: 0 },
+        searchPlanPlanning: { llm: 1, search: 0 },
+      },
+      timingsMs: {
+        graphOutlinePlanning: expect.any(Number),
+        searchPlanPlanning: expect.any(Number),
+        total: expect.any(Number),
       },
     });
   });
@@ -332,7 +413,11 @@ describe("Planner Golden 单条 Query 编排", () => {
     };
 
     const result = await evaluatePlannerGoldenQuery(
-      createInput(new FakeLLMProvider([initialPlan, unsafeRevisedPlan])),
+      createInput(new FakeLLMProvider([
+        toOutline(initialPlan),
+        toOutline(unsafeRevisedPlan),
+        toSearchPlanBundle(unsafeRevisedPlan),
+      ])),
     );
     const serialized = JSON.stringify(result);
 
@@ -343,7 +428,9 @@ describe("Planner Golden 单条 Query 编排", () => {
         urlRedactionCount: expect.any(Number),
       },
       planFingerprints: {
-        initialSha256: expect.stringMatching(/^[0-9a-f]{64}$/u),
+        initialOutlineSha256: expect.stringMatching(/^[0-9a-f]{64}$/u),
+        finalOutlineSha256: expect.stringMatching(/^[0-9a-f]{64}$/u),
+        searchPlanBundleSha256: expect.stringMatching(/^[0-9a-f]{64}$/u),
         finalSha256: expect.stringMatching(/^[0-9a-f]{64}$/u),
       },
     });
@@ -362,8 +449,8 @@ describe("Planner Golden 单条 Query 编排", () => {
     );
   });
 
-  it("Planner fallback 不计入实际 Strategy 覆盖", async () => {
-    const plannerFallback = await evaluatePlannerGoldenQuery(
+  it("Planner 失败样本不计入实际 Strategy 覆盖", async () => {
+    const plannerFailure = await evaluatePlannerGoldenQuery(
       createInput(
         new FakeLLMProvider([
           new LLMProviderError("provider_failure", false),
@@ -372,13 +459,18 @@ describe("Planner Golden 单条 Query 编排", () => {
     );
     const evidencePlan = createCompactPlan("evidence_assisted");
     const evidenceResult = await evaluatePlannerGoldenQuery(
-      createInput(new FakeLLMProvider([evidencePlan, evidencePlan])),
+      createInput(new FakeLLMProvider([
+        toOutline(evidencePlan),
+        toOutline(evidencePlan),
+        toSearchPlanBundle(evidencePlan),
+      ])),
     );
 
-    expect(summarizeResults([plannerFallback, evidenceResult])).toMatchObject({
+    expect(summarizeResults([plannerFailure, evidenceResult])).toMatchObject({
+      failedCount: 1,
       observedStrategies: ["evidence_assisted"],
       bothStrategiesObserved: false,
-      engineeringDisposition: "insufficientStrategyEvidence",
+      engineeringDisposition: "executionIncomplete",
     });
   });
 });
@@ -402,6 +494,11 @@ describe("Planner Golden 取消与程序错误边界", () => {
       executionStatus: "deadline_exceeded",
       suggestedOutcome: null,
       calls: { llm: 1, search: 0, extract: 0 },
+      timingsMs: {
+        graphOutlinePlanning: expect.any(Number),
+        searchPlanPlanning: null,
+        total: expect.any(Number),
+      },
     });
   });
 
@@ -412,7 +509,7 @@ describe("Planner Golden 取消与程序错误边界", () => {
     controller.abort(reason);
 
     const result = await evaluatePlannerGoldenQuery(
-      createInput(new FakeLLMProvider([createCompactPlan("plan_first")]), {
+      createInput(new FakeLLMProvider([toOutline(createCompactPlan("plan_first"))]), {
         signal: controller.signal,
       }),
     );
@@ -425,20 +522,26 @@ describe("Planner Golden 取消与程序错误边界", () => {
     expect(JSON.stringify(result)).not.toContain("人员取消");
   });
 
-  it("未知程序错误原样抛出，不伪装为受控 Eval 结果", async () => {
+  it("未知程序错误记为脱敏失败样本，不终止整个 Suite", async () => {
     const programmingError = new TypeError("PRIVATE_PROGRAMMING_DETAIL");
 
     await expect(
       evaluatePlannerGoldenQuery(
         createInput(new FakeLLMProvider([programmingError])),
       ),
-    ).rejects.toBe(programmingError);
+    ).resolves.toMatchObject({
+      executionStatus: "failed",
+      failure: {
+        stage: "graph_planner",
+        reason: "unexpected_internal_error",
+      },
+    });
   });
 
   it("拒绝突破 40 秒硬上限的测试配置", async () => {
     await expect(
       evaluatePlannerGoldenQuery(
-        createInput(new FakeLLMProvider([createCompactPlan("plan_first")]), {
+        createInput(new FakeLLMProvider([toOutline(createCompactPlan("plan_first"))]), {
           runDeadlineMs: 40_001,
         }),
       ),
@@ -448,7 +551,7 @@ describe("Planner Golden 取消与程序错误边界", () => {
   it("拒绝突破 30 秒硬上限的 LLM 阶段配置", async () => {
     await expect(
       evaluatePlannerGoldenQuery(
-        createInput(new FakeLLMProvider([createCompactPlan("plan_first")]), {
+        createInput(new FakeLLMProvider([toOutline(createCompactPlan("plan_first"))]), {
           llmStageTimeoutMs: 30_001,
         }),
       ),

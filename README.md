@@ -207,7 +207,7 @@ pnpm start
 | `SERPAPI_API_KEY` | 必填 Secret，示例留空 | SerpAPI 凭据（固定使用 Bing Search） |
 | `PORT` | 可选，默认 `3000` | Node 回环监听端口 |
 | `SEARCH_TIMEOUT_MS` | 可选，默认 `16000`、上限 `40000` | Search 单次超时 |
-| `PLANNER_TIMEOUT_MS` / `RERANK_TIMEOUT_MS` | 可选，默认 `30000 / 24000`、上限 `30000` | LLM 阶段单次超时 |
+| `PLANNER_TIMEOUT_MS` / `RERANK_TIMEOUT_MS` | 可选，默认 `30000 / 24000`、上限 `30000` | Graph Planner、Graph Reviser、SearchPlan Generator 各自单次 LLM 调用与 Reranker 的阶段上限；全部仍共享 40 秒 Run Deadline |
 | `SEARCH_CONCURRENCY` / `LLM_CONCURRENCY` | 可选、只能向下调整 | 进程级并发上限 |
 | `RUN_LOGGING` | 可选，默认 `false` | 仅本地受控诊断；共享部署保持关闭 |
 

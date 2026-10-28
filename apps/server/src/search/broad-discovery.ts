@@ -36,7 +36,7 @@ export type DiscoverBroadEvidenceInput = Readonly<{
   language: SearchLanguage;
 }>;
 
-/** 零 Evidence 的脱敏内部错误；未来 Orchestrator 据此保留 Initial GraphPlan。 */
+/** 零 Evidence 的脱敏内部错误；Orchestrator 据此失败关闭为 SEARCH_PROVIDER_FAILED。 */
 export class BroadDiscoveryError extends Error {
   public constructor() {
     super("BROAD_DISCOVERY_FAILED");

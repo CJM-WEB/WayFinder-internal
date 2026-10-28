@@ -76,6 +76,7 @@ export async function buildProductionServer(
       normalizeQuery: query => query.normalize("NFKC").trim().toLowerCase(),
       onPlannerValidationDiagnostic: () => undefined,
       onRevisionValidationDiagnostic: () => undefined,
+      onSearchPlanValidationDiagnostic: () => undefined,
       ...(runLogSink === undefined ? {} : { runLogSink }),
     }),
   );

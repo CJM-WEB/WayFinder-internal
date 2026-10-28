@@ -13,7 +13,14 @@ import type {
   PresentationMode,
 } from "@wayfinder/contracts";
 
-import { validateGraphPlan } from "./graph-validator.js";
+import {
+  GraphOutlineSchema,
+  type GraphOutline,
+} from "../ai/graph-outline.js";
+import {
+  validateGraphOutline,
+  validateGraphPlan,
+} from "./graph-validator.js";
 
 function makeNode(
   id: string,
@@ -85,7 +92,46 @@ function findingCodes(plan: GraphPlan): string[] {
   return validateGraphPlan(plan).findings.map(finding => finding.code);
 }
 
+/** 测试投影只删除第二阶段字段，不复制另一套 Outline 构造规则。 */
+function toOutline(plan: GraphPlan): GraphOutline {
+  return GraphOutlineSchema.parse({
+    analysis: plan.analysis,
+    nodes: plan.nodes.map(node => {
+      const { searchPlan, ...outlineNode } = node;
+      void searchPlan;
+      return outlineNode;
+    }),
+    edges: plan.edges,
+  });
+}
+
 describe("GraphPlan 确定性 Validator", () => {
+  it("Outline 复用图规则，但不会要求尚未生成的 SearchPlan", () => {
+    const plan = makePlan(
+      [
+        makeNode("only", "primary", {
+          searchPlan: {
+            queries: [" \n "],
+            maxResults: 20,
+            rankingProfile: "knowledge",
+            providerHints: ["news"],
+          },
+        }),
+      ],
+      [],
+      "compact",
+    );
+
+    expect(validateGraphOutline(toOutline(plan))).toEqual({
+      valid: true,
+      findings: [],
+    });
+    expect(findingCodes(plan)).toEqual([
+      "EMPTY_SEARCH_QUERY",
+      "UNSUPPORTED_PROVIDER_HINTS",
+    ]);
+  });
+
   it("接受 compact 单节点、普通 graph 和高歧义纯消歧图", () => {
     const compact = makePlan([makeNode("only")], [], "compact");
     const graph = makePrimaryChain(4);
@@ -216,9 +262,9 @@ describe("GraphPlan 确定性 Validator", () => {
 
   it("只补充可确定的空白文本与 V0 Provider Hint 规则", () => {
     const invalidNode = makeNode("only", "primary", {
-      title: " \n ",
+      title: "\u0085",
       searchPlan: {
-        queries: ["\t"],
+        queries: ["\u0085"],
         maxResults: 20,
         rankingProfile: "knowledge",
         providerHints: ["news"],

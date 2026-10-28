@@ -19,7 +19,12 @@ import {
   FakeLLMProvider,
   FakeSearchProvider,
 } from "../../../../tests/support/test-infrastructure.mjs";
-import type { LLMProvider } from "../ai/llm-provider.js";
+import { GraphOutlineSchema } from "../ai/graph-outline.js";
+import {
+  LLMProviderError,
+  type LLMProvider,
+} from "../ai/llm-provider.js";
+import { SearchPlanBundleSchema } from "../ai/search-plan-generator.js";
 import { NodeEventEmissionError } from "../pipeline/process-node.js";
 import type { SearchProvider } from "../search/provider.js";
 import { createConcurrencyLimitedProviders } from "./provider-concurrency.js";
@@ -144,6 +149,38 @@ function createRerankOutput() {
   };
 }
 
+/** 流程测试从同一公共 Plan 投影两阶段 Fake 响应，避免维护第二套 Fixture。 */
+function createPlanningResponses(plan: GraphPlan): readonly unknown[] {
+  return [
+    GraphOutlineSchema.parse({
+      analysis: plan.analysis,
+      nodes: plan.nodes.map(node => {
+        const { searchPlan, ...outlineNode } = node;
+        void searchPlan;
+        return outlineNode;
+      }),
+      edges: plan.edges,
+    }),
+    SearchPlanBundleSchema.parse({
+      plans: plan.nodes.map(node => ({
+        nodeId: node.id,
+        queries: node.searchPlan.queries,
+        rankingProfile: node.searchPlan.rankingProfile,
+      })),
+    }),
+  ];
+}
+
+function expandPlanFirstResponses(
+  llmResponses: readonly unknown[],
+): readonly unknown[] {
+  const [first, ...remaining] = llmResponses;
+  const parsed = GraphPlanSchema.safeParse(first);
+  return parsed.success
+    ? [...createPlanningResponses(parsed.data), ...remaining]
+    : llmResponses;
+}
+
 function createDependencies(
   clock: ReturnType<typeof createFixedClock>,
   llmResponses: readonly unknown[],
@@ -160,7 +197,7 @@ function createDependencies(
           },
         ],
       }),
-      llmProvider: new FakeLLMProvider(llmResponses),
+      llmProvider: new FakeLLMProvider(expandPlanFirstResponses(llmResponses)),
       concurrency: { search: 6, llm: 3 },
     }),
     officialSourcePolicy: { knownRiskyDownloadDomains: [] },
@@ -169,16 +206,20 @@ function createDependencies(
     normalizeQuery: (query: string) => query.normalize("NFKC").toLowerCase(),
     onPlannerValidationDiagnostic: () => undefined,
     onRevisionValidationDiagnostic: () => undefined,
+    onSearchPlanValidationDiagnostic: () => undefined,
     now: clock.now,
   };
 }
 
 describe("createRunSearchHandler", () => {
-  it("五个 Search-only 外部阶段共享同一 Run Scope，且迟到 Rerank 不能改写已完成 Graph", async () => {
+  it("两阶段规划与 Search-only 外部阶段共享 Run Scope，迟到 Rerank 不能改写结果", async () => {
     vi.useFakeTimers();
     const clock = createFixedClock("2026-10-22T08:00:00.000Z");
     const initialPlan = createEvidenceAssistedPlan("初始计划");
     const revisedPlan = createEvidenceAssistedPlan("Evidence 修订计划");
+    const initialOutline = createPlanningResponses(initialPlan)[0];
+    const revisedOutline = createPlanningResponses(revisedPlan)[0];
+    const revisedBundle = createPlanningResponses(revisedPlan)[1];
     const lateRerank = createDeferred<unknown>();
     const rerankEntered = createDeferred<void>();
     const observedSignals: Array<{
@@ -191,15 +232,18 @@ describe("createRunSearchHandler", () => {
     const llmProvider: LLMProvider = {
       id: "deadline-matrix-llm",
       structured: async (_input, options) => {
-        const stage = ["planner", "reviser", "rerank"][llmCallIndex];
+        const stage = ["planner", "reviser", "generator", "rerank"][
+          llmCallIndex
+        ];
         if (stage === undefined) {
           throw new Error("Deadline 矩阵收到未预期的 LLM 调用");
         }
         llmCallIndex += 1;
         observedSignals.push({ stage, signal: options.signal });
         llmTimeouts.push(options.timeoutMs);
-        if (stage === "planner") return initialPlan;
-        if (stage === "reviser") return revisedPlan;
+        if (stage === "planner") return initialOutline;
+        if (stage === "reviser") return revisedOutline;
+        if (stage === "generator") return revisedBundle;
         rerankEntered.resolve();
         // 故意忽略 AbortSignal，模拟不能及时取消的外部 SDK。
         return lateRerank.promise;
@@ -277,6 +321,7 @@ describe("createRunSearchHandler", () => {
         "planner",
         "broadSearch",
         "reviser",
+        "generator",
         "search:typescript-guide",
         "search:typescript-project",
         "rerank",
@@ -288,13 +333,15 @@ describe("createRunSearchHandler", () => {
       );
       // Broad Search 后仍有 33 秒；各阶段还会用单调时钟扣除自身已消耗时间，因此只冻结
       // 首次上限与后续不扩张约束，避免把真实执行的 1ms 抖动误当成业务回归。
-      expect(llmTimeouts).toHaveLength(3);
+      expect(llmTimeouts).toHaveLength(4);
       expect(llmTimeouts[0]).toBeGreaterThan(0);
       expect(llmTimeouts[0]).toBeLessThanOrEqual(30_000);
       expect(llmTimeouts[1]).toBeGreaterThan(0);
       expect(llmTimeouts[1]).toBeLessThanOrEqual(30_000);
       expect(llmTimeouts[2]).toBeGreaterThan(0);
-      expect(llmTimeouts[2]).toBeLessThanOrEqual(24_000);
+      expect(llmTimeouts[2]).toBeLessThanOrEqual(30_000);
+      expect(llmTimeouts[3]).toBeGreaterThan(0);
+      expect(llmTimeouts[3]).toBeLessThanOrEqual(24_000);
       expect(vi.getTimerCount()).toBe(1);
       expect(payloads).toContainEqual({
         type: "node.failed",
@@ -413,6 +460,71 @@ describe("createRunSearchHandler", () => {
     }
   });
 
+  it("GraphPlan 前无响应的 SearchPlan Generator 不阻塞 Deadline 或发布迟到计划", async () => {
+    vi.useFakeTimers();
+    const clock = createFixedClock("2026-10-22T08:00:00.000Z");
+    const [outline, bundle] = createPlanningResponses(createPlan());
+    const lateGenerator = createDeferred<unknown>();
+    const generatorEntered = createDeferred<void>();
+    const llmProvider: LLMProvider = {
+      id: "deadline-ignoring-generator",
+      structured: async input => {
+        if (input.schemaName === "graph_outline") return outline;
+        if (input.schemaName === "search_plan_bundle") {
+          generatorEntered.resolve();
+          // 故意忽略 AbortSignal，验证迟到 Bundle 不会装配或发布 GraphPlan。
+          return lateGenerator.promise;
+        }
+        throw new Error("Generator Deadline 测试收到未预期 LLM 调用");
+      },
+    };
+    const handler = createRunSearchHandler({
+      ...createDependencies(clock, []),
+      providers: createConcurrencyLimitedProviders({
+        searchProvider: new FakeSearchProvider({ searchResponses: {} }),
+        llmProvider,
+        concurrency: { search: 6, llm: 3 },
+      }),
+    });
+    const payloads: StreamEventPayload[] = [];
+    const pending = handler({
+      input: {
+        runId: "run-113-late-generator",
+        query: QUERY,
+        language: "zh-CN",
+      },
+      signal: new AbortController().signal,
+      emit: async payload => {
+        payloads.push(structuredClone(payload));
+      },
+    });
+
+    try {
+      await generatorEntered.promise;
+      await vi.advanceTimersByTimeAsync(40_000);
+      await pending;
+
+      expect(payloads).toEqual([
+        {
+          type: "run.failed",
+          error: { code: "RUN_DEADLINE_EXCEEDED", retryable: true },
+        },
+      ]);
+      const closedPayloads = structuredClone(payloads);
+
+      lateGenerator.resolve(bundle);
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(payloads).toEqual(closedPayloads);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      lateGenerator.resolve(bundle);
+      await Promise.resolve();
+      vi.useRealTimers();
+    }
+  });
+
   it("连通真实计划与 Node Pipeline，并在唯一 Node 终态后 complete", async () => {
     const clock = createFixedClock("2026-10-22T08:00:00.000Z");
     const payloads: StreamEventPayload[] = [];
@@ -518,6 +630,68 @@ describe("createRunSearchHandler", () => {
       {
         type: "run.failed",
         error: { code: "UNKNOWN", retryable: false },
+      },
+    ]);
+  });
+
+  it.each([
+    {
+      name: "规划 Provider 失败",
+      response: new LLMProviderError("provider_failure", true),
+      expected: { code: "PLANNER_FAILED", retryable: true },
+    },
+    {
+      name: "Outline Schema 失败",
+      response: { unexpected: "private-output" },
+      expected: { code: "INVALID_GRAPH", retryable: true },
+    },
+  ])("GraphPlan 前$name使用稳定错误码", async ({ response, expected }) => {
+    const clock = createFixedClock("2026-10-22T08:00:00.000Z");
+    const handler = createRunSearchHandler(
+      createDependencies(clock, [response]),
+    );
+    const payloads: StreamEventPayload[] = [];
+
+    await handler({
+      input: { runId: "run-113-planning-failed", query: QUERY, language: "zh-CN" },
+      signal: new AbortController().signal,
+      emit: async payload => {
+        payloads.push(payload);
+      },
+    });
+
+    expect(payloads).toEqual([{ type: "run.failed", error: expected }]);
+  });
+
+  it("Broad Discovery 零 Evidence 映射 SEARCH_PROVIDER_FAILED", async () => {
+    const clock = createFixedClock("2026-10-22T08:00:00.000Z");
+    const initialPlan = createEvidenceAssistedPlan("初始计划");
+    const initialOutline = createPlanningResponses(initialPlan)[0];
+    const dependencies = createDependencies(clock, []);
+    const handler = createRunSearchHandler({
+      ...dependencies,
+      providers: createConcurrencyLimitedProviders({
+        searchProvider: new FakeSearchProvider({
+          searchResponses: { [BROAD_QUERY]: [] },
+        }),
+        llmProvider: new FakeLLMProvider([initialOutline]),
+        concurrency: { search: 6, llm: 3 },
+      }),
+    });
+    const payloads: StreamEventPayload[] = [];
+
+    await handler({
+      input: { runId: "run-113-broad-failed", query: QUERY, language: "zh-CN" },
+      signal: new AbortController().signal,
+      emit: async payload => {
+        payloads.push(payload);
+      },
+    });
+
+    expect(payloads).toEqual([
+      {
+        type: "run.failed",
+        error: { code: "SEARCH_PROVIDER_FAILED", retryable: true },
       },
     ]);
   });
@@ -736,7 +910,9 @@ describe("createRunSearchHandler", () => {
     };
     const providers = createConcurrencyLimitedProviders({
       searchProvider: rawSearchProvider,
-      llmProvider: new FakeLLMProvider([createTwoNodePlan()]),
+      llmProvider: new FakeLLMProvider(
+        createPlanningResponses(createTwoNodePlan()),
+      ),
       concurrency: { search: 6, llm: 3 },
     });
     const dependencies = createDependencies(clock, []);
@@ -807,7 +983,7 @@ describe("createRunSearchHandler", () => {
       providers: createConcurrencyLimitedProviders({
         searchProvider,
         llmProvider: new FakeLLMProvider([
-          createTwoNodePlan(),
+          ...createPlanningResponses(createTwoNodePlan()),
           createRerankOutput(),
         ]),
         concurrency: { search: 6, llm: 3 },

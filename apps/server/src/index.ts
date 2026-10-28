@@ -81,6 +81,7 @@ export type {
   RunLogRecord,
   RunLogRecorder,
   RunLogSink,
+  RunPlanningStage,
   RunProviderOperation,
 } from "./observability/run-log.js";
 export {
@@ -114,10 +115,24 @@ export type {
   GraphPlanValidationDiagnostic,
   GraphPlanValidationIssueDiagnostic,
 } from "./ai/graph-plan-parser.js";
-export { planOrCompactFallback } from "./ai/graph-planner.js";
+export {
+  GraphOutlineSchema,
+  GraphOutlineValidationError,
+  parseGraphOutlineOutput,
+} from "./ai/graph-outline.js";
 export type {
-  GraphPlannerOutcome,
-  PlanOrCompactFallbackInput,
+  GraphOutline,
+  GraphOutlineNode,
+  GraphOutlineValidationDiagnostic,
+  GraphOutlineValidationIssueDiagnostic,
+} from "./ai/graph-outline.js";
+export {
+  GraphPlannerError,
+  planGraphOutline,
+} from "./ai/graph-planner.js";
+export type {
+  GraphPlannerErrorKind,
+  PlanGraphOutlineInput,
 } from "./ai/graph-planner.js";
 export {
   GRAPH_REVISER_MAX_DOMAIN_CODE_POINTS,
@@ -127,13 +142,26 @@ export {
   GRAPH_REVISER_MAX_SNIPPET_CODE_POINTS,
   GRAPH_REVISER_MAX_TITLE_CODE_POINTS,
   GraphRevisionError,
-  reviseGraphPlan,
+  reviseGraphOutline,
 } from "./ai/graph-reviser.js";
 export type {
   GraphRevisionErrorKind,
   GraphRevisionValidationDiagnostic,
-  ReviseGraphPlanInput,
+  ReviseGraphOutlineInput,
 } from "./ai/graph-reviser.js";
+export {
+  SearchPlanBundleSchema,
+  SearchPlanGenerationError,
+  assembleGraphPlan,
+  generateSearchPlanBundle,
+  normalizeSearchPlanQueryKey,
+} from "./ai/search-plan-generator.js";
+export type {
+  GenerateSearchPlanBundleInput,
+  SearchPlanBundle,
+  SearchPlanBundleValidationDiagnostic,
+  SearchPlanGenerationErrorKind,
+} from "./ai/search-plan-generator.js";
 export {
   DEEPSEEK_LLM_MODEL,
   DEEPSEEK_LLM_PROVIDER_ID,

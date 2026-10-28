@@ -27,9 +27,10 @@ import { promisify } from "node:util";
 import { z } from "zod";
 import { SearchLanguageSchema } from "@wayfinder/contracts";
 
-import { GRAPH_PLANNER_PROMPT_VERSION } from "../ai/prompts/graph-planner.v1.js";
-import { GRAPH_REVISER_PROMPT_VERSION } from "../ai/prompts/graph-reviser.v1.js";
+import { GRAPH_PLANNER_PROMPT_VERSION } from "../ai/prompts/graph-planner.v2.js";
+import { GRAPH_REVISER_PROMPT_VERSION } from "../ai/prompts/graph-reviser.v3.js";
 import { RESOURCE_RERANKER_PROMPT_VERSION } from "../ai/prompts/resource-reranker.v1.js";
+import { SEARCH_PLAN_GENERATOR_PROMPT_VERSION } from "../ai/prompts/search-plan-generator.v1.js";
 import {
   DEEPSEEK_LLM_MODEL,
   DEEPSEEK_LLM_PROVIDER_ID,
@@ -71,7 +72,7 @@ const RUN_ID_PATTERN =
   /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z-[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 
 /** Provider 与运行策略已迁移到 Search-only，不能复用旧 Tavily + Extract 报告版本。 */
-export const QUALITY_EVAL_REPORT_SCHEMA_VERSION = "quality-eval.v10" as const;
+export const QUALITY_EVAL_REPORT_SCHEMA_VERSION = "quality-eval.v11" as const;
 
 export type QualityEvalCliOptions = Readonly<{
   dataset: QualityEvalDatasetKind;
@@ -103,6 +104,7 @@ export const QualityEvalReportSchema = z.strictObject({
     prompts: z.strictObject({
       planner: z.literal(GRAPH_PLANNER_PROMPT_VERSION),
       reviser: z.literal(GRAPH_REVISER_PROMPT_VERSION),
+      searchPlanGenerator: z.literal(SEARCH_PLAN_GENERATOR_PROMPT_VERSION),
       reranker: z.literal(RESOURCE_RERANKER_PROMPT_VERSION),
     }),
     ranking: z.literal(RANK_FUSION_VERSION),
@@ -522,6 +524,7 @@ async function runQualityEval(
             value.normalize("NFKC").trim().toLowerCase(),
           onPlannerValidationDiagnostic: () => undefined,
           onRevisionValidationDiagnostic: () => undefined,
+          onSearchPlanValidationDiagnostic: () => undefined,
           runLogSink: {
             write: record => {
               // Handler 的 finish 不等待日志落盘；同步赋值保证返回后可立即读取唯一记录。
@@ -574,6 +577,7 @@ async function runQualityEval(
         prompts: {
           planner: GRAPH_PLANNER_PROMPT_VERSION,
           reviser: GRAPH_REVISER_PROMPT_VERSION,
+          searchPlanGenerator: SEARCH_PLAN_GENERATOR_PROMPT_VERSION,
           reranker: RESOURCE_RERANKER_PROMPT_VERSION,
         },
         ranking: RANK_FUSION_VERSION,

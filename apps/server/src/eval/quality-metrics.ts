@@ -185,12 +185,15 @@ const QualityEvalVersionSchema = RunLogRecordSchema.shape.versions.pick({
 
 export const QualityEvalTelemetrySchema = RunLogRecordSchema.pick({
   timingsMs: true,
+  planningStages: true,
   ranking: true,
   tokens: true,
   estimatedCost: true,
 }).extend({
   counts: QualityEvalCallCountsSchema,
   versions: QualityEvalVersionSchema,
+  /** 历史报告不能从总计 Token 反推分阶段事实，显式保留 null。 */
+  planningStages: RunLogRecordSchema.shape.planningStages.nullable(),
 });
 
 export const QualityEvalOfficialSourceSchema = z.discriminatedUnion("status", [

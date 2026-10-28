@@ -20,9 +20,10 @@ import {
 } from "@wayfinder/contracts";
 import { z } from "zod";
 
-import { GRAPH_PLANNER_PROMPT_VERSION } from "../ai/prompts/graph-planner.v1.js";
-import { GRAPH_REVISER_PROMPT_VERSION } from "../ai/prompts/graph-reviser.v1.js";
+import { GRAPH_PLANNER_PROMPT_VERSION } from "../ai/prompts/graph-planner.v2.js";
+import { GRAPH_REVISER_PROMPT_VERSION } from "../ai/prompts/graph-reviser.v3.js";
 import { RESOURCE_RERANKER_PROMPT_VERSION } from "../ai/prompts/resource-reranker.v1.js";
+import { SEARCH_PLAN_GENERATOR_PROMPT_VERSION } from "../ai/prompts/search-plan-generator.v1.js";
 import { RANK_FUSION_VERSION } from "../pipeline/rank-fusion.js";
 import type { RankingObservation } from "../pipeline/ranking-observation.js";
 import type { RunLogObservation } from "./run-log-context.js";
@@ -79,12 +80,26 @@ const RankingMetricsSchema = z.strictObject({
   fallback: RankingModeMetricsSchema,
 });
 
+const TokenMetricsSchema = z.strictObject({
+  status: z.enum(["not_used", "complete", "partial", "unavailable"]),
+  observations: NonNegativeIntegerSchema,
+  inputTokens: NonNegativeIntegerSchema,
+  outputTokens: NonNegativeIntegerSchema,
+  totalTokens: NonNegativeIntegerSchema,
+});
+
+const PlanningStageMetricsSchema = z.strictObject({
+  logicalLlmCalls: NonNegativeIntegerSchema,
+  tokens: TokenMetricsSchema,
+  failureCode: AppErrorCodeSchema.nullable(),
+});
+
 /**
  * 严格内部 Schema 是最终隐私白名单。即使调用方持有原始业务对象，文件 Sink 也只能接收
  * 这里列出的聚合字段；新增字段必须经过显式代码与测试审核。
  */
 export const RunLogRecordSchema = z.strictObject({
-  schemaVersion: z.literal("run-log.v2"),
+  schemaVersion: z.literal("run-log.v3"),
   createdAt: z.iso.datetime({ offset: true }),
   identifiers: z.strictObject({
     logId: z.uuid(),
@@ -100,6 +115,8 @@ export const RunLogRecordSchema = z.strictObject({
   ]),
   timingsMs: z.strictObject({
     planning: NonNegativeFiniteSchema.nullable(),
+    graphOutlinePlanning: NonNegativeFiniteSchema.nullable(),
+    searchPlanPlanning: NonNegativeFiniteSchema.nullable(),
     nodeProcessing: NonNegativeFiniteSchema.nullable(),
     total: NonNegativeFiniteSchema,
     provider: z.strictObject({
@@ -124,6 +141,11 @@ export const RunLogRecordSchema = z.strictObject({
     searchHttpAttempts: NonNegativeIntegerSchema,
     extractHttpAttempts: NonNegativeIntegerSchema,
   }),
+  /** 只区分两个规划阶段；Node Reranker 仍仅进入全 Run 聚合。 */
+  planningStages: z.strictObject({
+    graphOutline: PlanningStageMetricsSchema,
+    searchPlan: PlanningStageMetricsSchema,
+  }),
   warningCodes: UniqueWarningCodesSchema,
   errorCodes: UniqueErrorCodesSchema,
   versions: z.strictObject({
@@ -131,6 +153,9 @@ export const RunLogRecordSchema = z.strictObject({
     resultGraph: z.literal("0.1"),
     plannerPrompt: z.literal(GRAPH_PLANNER_PROMPT_VERSION),
     reviserPrompt: z.literal(GRAPH_REVISER_PROMPT_VERSION),
+    searchPlanGeneratorPrompt: z.literal(
+      SEARCH_PLAN_GENERATOR_PROMPT_VERSION,
+    ),
     rerankerPrompt: z.literal(RESOURCE_RERANKER_PROMPT_VERSION),
     rankFusion: z.literal(RANK_FUSION_VERSION),
   }),
@@ -149,13 +174,7 @@ export const RunLogRecordSchema = z.strictObject({
     }),
   }),
   ranking: RankingMetricsSchema,
-  tokens: z.strictObject({
-    status: z.enum(["not_used", "complete", "partial", "unavailable"]),
-    observations: NonNegativeIntegerSchema,
-    inputTokens: NonNegativeIntegerSchema,
-    outputTokens: NonNegativeIntegerSchema,
-    totalTokens: NonNegativeIntegerSchema,
-  }),
+  tokens: TokenMetricsSchema,
   estimatedCost: z.strictObject({
     status: z.literal("unavailable"),
     reason: z.literal("pricing_not_frozen"),
@@ -180,9 +199,16 @@ export type CreateRunLogRecorderInput = Readonly<{
 }>;
 
 export type RunProviderOperation = "search" | "extract" | "llm";
+export type RunPlanningStage = "graphOutline" | "searchPlan";
 
 export type RunLogRecorder = Readonly<{
   observe: (observation: RunLogObservation) => void;
+  recordGraphOutlinePlanningFinished: () => void;
+  recordSearchPlanPlanningFinished: () => void;
+  recordPlanningStageFailed: (
+    stage: RunPlanningStage,
+    code: AppErrorCode,
+  ) => void;
   recordPlan: (plan: GraphPlan) => void;
   recordNodeProcessingStarted: () => void;
   recordProviderCallStarted: (
@@ -203,6 +229,14 @@ export type RunLogRecorder = Readonly<{
 type MutableCounts = z.infer<typeof RunLogRecordSchema>["counts"];
 type MutableCacheMetrics = z.infer<typeof RunLogRecordSchema>["cache"];
 type MutableRankingMetrics = z.infer<typeof RunLogRecordSchema>["ranking"];
+type MutablePlanningStageMetrics = {
+  logicalLlmCalls: number;
+  observations: number;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  failureCode: AppErrorCode | null;
+};
 
 function appendUnique<T>(target: T[], value: T): void {
   if (!target.includes(value)) target.push(value);
@@ -240,6 +274,9 @@ export function createRunLogRecorder(
   const queryId = createId();
   let planId: string | null = null;
   let planningMs: number | null = null;
+  let graphOutlinePlanningMs: number | null = null;
+  let searchPlanPlanningStartedAt: number | null = null;
+  let searchPlanPlanningMs: number | null = null;
   let nodeProcessingStartedAt: number | null = null;
   let outcome: RunLogRecord["outcome"] = "interrupted";
   let finished = false;
@@ -286,6 +323,20 @@ export function createRunLogRecorder(
     outputTokens: 0,
     totalTokens: 0,
   };
+  const createPlanningStageMetrics = (): MutablePlanningStageMetrics => ({
+    logicalLlmCalls: 0,
+    observations: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    totalTokens: 0,
+    failureCode: null,
+  });
+  const planningStages = {
+    graphOutline: createPlanningStageMetrics(),
+    searchPlan: createPlanningStageMetrics(),
+  };
+  let activePlanningStage: keyof typeof planningStages | null =
+    "graphOutline";
 
   const observe = (observation: RunLogObservation): void => {
     if (finished) return;
@@ -307,6 +358,69 @@ export function createRunLogRecorder(
     tokens.inputTokens += observation.inputTokens;
     tokens.outputTokens += observation.outputTokens;
     tokens.totalTokens += observation.totalTokens;
+    if (activePlanningStage !== null) {
+      const stage = planningStages[activePlanningStage];
+      stage.observations += 1;
+      stage.inputTokens += observation.inputTokens;
+      stage.outputTokens += observation.outputTokens;
+      stage.totalTokens += observation.totalTokens;
+    }
+  };
+
+  /** Stage 1 结束同时成为 Stage 2 起点；只记录时间，不接收 Outline 内容。 */
+  const recordGraphOutlinePlanningFinished = (): void => {
+    if (finished || graphOutlinePlanningMs !== null) return;
+    const value = now();
+    const finishedAt = Number.isFinite(value) ? value : input.startedAt;
+    graphOutlinePlanningMs = Math.max(0, finishedAt - input.startedAt);
+    searchPlanPlanningStartedAt = finishedAt;
+    activePlanningStage = "searchPlan";
+  };
+
+  /** Stage 2 包含 Bundle 生成、确定性装配与最终 GraphPlan 校验。 */
+  const recordSearchPlanPlanningFinished = (): void => {
+    if (
+      finished ||
+      searchPlanPlanningStartedAt === null ||
+      searchPlanPlanningMs !== null
+    ) {
+      return;
+    }
+    searchPlanPlanningMs = readNonNegativeDuration(
+      now,
+      searchPlanPlanningStartedAt,
+    );
+    activePlanningStage = null;
+  };
+
+  /**
+   * 只接受稳定 AppError Code，不保存 Error、Query 或阶段输入。
+   * 失败是阶段的终态，因此必须在同一时刻冻结已消耗时间，
+   * 否则失败 Run 会在观测上被误判为“阶段未开始”。
+   */
+  const recordPlanningStageFailed = (
+    stage: RunPlanningStage,
+    code: AppErrorCode,
+  ): void => {
+    if (finished || planningStages[stage].failureCode !== null) return;
+    const parsed = AppErrorCodeSchema.safeParse(code);
+    if (!parsed.success) return;
+    planningStages[stage].failureCode = parsed.data;
+
+    if (activePlanningStage !== stage) return;
+    if (stage === "graphOutline" && graphOutlinePlanningMs === null) {
+      graphOutlinePlanningMs = readNonNegativeDuration(now, input.startedAt);
+    } else if (
+      stage === "searchPlan" &&
+      searchPlanPlanningStartedAt !== null &&
+      searchPlanPlanningMs === null
+    ) {
+      searchPlanPlanningMs = readNonNegativeDuration(
+        now,
+        searchPlanPlanningStartedAt,
+      );
+    }
+    activePlanningStage = null;
   };
 
   const recordPlan = (plan: GraphPlan): void => {
@@ -340,6 +454,9 @@ export function createRunLogRecorder(
       return;
     }
     counts.logicalLlmCalls += 1;
+    if (activePlanningStage !== null) {
+      planningStages[activePlanningStage].logicalLlmCalls += 1;
+    }
   };
 
   const recordProviderCallFinished = (
@@ -479,17 +596,49 @@ export function createRunLogRecorder(
           ? null
           : readNonNegativeDuration(now, nodeProcessingStartedAt);
       const record = RunLogRecordSchema.parse({
-        schemaVersion: "run-log.v2",
+        schemaVersion: "run-log.v3",
         createdAt,
         identifiers: { logId, queryId, planId },
         outcome,
         timingsMs: {
           planning: planningMs,
+          graphOutlinePlanning: graphOutlinePlanningMs,
+          searchPlanPlanning: searchPlanPlanningMs,
           nodeProcessing: nodeProcessingMs,
           total: totalMs,
           provider: providerTimings,
         },
         counts,
+        planningStages: {
+          graphOutline: {
+            logicalLlmCalls: planningStages.graphOutline.logicalLlmCalls,
+            failureCode: planningStages.graphOutline.failureCode,
+            tokens: {
+              status: readTokenStatus(
+                planningStages.graphOutline.logicalLlmCalls,
+                planningStages.graphOutline.observations,
+              ),
+              observations: planningStages.graphOutline.observations,
+              inputTokens: planningStages.graphOutline.inputTokens,
+              outputTokens: planningStages.graphOutline.outputTokens,
+              totalTokens: planningStages.graphOutline.totalTokens,
+            },
+          },
+          searchPlan: {
+            logicalLlmCalls: planningStages.searchPlan.logicalLlmCalls,
+            failureCode: planningStages.searchPlan.failureCode,
+            tokens: {
+              status: readTokenStatus(
+                planningStages.searchPlan.logicalLlmCalls,
+                planningStages.searchPlan.observations,
+              ),
+              observations: planningStages.searchPlan.observations,
+              inputTokens: planningStages.searchPlan.inputTokens,
+              outputTokens: planningStages.searchPlan.outputTokens,
+              totalTokens: planningStages.searchPlan.totalTokens,
+            },
+          },
+        },
         warningCodes,
         errorCodes,
         versions: {
@@ -497,6 +646,7 @@ export function createRunLogRecorder(
           resultGraph: "0.1",
           plannerPrompt: GRAPH_PLANNER_PROMPT_VERSION,
           reviserPrompt: GRAPH_REVISER_PROMPT_VERSION,
+          searchPlanGeneratorPrompt: SEARCH_PLAN_GENERATOR_PROMPT_VERSION,
           rerankerPrompt: RESOURCE_RERANKER_PROMPT_VERSION,
           rankFusion: RANK_FUSION_VERSION,
         },
@@ -526,6 +676,9 @@ export function createRunLogRecorder(
 
   return {
     observe,
+    recordGraphOutlinePlanningFinished,
+    recordSearchPlanPlanningFinished,
+    recordPlanningStageFailed,
     recordPlan,
     recordNodeProcessingStarted,
     recordProviderCallStarted,

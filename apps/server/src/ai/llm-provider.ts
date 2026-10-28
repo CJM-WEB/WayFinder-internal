@@ -27,7 +27,7 @@ export type LLMCallOptions = Readonly<{
   timeoutMs: number;
 }>;
 
-/** Planner、Reviser 与 Reranker 只依赖此端口，不接触具体 Provider SDK。 */
+/** Planner、Reviser、SearchPlan Generator 与 Reranker 只依赖此端口。 */
 export interface LLMProvider {
   readonly id: string;
 

@@ -63,6 +63,25 @@ const plan = GraphPlanSchema.parse({
   ],
   edges: [],
 });
+const outline = {
+  analysis: plan.analysis,
+  nodes: plan.nodes.map(node => ({
+    id: node.id,
+    title: node.title,
+    description: node.description,
+    nodeType: node.nodeType,
+    layer: node.layer,
+    status: node.status,
+  })),
+  edges: plan.edges,
+};
+const searchPlanBundle = {
+  plans: plan.nodes.map(node => ({
+    nodeId: node.id,
+    queries: node.searchPlan.queries,
+    rankingProfile: node.searchPlan.rankingProfile,
+  })),
+};
 
 const searchGate = createDeferred();
 let searchResolved = false;
@@ -92,13 +111,16 @@ const searchProvider = {
   },
 };
 
-let llmCall = 0;
 const llmProvider = {
   id: "fake-llm",
-  async structured(_input, options) {
+  async structured(input, options) {
     options.signal.throwIfAborted();
-    llmCall += 1;
-    if (llmCall === 1) return plan;
+    // 按 Structured Output 角色返回固定夹具，避免调用顺序漂移掩盖阶段错误。
+    if (input.schemaName === "graph_outline") return outline;
+    if (input.schemaName === "search_plan_bundle") return searchPlanBundle;
+    if (input.schemaName !== "resource_rerank") {
+      throw new Error("生产 Smoke 收到未知 LLM Schema");
+    }
     return {
       ranking: [
         {

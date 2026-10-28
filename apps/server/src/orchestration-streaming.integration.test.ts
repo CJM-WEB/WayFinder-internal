@@ -27,6 +27,8 @@ import {
   type Deferred,
   type FixedClock,
 } from "../../../tests/support/test-infrastructure.mjs";
+import { GraphOutlineSchema } from "./ai/graph-outline.js";
+import { SearchPlanBundleSchema } from "./ai/search-plan-generator.js";
 import { readSearchEventStream } from "../../web/src/lib/stream.js";
 import { createGraphStore } from "../../web/src/stores/graph-store.js";
 import { createPythonMockStream } from "../../web/src/testing/python-mock-stream.js";
@@ -69,6 +71,28 @@ function createPlan(queries: readonly string[] = [QUERY]): GraphPlan {
     ],
     edges: [],
   });
+}
+
+/** 从最终公共 Plan 投影两阶段 Fake 响应，所有业务装配仍走生产实现。 */
+function createPlanningResponses(plan: GraphPlan): readonly unknown[] {
+  return [
+    GraphOutlineSchema.parse({
+      analysis: plan.analysis,
+      nodes: plan.nodes.map(node => {
+        const { searchPlan, ...outlineNode } = node;
+        void searchPlan;
+        return outlineNode;
+      }),
+      edges: plan.edges,
+    }),
+    SearchPlanBundleSchema.parse({
+      plans: plan.nodes.map(node => ({
+        nodeId: node.id,
+        queries: node.searchPlan.queries,
+        rankingProfile: node.searchPlan.rankingProfile,
+      })),
+    }),
+  ];
 }
 
 function createHit(query = QUERY): NormalizedSearchHit {
@@ -251,7 +275,7 @@ type ScenarioInput = Readonly<{
 
 /** 真实组合层只替换外部能力；事件 Envelope、NDJSON 与业务状态机均使用生产实现。 */
 function createScenarioServer(input: ScenarioInput): FastifyInstance {
-  const llmResponses: unknown[] = [input.plan];
+  const llmResponses: unknown[] = [...createPlanningResponses(input.plan)];
   if (input.includeRerank === true) {
     llmResponses.push(createRerankOutput());
   }
@@ -277,6 +301,7 @@ function createScenarioServer(input: ScenarioInput): FastifyInstance {
       },
       onPlannerValidationDiagnostic: () => undefined,
       onRevisionValidationDiagnostic: () => undefined,
+      onSearchPlanValidationDiagnostic: () => undefined,
       now: input.clock.now,
     }),
   );
@@ -387,7 +412,7 @@ describe("Orchestration + NDJSON 服务端回归矩阵", () => {
     const providers = createConcurrencyLimitedProviders({
       searchProvider,
       llmProvider: new FakeLLMProvider([
-        plan,
+        ...createPlanningResponses(plan),
         createRerankOutput(),
         createRerankOutput(),
       ]),
@@ -401,6 +426,7 @@ describe("Orchestration + NDJSON 服务端回归矩阵", () => {
       normalizeQuery: query => query.normalize("NFKC").toLowerCase(),
       onPlannerValidationDiagnostic: () => undefined,
       onRevisionValidationDiagnostic: () => undefined,
+      onSearchPlanValidationDiagnostic: () => undefined,
       now: clock.now,
     });
     const payloads: StreamEventPayload[] = [];
@@ -662,7 +688,7 @@ describe("Orchestration + NDJSON 服务端回归矩阵", () => {
     const plan = createTwoNodePlan();
     const providers = createConcurrencyLimitedProviders({
       searchProvider: new RejectedAndLateSearchProvider(lateSearch),
-      llmProvider: new FakeLLMProvider([plan]),
+      llmProvider: new FakeLLMProvider(createPlanningResponses(plan)),
       concurrency: { search: 6, llm: 3 },
     });
     const handler = createRunSearchHandler({
@@ -673,6 +699,7 @@ describe("Orchestration + NDJSON 服务端回归矩阵", () => {
       normalizeQuery: query => query.normalize("NFKC").toLowerCase(),
       onPlannerValidationDiagnostic: () => undefined,
       onRevisionValidationDiagnostic: () => undefined,
+      onSearchPlanValidationDiagnostic: () => undefined,
       now: clock.now,
     });
     const payloads: StreamEventPayload[] = [];

@@ -42,7 +42,7 @@ import {
   type QualityEvalMetricMeasurement,
 } from "./quality-metrics.js";
 
-export const QUALITY_EVAL_SCHEMA_VERSION = "quality-eval.v8" as const;
+export const QUALITY_EVAL_SCHEMA_VERSION = "quality-eval.v9" as const;
 export const QUALITY_EVAL_DATASET_VERSION =
   "wayfinder-regression.v1" as const;
 
@@ -413,6 +413,7 @@ function projectRunLog(record: RunLogRecord | undefined): z.infer<
   const { counts } = record;
   return QualityEvalTelemetrySchema.parse({
     timingsMs: record.timingsMs,
+    planningStages: record.planningStages,
     versions: { rankFusion: record.versions.rankFusion },
     counts: {
       logicalSearchCalls: counts.logicalSearchCalls,

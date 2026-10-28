@@ -26,6 +26,8 @@ function createTelemetry(value: number, ranked = false) {
   return {
     timingsMs: {
       planning: 0,
+      graphOutlinePlanning: 0,
+      searchPlanPlanning: 0,
       nodeProcessing: 0,
       total: 0,
       provider: { search: 0, extract: 0, llm: 0 },
@@ -37,6 +39,30 @@ function createTelemetry(value: number, ranked = false) {
       logicalLlmCalls: 1,
       searchHttpAttempts: value,
       extractHttpAttempts: 0,
+    },
+    planningStages: {
+      graphOutline: {
+        logicalLlmCalls: 1,
+        failureCode: null,
+        tokens: {
+          status: "complete",
+          observations: 1,
+          inputTokens: value,
+          outputTokens: value,
+          totalTokens: value * 2,
+        },
+      },
+      searchPlan: {
+        logicalLlmCalls: 0,
+        failureCode: null,
+        tokens: {
+          status: "not_used",
+          observations: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          totalTokens: 0,
+        },
+      },
     },
     versions: { rankFusion: "rank-fusion.v1" },
     ranking: {
@@ -70,7 +96,7 @@ function createReport(
   includeRankedResult = true,
 ) {
   return QualityEvalReportSchema.parse({
-    schemaVersion: "quality-eval.v10",
+    schemaVersion: "quality-eval.v11",
     issue: "WAY-86",
     evaluationRunId: `2026-10-23T00-00-0${runIndex}-000Z-0000000${runIndex}-0000-4000-8000-00000000000${runIndex}`,
     completedAt: `2026-10-23T00:00:0${runIndex}.000Z`,
@@ -85,8 +111,9 @@ function createReport(
       git: { commit, worktreeClean: true },
       contracts: { protocol: "0.1", resultGraph: "0.1" },
       prompts: {
-        planner: "graph-planner.v1",
-        reviser: "graph-reviser.v1",
+        planner: "graph-planner.v2",
+        reviser: "graph-reviser.v3",
+        searchPlanGenerator: "search-plan-generator.v1",
         reranker: "resource-reranker.v1",
       },
       ranking: "rank-fusion.v1",
@@ -149,7 +176,7 @@ function createReport(
           edges: [],
         } as const;
         return {
-          schemaVersion: "quality-eval.v8",
+          schemaVersion: "quality-eval.v9",
           comparisonKey: `wayfinder-regression.v1:${id}`,
           query: {
             id,
@@ -217,7 +244,7 @@ function createReport(
       }
       const query = `Query ${index + 1}`;
       return {
-        schemaVersion: "quality-eval.v8",
+        schemaVersion: "quality-eval.v9",
         comparisonKey: `wayfinder-regression.v1:${id}`,
         query: {
           id,
@@ -418,6 +445,31 @@ function createV9LegacyReport(commit: string, runIndex: number): unknown {
   return legacy;
 }
 
+/** outer v10/query v8 是 WAY-112 最后一个一体化 Planner 报告组合。 */
+function createV10LegacyReport(commit: string, runIndex: number): unknown {
+  const legacy = structuredClone(createReport(commit, runIndex)) as Record<
+    string,
+    unknown
+  >;
+  legacy.schemaVersion = "quality-eval.v10";
+  const source = legacy.source as Record<string, unknown>;
+  const prompts = source.prompts as Record<string, unknown>;
+  prompts.planner = "graph-planner.v1";
+  prompts.reviser = "graph-reviser.v1";
+  delete prompts.searchPlanGenerator;
+  for (const result of legacy.results as Record<string, unknown>[]) {
+    result.schemaVersion = "quality-eval.v8";
+    const telemetry = result.telemetry;
+    if (telemetry !== null) {
+      const timingsMs = (telemetry as Record<string, unknown>)
+        .timingsMs as Record<string, unknown>;
+      delete timingsMs.graphOutlinePlanning;
+      delete timingsMs.searchPlanPlanning;
+    }
+  }
+  return legacy;
+}
+
 /** 用真实的未完成语义制造覆盖缺口，禁止在 completed 结果上伪造 null。 */
 function replaceWithUnmeasuredFailure(
   report: ReturnType<typeof createReport>,
@@ -425,7 +477,7 @@ function replaceWithUnmeasuredFailure(
 ): void {
   const current = report.results[index]!;
   report.results[index] = {
-    schemaVersion: "quality-eval.v8",
+    schemaVersion: "quality-eval.v9",
     comparisonKey: current.comparisonKey,
     query: current.query,
     executionStatus: "run_failed",
@@ -539,6 +591,25 @@ describe("WAY-90 Quality Eval A-B-B-A 比较", () => {
     expect(
       reports.every(report => !QualityEvalReportSchema.safeParse(report).success),
     ).toBe(true);
+
+    const compared = compareQualityEvalBlocks({
+      baselineCommit: BASELINE_COMMIT,
+      candidateCommit: CANDIDATE_COMMIT,
+      blocks: BLOCKS.map((block, index) => ({ block, report: reports[index] })),
+    });
+
+    expect(compared.status).toBe("comparable");
+    expect(reports).toEqual(snapshots);
+  });
+
+  it("显式迁移 outer v10/query v8，但不伪造历史分阶段耗时或 Prompt", () => {
+    const reports = BLOCKS.map((block, index) =>
+      createV10LegacyReport(
+        block.startsWith("A") ? BASELINE_COMMIT : CANDIDATE_COMMIT,
+        index + 1,
+      ),
+    );
+    const snapshots = structuredClone(reports);
 
     const compared = compareQualityEvalBlocks({
       baselineCommit: BASELINE_COMMIT,

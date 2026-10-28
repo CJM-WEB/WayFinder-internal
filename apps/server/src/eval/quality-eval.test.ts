@@ -179,7 +179,7 @@ const projectedCallCounts = {
 } as const;
 
 const runLog = RunLogRecordSchema.parse({
-  schemaVersion: "run-log.v2",
+  schemaVersion: "run-log.v3",
   createdAt: "2026-10-23T00:00:00.000Z",
   identifiers: {
     logId: "11111111-1111-4111-8111-111111111111",
@@ -189,6 +189,8 @@ const runLog = RunLogRecordSchema.parse({
   outcome: "complete",
   timingsMs: {
     planning: 200,
+    graphOutlinePlanning: 120,
+    searchPlanPlanning: 80,
     nodeProcessing: 900,
     total: 1_234,
     provider: { search: 300, extract: 250, llm: 500 },
@@ -204,13 +206,38 @@ const runLog = RunLogRecordSchema.parse({
     searchResultCount: 16,
     extractedPageCount: 8,
   },
+  planningStages: {
+    graphOutline: {
+      logicalLlmCalls: 2,
+      failureCode: null,
+      tokens: {
+        status: "complete",
+        observations: 2,
+        inputTokens: 60,
+        outputTokens: 20,
+        totalTokens: 80,
+      },
+    },
+    searchPlan: {
+      logicalLlmCalls: 1,
+      failureCode: null,
+      tokens: {
+        status: "complete",
+        observations: 1,
+        inputTokens: 40,
+        outputTokens: 20,
+        totalTokens: 60,
+      },
+    },
+  },
   warningCodes: [],
   errorCodes: [],
   versions: {
     protocol: "0.1",
     resultGraph: "0.1",
-    plannerPrompt: "graph-planner.v1",
-    reviserPrompt: "graph-reviser.v1",
+    plannerPrompt: "graph-planner.v2",
+    reviserPrompt: "graph-reviser.v3",
+    searchPlanGeneratorPrompt: "search-plan-generator.v1",
     rerankerPrompt: "resource-reranker.v1",
     rankFusion: "rank-fusion.v1",
   },
@@ -313,7 +340,7 @@ describe("WAY-86 Quality Eval 数据集", () => {
 
 describe("WAY-86 Quality Eval 查询投影", () => {
   it("保留计划、Top 3、官方排名、跨 Node 重复、多样性与 Run Log 遥测", async () => {
-    expect(QUALITY_EVAL_SCHEMA_VERSION).toBe("quality-eval.v8");
+    expect(QUALITY_EVAL_SCHEMA_VERSION).toBe("quality-eval.v9");
     const payloads: StreamEventPayload[] = [
       { type: "query.analysis", data: plan.analysis },
       { type: "graph.plan", data: plan },

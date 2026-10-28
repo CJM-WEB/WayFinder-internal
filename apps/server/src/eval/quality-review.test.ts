@@ -1,7 +1,7 @@
 /**
  * 测试职责：冻结 WAY-88 人工评审工作表的评分字段、H1～H5 证据隔离与脱敏边界。
  *
- * 边界说明：只测试已校验 `quality-eval.v8` 投影的确定性渲染，不填写主观分数、
+ * 边界说明：只测试已校验 `quality-eval.v9` 投影的确定性渲染，不填写主观分数、
  * 不访问网络，也不把 Worksheet 变成第二份机器报告 Contract。
  */
 import { describe, expect, it } from "vitest";
@@ -169,6 +169,8 @@ function createCompletedResult(): QualityEvalQueryResult {
     telemetry: {
       timingsMs: {
         planning: 10,
+        graphOutlinePlanning: 6,
+        searchPlanPlanning: 4,
         nodeProcessing: 20,
         total: 30,
         provider: { search: 10, extract: 10, llm: 10 },
@@ -180,6 +182,30 @@ function createCompletedResult(): QualityEvalQueryResult {
         logicalLlmCalls: 2,
         searchHttpAttempts: 2,
         extractHttpAttempts: 1,
+      },
+      planningStages: {
+        graphOutline: {
+          logicalLlmCalls: 1,
+          failureCode: null,
+          tokens: {
+            status: "complete",
+            observations: 1,
+            inputTokens: 1,
+            outputTokens: 1,
+            totalTokens: 2,
+          },
+        },
+        searchPlan: {
+          logicalLlmCalls: 1,
+          failureCode: null,
+          tokens: {
+            status: "complete",
+            observations: 1,
+            inputTokens: 1,
+            outputTokens: 1,
+            totalTokens: 2,
+          },
+        },
       },
       versions: { rankFusion: "rank-fusion.v1" },
       ranking: {
@@ -466,7 +492,7 @@ describe("WAY-88 人工质量评审工作表", () => {
       .toBe(full.replace("- Dataset：full", "- Dataset：<kind>"));
   });
 
-  it("拒绝绕过 quality-eval.v8 的非法结果", () => {
+  it("拒绝绕过 quality-eval.v9 的非法结果", () => {
     const invalidResult = {
       ...createCompletedResult(),
       schemaVersion: "quality-eval.v6",
