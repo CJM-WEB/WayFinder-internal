@@ -365,6 +365,125 @@ describe("Orchestration + NDJSON 服务端回归矩阵", () => {
     });
   });
 
+  it("并发 Node 乱序完成时按 GraphPlan 固定 URL 所有权，并让增量终态与 complete 一致", async () => {
+    const clock = createFixedClock("2026-10-22T08:00:00.000Z");
+    const firstSearch = createDeferred<readonly NormalizedSearchHit[]>();
+    const secondSearchEntered = createDeferred<void>();
+    const plan = createTwoNodePlan();
+    const searchProvider: SearchProvider = {
+      id: "out-of-order-duplicate-search",
+      capabilities: ["general"],
+      search: async request => {
+        if (request.query === QUERY) {
+          return [...(await firstSearch.promise)];
+        }
+        if (request.query === LATE_QUERY) {
+          secondSearchEntered.resolve();
+          return [createHit(LATE_QUERY)];
+        }
+        throw new Error(`乱序去重测试未配置 Query：${request.query}`);
+      },
+    };
+    const providers = createConcurrencyLimitedProviders({
+      searchProvider,
+      llmProvider: new FakeLLMProvider([
+        plan,
+        createRerankOutput(),
+        createRerankOutput(),
+      ]),
+      concurrency: { search: 6, llm: 3 },
+    });
+    const handler = createRunSearchHandler({
+      providers,
+      officialSourcePolicy: { knownRiskyDownloadDomains: [] },
+      llmStageTimeoutMs: 30_000,
+      rerankTimeoutMs: 24_000,
+      normalizeQuery: query => query.normalize("NFKC").toLowerCase(),
+      onPlannerValidationDiagnostic: () => undefined,
+      onRevisionValidationDiagnostic: () => undefined,
+      now: clock.now,
+    });
+    const payloads: StreamEventPayload[] = [];
+    const pending = handler({
+      input: { runId: RUN_ID, query: QUERY, language: "zh-CN" },
+      signal: new AbortController().signal,
+      emit: async payload => {
+        payloads.push(structuredClone(payload));
+      },
+    });
+
+    await secondSearchEntered.promise;
+    // 后序 Node 的 Provider 与 Reranker 可先完成，但连续计划前缀尚未形成时不能发布终态。
+    for (let flushIndex = 0; flushIndex < 10; flushIndex += 1) {
+      await Promise.resolve();
+    }
+    expect(
+      payloads.filter(payload =>
+        ["node.ready", "node.partial", "node.failed"].includes(payload.type),
+      ),
+    ).toEqual([]);
+
+    firstSearch.resolve([createHit(QUERY)]);
+    await pending;
+
+    const nodeTerminals = payloads.filter(
+      (payload): payload is Extract<
+        StreamEventPayload,
+        { type: "node.ready" | "node.partial" | "node.failed" }
+      > =>
+        payload.type === "node.ready" ||
+        payload.type === "node.partial" ||
+        payload.type === "node.failed",
+    );
+    expect(nodeTerminals.map(payload => [payload.nodeId, payload.type])).toEqual([
+      ["typescript-internals", "node.failed"],
+      ["typescript-guide", "node.ready"],
+    ]);
+    expect(nodeTerminals[0]).toMatchObject({
+      error: { code: "NO_UNIQUE_RESOURCE_AVAILABLE", retryable: false },
+    });
+
+    const complete = payloads.at(-1);
+    expect(complete).toMatchObject({
+      type: "complete",
+      data: {
+        finalStatus: "partial",
+        result: {
+          graph: {
+            nodes: [
+              expect.objectContaining({
+                id: "typescript-guide",
+                status: "ready",
+                resources: [
+                  expect.objectContaining({
+                    canonicalUrl: createHit().canonicalUrl,
+                    rank: 1,
+                  }),
+                ],
+              }),
+              expect.objectContaining({
+                id: "typescript-internals",
+                status: "failed",
+                resources: [],
+                error: {
+                  code: "NO_UNIQUE_RESOURCE_AVAILABLE",
+                  retryable: false,
+                },
+              }),
+            ],
+          },
+        },
+      },
+    });
+    if (complete?.type !== "complete") {
+      throw new Error("乱序去重测试缺少 complete 终态");
+    }
+    const canonicalUrls = complete.data.result.graph.nodes.flatMap(node =>
+      node.resources.map(resource => resource.canonicalUrl),
+    );
+    expect(canonicalUrls).toHaveLength(new Set(canonicalUrls).size);
+  });
+
   it("loopback：真实 Route 响应由 Web Reader 消费并原子收敛 Store", async () => {
     const clock = createFixedClock("2026-10-22T08:00:00.000Z");
     const server = createScenarioServer({

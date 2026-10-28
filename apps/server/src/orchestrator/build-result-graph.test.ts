@@ -103,13 +103,14 @@ function fulfilled(
   nodeId: string,
   value: ResultGraphNode,
 ): NodeJobOutcome {
-  return { status: "fulfilled", nodeId, value };
+  return { status: "fulfilled", nodeId, settlementOrdinal: 1, value };
 }
 
 function timedOut(nodeId: string): NodeJobOutcome {
   return {
     status: "timed_out",
     nodeId,
+    settlementOrdinal: 1,
     error: { code: "RUN_DEADLINE_EXCEEDED", retryable: true },
   };
 }
@@ -136,6 +137,7 @@ describe("buildResultGraph", () => {
       {
         status: "rejected",
         nodeId: "node-c",
+        settlementOrdinal: 3,
         error: Object.assign(new Error("provider private detail"), {
           code: "SEARCH_PROVIDER_FAILED" as const,
           retryable: true,
@@ -180,6 +182,7 @@ describe("buildResultGraph", () => {
     const outcome: NodeJobOutcome = {
       status: "timed_out",
       nodeId: "node-a",
+      settlementOrdinal: 1,
       error: { code: "RUN_DEADLINE_EXCEEDED", retryable: true },
     };
 

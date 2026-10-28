@@ -15,7 +15,7 @@ import { QualityEvalPlannedRequestDuplicationSchema } from "./quality-metrics.js
 import type { QualityEvalReport } from "./run-quality-eval.js";
 
 export const QUALITY_EVAL_OPERATING_SUMMARY_VERSION =
-  "quality-eval-operating-summary.v3" as const;
+  "quality-eval-operating-summary.v4" as const;
 
 const CALL_COUNT_KEYS = [
   "logicalSearchCalls",
@@ -525,7 +525,11 @@ export function summarizeQualityEvalRanking(
     const expectedForQuery =
       result.executionStatus === "completed"
         ? result.nodes.filter(
-            node => node.status === "ready" || node.status === "partial",
+            node =>
+              node.status === "ready" ||
+              node.status === "partial" ||
+              (node.status === "failed" &&
+                node.errorCode === "NO_UNIQUE_RESOURCE_AVAILABLE"),
           ).length
         : 0;
     expectedRankedNodeCount = addSafeInteger(

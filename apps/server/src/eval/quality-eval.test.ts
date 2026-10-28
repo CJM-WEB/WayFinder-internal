@@ -97,7 +97,10 @@ const sharedResource = {
 } as const;
 
 function createSensitiveSharedResource(nodeId: string) {
-  const canonicalUrl = "https://code.visualstudio.com/download";
+  const canonicalUrl =
+    nodeId === "download"
+      ? "https://code.visualstudio.com/download"
+      : "https://code.visualstudio.com/docs";
   return {
     ...sharedResource,
     id: `resource_${createHash("sha256").update(`${canonicalUrl}:${nodeId}`).digest("hex")}`,
@@ -310,7 +313,7 @@ describe("WAY-86 Quality Eval 数据集", () => {
 
 describe("WAY-86 Quality Eval 查询投影", () => {
   it("保留计划、Top 3、官方排名、跨 Node 重复、多样性与 Run Log 遥测", async () => {
-    expect(QUALITY_EVAL_SCHEMA_VERSION).toBe("quality-eval.v7");
+    expect(QUALITY_EVAL_SCHEMA_VERSION).toBe("quality-eval.v8");
     const payloads: StreamEventPayload[] = [
       { type: "query.analysis", data: plan.analysis },
       { type: "graph.plan", data: plan },
@@ -365,9 +368,9 @@ describe("WAY-86 Quality Eval 查询投影", () => {
         },
         duplicateRate: {
           status: "measured",
-          duplicateOccurrences: 1,
+          duplicateOccurrences: 0,
           totalOccurrences: 8,
-          value: 0.125,
+          value: 0,
         },
         officialSource: { status: "detected", rank: 1 },
         deadlineCompliance: { status: "within" },
@@ -410,23 +413,7 @@ describe("WAY-86 Quality Eval 查询投影", () => {
     expect(differentActualCalls.metrics?.plannedRequestDuplication.totalCount)
       .toBe(2);
     expect(differentActualCalls.telemetry?.counts.logicalSearchCalls).toBe(7);
-    expect(projected.duplicateResources).toEqual([
-      {
-        canonicalUrlFingerprint: createHash("sha256")
-          .update("https://code.visualstudio.com/download")
-          .digest("hex"),
-        occurrences: [
-          {
-            nodeId: "download",
-            rank: 1,
-          },
-          {
-            nodeId: "docs",
-            rank: 1,
-          },
-        ],
-      },
-    ]);
+    expect(projected.duplicateResources).toEqual([]);
   });
 
   it("为适用 Node 显式区分已测量、无日期与无资源的新鲜度事实", async () => {

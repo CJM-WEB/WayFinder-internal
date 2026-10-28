@@ -66,6 +66,7 @@ const NODE_ERROR_MESSAGES: Record<AppErrorCode, string> = {
   PLANNER_FAILED: "未能生成可用的检索计划。",
   INVALID_GRAPH: "检索计划无效，未能执行该节点。",
   SEARCH_PROVIDER_FAILED: "未能获取可用的搜索结果。",
+  NO_UNIQUE_RESOURCE_AVAILABLE: "该节点的可用结果已在图中其他节点展示。",
   EXTRACTION_FAILED: "未能读取可用的网页内容。",
   RERANK_FAILED: "未能完成结果排序。",
   RUN_DEADLINE_EXCEEDED: "该节点未能在本轮时限内完成。",

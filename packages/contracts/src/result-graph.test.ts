@@ -401,6 +401,7 @@ describe("ResultGraph 严格根契约", () => {
     const nodes = Array.from({ length: nodeCount }, (_, index) => ({
       ...validReadyNode,
       id: `node-${index + 1}`,
+      resources: [createResource(index + 1)],
     }));
     expect(
       ResultGraphSchema.safeParse({
@@ -424,7 +425,11 @@ describe("ResultGraph 严格根契约", () => {
   });
 
   it("graph 接受复用 GraphEdgeSchema 的非空 Edge 数组", () => {
-    const secondNode = { ...validReadyNode, id: "node-002" };
+    const secondNode = {
+      ...validReadyNode,
+      id: "node-002",
+      resources: [createResource(2)],
+    };
     expect(
       ResultGraphSchema.safeParse({
         ...validResultGraph,
@@ -632,10 +637,30 @@ describe("ResultGraph 跨对象关系", () => {
     },
   );
 
-  it("允许不同 Node 复用 Resource 值，也允许同 Node 使用不连续但唯一的 rank", () => {
+  it("拒绝不同 Node 复用 canonicalUrl，并精确定位第二次出现的 Resource", () => {
     const resources = [createResource(1), createResource(8)];
     const firstNode = { ...validReadyNode, resources };
     const secondNode = { ...firstNode, id: "node-002" };
+
+    expectCustomIssueAt(
+      {
+        ...validResultGraph,
+        graph: { nodes: [firstNode, secondNode], edges: [] },
+      },
+      ["graph", "nodes", 1, "resources", 0, "canonicalUrl"],
+    );
+  });
+
+  it("允许跨 Node 不同 canonicalUrl，也允许同 Node 使用不连续但唯一的 rank", () => {
+    const firstNode = {
+      ...validReadyNode,
+      resources: [createResource(1), createResource(8)],
+    };
+    const secondNode = {
+      ...validReadyNode,
+      id: "node-002",
+      resources: [createResource(2), createResource(3)],
+    };
 
     expect(
       ResultGraphSchema.safeParse({
@@ -646,12 +671,56 @@ describe("ResultGraph 跨对象关系", () => {
   });
 
   it.each([
+    ["根路径与子路径", "https://example.com/", "https://example.com/1234/"],
+    ["尾斜杠", "https://example.com/path", "https://example.com/path/"],
+    ["业务 Query", "https://example.com/search?q=one", "https://example.com/search?q=two"],
+    ["协议", "http://example.com/path", "https://example.com/path"],
+    ["Hostname", "https://example.com/path", "https://www.example.com/path"],
+    ["语言路径", "https://example.com/", "https://example.com/cn/"],
+  ])("全图唯一门禁保留不同的%s身份", (_name, firstUrl, secondUrl) => {
+    const firstResource = {
+      ...createResource(1),
+      url: firstUrl,
+      canonicalUrl: firstUrl,
+    };
+    const secondResource = {
+      ...createResource(2),
+      url: secondUrl,
+      canonicalUrl: secondUrl,
+    };
+
+    expect(
+      ResultGraphSchema.safeParse({
+        ...validResultGraph,
+        graph: {
+          nodes: [
+            { ...validReadyNode, resources: [firstResource] },
+            {
+              ...validReadyNode,
+              id: "node-002",
+              resources: [secondResource],
+            },
+          ],
+          edges: [],
+        },
+      }).success,
+    ).toBe(true);
+  });
+
+  it.each([
     ["仅 ready", [validReadyNode], false],
     ["仅 partial", [validPartialNode], true],
     ["仅 failed", [validFailedNode], true],
     [
       "ready + partial",
-      [validReadyNode, { ...validPartialNode, id: "node-002" }],
+      [
+        validReadyNode,
+        {
+          ...validPartialNode,
+          id: "node-002",
+          resources: [createResource(2)],
+        },
+      ],
       true,
     ],
     [

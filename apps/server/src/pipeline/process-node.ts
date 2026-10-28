@@ -1,12 +1,11 @@
 /**
- * 模块职责：组合单个 Graph Node（图节点）的检索阶段，并把完成的业务结果收敛为
- * 唯一的 ready / partial / failed 终态事件。
+ * 模块职责：组合单个 Graph Node（图节点）的检索与排序计算，并返回未做跨 Node
+ * 仲裁的 ready / partial 结果。
  *
  * 生命周期边界：取消与绝对 Run deadline 由上层 Orchestrator 统一管理；只要共享
- * Signal 已终止，本模块就原样抛出 reason，不发送 node.failed，也不推测中途结果。
+ * Signal 已终止，本模块就原样抛出 reason；Node 终态由 Run 级协调器统一仲裁后发送。
  */
 import {
-  AppErrorSchema,
   ResultGraphNodeSchema,
   StreamEventPayloadSchema,
   type AppErrorCode,
@@ -57,6 +56,11 @@ export type NodeStreamEventPayload = Extract<
   }
 >;
 
+export type NodeStatusEventPayload = Extract<
+  NodeStreamEventPayload,
+  { type: "node.status" }
+>;
+
 /**
  * 普通 Node Job（节点任务）失败的服务端结构。公共事件只投影 code/retryable，
  * cause 与 stack 仅供后续脱敏诊断使用，不能进入 Wire Contract（传输协议）。
@@ -100,8 +104,8 @@ export type ProcessNodeContext = Readonly<{
   nowMs: number;
   /** Rerank 阶段配置上限；真正调用前还要按 Run 当前剩余预算再次收窄。 */
   rerankTimeoutMs: number;
-  /** Emit 只接收无 Envelope 的严格业务 Payload；Run Event Writer 负责补齐 Envelope。 */
-  emit: (payload: NodeStreamEventPayload) => Promise<void>;
+  /** 计算阶段只发送进度；所有终态由 Run 级协调器在全图仲裁后发送。 */
+  emit: (payload: NodeStatusEventPayload) => Promise<void>;
   /** 匿名排序观测是旁路能力，失败不得改变 Node 结果。 */
   observeRanking?: (observation: RankingObservation) => void;
   language: SearchLanguage;
@@ -146,21 +150,15 @@ function appendUniqueWarnings(
 /** 在交给传输层前先校验 Payload，防止内部调用绕过公共 Event Contract。 */
 async function emitValidated(
   emit: ProcessNodeContext["emit"],
-  payload: NodeStreamEventPayload,
+  payload: NodeStatusEventPayload,
 ): Promise<void> {
   const parsed = StreamEventPayloadSchema.parse(payload);
   try {
-    switch (parsed.type) {
-      case "node.status":
-      case "node.ready":
-      case "node.partial":
-      case "node.failed":
-        await emit(parsed);
-        return;
-      default:
-        // 输入类型已经排除非 Node 事件；此分支防止未来 Schema 调整后边界静默扩大。
-        throw new TypeError("processNode 只能发送 Node 事件");
+    if (parsed.type !== "node.status") {
+      // 输入类型已经固定为进度事件；此分支防止未来 Schema 调整后边界静默扩大。
+      throw new TypeError("processNode 只能发送 Node 状态事件");
     }
+    await emit(parsed);
   } catch (error: unknown) {
     throw new NodeEventEmissionError({ cause: error });
   }
@@ -168,7 +166,7 @@ async function emitValidated(
 
 /**
  * 依次执行已批准的单 Node Pipeline。成功与局部降级返回完整 ResultGraphNode；
- * 普通失败发送一次 node.failed 后抛 NodeJobError，供上层生成 rejected outcome。
+ * 普通失败只抛 NodeJobError，供上层生成 rejected outcome 并执行全图终态仲裁。
  */
 export async function processNode(
   node: GraphPlanNode,
@@ -295,38 +293,18 @@ export async function processNode(
       throw error;
     }
 
-    const nodeError = toNodeJobError(error);
-    const appError = AppErrorSchema.parse({
-      code: nodeError.code,
-      retryable: nodeError.retryable,
-    });
-    await emitValidated(context.emit, {
-      type: "node.failed",
-      nodeId: node.id,
-      error: appError,
-    });
-    throw nodeError;
+    throw toNodeJobError(error);
   }
 
   // 最后一次外部调用结算后再次守住 Run 生命周期，禁止发送迟到的 ready/partial。
   signal.throwIfAborted();
 
-  /**
-   * 终态 Emit 位于业务 catch 之外：若传输层在发送 ready/partial 时抛错，不能再补发
-   * node.failed，否则同一 Node 可能出现两个终态事件。此类错误应由 Run 层终止传输。
-   */
-  await emitValidated(context.emit, {
-    type: result.status === "partial" ? "node.partial" : "node.ready",
-    nodeId: node.id,
-    resources: result.resources,
-    warnings: result.warnings,
-  });
   try {
     if (rankingObservation !== undefined) {
       context.observeRanking?.(rankingObservation);
     }
   } catch {
-    // 只有终态成功送达后才记录；旁路 Sink 故障仍不能覆盖已交付的业务结果。
+    // Ranking 已真实完成；后续全图仲裁即使清空 Node，也必须保留这条覆盖事实。
   }
   return result;
 }

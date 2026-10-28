@@ -451,15 +451,15 @@ describe("WAY-110 SearchPlan 计划请求重复聚合", () => {
 });
 
 describe("WAY-87 确定性质量指标", () => {
-  it("使用完整 ResultGraph 统计 Resource，并冻结 excess-occurrence 重复率", () => {
+  it("合法 ResultGraph 的 Resource 重复率严格为 0", () => {
     const fixture = createGraphFixture([
       [
         "https://example.com/a",
         "https://example.com/b",
         "https://example.com/c",
-        "https://duplicate.example/item",
+        "https://example.com/d",
       ],
-      ["https://duplicate.example/item"],
+      ["https://example.com/e"],
     ]);
 
     const measured = measureQualityEvalMetrics({
@@ -479,9 +479,9 @@ describe("WAY-87 确定性质量指标", () => {
       resourceCount: 5,
       duplicateRate: {
         status: "measured",
-        duplicateOccurrences: 1,
+        duplicateOccurrences: 0,
         totalOccurrences: 5,
-        value: 0.2,
+        value: 0,
       },
       officialSource: { status: "notApplicable" },
       deadlineCompliance: { status: "within" },
@@ -498,36 +498,18 @@ describe("WAY-87 确定性质量指标", () => {
         officialSource: { status: "notApplicable" },
       },
     ]);
-    expect(measured.duplicateResources).toHaveLength(1);
-    expect(measured.duplicateResources[0]?.occurrences).toEqual([
-      { nodeId: "node-1", rank: 4 },
-      { nodeId: "node-2", rank: 1 },
-    ]);
+    expect(measured.duplicateResources).toEqual([]);
   });
 
-  it("三次重复只计算两个超额 occurrence，零资源时重复率不可用", () => {
-    const repeatedFixture = createGraphFixture([
-      ["https://duplicate.example/item"],
-      ["https://duplicate.example/item"],
-      ["https://duplicate.example/item"],
-      ["https://unique.example/item"],
-    ]);
-    const repeated = measureQualityEvalMetrics({
-      queryId: QUERY_ID,
-      ...repeatedFixture,
-      telemetry: createTelemetry(1_000),
-      expectedOfficialDomains: [],
-      runDeadlineMs: RUN_DEADLINE_MS,
-    });
-    expect(repeated.status).toBe("measured");
-    if (repeated.status === "measured") {
-      expect(repeated.metrics.duplicateRate).toEqual({
-        status: "measured",
-        duplicateOccurrences: 2,
-        totalOccurrences: 4,
-        value: 0.5,
-      });
-    }
+  it("跨 Node 重复图被 Contract 拒绝，零资源时重复率不可用", () => {
+    expect(() =>
+      createGraphFixture([
+        ["https://duplicate.example/item"],
+        ["https://duplicate.example/item"],
+        ["https://duplicate.example/item"],
+        ["https://unique.example/item"],
+      ]),
+    ).toThrow();
 
     const empty = measureQualityEvalMetrics({
       queryId: QUERY_ID,

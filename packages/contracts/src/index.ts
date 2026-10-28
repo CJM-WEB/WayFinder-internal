@@ -252,6 +252,7 @@ export const AppErrorCodeSchema = z.enum([
   "PLANNER_FAILED",
   "INVALID_GRAPH",
   "SEARCH_PROVIDER_FAILED",
+  "NO_UNIQUE_RESOURCE_AVAILABLE",
   "EXTRACTION_FAILED",
   "RERANK_FAILED",
   "RUN_DEADLINE_EXCEEDED",
@@ -663,16 +664,19 @@ export type NodeJobOutcome =
   | {
       status: "fulfilled";
       nodeId: string;
+      settlementOrdinal: number;
       value: ResultGraphNode;
     }
   | {
       status: "rejected";
       nodeId: string;
+      settlementOrdinal: number;
       error: NodeJobFailure;
     }
   | {
       status: "timed_out";
       nodeId: string;
+      settlementOrdinal: number;
       error: {
         code: "RUN_DEADLINE_EXCEEDED";
         retryable: true;
@@ -781,7 +785,8 @@ export const ResultGraphSchema = z
       }
     });
 
-    // 3. Resource 身份与展示顺序只要求在各自 Node 内唯一。
+    // 3. 先保留既有 Node 内身份门禁，再单独定位跨 Node 的 canonicalUrl 重复。
+    const canonicalOwnerNodeIndex = new Map<string, number>();
     result.graph.nodes.forEach((node, nodeIndex) => {
       for (const field of ["id", "canonicalUrl", "rank"] as const) {
         for (const resourceIndex of duplicateValueIndexes(
@@ -801,6 +806,28 @@ export const ResultGraphSchema = z
           });
         }
       }
+
+      node.resources.forEach((resource, resourceIndex) => {
+        const ownerNodeIndex = canonicalOwnerNodeIndex.get(
+          resource.canonicalUrl,
+        );
+        if (ownerNodeIndex !== undefined && ownerNodeIndex !== nodeIndex) {
+          context.addIssue({
+            code: "custom",
+            path: [
+              "graph",
+              "nodes",
+              nodeIndex,
+              "resources",
+              resourceIndex,
+              "canonicalUrl",
+            ],
+            message: "Resource canonicalUrl must be unique across the graph",
+          });
+          return;
+        }
+        canonicalOwnerNodeIndex.set(resource.canonicalUrl, nodeIndex);
+      });
     });
 
     // 4. partial 是最终 Node 状态的派生值，调用方不能独立覆盖。

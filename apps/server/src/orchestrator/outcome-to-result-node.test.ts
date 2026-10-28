@@ -60,6 +60,7 @@ describe("outcomeToResultNode", () => {
       const outcome: NodeJobOutcome = {
         status: "fulfilled",
         nodeId: PLAN_NODE.id,
+        settlementOrdinal: 1,
         value,
       };
 
@@ -89,6 +90,7 @@ describe("outcomeToResultNode", () => {
       const outcome: NodeJobOutcome = {
         status: "rejected",
         nodeId: PLAN_NODE.id,
+        settlementOrdinal: 1,
         error: sourceError,
       };
 
@@ -119,6 +121,7 @@ describe("outcomeToResultNode", () => {
     const outcome: NodeJobOutcome = {
       status: "timed_out",
       nodeId: PLAN_NODE.id,
+      settlementOrdinal: 1,
       error: {
         code: "RUN_DEADLINE_EXCEEDED",
         retryable: true,
@@ -148,6 +151,7 @@ describe("outcomeToResultNode", () => {
     const outcome: NodeJobOutcome = {
       status: "fulfilled",
       nodeId: PLAN_NODE.id,
+      settlementOrdinal: 1,
       value: failedValue,
     };
 

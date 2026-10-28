@@ -70,7 +70,7 @@ function createReport(
   includeRankedResult = true,
 ) {
   return QualityEvalReportSchema.parse({
-    schemaVersion: "quality-eval.v9",
+    schemaVersion: "quality-eval.v10",
     issue: "WAY-86",
     evaluationRunId: `2026-10-23T00-00-0${runIndex}-000Z-0000000${runIndex}-0000-4000-8000-00000000000${runIndex}`,
     completedAt: `2026-10-23T00:00:0${runIndex}.000Z`,
@@ -149,7 +149,7 @@ function createReport(
           edges: [],
         } as const;
         return {
-          schemaVersion: "quality-eval.v7",
+          schemaVersion: "quality-eval.v8",
           comparisonKey: `wayfinder-regression.v1:${id}`,
           query: {
             id,
@@ -217,7 +217,7 @@ function createReport(
       }
       const query = `Query ${index + 1}`;
       return {
-        schemaVersion: "quality-eval.v7",
+        schemaVersion: "quality-eval.v8",
         comparisonKey: `wayfinder-regression.v1:${id}`,
         query: {
           id,
@@ -405,6 +405,19 @@ function createV8LegacyReport(
   return legacy;
 }
 
+/** outer v9/query v7/metrics v3 是 WAY-111 的 zh-CN 历史报告组合。 */
+function createV9LegacyReport(commit: string, runIndex: number): unknown {
+  const legacy = structuredClone(createReport(commit, runIndex)) as Record<
+    string,
+    unknown
+  >;
+  legacy.schemaVersion = "quality-eval.v9";
+  for (const result of legacy.results as Record<string, unknown>[]) {
+    result.schemaVersion = "quality-eval.v7";
+  }
+  return legacy;
+}
+
 /** 用真实的未完成语义制造覆盖缺口，禁止在 completed 结果上伪造 null。 */
 function replaceWithUnmeasuredFailure(
   report: ReturnType<typeof createReport>,
@@ -412,7 +425,7 @@ function replaceWithUnmeasuredFailure(
 ): void {
   const current = report.results[index]!;
   report.results[index] = {
-    schemaVersion: "quality-eval.v7",
+    schemaVersion: "quality-eval.v8",
     comparisonKey: current.comparisonKey,
     query: current.query,
     executionStatus: "run_failed",
@@ -513,6 +526,53 @@ describe("WAY-90 Quality Eval A-B-B-A 比较", () => {
 
     expect(compared.status).toBe("inconclusive");
     expect(reports).toEqual(snapshots);
+  });
+
+  it("显式且不可变地迁移整组 outer v9/query v7/metrics v3 报告", () => {
+    const reports = BLOCKS.map((block, index) =>
+      createV9LegacyReport(
+        block.startsWith("A") ? BASELINE_COMMIT : CANDIDATE_COMMIT,
+        index + 1,
+      ),
+    );
+    const snapshots = structuredClone(reports);
+    expect(
+      reports.every(report => !QualityEvalReportSchema.safeParse(report).success),
+    ).toBe(true);
+
+    const compared = compareQualityEvalBlocks({
+      baselineCommit: BASELINE_COMMIT,
+      candidateCommit: CANDIDATE_COMMIT,
+      blocks: BLOCKS.map((block, index) => ({ block, report: reports[index] })),
+    });
+
+    expect(compared.status).toBe("comparable");
+    expect(reports).toEqual(snapshots);
+  });
+
+  it("拒绝历史上不可能的 outer v9 + und 组合", () => {
+    const forged = createV9LegacyReport(BASELINE_COMMIT, 1) as Record<
+      string,
+      unknown
+    >;
+    (forged.runPolicy as Record<string, unknown>).language = "und";
+
+    expect(() =>
+      compareQualityEvalBlocks({
+        baselineCommit: BASELINE_COMMIT,
+        candidateCommit: CANDIDATE_COMMIT,
+        blocks: BLOCKS.map((block, index) => ({
+          block,
+          report:
+            block === "A1"
+              ? forged
+              : createReport(
+                  block.startsWith("A") ? BASELINE_COMMIT : CANDIDATE_COMMIT,
+                  index + 1,
+                ),
+        })),
+      }),
+    ).toThrow("Quality Eval A1 报告不符合严格 Schema");
   });
 
   it("拒绝历史上不可能的 v8/v6/v2 + zh-CN 组合", () => {

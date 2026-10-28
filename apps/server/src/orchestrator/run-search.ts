@@ -73,9 +73,10 @@ const DEADLINE_ERROR = Object.freeze({
 function createTimedOutOutcomes(
   nodeIds: readonly string[],
 ): readonly NodeJobOutcome[] {
-  return nodeIds.map(nodeId => ({
+  return nodeIds.map((nodeId, index) => ({
     status: "timed_out",
     nodeId,
+    settlementOrdinal: index + 1,
     error: DEADLINE_ERROR,
   }));
 }
@@ -294,7 +295,6 @@ export function createRunSearchHandler(
         runScope,
         emit: observedEmit,
       });
-      let outcomes: readonly NodeJobOutcome[];
       observeSafely(() => recorder?.recordNodeProcessingStarted());
       try {
         const jobs = startNodeJobs({
@@ -304,7 +304,7 @@ export function createRunSearchHandler(
             nowMs: startedAt,
             // processNode 会在真正进入 Rerank 前按同一 Run Scope 再次收窄。
             rerankTimeoutMs: dependencies.rerankTimeoutMs,
-            emit: terminalEvents.emitNode,
+            emit: terminalEvents.emitNodeStatus,
             ...(recorder === undefined
               ? {}
               : { observeRanking: recorder.recordRanking }),
@@ -313,21 +313,26 @@ export function createRunSearchHandler(
           providers,
           runScope,
         });
-        outcomes = await settleNodeJobsUntilAbsoluteDeadline(jobs, {
+        await settleNodeJobsUntilAbsoluteDeadline(jobs, {
           runScope,
+          acceptOutcome: terminalEvents.acceptOutcome,
+          abortRun: reason => fatalController.abort(reason),
         });
       } catch (error: unknown) {
         if (!runScope.isDeadlineReason(error)) {
           throw error;
         }
         // GraphPlan 已上流但首个 Node 还未启动时到期，仍必须补齐每 Node 终态。
-        outcomes = createTimedOutOutcomes(plan.nodes.map(node => node.id));
+        await Promise.all(
+          createTimedOutOutcomes(plan.nodes.map(node => node.id)).map(
+            terminalEvents.acceptOutcome,
+          ),
+        );
       }
 
       await terminalEvents.complete({
         runId: input.runId,
         query: resultQuery,
-        outcomes,
         meta: {
           createdAt: new Date(startedAt).toISOString(),
           // ResultGraph 现有语义记录用户可见 Resource 的 Search Provider。

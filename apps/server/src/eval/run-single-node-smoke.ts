@@ -49,7 +49,7 @@ import {
   NodeEventEmissionError,
   NodeJobError,
   processNode,
-  type NodeStreamEventPayload,
+  type NodeStatusEventPayload,
 } from "../pipeline/process-node.js";
 import type { SearchProvider } from "../search/provider.js";
 import {
@@ -637,7 +637,7 @@ export async function evaluateSingleNodeSmokeCase(
   let terminalEventCount = 0;
   let timeToTerminalMs: number | undefined;
 
-  const emit = async (payload: NodeStreamEventPayload): Promise<void> => {
+  const recordTerminal = (payload: unknown): void => {
     const parsed = StreamEventPayloadSchema.parse(payload);
     if (
       parsed.type === "node.ready" ||
@@ -649,6 +649,9 @@ export async function evaluateSingleNodeSmokeCase(
       timeToTerminalMs = elapsedSince(startedAt, now);
     }
   };
+  /** Standalone Smoke 不装配 D4 协调器，只记录 processNode 进度并本地投影单 Node 终态。 */
+  const emit: (payload: NodeStatusEventPayload) => Promise<void> = async () =>
+    undefined;
 
   try {
     const result = ResultGraphNodeSchema.parse(
@@ -671,14 +674,17 @@ export async function evaluateSingleNodeSmokeCase(
         },
       ),
     );
-    if (
-      result.status === "failed" ||
-      terminalEventCount !== 1 ||
-      terminalEventType !==
-        (result.status === "ready" ? "node.ready" : "node.partial")
-    ) {
-      throw new Error("单 Node Smoke 终态不变量被破坏");
+    if (result.status === "failed") {
+      throw new Error("单 Node Smoke 计算结果不变量被破坏");
     }
+    const successfulTerminalEventType =
+      result.status === "ready" ? "node.ready" : "node.partial";
+    recordTerminal({
+      type: successfulTerminalEventType,
+      nodeId: result.id,
+      resources: result.resources,
+      warnings: result.warnings,
+    });
 
     const providerTelemetry = readProviderTelemetry(
       telemetry,
@@ -703,7 +709,7 @@ export async function evaluateSingleNodeSmokeCase(
       referenceTime,
       executionStatus: "completed",
       nodeStatus: result.status,
-      terminalEventType,
+      terminalEventType: successfulTerminalEventType,
       terminalEventCount,
       elapsedMs: elapsedSince(startedAt, now),
       ...(timeToTerminalMs === undefined ? {} : { timeToTerminalMs }),
@@ -717,6 +723,13 @@ export async function evaluateSingleNodeSmokeCase(
       telemetry: providerTelemetry,
     };
   } catch (error: unknown) {
+    if (error instanceof NodeJobError && terminalEventCount === 0) {
+      recordTerminal({
+        type: "node.failed",
+        nodeId: input.smokeCase.node.id,
+        error: { code: error.code, retryable: error.retryable },
+      });
+    }
     const providerTelemetry = readProviderTelemetry(
       telemetry,
       attemptObservations(),

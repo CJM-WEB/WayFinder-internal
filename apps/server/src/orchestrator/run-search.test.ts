@@ -286,8 +286,15 @@ describe("createRunSearchHandler", () => {
       expect(observedSignals.every(item => item.signal === sharedSignal)).toBe(
         true,
       );
-      // Broad Search 后仍有 33 秒，Reviser 受 30 秒上限收窄，Rerank 再受 24 秒上限收窄。
-      expect(llmTimeouts).toEqual([30_000, 30_000, 24_000]);
+      // Broad Search 后仍有 33 秒；各阶段还会用单调时钟扣除自身已消耗时间，因此只冻结
+      // 首次上限与后续不扩张约束，避免把真实执行的 1ms 抖动误当成业务回归。
+      expect(llmTimeouts).toHaveLength(3);
+      expect(llmTimeouts[0]).toBeGreaterThan(0);
+      expect(llmTimeouts[0]).toBeLessThanOrEqual(30_000);
+      expect(llmTimeouts[1]).toBeGreaterThan(0);
+      expect(llmTimeouts[1]).toBeLessThanOrEqual(30_000);
+      expect(llmTimeouts[2]).toBeGreaterThan(0);
+      expect(llmTimeouts[2]).toBeLessThanOrEqual(24_000);
       expect(vi.getTimerCount()).toBe(1);
       expect(payloads).toContainEqual({
         type: "node.failed",
@@ -769,5 +776,79 @@ describe("createRunSearchHandler", () => {
       "node.status",
       "node.status",
     ]);
+  });
+
+  it("Node 终态 Sink 失败时立即中止 Provider 中的兄弟 Node 且不补失败或 complete", async () => {
+    const clock = createFixedClock("2026-10-22T08:00:00.000Z");
+    const sinkError = new Error("node terminal sink failed");
+    let siblingSignal: AbortSignal | undefined;
+    let siblingAbortReason: unknown;
+    const searchProvider: SearchProvider = {
+      id: "terminal-fatal-search",
+      capabilities: ["general"],
+      search: async (request, signal) => {
+        if (request.query === QUERY) return [createHit()];
+        if (request.query !== SECOND_QUERY) {
+          throw new Error(`终态失败测试未配置 Query：${request.query}`);
+        }
+        siblingSignal = signal;
+        return await new Promise<NormalizedSearchHit[]>((_resolve, reject) => {
+          const onAbort = (): void => {
+            siblingAbortReason = signal.reason;
+            reject(signal.reason);
+          };
+          signal.addEventListener("abort", onAbort, { once: true });
+          if (signal.aborted) onAbort();
+        });
+      },
+    };
+    const handler = createRunSearchHandler({
+      ...createDependencies(clock, []),
+      providers: createConcurrencyLimitedProviders({
+        searchProvider,
+        llmProvider: new FakeLLMProvider([
+          createTwoNodePlan(),
+          createRerankOutput(),
+        ]),
+        concurrency: { search: 6, llm: 3 },
+      }),
+    });
+    const payloads: StreamEventPayload[] = [];
+    let handlerError: unknown;
+
+    try {
+      await handler({
+        input: {
+          runId: "run-112-terminal-fatal",
+          query: QUERY,
+          language: "zh-CN",
+        },
+        signal: new AbortController().signal,
+        emit: payload => {
+          payloads.push(payload);
+          return payload.type === "node.ready"
+            ? Promise.reject(sinkError)
+            : Promise.resolve();
+        },
+      });
+    } catch (error: unknown) {
+      handlerError = error;
+    }
+
+    expect(handlerError).toBe(sinkError);
+    expect(siblingSignal?.aborted).toBe(true);
+    expect(siblingAbortReason).toBe(sinkError);
+    expect(payloads).toContainEqual(
+      expect.objectContaining({
+        type: "node.ready",
+        nodeId: "typescript-guide",
+      }),
+    );
+    expect(payloads).not.toContainEqual(
+      expect.objectContaining({ type: "node.failed" }),
+    );
+    expect(payloads).not.toContainEqual(
+      expect.objectContaining({ type: "complete" }),
+    );
   });
 });

@@ -42,7 +42,7 @@ import {
   type QualityEvalMetricMeasurement,
 } from "./quality-metrics.js";
 
-export const QUALITY_EVAL_SCHEMA_VERSION = "quality-eval.v7" as const;
+export const QUALITY_EVAL_SCHEMA_VERSION = "quality-eval.v8" as const;
 export const QUALITY_EVAL_DATASET_VERSION =
   "wayfinder-regression.v1" as const;
 

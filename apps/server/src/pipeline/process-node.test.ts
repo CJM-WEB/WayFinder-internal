@@ -1,9 +1,9 @@
 /**
- * 测试职责：冻结 WAY-57/58/109 的单 Node Pipeline、Warning 合并、唯一终态与高风险
+ * 测试职责：冻结 WAY-57/58/109/112 的单 Node Pipeline、Warning 合并与高风险
  * 检索状态矩阵，全部通过显式 Fake Provider（测试替身）在普通 CI 中确定性运行。
  *
- * 关键约束：ready/partial 返回完整且通过 Contract 的 Node；普通失败只发一次
- * node.failed；取消由上层接管；任何处理中事件都不得携带 Resource 快照。
+ * 关键约束：ready/partial 返回完整且通过 Contract 的 Node；本层只发送处理中状态，
+ * 普通失败只抛结构化错误；取消与全图终态均由上层接管。
  */
 import {
   ResultGraphNodeSchema,
@@ -23,7 +23,6 @@ import {
 } from "../../../../tests/support/test-infrastructure.mjs";
 import { LLMProviderError } from "../ai/llm-provider.js";
 import {
-  NodeEventEmissionError,
   NodeJobError,
   processNode,
   toNodeJobError,
@@ -156,7 +155,7 @@ function terminalEvents(events: readonly StreamEventPayload[]) {
   );
 }
 
-/** 每个完成态矩阵 Case 都复用同一组公共 Contract 与唯一终态断言。 */
+/** 每个完成态矩阵 Case 都复用同一组公共 Contract 与“无抢先终态”断言。 */
 function expectCompletedExecution(
   result: ResultGraphNode,
   events: readonly StreamEventPayload[],
@@ -165,7 +164,7 @@ function expectCompletedExecution(
   expect(
     events.every(event => StreamEventPayloadSchema.safeParse(event).success),
   ).toBe(true);
-  expect(terminalEvents(events)).toHaveLength(1);
+  expect(terminalEvents(events)).toEqual([]);
 }
 
 /** 只读取结构化 Prompt 的候选数据区，避免对完整 Prompt/JSON Schema 做脆弱快照。 */
@@ -194,7 +193,7 @@ function readPromptCandidates(provider: FakeLLMProvider): Array<{
 }
 
 describe("processNode 成功与局部降级", () => {
-  it("组装全部阶段并返回 ready，同时只发送一个携带最终 Resource 的终态", async () => {
+  it("组装全部阶段并返回 ready，同时只发送 searching/filtering", async () => {
     const hit = createHit();
     const searchProvider = new FakeSearchProvider({
       searchResponses: { [hit.query]: [hit] },
@@ -260,7 +259,6 @@ describe("processNode 成功与局部降级", () => {
     expect(events.map(event => event.type)).toEqual([
       "node.status",
       "node.status",
-      "node.ready",
     ]);
     expect(events.slice(0, 2)).toEqual([
       {
@@ -274,12 +272,12 @@ describe("processNode 成功与局部降级", () => {
         status: "filtering",
       },
     ]);
-    expect(terminalEvents(events)).toHaveLength(1);
+    expect(terminalEvents(events)).toEqual([]);
     expect(events.every(event => StreamEventPayloadSchema.safeParse(event).success))
       .toBe(true);
   });
 
-  it("排序观察 Sink 失败时保持业务结果与终态不变", async () => {
+  it("排序观察 Sink 失败时保持业务结果与状态事件不变", async () => {
     const hit = createHit();
     const searchProvider = new FakeSearchProvider({
       searchResponses: { [hit.query]: [hit] },
@@ -333,16 +331,8 @@ describe("processNode 成功与局部降级", () => {
     expect(events.map(event => event.type)).toEqual([
       "node.status",
       "node.status",
-      "node.partial",
     ]);
-    expect(terminalEvents(events)).toEqual([
-      {
-        type: "node.partial",
-        nodeId: node.id,
-        resources: result.resources,
-        warnings: result.warnings,
-      },
-    ]);
+    expect(terminalEvents(events)).toEqual([]);
   });
 });
 
@@ -374,9 +364,7 @@ describe("WAY-58 单 Node 高风险检索矩阵", () => {
     expect(result.status).toBe("partial");
     expect(result.warnings).toEqual(["SEARCH_PROVIDER_PARTIAL"]);
     expect(result.resources).toHaveLength(1);
-    expect(terminalEvents(events).map(event => event.type)).toEqual([
-      "node.partial",
-    ]);
+    expect(terminalEvents(events)).toEqual([]);
     expect(
       searchProvider.searchCalls.map(call => ({
         query: call.request.query,
@@ -727,7 +715,6 @@ describe("WAY-58 单 Node 高风险检索矩阵", () => {
     expect(events.map(event => event.type)).toEqual([
       "node.status",
       "node.status",
-      "node.partial",
     ]);
   });
 
@@ -833,7 +820,6 @@ describe("WAY-58 单 Node 高风险检索矩阵", () => {
     expect(events.map(event => event.type)).toEqual([
       "node.status",
       "node.status",
-      "node.ready",
     ]);
   });
 
@@ -1040,7 +1026,7 @@ describe("processNode 失败与取消", () => {
     },
   );
 
-  it("所有 Search 都无结果时发送精确 node.failed 并抛可重试错误", async () => {
+  it("所有 Search 都无结果时只抛可重试错误，不抢先发送 node.failed", async () => {
     const node = createNode(["TypeScript compiler guide", "backup query"]);
     const searchProvider = new FakeSearchProvider({
       searchResponses: {
@@ -1068,13 +1054,8 @@ describe("processNode 失败与取消", () => {
         nodeId: node.id,
         status: "searching",
       },
-      {
-        type: "node.failed",
-        nodeId: node.id,
-        error: { code: "SEARCH_PROVIDER_FAILED", retryable: true },
-      },
     ]);
-    expect(terminalEvents(events)).toHaveLength(1);
+    expect(terminalEvents(events)).toEqual([]);
     expect(
       events.every(event => StreamEventPayloadSchema.safeParse(event).success),
     ).toBe(true);
@@ -1110,9 +1091,8 @@ describe("processNode 失败与取消", () => {
     expect(events.map(event => event.type)).toEqual([
       "node.status",
       "node.status",
-      "node.ready",
     ]);
-    expect(terminalEvents(events)).toHaveLength(1);
+    expect(terminalEvents(events)).toEqual([]);
   });
 
   it("内部未知错误收敛为不可重试 UNKNOWN，且公共事件不泄漏 cause", async () => {
@@ -1139,13 +1119,7 @@ describe("processNode 失败与取消", () => {
         createRunScope(),
       ),
     ).rejects.toMatchObject({ code: "UNKNOWN", retryable: false });
-    expect(terminalEvents(events)).toEqual([
-      {
-        type: "node.failed",
-        nodeId: node.id,
-        error: { code: "UNKNOWN", retryable: false },
-      },
-    ]);
+    expect(terminalEvents(events)).toEqual([]);
     expect(JSON.stringify(events)).not.toContain("invalid-policy");
   });
 
@@ -1236,7 +1210,7 @@ describe("processNode 失败与取消", () => {
     expect(terminalEvents(events)).toEqual([]);
   });
 
-  it("ready 终态的 Emit 抛错时不会再补发第二个 failed 终态", async () => {
+  it("filtering 状态 Emit 抛错时作为传输故障上抛，且不记录 Ranking", async () => {
     const node = createNode();
     const hit = createHit(node.searchPlan.queries[0]);
     const searchProvider = new FakeSearchProvider({
@@ -1266,7 +1240,7 @@ describe("processNode 失败与取消", () => {
           ...baseContext,
           async emit(payload) {
             events.push(structuredClone(payload));
-            if (payload.type === "node.ready") {
+            if (payload.status === "filtering") {
               throw emitError;
             }
           },
@@ -1277,16 +1251,13 @@ describe("processNode 失败与取消", () => {
       name: "NodeEventEmissionError",
       cause: emitError,
     });
-    expect(terminalEvents(events).map(event => event.type)).toEqual([
-      "node.ready",
-    ]);
+    expect(terminalEvents(events)).toEqual([]);
     expect(rankingObservations).toEqual([]);
   });
 
-  it("failed 终态 Emit 失败时只尝试一次，并作为传输故障上抛", async () => {
+  it("普通失败不访问终态 Sink，只抛 NodeJobError 供上层结算", async () => {
     const node = createNode();
     const events: StreamEventPayload[] = [];
-    const emitError = new Error("failed event rejected");
     const baseContext = createContext(
       new FakeSearchProvider({
         searchResponses: { [node.searchPlan.queries[0]!]: [] },
@@ -1301,18 +1272,17 @@ describe("processNode 失败与取消", () => {
         ...baseContext,
         async emit(payload) {
           events.push(structuredClone(payload));
-          if (payload.type === "node.failed") {
-            throw emitError;
-          }
         },
       },
       createRunScope(),
     );
 
-    await expect(operation).rejects.toBeInstanceOf(NodeEventEmissionError);
-    expect(terminalEvents(events).map(event => event.type)).toEqual([
-      "node.failed",
-    ]);
+    await expect(operation).rejects.toMatchObject({
+      name: "NodeJobError",
+      code: "SEARCH_PROVIDER_FAILED",
+    });
+    expect(events.map(event => event.type)).toEqual(["node.status"]);
+    expect(terminalEvents(events)).toEqual([]);
   });
 });
 

@@ -11,6 +11,7 @@ import {
   createQualityEvalOperatingSummary,
   summarizeQualityEvalDuplication,
   summarizeQualityEvalProviderUsage,
+  summarizeQualityEvalRanking,
 } from "./quality-eval-operating-summary.js";
 import { QualityEvalQueryResultSchema } from "./quality-eval.js";
 import { QualityEvalReportSchema } from "./run-quality-eval.js";
@@ -71,7 +72,7 @@ function createTelemetry(index: number) {
 
 function createReport() {
   return QualityEvalReportSchema.parse({
-    schemaVersion: "quality-eval.v9",
+    schemaVersion: "quality-eval.v10",
     issue: "WAY-86",
     evaluationRunId:
       "2026-10-23T09-00-00-000Z-11111111-1111-4111-8111-111111111111",
@@ -122,7 +123,7 @@ function createReport() {
     results: Array.from({ length: 20 }, (_, index) => {
       const id = `wfq-${String(index + 1).padStart(3, "0")}`;
       return {
-        schemaVersion: "quality-eval.v7",
+        schemaVersion: "quality-eval.v8",
         comparisonKey: `wayfinder-regression.v1:${id}`,
         query: {
           id,
@@ -442,6 +443,68 @@ describe("WAY-91 Quality Eval 运行摘要", () => {
     });
   });
 
+  it("把去重清空的失败 Node 计入排序覆盖，但不扩大到普通失败", () => {
+    const report = createReport();
+    const completed = createCompletedDuplicationResult(report.results[0]!);
+    const emptyMode = {
+      nodeCount: 0,
+      finalCandidateCount: 0,
+      providerTop1OverrideCount: 0,
+      heuristicTop1OverrideCount: 0,
+      providerTop3FinalOverlapCount: 0,
+      heuristicTop3FinalOverlapCount: 0,
+      top3ComparisonSlots: 0,
+    };
+    const observedMode = {
+      ...emptyMode,
+      nodeCount: 2,
+      finalCandidateCount: 2,
+      providerTop3FinalOverlapCount: 2,
+      heuristicTop3FinalOverlapCount: 2,
+      top3ComparisonSlots: 2,
+    };
+    const failedNode = {
+      ...completed.nodes[1]!,
+      status: "failed" as const,
+      warnings: [],
+      errorCode: "NO_UNIQUE_RESOURCE_AVAILABLE" as const,
+      resourceCount: 0,
+      topResources: [],
+      officialSource: { status: "unavailable" as const, reason: "noResources" as const },
+      diversity: { distinctExactDomainCount: 0 },
+      freshness: { status: "notApplicable" as const },
+    };
+    report.results[0] = QualityEvalQueryResultSchema.parse({
+      ...completed,
+      nodes: [completed.nodes[0], failedNode],
+      telemetry: {
+        ...completed.telemetry,
+        ranking: { llmSuccess: observedMode, fallback: emptyMode },
+      },
+    });
+
+    expect(summarizeQualityEvalRanking(report.results)).toMatchObject({
+      status: "complete",
+      expectedRankedNodeCount: 2,
+      observedRankedNodeCount: 2,
+      incompleteQueryCount: 0,
+    });
+
+    report.results[0] = QualityEvalQueryResultSchema.parse({
+      ...report.results[0],
+      nodes: [
+        report.results[0]!.nodes[0],
+        { ...failedNode, errorCode: "SEARCH_PROVIDER_FAILED" },
+      ],
+    });
+    expect(summarizeQualityEvalRanking(report.results)).toMatchObject({
+      status: "partial",
+      expectedRankedNodeCount: 1,
+      observedRankedNodeCount: 2,
+      incompleteQueryCount: 1,
+    });
+  });
+
   it("按 Full 顺序生成 nearest-rank P50、最坏样本与完整成本代理", () => {
     const report = createReport();
     for (const [index, result] of report.results.entries()) {
@@ -451,7 +514,7 @@ describe("WAY-91 Quality Eval 运行摘要", () => {
     const summary = createQualityEvalOperatingSummary(report);
 
     expect(summary).toMatchObject({
-      schemaVersion: "quality-eval-operating-summary.v3",
+      schemaVersion: "quality-eval-operating-summary.v4",
       source: {
         gitCommit: SOURCE_COMMIT,
         datasetKind: "full",

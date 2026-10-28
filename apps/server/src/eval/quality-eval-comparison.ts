@@ -3,7 +3,7 @@
  * 与成本事实汇总为可审核结果，并在 A-B-B-A 条件或覆盖率不完整时拒绝比较。
  *
  * 关键边界：
- * - 当前报告严格读取 `quality-eval.v9`；旧 v5-v8 只经显式内存归一化读取；
+ * - 当前报告严格读取 `quality-eval.v10`；旧 v5-v9 只经显式内存归一化读取；
  * - `0` 是有效测量值，`telemetry: null` 才表示缺失；
  * - 本模块只判断报告能否比较，不自动给出 Keep / Revert 产品结论。
  */
@@ -103,8 +103,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 /**
  * 旧 outer v5/query v4 没有 Ranking telemetry，outer v6/query v5 没有计划请求诊断；
- * outer v7/v8 使用 query v6 / metrics v2。归一化只升级工件形状，不改写
- * 旧 runPolicy.language；因此 und 与 zh-CN 会在跨 Block 条件比较时明确不一致。
+ * outer v7/v8 使用 query v6 / metrics v2，outer v9 使用 query v7 / metrics v3。
+ * 归一化只升级工件形状，不改写历史运行语言身份。
  */
 function normalizeLegacyReport(
   value: Record<string, unknown>,
@@ -112,7 +112,8 @@ function normalizeLegacyReport(
     | "quality-eval.v5"
     | "quality-eval.v6"
     | "quality-eval.v7"
-    | "quality-eval.v8",
+    | "quality-eval.v8"
+    | "quality-eval.v9",
 ): unknown {
   const source = value.source;
   const runPolicy = value.runPolicy;
@@ -120,7 +121,8 @@ function normalizeLegacyReport(
   if (
     !isRecord(source) ||
     !isRecord(runPolicy) ||
-    runPolicy.language !== "und" ||
+    runPolicy.language !==
+      (outerVersion === "quality-eval.v9" ? "zh-CN" : "und") ||
     !Array.isArray(results) ||
     (outerVersion === "quality-eval.v5" && "ranking" in source) ||
     (outerVersion !== "quality-eval.v5" && source.ranking !== "rank-fusion.v1")
@@ -140,11 +142,13 @@ function normalizeLegacyReport(
       ? "quality-eval.v4"
       : outerVersion === "quality-eval.v6"
         ? "quality-eval.v5"
-        : "quality-eval.v6";
+        : outerVersion === "quality-eval.v9"
+          ? "quality-eval.v7"
+          : "quality-eval.v6";
 
   return {
     ...value,
-    schemaVersion: "quality-eval.v9",
+    schemaVersion: "quality-eval.v10",
     source:
       outerVersion === "quality-eval.v5"
         ? { ...source, ranking: "rank-fusion.v1" }
@@ -165,11 +169,9 @@ function normalizeLegacyReport(
       }
       const metrics = result.metrics;
       let normalizedMetrics = metrics;
-      if (
-        metrics !== null &&
-        outerVersion !== "quality-eval.v7" &&
-        outerVersion !== "quality-eval.v8"
-      ) {
+      if (metrics !== null && outerVersion !== "quality-eval.v7" &&
+        outerVersion !== "quality-eval.v8" &&
+        outerVersion !== "quality-eval.v9") {
         const parsedPlan = GraphPlanSchema.safeParse(result.plan);
         if (
           !isRecord(metrics) ||
@@ -187,16 +189,21 @@ function normalizeLegacyReport(
               plannedRequestConfig,
             ),
         };
-      } else if (metrics !== null) {
+      } else if (metrics !== null && outerVersion !== "quality-eval.v9") {
         if (!isRecord(metrics) || metrics.version !== "quality-metrics.v2") {
           throw new TypeError("legacy_metrics_invalid");
         }
         // v2 与 v3 的聚合数值形状不变；历史语言身份继续由 runPolicy 保留。
         normalizedMetrics = { ...metrics, version: "quality-metrics.v3" };
+      } else if (
+        metrics !== null &&
+        (!isRecord(metrics) || metrics.version !== "quality-metrics.v3")
+      ) {
+        throw new TypeError("legacy_metrics_invalid");
       }
       return {
         ...result,
-        schemaVersion: "quality-eval.v7",
+        schemaVersion: "quality-eval.v8",
         metrics: normalizedMetrics,
         telemetry:
           outerVersion !== "quality-eval.v5"
@@ -223,7 +230,8 @@ function parseReport(
       (value.schemaVersion === "quality-eval.v5" ||
         value.schemaVersion === "quality-eval.v6" ||
         value.schemaVersion === "quality-eval.v7" ||
-        value.schemaVersion === "quality-eval.v8")
+        value.schemaVersion === "quality-eval.v8" ||
+        value.schemaVersion === "quality-eval.v9")
         ? value.schemaVersion
         : null;
     let candidate = value;
