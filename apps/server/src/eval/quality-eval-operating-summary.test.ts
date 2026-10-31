@@ -116,7 +116,7 @@ function createReport() {
       prompts: {
         planner: "graph-planner.v2",
         reviser: "graph-reviser.v3",
-        searchPlanGenerator: "search-plan-generator.v1",
+        searchPlanGenerator: "search-plan-generator.v2",
         reranker: "resource-reranker.v1",
       },
       ranking: "rank-fusion.v1",

@@ -237,7 +237,7 @@ const runLog = RunLogRecordSchema.parse({
     resultGraph: "0.1",
     plannerPrompt: "graph-planner.v2",
     reviserPrompt: "graph-reviser.v3",
-    searchPlanGeneratorPrompt: "search-plan-generator.v1",
+    searchPlanGeneratorPrompt: "search-plan-generator.v2",
     rerankerPrompt: "resource-reranker.v1",
     rankFusion: "rank-fusion.v1",
   },

@@ -30,7 +30,7 @@ import { SearchLanguageSchema } from "@wayfinder/contracts";
 import { GRAPH_PLANNER_PROMPT_VERSION } from "../ai/prompts/graph-planner.v2.js";
 import { GRAPH_REVISER_PROMPT_VERSION } from "../ai/prompts/graph-reviser.v3.js";
 import { RESOURCE_RERANKER_PROMPT_VERSION } from "../ai/prompts/resource-reranker.v1.js";
-import { SEARCH_PLAN_GENERATOR_PROMPT_VERSION } from "../ai/prompts/search-plan-generator.v1.js";
+import { SEARCH_PLAN_GENERATOR_PROMPT_VERSION } from "../ai/prompts/search-plan-generator.v2.js";
 import {
   DEEPSEEK_LLM_MODEL,
   DEEPSEEK_LLM_PROVIDER_ID,
@@ -74,6 +74,12 @@ const RUN_ID_PATTERN =
 /** Provider 与运行策略已迁移到 Search-only，不能复用旧 Tavily + Extract 报告版本。 */
 export const QUALITY_EVAL_REPORT_SCHEMA_VERSION = "quality-eval.v11" as const;
 
+/** 外层报告结构未变；读取端保留 v1 工件，当前 Runner 仍确定性写入 v2。 */
+const QualityEvalSearchPlanGeneratorPromptVersionSchema = z.enum([
+  "search-plan-generator.v1",
+  "search-plan-generator.v2",
+]);
+
 export type QualityEvalCliOptions = Readonly<{
   dataset: QualityEvalDatasetKind;
 }>;
@@ -104,7 +110,7 @@ export const QualityEvalReportSchema = z.strictObject({
     prompts: z.strictObject({
       planner: z.literal(GRAPH_PLANNER_PROMPT_VERSION),
       reviser: z.literal(GRAPH_REVISER_PROMPT_VERSION),
-      searchPlanGenerator: z.literal(SEARCH_PLAN_GENERATOR_PROMPT_VERSION),
+      searchPlanGenerator: QualityEvalSearchPlanGeneratorPromptVersionSchema,
       reranker: z.literal(RESOURCE_RERANKER_PROMPT_VERSION),
     }),
     ranking: z.literal(RANK_FUSION_VERSION),

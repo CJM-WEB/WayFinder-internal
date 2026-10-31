@@ -72,7 +72,8 @@ const ComparableQualityEvalReportSchema = QualityEvalReportSchema.extend({
     prompts: z.strictObject({
       planner: z.enum(["graph-planner.v1", "graph-planner.v2"]),
       reviser: z.enum(["graph-reviser.v1", "graph-reviser.v3"]),
-      searchPlanGenerator: z.literal("search-plan-generator.v1").nullable(),
+      searchPlanGenerator:
+        QualityEvalReportSchema.shape.source.shape.prompts.shape.searchPlanGenerator.nullable(),
       reranker:
         QualityEvalReportSchema.shape.source.shape.prompts.shape.reranker,
     }),

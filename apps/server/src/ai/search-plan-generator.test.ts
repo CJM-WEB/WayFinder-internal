@@ -17,7 +17,7 @@ import {
   LLMProviderError,
   type LLMProvider,
 } from "./llm-provider.js";
-import { SEARCH_PLAN_GENERATOR_SYSTEM_PROMPT } from "./prompts/search-plan-generator.v1.js";
+import { SEARCH_PLAN_GENERATOR_SYSTEM_PROMPT } from "./prompts/search-plan-generator.v2.js";
 import {
   SearchPlanBundleSchema,
   SearchPlanGenerationError,
@@ -75,7 +75,7 @@ function createBundle(): SearchPlanBundle {
     plans: [
       {
         nodeId: "mysql-overview",
-        queries: ["MySQL 是什么", "MySQL 数据库主要用途"],
+        queries: ["MySQL 定位与主要用途"],
         rankingProfile: "knowledge",
       },
       {
@@ -160,8 +160,8 @@ describe("SearchPlan Generator", () => {
       "mysql-architecture",
     ]);
     expect(graphPlan.nodes[0]?.searchPlan).toEqual({
-      queries: ["MySQL 是什么", "MySQL 数据库主要用途"],
-      maxResults: 10,
+      queries: ["MySQL 定位与主要用途"],
+      maxResults: 20,
       rankingProfile: "knowledge",
       providerHints: ["general"],
     });
@@ -199,7 +199,22 @@ describe("SearchPlan Generator", () => {
     );
   });
 
-  it("同 Node 与跨 Node 都使用同一个 Unicode 精确唯一门禁", async () => {
+  it.each([
+    ["0 条", []],
+    ["2 条", ["query one", "query two"]],
+    ["3 条", ["query one", "query two", "query three"]],
+  ] as const)("内部 Bundle Schema 拒绝%s Query", (_name, queries) => {
+    const candidate = {
+      plans: [
+        { ...createBundle().plans[0], queries },
+        createBundle().plans[1],
+      ],
+    };
+
+    expect(SearchPlanBundleSchema.safeParse(candidate).success).toBe(false);
+  });
+
+  it("跨 Node 使用 Unicode 精确唯一门禁", async () => {
     expect(normalizeSearchPlanQueryKey(" ＭｙＳＱＬ\u00a0  架构 ")).toBe(
       "mysql 架构",
     );
@@ -207,22 +222,6 @@ describe("SearchPlan Generator", () => {
       "mysql 架构",
     );
     expect(normalizeSearchPlanQueryKey("\u0085")).toBe("");
-
-    const sameNode = SearchPlanBundleSchema.parse({
-      plans: [
-        {
-          nodeId: "mysql-overview",
-          queries: ["MySQL 架构", " ＭｙＳＱＬ\u00a0架构 "],
-          rankingProfile: "knowledge",
-        },
-        createBundle().plans[1],
-      ],
-    });
-    await expect(
-      generateSearchPlanBundle(
-        createArgs(new FakeLLMProvider([sameNode])),
-      ),
-    ).rejects.toEqual(new SearchPlanGenerationError("duplicate_query"));
 
     const crossNode = SearchPlanBundleSchema.parse({
       plans: [
@@ -273,7 +272,16 @@ describe("SearchPlan Generator", () => {
   it("Schema 失败发布脱敏计数并直接失败", async () => {
     const diagnostics: SearchPlanBundleValidationDiagnostic[] = [];
     const provider = new FakeLLMProvider([
-      { plans: [{ nodeId: "mysql-overview", queries: [] }] },
+      {
+        plans: [
+          {
+            nodeId: "mysql-overview",
+            queries: ["MySQL overview", "MySQL purpose"],
+            rankingProfile: "knowledge",
+          },
+          createBundle().plans[1],
+        ],
+      },
       createBundle(),
     ]);
     await expect(

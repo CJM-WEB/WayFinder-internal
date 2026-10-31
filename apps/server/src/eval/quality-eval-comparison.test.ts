@@ -113,7 +113,7 @@ function createReport(
       prompts: {
         planner: "graph-planner.v2",
         reviser: "graph-reviser.v3",
-        searchPlanGenerator: "search-plan-generator.v1",
+        searchPlanGenerator: "search-plan-generator.v2",
         reranker: "resource-reranker.v1",
       },
       ranking: "rank-fusion.v1",
@@ -499,6 +499,18 @@ function replaceWithUnmeasuredFailure(
 }
 
 describe("WAY-90 Quality Eval A-B-B-A 比较", () => {
+  it("当前写入使用 v2，且同结构版本继续读取历史 v1 Prompt 来源", () => {
+    const current = createReport(CANDIDATE_COMMIT, 1);
+    expect(current.source.prompts.searchPlanGenerator).toBe(
+      "search-plan-generator.v2",
+    );
+
+    const historical = structuredClone(current);
+    historical.source.prompts.searchPlanGenerator =
+      "search-plan-generator.v1";
+    expect(QualityEvalReportSchema.safeParse(historical).success).toBe(true);
+  });
+
   it("拒绝把历史 und 基线与当前 zh-CN 条件混合比较", () => {
     expect(() =>
       compareQualityEvalBlocks({

@@ -25,7 +25,7 @@ import {
 } from "../ai/prompts/graph-reviser.v3.js";
 import {
   SEARCH_PLAN_GENERATOR_PROMPT_VERSION,
-} from "../ai/prompts/search-plan-generator.v1.js";
+} from "../ai/prompts/search-plan-generator.v2.js";
 import {
   DEEPSEEK_LLM_MODEL,
   DEEPSEEK_LLM_PROVIDER_ID,

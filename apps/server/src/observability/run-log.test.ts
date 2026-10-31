@@ -391,7 +391,7 @@ describe("Run Log Recorder", () => {
         resultGraph: "0.1",
         plannerPrompt: "graph-planner.v2",
         reviserPrompt: "graph-reviser.v3",
-        searchPlanGeneratorPrompt: "search-plan-generator.v1",
+        searchPlanGeneratorPrompt: "search-plan-generator.v2",
         rerankerPrompt: "resource-reranker.v1",
         rankFusion: "rank-fusion.v1",
       },
@@ -454,6 +454,17 @@ describe("Run Log Recorder", () => {
         },
       }),
     ).toThrow();
+
+    // Prompt 来源是版本事实而非结构变化；历史 v1 工件必须继续通过 v3 读取边界。
+    expect(
+      RunLogRecordSchema.safeParse({
+        ...base,
+        versions: {
+          ...base.versions,
+          searchPlanGeneratorPrompt: "search-plan-generator.v1",
+        },
+      }).success,
+    ).toBe(true);
   });
 
   it("失败与取消只记录稳定 Code，不保存 Error 对象", async () => {

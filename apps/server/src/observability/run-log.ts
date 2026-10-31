@@ -23,7 +23,7 @@ import { z } from "zod";
 import { GRAPH_PLANNER_PROMPT_VERSION } from "../ai/prompts/graph-planner.v2.js";
 import { GRAPH_REVISER_PROMPT_VERSION } from "../ai/prompts/graph-reviser.v3.js";
 import { RESOURCE_RERANKER_PROMPT_VERSION } from "../ai/prompts/resource-reranker.v1.js";
-import { SEARCH_PLAN_GENERATOR_PROMPT_VERSION } from "../ai/prompts/search-plan-generator.v1.js";
+import { SEARCH_PLAN_GENERATOR_PROMPT_VERSION } from "../ai/prompts/search-plan-generator.v2.js";
 import { RANK_FUSION_VERSION } from "../pipeline/rank-fusion.js";
 import type { RankingObservation } from "../pipeline/ranking-observation.js";
 import type { RunLogObservation } from "./run-log-context.js";
@@ -45,6 +45,15 @@ const NonNegativeFiniteSchema = z.number().finite().min(0);
 const ProviderIdentifierSchema = z
   .string()
   .regex(/^[a-z0-9][a-z0-9._-]{0,63}$/);
+
+/**
+ * run-log.v3 的字段结构未变；读取端显式兼容历史 v1 来源，生产 Recorder 仍只写现役 v2。
+ * 这样不会把同一结构版本的既有私有工件因 Prompt 升级而变成不可读。
+ */
+const SearchPlanGeneratorPromptVersionSchema = z.enum([
+  "search-plan-generator.v1",
+  "search-plan-generator.v2",
+]);
 
 const RankingModeMetricsSchema = z
   .strictObject({
@@ -153,9 +162,7 @@ export const RunLogRecordSchema = z.strictObject({
     resultGraph: z.literal("0.1"),
     plannerPrompt: z.literal(GRAPH_PLANNER_PROMPT_VERSION),
     reviserPrompt: z.literal(GRAPH_REVISER_PROMPT_VERSION),
-    searchPlanGeneratorPrompt: z.literal(
-      SEARCH_PLAN_GENERATOR_PROMPT_VERSION,
-    ),
+    searchPlanGeneratorPrompt: SearchPlanGeneratorPromptVersionSchema,
     rerankerPrompt: z.literal(RESOURCE_RERANKER_PROMPT_VERSION),
     rankFusion: z.literal(RANK_FUSION_VERSION),
   }),
