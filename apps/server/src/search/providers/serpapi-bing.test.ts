@@ -85,7 +85,7 @@ describe("SerpApiBingSearchProvider.search 请求与规范化", () => {
     expect("extract" in provider).toBe(false);
   });
 
-  it("发送固定首屏参数并把 unknown Fixture 映射为规范化结果", async () => {
+  it("zh-CN 只发送 Baidu 参数并把 unknown Fixture 映射为规范化结果", async () => {
     const fetchImplementation = vi.fn<typeof fetch>().mockResolvedValue(
       jsonResponse(
         successEnvelope([
@@ -130,8 +130,7 @@ describe("SerpApiBingSearchProvider.search 请求与规范化", () => {
     expect(Object.fromEntries(requestUrl.searchParams)).toEqual({
       engine: "baidu",
       q: SEARCH_REQUEST.query,
-      mkt: "zh-CN",
-      safeSearch: "Strict",
+      ct: "2",
       device: "desktop",
       output: "json",
       api_key: "test-serpapi-key",
@@ -142,6 +141,39 @@ describe("SerpApiBingSearchProvider.search 请求与规范化", () => {
     expect(requestUrl.searchParams.has("maxResults")).toBe(false);
     expect(init).toMatchObject({ method: "GET", redirect: "error" });
     expect(new Headers(init?.headers).get("accept")).toBe("application/json");
+  });
+
+  it("en-US 只发送 Google 美国英语参数", async () => {
+    const fetchImplementation = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(jsonResponse(successEnvelope([])));
+
+    await createProvider(fetchImplementation).search(
+      {
+        ...SEARCH_REQUEST,
+        query: "What is MySQL",
+        language: "en-US",
+      },
+      createRunSignal(),
+    );
+
+    expect(fetchImplementation).toHaveBeenCalledTimes(1);
+    const [input] = fetchImplementation.mock.calls[0] ?? [];
+    const requestUrl = new URL(String(input));
+    expect(Object.fromEntries(requestUrl.searchParams)).toEqual({
+      q: "What is MySQL",
+      engine: "google",
+      hl: "en",
+      gl: "us",
+      google_domain: "google.com",
+      safe: "active",
+      device: "desktop",
+      output: "json",
+      api_key: "test-serpapi-key",
+    });
+    expect(requestUrl.searchParams.has("ct")).toBe(false);
+    expect(requestUrl.searchParams.has("mkt")).toBe(false);
+    expect(requestUrl.searchParams.has("safeSearch")).toBe(false);
   });
 
   it.each([

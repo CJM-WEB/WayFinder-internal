@@ -23,7 +23,7 @@ import type {
 } from "@wayfinder/contracts";
 import { z } from "zod";
 
-import { RESOURCE_RERANKER_PROMPT_VERSION } from "../ai/prompts/resource-reranker.v1.js";
+import { RESOURCE_RERANKER_PROMPT_VERSION } from "../ai/prompts/resource-reranker.v2.js";
 import {
   DEEPSEEK_LLM_MODEL,
   DEEPSEEK_LLM_PROVIDER_ID,
@@ -337,6 +337,7 @@ export async function evaluateResourceRerankerGoldenCase(input: {
   try {
     const decisions = await rerankResources({
       ...runtime,
+      language: "zh-CN",
       provider: input.provider,
       signal,
       timeoutMs: input.timeoutMs,

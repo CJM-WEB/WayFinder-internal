@@ -9,8 +9,11 @@
  */
 import { z } from "zod";
 
-/** V0.1 只开放已完整贯穿前后端、Provider 与去重门禁的简体中文。 */
-export const SearchLanguageSchema = z.literal("zh-CN");
+/**
+ * Search Language（搜索语言）同时约束 UI、LLM 输出与 Provider 地区语境。
+ * 使用明确 Locale，避免模糊 `en` 或运行时 Locale 猜测造成跨层漂移。
+ */
+export const SearchLanguageSchema = z.enum(["zh-CN", "en-US"]);
 export type SearchLanguage = z.infer<typeof SearchLanguageSchema>;
 
 /**

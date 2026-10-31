@@ -33,7 +33,7 @@ import type {
   LLMProvider,
   StructuredLLMInput,
 } from "../ai/llm-provider.js";
-import { RESOURCE_RERANKER_PROMPT_VERSION } from "../ai/prompts/resource-reranker.v1.js";
+import { RESOURCE_RERANKER_PROMPT_VERSION } from "../ai/prompts/resource-reranker.v2.js";
 import {
   DEEPSEEK_LLM_MODEL,
   DEEPSEEK_LLM_PROVIDER_ID,

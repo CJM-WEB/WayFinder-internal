@@ -4,7 +4,7 @@
  * 关键约束：
  * - Query（查询）先 trim，再按 Unicode code point（码点）校验 1～2000 长度。
  * - runId 只要求非空字符串，不收紧格式、长度，也不改写首尾空白。
- * - language 必须是当前唯一支持的 zh-CN，不允许缺失或静默回退。
+ * - language 只接受明确的 zh-CN / en-US，不允许缺失、模糊值或静默回退。
  * - QueryAnalysis 七个字段全部必填，Strategy（策略）决定 Broad Query（广泛查询）的数量。
  * - 公共对象严格拒绝未知字段，公共类型从对应 Zod Schema 推导。
  */
@@ -24,6 +24,23 @@ import type {
 
 describe("SearchRequest 请求边界", () => {
   const language = "zh-CN" as const;
+
+  it.each(["zh-CN", "en-US"] as const)(
+    "接受显式支持的语言 %s",
+    supportedLanguage => {
+      expect(
+        SearchRequestSchema.parse({
+          runId: "run-language",
+          query: "MySQL",
+          language: supportedLanguage,
+        }),
+      ).toEqual({
+        runId: "run-language",
+        query: "MySQL",
+        language: supportedLanguage,
+      });
+    },
+  );
 
   it("去除 Query 首尾空白并保留有效内容", () => {
     expect(

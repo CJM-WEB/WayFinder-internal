@@ -48,7 +48,7 @@ describe("finalizeResources 数量与稳定顺序", () => {
       createCandidate(index + 1),
     );
 
-    const resources = finalizeResources(candidates);
+    const resources = finalizeResources(candidates, "zh-CN");
 
     expect(resources).toHaveLength(count);
     expect(resources.map(resource => resource.title)).toEqual(
@@ -62,7 +62,7 @@ describe("finalizeResources 数量与稳定顺序", () => {
     );
     const snapshot = structuredClone(candidates);
 
-    const resources = finalizeResources(candidates);
+    const resources = finalizeResources(candidates, "zh-CN");
 
     expect(MAX_RETAINED_RESOURCES_PER_NODE).toBe(8);
     expect(resources).toHaveLength(8);
@@ -88,7 +88,7 @@ describe("finalizeResources 公共字段", () => {
       },
     });
 
-    const resources = finalizeResources([first, second]);
+    const resources = finalizeResources([first, second], "zh-CN");
 
     expect(resources[0]).toEqual({
       id: expectedResourceId(first.hit.canonicalUrl),
@@ -117,13 +117,13 @@ describe("finalizeResources 公共字段", () => {
       sourceType: "   ",
     });
 
-    const [resource] = finalizeResources([candidate]);
+    const [resource] = finalizeResources([candidate], "zh-CN");
 
     expect(resource).toMatchObject({
       sourceType: "web",
       summary: "Snippet 1",
       whySelected:
-        "该结果来自 Bing Organic Results，并按当前确定性排序保留。",
+        "该结果由搜索提供方返回，并按当前确定性排序保留。",
     });
     expect(resource).not.toHaveProperty("scores");
   });
@@ -132,8 +132,8 @@ describe("finalizeResources 公共字段", () => {
     const candidate = createCandidate(1);
     const renamed = { ...candidate, candidateId: "another_batch_id" };
 
-    expect(finalizeResources([candidate])[0]?.id).toBe(
-      finalizeResources([renamed])[0]?.id,
+    expect(finalizeResources([candidate], "zh-CN")[0]?.id).toBe(
+      finalizeResources([renamed], "zh-CN")[0]?.id,
     );
   });
 
@@ -145,7 +145,10 @@ describe("finalizeResources 公共字段", () => {
       hit: { ...createCandidate(2).hit, publishedAt: null },
     });
 
-    const resources = finalizeResources([invalidDate, explicitNull]);
+    const resources = finalizeResources(
+      [invalidDate, explicitNull],
+      "zh-CN",
+    );
 
     expect(resources[0]).not.toHaveProperty("publishedAt");
     expect(resources[1]).toHaveProperty("publishedAt", null);
@@ -157,7 +160,7 @@ describe("finalizeResources 防御性校验", () => {
     const first = createCandidate(1);
     const duplicate = createCandidate(2, { hit: { ...first.hit } });
 
-    expect(() => finalizeResources([first, duplicate])).toThrow(
+    expect(() => finalizeResources([first, duplicate], "zh-CN")).toThrow(
       "重复的 Resource 身份",
     );
   });
@@ -173,7 +176,7 @@ describe("finalizeResources 防御性校验", () => {
       hit: { ...candidate.hit, ...hitOverride },
     };
 
-    expect(() => finalizeResources([invalid])).toThrow(TypeError);
+    expect(() => finalizeResources([invalid], "zh-CN")).toThrow(TypeError);
   });
 
   it.each([
@@ -188,7 +191,7 @@ describe("finalizeResources 防御性校验", () => {
       hit: { ...candidate.hit, ...hitOverride },
     };
 
-    expect(() => finalizeResources([invalid])).toThrow();
+    expect(() => finalizeResources([invalid], "zh-CN")).toThrow();
   });
 
   it("空 snippet 与缺失模型摘要时使用固定中性文本", () => {
@@ -196,8 +199,37 @@ describe("finalizeResources 防御性校验", () => {
       hit: { ...createCandidate(1).hit, snippet: "" },
     });
 
-    expect(finalizeResources([candidate])[0]?.summary).toBe(
+    expect(finalizeResources([candidate], "zh-CN")[0]?.summary).toBe(
       "该搜索结果未提供可用摘要，请打开页面查看。",
     );
+  });
+
+  it("英文 Run 使用英文 fallback 且不写死具体搜索引擎", () => {
+    const candidate = createCandidate(1, {
+      hit: { ...createCandidate(1).hit, snippet: "" },
+      whySelected: "   ",
+    });
+
+    expect(finalizeResources([candidate], "en-US")[0]).toMatchObject({
+      summary:
+        "This search result does not provide a usable summary. Open the page to view it.",
+      whySelected:
+        "This result was returned by the search provider and retained by the current deterministic ranking.",
+    });
+  });
+
+  it("英文 Run 仍原样保留 Provider 的标题与摘要", () => {
+    const candidate = createCandidate(1, {
+      hit: {
+        ...createCandidate(1).hit,
+        title: "Provider 原始中文标题",
+        snippet: "Provider 原始中文摘要。",
+      },
+    });
+
+    expect(finalizeResources([candidate], "en-US")[0]).toMatchObject({
+      title: "Provider 原始中文标题",
+      summary: "Provider 原始中文摘要。",
+    });
   });
 });

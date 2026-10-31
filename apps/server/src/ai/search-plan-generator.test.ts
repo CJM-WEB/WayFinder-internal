@@ -1,6 +1,7 @@
 /**
  * 测试职责：冻结全图 Bundle 单次生成、双射、Query 唯一门禁与确定性 GraphPlan 装配。
  */
+import type { SearchLanguage } from "@wayfinder/contracts";
 import { z } from "zod";
 import { describe, expect, it } from "vitest";
 
@@ -17,7 +18,8 @@ import {
   LLMProviderError,
   type LLMProvider,
 } from "./llm-provider.js";
-import { SEARCH_PLAN_GENERATOR_SYSTEM_PROMPT } from "./prompts/search-plan-generator.v2.js";
+import { SEARCH_PLAN_GENERATOR_SYSTEM_PROMPT } from "./prompts/search-plan-generator.v3.js";
+import { appendTargetLanguageSystemInstruction } from "./prompts/target-language-system-instruction.js";
 import {
   SearchPlanBundleSchema,
   SearchPlanGenerationError,
@@ -90,6 +92,7 @@ function createBundle(): SearchPlanBundle {
 function createArgs(
   provider: LLMProvider,
   overrides: Partial<{
+    language: SearchLanguage;
     outline: GraphOutline;
     signal: AbortSignal;
     timeoutMs: number;
@@ -101,7 +104,7 @@ function createArgs(
 ) {
   const base = {
     query: QUERY,
-    language: "zh-CN" as const,
+    language: overrides.language ?? "zh-CN",
     outline: overrides.outline ?? createOutline(),
     provider,
     signal: overrides.signal ?? new AbortController().signal,
@@ -130,7 +133,10 @@ describe("SearchPlan Generator", () => {
 
     expect(provider.calls).toHaveLength(1);
     expect(provider.calls[0]?.input).toMatchObject({
-      system: SEARCH_PLAN_GENERATOR_SYSTEM_PROMPT,
+      system: appendTargetLanguageSystemInstruction(
+        SEARCH_PLAN_GENERATOR_SYSTEM_PROMPT,
+        "zh-CN",
+      ),
       schemaName: "search_plan_bundle",
       schema: z.toJSONSchema(SearchPlanBundleSchema, {
         target: "draft-2020-12",
@@ -145,6 +151,20 @@ describe("SearchPlan Generator", () => {
       outline,
     });
     expect(provider.calls[0]?.options).toEqual({ signal, timeoutMs: 9_000 });
+  });
+
+  it("en-US 同时进入可信 System 规则与结构化语言上下文", async () => {
+    const provider = new FakeLLMProvider([createBundle()]);
+
+    await generateSearchPlanBundle(
+      createArgs(provider, { language: "en-US" }),
+    );
+
+    expect(provider.calls[0]?.input.system).toContain("American English");
+    expect(provider.calls[0]?.input.system).not.toContain("Simplified Chinese");
+    expect(JSON.parse(provider.calls[0]?.input.user ?? "")).toMatchObject({
+      language: "en-US",
+    });
   });
 
   it("按 Outline 顺序装配并确定 maxResults 与 providerHints", () => {

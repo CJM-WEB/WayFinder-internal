@@ -65,7 +65,7 @@ describe("Mock Product 前端纵切", () => {
     const markup = renderToStaticMarkup(
       createElement(ResourcePanelView, { model: panel, openResource: opener }),
     );
-    expect(markup).toContain(">Open</button>");
+    expect(markup).toContain(">打开</button>");
     expect(opener).not.toHaveBeenCalled();
   });
 

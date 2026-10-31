@@ -1,7 +1,10 @@
 /**
  * 测试职责：冻结 Outline-only Reviser 的单次调用、输入投影与失败关闭边界。
  */
-import type { CandidateSearchHit } from "@wayfinder/contracts";
+import type {
+  CandidateSearchHit,
+  SearchLanguage,
+} from "@wayfinder/contracts";
 import { z } from "zod";
 import { describe, expect, it } from "vitest";
 
@@ -26,7 +29,8 @@ import {
   LLMProviderError,
   type LLMProvider,
 } from "./llm-provider.js";
-import { GRAPH_REVISER_SYSTEM_PROMPT } from "./prompts/graph-reviser.v3.js";
+import { GRAPH_REVISER_SYSTEM_PROMPT } from "./prompts/graph-reviser.v4.js";
+import { appendTargetLanguageSystemInstruction } from "./prompts/target-language-system-instruction.js";
 
 const QUERY = "NVIDIA 最新动态";
 
@@ -112,6 +116,7 @@ function createEvidence(
 function createArgs(
   provider: LLMProvider,
   overrides: Partial<{
+    language: SearchLanguage;
     initialOutline: GraphOutline;
     evidence: readonly CandidateSearchHit[];
     signal: AbortSignal;
@@ -124,6 +129,7 @@ function createArgs(
 ) {
   const base = {
     query: QUERY,
+    language: overrides.language ?? "zh-CN",
     initialOutline: overrides.initialOutline ?? createInitialOutline(),
     evidence: overrides.evidence ?? [createEvidence()],
     provider,
@@ -138,7 +144,7 @@ function createArgs(
 }
 
 describe("reviseGraphOutline", () => {
-  it("一次返回完整 Outline，并传入 v3 Prompt、Outline Schema、父 Signal 与预算", async () => {
+  it("一次返回完整 Outline，并传入带目标语言的 v4 Prompt、Schema 与预算", async () => {
     const initialOutline = createInitialOutline();
     const revisedOutline = createRevisedOutline(initialOutline);
     const provider = new FakeLLMProvider([revisedOutline]);
@@ -153,7 +159,10 @@ describe("reviseGraphOutline", () => {
 
     expect(provider.calls).toHaveLength(1);
     expect(provider.calls[0]?.input).toMatchObject({
-      system: GRAPH_REVISER_SYSTEM_PROMPT,
+      system: appendTargetLanguageSystemInstruction(
+        GRAPH_REVISER_SYSTEM_PROMPT,
+        "zh-CN",
+      ),
       schemaName: "graph_outline",
       schema: z.toJSONSchema(GraphOutlineSchema, {
         target: "draft-2020-12",
@@ -163,6 +172,18 @@ describe("reviseGraphOutline", () => {
       }),
     });
     expect(provider.calls[0]?.options).toEqual({ signal, timeoutMs: 8_000 });
+  });
+
+  it("en-US 只把美式英语规则加入 System 层", async () => {
+    const provider = new FakeLLMProvider([createRevisedOutline()]);
+
+    await reviseGraphOutline(createArgs(provider, { language: "en-US" }));
+
+    expect(provider.calls[0]?.input.system).toContain("American English");
+    expect(provider.calls[0]?.input.system).not.toContain("Simplified Chinese");
+    expect(JSON.parse(provider.calls[0]?.input.user ?? "")).not.toHaveProperty(
+      "language",
+    );
   });
 
   it("Evidence 只以有界白名单进入 Prompt，Outline 中没有 SearchPlan", async () => {

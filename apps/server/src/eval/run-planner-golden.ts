@@ -19,13 +19,13 @@ import { z } from "zod";
 
 import {
   GRAPH_PLANNER_PROMPT_VERSION,
-} from "../ai/prompts/graph-planner.v2.js";
+} from "../ai/prompts/graph-planner.v3.js";
 import {
   GRAPH_REVISER_PROMPT_VERSION,
-} from "../ai/prompts/graph-reviser.v3.js";
+} from "../ai/prompts/graph-reviser.v4.js";
 import {
   SEARCH_PLAN_GENERATOR_PROMPT_VERSION,
-} from "../ai/prompts/search-plan-generator.v2.js";
+} from "../ai/prompts/search-plan-generator.v3.js";
 import {
   DEEPSEEK_LLM_MODEL,
   DEEPSEEK_LLM_PROVIDER_ID,

@@ -439,7 +439,7 @@ describe("WAY-58 单 Node 高风险检索矩阵", () => {
       summary: hit.snippet,
       sourceType: "web",
       whySelected:
-        "该结果来自 Bing Organic Results，并按当前确定性排序保留。",
+        "该结果由搜索提供方返回，并按当前确定性排序保留。",
     });
     expect(result.resources[0]).not.toHaveProperty("scores");
     expect(searchProvider.searchCalls).toHaveLength(1);

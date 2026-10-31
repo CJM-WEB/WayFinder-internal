@@ -299,16 +299,16 @@ function assertSearchRequest(request: ProviderSearchRequest): void {
   if (request.query.trim().length === 0) {
     throw new SerpApiBingProviderError("SerpAPI Bing Search Query 不能为空");
   }
-  if (request.language !== "zh-CN") {
+  if (request.language !== "zh-CN" && request.language !== "en-US") {
     // 这是最后一道 Adapter 边界：非法语言必须在网络调用前失败。
     throw new SerpApiBingProviderError("SerpAPI Bing Search language 不受支持");
   }
 }
 
 /**
- * WAY-115 仅把 Engine 切换为 Baidu 进行受控体验，其余请求参数保持既有行为。
- * maxResults 是本地接纳上限，不映射为分页、filters 或 no_cache 参数；URL 仅在
- * Adapter 内传给 Fetch，禁止写入错误与日志。
+ * 按已验证语言选择唯一 Engine，并只写入该 Engine 的私有参数。分支必须互斥，
+ * 避免 Baidu 接收 Google 参数或 Google 接收 Baidu 参数后产生不可审计的隐式行为。
+ * maxResults 仍是本地接纳上限，不映射为分页、filters 或 no_cache 参数。
  */
 function createSearchUrl(
   query: string,
@@ -316,10 +316,22 @@ function createSearchUrl(
   apiKey: string,
 ): URL {
   const url = new URL(SERPAPI_BING_SEARCH_URL);
-  url.searchParams.set("engine", "baidu");
   url.searchParams.set("q", query);
-  url.searchParams.set("mkt", language);
-  url.searchParams.set("safeSearch", "Strict");
+
+  if (language === "zh-CN") {
+    url.searchParams.set("engine", "baidu");
+    url.searchParams.set("ct", "2");
+  } else if (language === "en-US") {
+    url.searchParams.set("engine", "google");
+    url.searchParams.set("hl", "en");
+    url.searchParams.set("gl", "us");
+    url.searchParams.set("google_domain", "google.com");
+    url.searchParams.set("safe", "active");
+  } else {
+    // assertSearchRequest 已先执行；此分支防止未来内部重构绕过最后一道门禁。
+    throw new SerpApiBingProviderError("SerpAPI Bing Search language 不受支持");
+  }
+
   url.searchParams.set("device", "desktop");
   url.searchParams.set("output", "json");
   url.searchParams.set("api_key", apiKey);

@@ -35,6 +35,13 @@ const validProviderRequest: ProviderSearchRequest = {
   language: "zh-CN",
 };
 
+/** English 与简体中文复用同一个 Provider 请求边界，不新增平行字段。 */
+const validEnglishProviderRequest: ProviderSearchRequest = {
+  ...validProviderRequest,
+  language: "en-US",
+};
+void validEnglishProviderRequest;
+
 const consumeNormalizedHit = (hit: NormalizedSearchHit): void => {
   void hit;
 };

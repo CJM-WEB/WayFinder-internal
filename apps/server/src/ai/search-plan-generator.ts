@@ -28,7 +28,8 @@ import {
   type LLMProvider,
   type StructuredLLMInput,
 } from "./llm-provider.js";
-import { SEARCH_PLAN_GENERATOR_SYSTEM_PROMPT } from "./prompts/search-plan-generator.v2.js";
+import { SEARCH_PLAN_GENERATOR_SYSTEM_PROMPT } from "./prompts/search-plan-generator.v3.js";
+import { appendTargetLanguageSystemInstruction } from "./prompts/target-language-system-instruction.js";
 
 export const SearchPlanBundleItemSchema = z.strictObject({
   nodeId: z.string().min(1),
@@ -177,7 +178,10 @@ function createStructuredInput(
   outline: GraphOutline,
 ): StructuredLLMInput {
   return {
-    system: SEARCH_PLAN_GENERATOR_SYSTEM_PROMPT,
+    system: appendTargetLanguageSystemInstruction(
+      SEARCH_PLAN_GENERATOR_SYSTEM_PROMPT,
+      language,
+    ),
     user: JSON.stringify({ query, language, outline }),
     schemaName: "search_plan_bundle",
     schema: SEARCH_PLAN_BUNDLE_PROVIDER_SCHEMA,

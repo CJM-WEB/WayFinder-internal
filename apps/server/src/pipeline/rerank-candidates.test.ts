@@ -80,6 +80,7 @@ function createInput(
 ): RerankCandidatesWithFallbackInput {
   return {
     node: createNode(),
+    language: "zh-CN",
     candidates: [createCandidate(1), createCandidate(2)],
     pages: [],
     provider,

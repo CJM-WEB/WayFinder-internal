@@ -928,7 +928,10 @@
                     },
                     "language": {
                       "type": "string",
-                      "const": "zh-CN"
+                      "enum": [
+                        "zh-CN",
+                        "en-US"
+                      ]
                     }
                   },
                   "required": [

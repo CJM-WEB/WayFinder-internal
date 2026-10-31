@@ -20,10 +20,10 @@ import {
 } from "@wayfinder/contracts";
 import { z } from "zod";
 
-import { GRAPH_PLANNER_PROMPT_VERSION } from "../ai/prompts/graph-planner.v2.js";
-import { GRAPH_REVISER_PROMPT_VERSION } from "../ai/prompts/graph-reviser.v3.js";
-import { RESOURCE_RERANKER_PROMPT_VERSION } from "../ai/prompts/resource-reranker.v1.js";
-import { SEARCH_PLAN_GENERATOR_PROMPT_VERSION } from "../ai/prompts/search-plan-generator.v2.js";
+import { GRAPH_PLANNER_PROMPT_VERSION } from "../ai/prompts/graph-planner.v3.js";
+import { GRAPH_REVISER_PROMPT_VERSION } from "../ai/prompts/graph-reviser.v4.js";
+import { RESOURCE_RERANKER_PROMPT_VERSION } from "../ai/prompts/resource-reranker.v2.js";
+import { SEARCH_PLAN_GENERATOR_PROMPT_VERSION } from "../ai/prompts/search-plan-generator.v3.js";
 import { RANK_FUSION_VERSION } from "../pipeline/rank-fusion.js";
 import type { RankingObservation } from "../pipeline/ranking-observation.js";
 import type { RunLogObservation } from "./run-log-context.js";
@@ -45,15 +45,6 @@ const NonNegativeFiniteSchema = z.number().finite().min(0);
 const ProviderIdentifierSchema = z
   .string()
   .regex(/^[a-z0-9][a-z0-9._-]{0,63}$/);
-
-/**
- * run-log.v3 的字段结构未变；读取端显式兼容历史 v1 来源，生产 Recorder 仍只写现役 v2。
- * 这样不会把同一结构版本的既有私有工件因 Prompt 升级而变成不可读。
- */
-const SearchPlanGeneratorPromptVersionSchema = z.enum([
-  "search-plan-generator.v1",
-  "search-plan-generator.v2",
-]);
 
 const RankingModeMetricsSchema = z
   .strictObject({
@@ -108,7 +99,7 @@ const PlanningStageMetricsSchema = z.strictObject({
  * 这里列出的聚合字段；新增字段必须经过显式代码与测试审核。
  */
 export const RunLogRecordSchema = z.strictObject({
-  schemaVersion: z.literal("run-log.v3"),
+  schemaVersion: z.literal("run-log.v4"),
   createdAt: z.iso.datetime({ offset: true }),
   identifiers: z.strictObject({
     logId: z.uuid(),
@@ -162,7 +153,7 @@ export const RunLogRecordSchema = z.strictObject({
     resultGraph: z.literal("0.1"),
     plannerPrompt: z.literal(GRAPH_PLANNER_PROMPT_VERSION),
     reviserPrompt: z.literal(GRAPH_REVISER_PROMPT_VERSION),
-    searchPlanGeneratorPrompt: SearchPlanGeneratorPromptVersionSchema,
+    searchPlanGeneratorPrompt: z.literal(SEARCH_PLAN_GENERATOR_PROMPT_VERSION),
     rerankerPrompt: z.literal(RESOURCE_RERANKER_PROMPT_VERSION),
     rankFusion: z.literal(RANK_FUSION_VERSION),
   }),
@@ -189,6 +180,34 @@ export const RunLogRecordSchema = z.strictObject({
 });
 
 export type RunLogRecord = Readonly<z.infer<typeof RunLogRecordSchema>>;
+
+/**
+ * 历史 v3 只通过显式读取入口解析；不重写文件、不升级其 Prompt 来源，也不允许写入 Sink。
+ * 生产 v4 的严格白名单因此不会把历史工件错误标记为当前双语言实现的运行证据。
+ */
+const HistoricalRunLogRecordSchema = RunLogRecordSchema.extend({
+  schemaVersion: z.literal("run-log.v3"),
+  versions: RunLogRecordSchema.shape.versions.extend({
+    plannerPrompt: z.literal("graph-planner.v2"),
+    reviserPrompt: z.literal("graph-reviser.v3"),
+    searchPlanGeneratorPrompt: z.enum([
+      "search-plan-generator.v1",
+      "search-plan-generator.v2",
+    ]),
+    rerankerPrompt: z.literal("resource-reranker.v1"),
+  }),
+});
+
+const ReadableRunLogRecordSchema = z.discriminatedUnion("schemaVersion", [
+  RunLogRecordSchema,
+  HistoricalRunLogRecordSchema,
+]);
+
+export function parseRunLogRecordForRead(
+  value: unknown,
+): Readonly<z.infer<typeof ReadableRunLogRecordSchema>> {
+  return ReadableRunLogRecordSchema.parse(value);
+}
 
 export type RunLogSink = Readonly<{
   write: (record: RunLogRecord) => Promise<void>;
@@ -603,7 +622,7 @@ export function createRunLogRecorder(
           ? null
           : readNonNegativeDuration(now, nodeProcessingStartedAt);
       const record = RunLogRecordSchema.parse({
-        schemaVersion: "run-log.v3",
+        schemaVersion: "run-log.v4",
         createdAt,
         identifiers: { logId, queryId, planId },
         outcome,

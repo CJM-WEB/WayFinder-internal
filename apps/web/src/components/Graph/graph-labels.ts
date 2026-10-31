@@ -3,21 +3,22 @@
  *
  * Record 约束确保 Contract 新增枚举值时编译立即失败，避免界面静默显示原始协议值。
  */
-import type { NodeType, StreamNodeStatus } from "@wayfinder/contracts";
+import type {
+  NodeType,
+  SearchLanguage,
+  StreamNodeStatus,
+} from "@wayfinder/contracts";
 
-export const NODE_STATUS_LABELS: Record<StreamNodeStatus, string> = {
-  planned: "等待检索",
-  searching: "检索中",
-  filtering: "筛选中",
-  ready: "已就绪",
-  partial: "部分完成",
-  failed: "失败",
-};
+import { getMessages } from "../../i18n/messages.js";
+
+/** H1/H2 评估界面暂不纳入本次多语言范围，保留中文默认导出以维持既有实验行为。 */
+export const NODE_STATUS_LABELS: Readonly<
+  Record<StreamNodeStatus, string>
+> = getMessages("zh-CN").graph.statusLabels;
 
 type NodeStatusVisual = Readonly<{
-  /** 独立符号让状态不只依赖颜色；可见中文标签继续承担完整语义。 */
+  /** 独立符号让状态不只依赖颜色；本地化可见标签继续承担完整语义。 */
   marker: string;
-  detail: (resourceCount: number) => string;
   isLoading: boolean;
 }>;
 
@@ -28,32 +29,26 @@ type NodeStatusVisual = Readonly<{
 const NODE_STATUS_VISUALS: Record<StreamNodeStatus, NodeStatusVisual> = {
   planned: {
     marker: "○",
-    detail: () => "等待开始",
     isLoading: false,
   },
   searching: {
     marker: "↻",
-    detail: () => "正在检索网页",
     isLoading: true,
   },
   filtering: {
     marker: "◇",
-    detail: () => "正在筛选结果",
     isLoading: true,
   },
   ready: {
     marker: "✓",
-    detail: resourceCount => `${resourceCount} 条可用资源`,
     isLoading: false,
   },
   partial: {
     marker: "!",
-    detail: resourceCount => `${resourceCount} 条可用资源 · 含降级`,
     isLoading: false,
   },
   failed: {
     marker: "×",
-    detail: () => "没有可用资源",
     isLoading: false,
   },
 };
@@ -69,19 +64,19 @@ export type NodeStatusPresentation = Readonly<{
 export const buildNodeStatusPresentation = (
   status: StreamNodeStatus,
   resourceCount: number,
+  language: SearchLanguage = "zh-CN",
 ): NodeStatusPresentation => {
   const visual = NODE_STATUS_VISUALS[status];
+  const messages = getMessages(language).graph;
 
   return {
-    label: NODE_STATUS_LABELS[status],
+    label: messages.statusLabels[status],
     marker: visual.marker,
-    detail: visual.detail(resourceCount),
+    detail: messages.statusDetails[status](resourceCount),
     isLoading: visual.isLoading,
   };
 };
 
-export const NODE_TYPE_LABELS: Record<NodeType, string> = {
-  primary: "主路径",
-  related: "相关主题",
-  disambiguation: "消歧分支",
-};
+/** 中文默认值只供未接入语言参数的 Evaluation 路径复用。 */
+export const NODE_TYPE_LABELS: Readonly<Record<NodeType, string>> =
+  getMessages("zh-CN").graph.nodeTypeLabels;

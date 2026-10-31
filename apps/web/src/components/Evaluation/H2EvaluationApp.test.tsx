@@ -81,7 +81,7 @@ describe("H2 Evaluation 盲测视图", () => {
       expect(markup).toContain(selected.node.resources[0]?.title);
       expect(markup).toContain("AI 摘要");
       expect(markup).toContain("入选原因");
-      expect(markup).toContain(">Open</button>");
+      expect(markup).toContain(">打开</button>");
       expect(markup).toContain(`data-evaluation-condition="${condition}"`);
       expect(markup).toContain(`条件 ${condition}`);
       expect(markup).not.toContain("node_specific");

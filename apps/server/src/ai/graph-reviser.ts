@@ -10,7 +10,10 @@
 import { performance } from "node:perf_hooks";
 import { isDeepStrictEqual } from "node:util";
 
-import type { CandidateSearchHit } from "@wayfinder/contracts";
+import type {
+  CandidateSearchHit,
+  SearchLanguage,
+} from "@wayfinder/contracts";
 import { z } from "zod";
 
 import { validateGraphOutline } from "../graph/graph-validator.js";
@@ -27,7 +30,8 @@ import {
   type LLMProvider,
   type StructuredLLMInput,
 } from "./llm-provider.js";
-import { GRAPH_REVISER_SYSTEM_PROMPT } from "./prompts/graph-reviser.v3.js";
+import { GRAPH_REVISER_SYSTEM_PROMPT } from "./prompts/graph-reviser.v4.js";
+import { appendTargetLanguageSystemInstruction } from "./prompts/target-language-system-instruction.js";
 
 /** Prompt 投影上限按批准语义使用 Unicode code point（码点）。 */
 export const GRAPH_REVISER_MAX_EVIDENCE_QUERY_CODE_POINTS = 200 as const;
@@ -72,6 +76,8 @@ export type GraphRevisionValidationDiagnostic = Readonly<{
 
 export type ReviseGraphOutlineInput = Readonly<{
   query: string;
+  /** 与 Initial Outline 同属本次 Run，用于约束修订后的用户可见文本。 */
+  language: SearchLanguage;
   /** 必须是已通过 Schema 与 Outline Validator 的 evidence_assisted 初始轮廓。 */
   initialOutline: GraphOutline;
   evidence: readonly CandidateSearchHit[];
@@ -200,6 +206,7 @@ function parseInitialOutline(initialOutline: GraphOutline): GraphOutline {
 
 function createStructuredInput(
   query: string,
+  language: SearchLanguage,
   initialOutline: GraphOutline,
   evidence: readonly CandidateSearchHit[],
 ): StructuredLLMInput {
@@ -217,7 +224,10 @@ function createStructuredInput(
   }
 
   return {
-    system: GRAPH_REVISER_SYSTEM_PROMPT,
+    system: appendTargetLanguageSystemInstruction(
+      GRAPH_REVISER_SYSTEM_PROMPT,
+      language,
+    ),
     user,
     schemaName: "graph_outline",
     schema: GRAPH_OUTLINE_PROVIDER_SCHEMA,
@@ -256,6 +266,7 @@ export async function reviseGraphOutline(
   const initialOutline = parseInitialOutline(input.initialOutline);
   const structuredInput = createStructuredInput(
     input.query,
+    input.language,
     initialOutline,
     input.evidence,
   );

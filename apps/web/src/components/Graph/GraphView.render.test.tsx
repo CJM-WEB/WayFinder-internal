@@ -6,13 +6,14 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { NodeChange } from "@xyflow/react";
+import type { AriaLabelConfig, NodeChange } from "@xyflow/react";
 
 import type { GraphFlowEdge, GraphFlowNode } from "./graph-layout.js";
 
 const capturedFlow = vi.hoisted(() => ({
   nodes: undefined as readonly unknown[] | undefined,
   edges: undefined as readonly unknown[] | undefined,
+  ariaLabels: undefined as Partial<AriaLabelConfig> | undefined,
   onNodesChange: undefined as ((changes: readonly unknown[]) => void) | undefined,
 }));
 
@@ -31,10 +32,12 @@ vi.mock("@xyflow/react", async importOriginal => {
     ReactFlow: (props: {
       nodes: readonly unknown[];
       edges: readonly unknown[];
+      ariaLabelConfig?: Partial<AriaLabelConfig>;
       onNodesChange?: (changes: readonly unknown[]) => void;
     }) => {
       capturedFlow.nodes = props.nodes;
       capturedFlow.edges = props.edges;
+      capturedFlow.ariaLabels = props.ariaLabelConfig;
       capturedFlow.onNodesChange = props.onNodesChange;
       return null;
     },
@@ -51,6 +54,7 @@ afterEach(() => {
   graphStore.getState().reset();
   capturedFlow.nodes = undefined;
   capturedFlow.edges = undefined;
+  capturedFlow.ariaLabels = undefined;
   capturedFlow.onNodesChange = undefined;
 });
 
@@ -68,7 +72,7 @@ describe("GraphView 渐进快照接线", () => {
     graphStore.getState().applyStreamEvent(plan);
 
     const markup = renderToStaticMarkup(
-      <GraphView presentationMode="graph" />,
+      <GraphView presentationMode="graph" language="zh-CN" />,
     );
 
     const nodes = capturedFlow.nodes as readonly GraphFlowNode[] | undefined;
@@ -104,7 +108,7 @@ describe("GraphView 渐进快照接线", () => {
       graphStore.getState().setGraph({ nodes, edges });
 
       const markup = renderToStaticMarkup(
-        <GraphView presentationMode="compact" />,
+        <GraphView presentationMode="compact" language="zh-CN" />,
       );
 
       expect(capturedFlow.nodes).toHaveLength(nodeCount);
@@ -120,6 +124,35 @@ describe("GraphView 渐进快照接线", () => {
     },
   );
 
+  it("English 统一映射画布、Node、Edge 与 React Flow 可访问文案", () => {
+    const plan = createPythonMockStream({
+      now: () => Date.parse("2026-10-22T00:00:00.000Z"),
+    }).find(event => event.type === "graph.plan");
+    if (plan?.type !== "graph.plan") {
+      throw new Error("Python Mock Stream 缺少 graph.plan");
+    }
+    graphStore.getState().setGraph(plan.data);
+
+    const markup = renderToStaticMarkup(
+      <GraphView presentationMode="graph" language="en-US" />,
+    );
+    const nodes = capturedFlow.nodes as readonly GraphFlowNode[] | undefined;
+    const edges = capturedFlow.edges as readonly GraphFlowEdge[] | undefined;
+
+    expect(markup).toContain(
+      'aria-label="Exploratory search results graph"',
+    );
+    expect(nodes?.[0]?.data.language).toBe("en-US");
+    expect(nodes?.[0]?.ariaLabel).toContain("status: Waiting");
+    expect(edges?.[0]?.label).toBe("Recommended next");
+    expect(capturedFlow.ariaLabels).toMatchObject({
+      "node.a11yDescription.default":
+        "Press Enter or Space to select a node.",
+      "controls.zoomIn.ariaLabel": "Zoom in",
+      "controls.fitView.ariaLabel": "Fit all nodes",
+    });
+  });
+
   it("把 React Flow 键盘选择变化接回 Store", () => {
     const plan = createPythonMockStream({
       now: () => Date.parse("2026-10-22T00:00:00.000Z"),
@@ -132,7 +165,9 @@ describe("GraphView 渐进快照接线", () => {
       .startRun({ runId: plan.runId, query: "Python", language: "zh-CN" });
     graphStore.getState().applyStreamEvent(plan);
 
-    renderToStaticMarkup(<GraphView presentationMode="graph" />);
+    renderToStaticMarkup(
+      <GraphView presentationMode="graph" language="zh-CN" />,
+    );
 
     const firstNodeId = plan.data.nodes[0]?.id;
     const secondNodeId = plan.data.nodes[1]?.id;
@@ -146,7 +181,9 @@ describe("GraphView 渐进快照接线", () => {
     expect(graphStore.getState().selectedNodeId).toBe(firstNodeId);
 
     // Store 更新后重新 render，确保回调基于最新受控 Nodes 完成键盘切换。
-    renderToStaticMarkup(<GraphView presentationMode="graph" />);
+    renderToStaticMarkup(
+      <GraphView presentationMode="graph" language="zh-CN" />,
+    );
     const switchSelection = capturedFlow.onNodesChange as
       | ((changes: NodeChange<GraphFlowNode>[]) => void)
       | undefined;
@@ -156,7 +193,9 @@ describe("GraphView 渐进快照接线", () => {
     ]);
     expect(graphStore.getState().selectedNodeId).toBe(secondNodeId);
 
-    renderToStaticMarkup(<GraphView presentationMode="graph" />);
+    renderToStaticMarkup(
+      <GraphView presentationMode="graph" language="zh-CN" />,
+    );
     const clearSelection = capturedFlow.onNodesChange as
       | ((changes: NodeChange<GraphFlowNode>[]) => void)
       | undefined;

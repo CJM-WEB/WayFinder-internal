@@ -3,7 +3,7 @@
  * 与成本事实汇总为可审核结果，并在 A-B-B-A 条件或覆盖率不完整时拒绝比较。
  *
  * 关键边界：
- * - 当前报告严格读取 `quality-eval.v11`；旧 v5-v10 只经显式内存归一化读取；
+ * - 当前报告严格读取 `quality-eval.v12`；旧 v5-v11 只经显式内存归一化读取；
  * - `0` 是有效测量值，`telemetry: null` 才表示缺失；
  * - 本模块只判断报告能否比较，不自动给出 Keep / Revert 产品结论。
  */
@@ -70,16 +70,18 @@ export type QualityEvalComparison = Readonly<{
 const ComparableQualityEvalReportSchema = QualityEvalReportSchema.extend({
   source: QualityEvalReportSchema.shape.source.extend({
     prompts: z.strictObject({
-      planner: z.enum(["graph-planner.v1", "graph-planner.v2"]),
-      reviser: z.enum(["graph-reviser.v1", "graph-reviser.v3"]),
-      searchPlanGenerator:
-        QualityEvalReportSchema.shape.source.shape.prompts.shape.searchPlanGenerator.nullable(),
-      reranker:
-        QualityEvalReportSchema.shape.source.shape.prompts.shape.reranker,
+      planner: z.enum(["graph-planner.v1", "graph-planner.v2", "graph-planner.v3"]),
+      reviser: z.enum(["graph-reviser.v1", "graph-reviser.v3", "graph-reviser.v4"]),
+      searchPlanGenerator: z.enum([
+        "search-plan-generator.v1",
+        "search-plan-generator.v2",
+        "search-plan-generator.v3",
+      ]).nullable(),
+      reranker: z.enum(["resource-reranker.v1", "resource-reranker.v2"]),
     }),
   }),
   runPolicy: QualityEvalReportSchema.shape.runPolicy.extend({
-    language: z.enum(["zh-CN", "und"]),
+    language: z.enum(["zh-CN", "en-US", "und"]),
   }),
 });
 
@@ -158,7 +160,8 @@ function normalizeLegacyReport(
     | "quality-eval.v7"
     | "quality-eval.v8"
     | "quality-eval.v9"
-    | "quality-eval.v10",
+    | "quality-eval.v10"
+    | "quality-eval.v11",
 ): unknown {
   const source = value.source;
   const runPolicy = value.runPolicy;
@@ -167,7 +170,9 @@ function normalizeLegacyReport(
     !isRecord(source) ||
     !isRecord(runPolicy) ||
     runPolicy.language !==
-      (outerVersion === "quality-eval.v9" || outerVersion === "quality-eval.v10"
+      (outerVersion === "quality-eval.v9" ||
+      outerVersion === "quality-eval.v10" ||
+      outerVersion === "quality-eval.v11"
         ? "zh-CN"
         : "und") ||
     !Array.isArray(results) ||
@@ -178,6 +183,20 @@ function normalizeLegacyReport(
   }
   const providers = source.providers;
   if (!isRecord(providers)) throw new TypeError("legacy_provider_invalid");
+  // 历史来源只能使用当时实际存在的 Prompt；新语言版本不能倒灌进旧报告。
+  const historicalPrompts = z.strictObject({
+    planner: z.enum(["graph-planner.v1", "graph-planner.v2"]),
+    reviser: z.enum(["graph-reviser.v1", "graph-reviser.v3"]),
+    searchPlanGenerator: z.enum([
+      "search-plan-generator.v1",
+      "search-plan-generator.v2",
+    ]).optional(),
+    reranker: z.literal("resource-reranker.v1"),
+  }).parse(source.prompts);
+  if (outerVersion === "quality-eval.v11" &&
+    historicalPrompts.searchPlanGenerator === undefined) {
+    throw new TypeError("legacy_prompt_invalid");
+  }
   const plannedRequestConfig = {
     providerId: providers.search,
     // 这只重建 v1 未序列化的五个聚合计数：全局常量从 und 换为
@@ -193,11 +212,13 @@ function normalizeLegacyReport(
           ? "quality-eval.v7"
           : outerVersion === "quality-eval.v10"
             ? "quality-eval.v8"
+            : outerVersion === "quality-eval.v11"
+              ? "quality-eval.v9"
           : "quality-eval.v6";
 
   return {
     ...value,
-    schemaVersion: "quality-eval.v11",
+    schemaVersion: "quality-eval.v12",
     source: {
       ...(outerVersion === "quality-eval.v5"
         ? { ...source, ranking: "rank-fusion.v1" }
@@ -205,7 +226,9 @@ function normalizeLegacyReport(
       prompts: isRecord(source.prompts)
         ? {
             ...source.prompts,
-            searchPlanGenerator: null,
+            searchPlanGenerator: outerVersion === "quality-eval.v11"
+              ? historicalPrompts.searchPlanGenerator
+              : null,
           }
         : source.prompts,
     },
@@ -228,7 +251,8 @@ function normalizeLegacyReport(
       if (metrics !== null && outerVersion !== "quality-eval.v7" &&
         outerVersion !== "quality-eval.v8" &&
         outerVersion !== "quality-eval.v9" &&
-        outerVersion !== "quality-eval.v10") {
+        outerVersion !== "quality-eval.v10" &&
+        outerVersion !== "quality-eval.v11") {
         const parsedPlan = GraphPlanSchema.safeParse(result.plan);
         if (
           !isRecord(metrics) ||
@@ -239,7 +263,7 @@ function normalizeLegacyReport(
         }
         normalizedMetrics = {
           ...metrics,
-          version: "quality-metrics.v3",
+          version: "quality-metrics.v4",
           plannedRequestDuplication:
             measureQualityEvalPlannedRequestDuplication(
               parsedPlan.data,
@@ -249,27 +273,33 @@ function normalizeLegacyReport(
       } else if (
         metrics !== null &&
         outerVersion !== "quality-eval.v9" &&
-        outerVersion !== "quality-eval.v10"
+        outerVersion !== "quality-eval.v10" &&
+        outerVersion !== "quality-eval.v11"
       ) {
         if (!isRecord(metrics) || metrics.version !== "quality-metrics.v2") {
           throw new TypeError("legacy_metrics_invalid");
         }
-        // v2 与 v3 的聚合数值形状不变；历史语言身份继续由 runPolicy 保留。
-        normalizedMetrics = { ...metrics, version: "quality-metrics.v3" };
+        // 旧 v2/v3 与当前 v4 的聚合数值形状不变；历史语言身份继续由 runPolicy 保留。
+        normalizedMetrics = { ...metrics, version: "quality-metrics.v4" };
       } else if (
         metrics !== null &&
         (!isRecord(metrics) || metrics.version !== "quality-metrics.v3")
       ) {
         throw new TypeError("legacy_metrics_invalid");
+      } else if (isRecord(metrics)) {
+        // v3 的聚合形状不变，内存升级版本；历史语言身份仍由原 runPolicy 保留。
+        normalizedMetrics = { ...metrics, version: "quality-metrics.v4" };
       }
       return {
         ...result,
-        schemaVersion: "quality-eval.v9",
+        schemaVersion: "quality-eval.v10",
         metrics: normalizedMetrics,
-        telemetry: normalizeLegacyTelemetry(
-          telemetry,
-          outerVersion === "quality-eval.v5",
-        ),
+        telemetry: outerVersion === "quality-eval.v11"
+          ? telemetry
+          : normalizeLegacyTelemetry(
+              telemetry,
+              outerVersion === "quality-eval.v5",
+            ),
       };
     }),
   };
@@ -287,7 +317,8 @@ function parseReport(
         value.schemaVersion === "quality-eval.v7" ||
         value.schemaVersion === "quality-eval.v8" ||
         value.schemaVersion === "quality-eval.v9" ||
-        value.schemaVersion === "quality-eval.v10")
+        value.schemaVersion === "quality-eval.v10" ||
+        value.schemaVersion === "quality-eval.v11")
         ? value.schemaVersion
         : null;
     let candidate = value;
@@ -296,7 +327,10 @@ function parseReport(
       if (!isRecord(value)) throw new TypeError("legacy_report_invalid");
       candidate = normalizeLegacyReport(value, legacyVersion);
     }
-    const parsed = ComparableQualityEvalReportSchema.safeParse(candidate);
+    // 新报告必须遵守现役 Prompt 与语言白名单；只有历史迁移走扩展读取边界。
+    const parsed = legacyVersion === null
+      ? QualityEvalReportSchema.safeParse(candidate)
+      : ComparableQualityEvalReportSchema.safeParse(candidate);
     if (!parsed.success) {
       throw new TypeError("schema_invalid");
     }

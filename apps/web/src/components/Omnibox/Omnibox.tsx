@@ -14,6 +14,7 @@ import {
   type SearchRequest,
 } from "@wayfinder/contracts";
 
+import { getMessages } from "../../i18n/messages.js";
 import { resolveSafeHttpUrl } from "../../lib/url.js";
 
 export type StartOmniboxSearch = (
@@ -130,14 +131,47 @@ export function startOmniboxSubmission(
 export type OmniboxProps = Readonly<{
   startSearch: StartOmniboxSearch;
   openDirectUrl: OpenOmniboxUrl;
+  /** 下一次搜索使用的受控语言。 */
+  language: SearchLanguage;
+  /** 当前页面唯一展示语言；已有 Run 时可能与下一次搜索语言不同。 */
+  renderLanguage: SearchLanguage;
+  onLanguageChange: (language: SearchLanguage) => void;
 }>;
 
-/** 统一 Omnibox 不暴露模式、熟练度或其他搜索前置表单。 */
-export function Omnibox({ startSearch, openDirectUrl }: OmniboxProps) {
+type OmniboxFeedback =
+  | InvalidOmniboxInputReason
+  | "input_failure"
+  | "search_failure";
+
+/**
+ * 统一 Omnibox 不暴露模式、熟练度或其他搜索前置表单。
+ * language 由 App 持有，使选择器、搜索请求与页面文案共用同一个明确来源。
+ */
+export function Omnibox({
+  startSearch,
+  openDirectUrl,
+  language,
+  renderLanguage,
+  onLanguageChange,
+}: OmniboxProps) {
   const [input, setInput] = useState("");
-  const [language, setLanguage] = useState<SearchLanguage>("zh-CN");
-  const [feedback, setFeedback] = useState<string | null>(null);
+  const [feedback, setFeedback] = useState<OmniboxFeedback | null>(null);
   const latestSubmission = useRef(0);
+  const messages = getMessages(renderLanguage).omnibox;
+
+  /** Feedback 只保存稳定原因，切换语言时由当前文案表重新呈现，避免残留混语。 */
+  const feedbackMessage =
+    feedback === null
+      ? null
+      : feedback === "query"
+        ? messages.invalidQuery
+        : feedback === "invalid_url"
+          ? messages.invalidUrl
+          : feedback === "unsupported_protocol"
+            ? messages.unsupportedProtocol
+            : feedback === "input_failure"
+              ? messages.inputFailure
+              : messages.searchFailure;
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>): void => {
     event.preventDefault();
@@ -154,18 +188,12 @@ export function Omnibox({ startSearch, openDirectUrl }: OmniboxProps) {
         language,
       );
     } catch {
-      setFeedback("无法处理当前输入，请稍后重试。");
+      setFeedback("input_failure");
       return;
     }
 
     if (submission.kind === "invalid") {
-      setFeedback(
-        submission.reason === "query"
-          ? "请输入 1 至 2000 个字符的搜索内容。"
-          : submission.reason === "invalid_url"
-            ? "网址格式无效，请使用完整的 http:// 或 https:// 地址。"
-            : "不支持此网址协议，仅支持 http:// 或 https://。",
-      );
+      setFeedback(submission.reason);
       return;
     }
 
@@ -182,26 +210,26 @@ export function Omnibox({ startSearch, openDirectUrl }: OmniboxProps) {
     void submission.completion.catch(() => {
       if (latestSubmission.current === submissionNumber) {
         // 不展示底层错误对象，避免把网络或 Provider 细节泄漏到 UI。
-        setFeedback("搜索启动失败，请稍后重试。");
+        setFeedback("search_failure");
       }
     });
   };
 
   return (
     <form
-      aria-label="WayFinder 搜索"
+      aria-label={messages.formAria}
       className="omnibox"
       role="search"
       onSubmit={handleSubmit}
     >
-      <label htmlFor="wayfinder-query">搜索任意主题</label>
+      <label htmlFor="wayfinder-query">{messages.queryLabel}</label>
       <div className="omnibox__controls">
         <input
           id="wayfinder-query"
           name="query"
           type="search"
           value={input}
-          placeholder="输入网址、关键词或自然语言，按 Enter"
+          placeholder={messages.placeholder}
           aria-describedby="wayfinder-query-feedback"
           autoComplete="off"
           onChange={event => {
@@ -210,27 +238,30 @@ export function Omnibox({ startSearch, openDirectUrl }: OmniboxProps) {
           }}
         />
         <div className="omnibox__language">
-          <label htmlFor="wayfinder-language">language</label>
+          <label htmlFor="wayfinder-language">{messages.languageLabel}</label>
           <select
             id="wayfinder-language"
             name="language"
             value={language}
             onChange={event => {
               // Select 值仍经过公共 Contract，禁止 DOM 或未来 Option 绕过语言门禁。
-              setLanguage(SearchLanguageSchema.parse(event.currentTarget.value));
+              onLanguageChange(
+                SearchLanguageSchema.parse(event.currentTarget.value),
+              );
             }}
           >
-            <option value="zh-CN">简体中文</option>
+            <option value="zh-CN">{messages.languageOptions["zh-CN"]}</option>
+            <option value="en-US">{messages.languageOptions["en-US"]}</option>
           </select>
         </div>
-        <button type="submit">搜索</button>
+        <button type="submit">{messages.searchButton}</button>
       </div>
       <p
         id="wayfinder-query-feedback"
         className={feedback === null ? "omnibox__hint" : "omnibox__error"}
         aria-live="polite"
       >
-        {feedback ?? "明确的 HTTP(S) 网址将直接打开，其他输入进入 AI Search。"}
+        {feedbackMessage ?? messages.hint}
       </p>
     </form>
   );

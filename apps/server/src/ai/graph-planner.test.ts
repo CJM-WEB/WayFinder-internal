@@ -1,6 +1,7 @@
 /**
  * 测试职责：冻结 Outline-only Planner 的单次调用、失败关闭与取消/预算边界。
  */
+import type { SearchLanguage } from "@wayfinder/contracts";
 import { z } from "zod";
 import { describe, expect, it } from "vitest";
 
@@ -22,7 +23,8 @@ import {
   LLMProviderError,
   type LLMProvider,
 } from "./llm-provider.js";
-import { GRAPH_PLANNER_SYSTEM_PROMPT } from "./prompts/graph-planner.v2.js";
+import { GRAPH_PLANNER_SYSTEM_PROMPT } from "./prompts/graph-planner.v3.js";
+import { appendTargetLanguageSystemInstruction } from "./prompts/target-language-system-instruction.js";
 
 const QUERY = "什么是 MySQL";
 
@@ -54,6 +56,7 @@ function createOutline(): GraphOutline {
 function createArgs(
   provider: LLMProvider,
   overrides: Partial<{
+    language: SearchLanguage;
     signal: AbortSignal;
     timeoutMs: number;
     now: () => number;
@@ -64,6 +67,7 @@ function createArgs(
 ) {
   const base = {
     query: QUERY,
+    language: overrides.language ?? "zh-CN",
     provider,
     signal: overrides.signal ?? new AbortController().signal,
     timeoutMs: overrides.timeoutMs ?? 10_000,
@@ -76,7 +80,7 @@ function createArgs(
 }
 
 describe("planGraphOutline", () => {
-  it("只调用一次并使用 Outline Schema、v2 Prompt、父 Signal 与有限预算", async () => {
+  it("只调用一次并使用带目标语言的 v3 Prompt、父 Signal 与有限预算", async () => {
     const outline = createOutline();
     const provider = new FakeLLMProvider([outline]);
     const signal = new AbortController().signal;
@@ -89,7 +93,10 @@ describe("planGraphOutline", () => {
     expect(provider.calls).toHaveLength(1);
     expect(provider.calls[0]).toEqual({
       input: {
-        system: GRAPH_PLANNER_SYSTEM_PROMPT,
+        system: appendTargetLanguageSystemInstruction(
+          GRAPH_PLANNER_SYSTEM_PROMPT,
+          "zh-CN",
+        ),
         user: QUERY,
         schemaName: "graph_outline",
         schema: z.toJSONSchema(GraphOutlineSchema, {
@@ -101,6 +108,16 @@ describe("planGraphOutline", () => {
       },
       options: { signal, timeoutMs: 10_000 },
     });
+  });
+
+  it("en-US 只把美式英语规则加入 System 层", async () => {
+    const provider = new FakeLLMProvider([createOutline()]);
+
+    await planGraphOutline(createArgs(provider, { language: "en-US" }));
+
+    expect(provider.calls[0]?.input.system).toContain("American English");
+    expect(provider.calls[0]?.input.system).not.toContain("Simplified Chinese");
+    expect(provider.calls[0]?.input.user).toBe(QUERY);
   });
 
   it("Schema 失败发布脱敏诊断并直接失败，不重试或 fallback", async () => {

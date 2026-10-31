@@ -1,12 +1,14 @@
 /** 组件职责：组合统一 Omnibox、运行摘要、Graph 结果画布与当前节点的 Resource Panel。 */
 import { useStore } from "zustand";
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import type { SearchLanguage } from "@wayfinder/contracts";
 
 import { startStreamingSearch } from "./api/search.js";
 import { H1StructuredFlatList } from "./components/Evaluation/H1StructuredFlatList.js";
 import { GraphView } from "./components/Graph/GraphView.js";
 import { Omnibox } from "./components/Omnibox/Omnibox.js";
 import { ResourcePanel } from "./components/ResourcePanel/ResourcePanel.js";
+import { getMessages } from "./i18n/messages.js";
 import {
   requestSafeUrlOpen,
   type BrowserUrlOpener,
@@ -29,6 +31,23 @@ export type AppProps = Readonly<{
   h1Evaluation?: H1EvaluationRoute;
 }>;
 
+/**
+ * 已开始的 Run 锁定整页展示语言；选择器只决定下一次搜索。
+ * 没有 Run 时才直接预览选择语言，避免旧结果与新静态文案组成混合语言页面。
+ */
+export const resolveRenderLanguage = (
+  runLanguage: SearchLanguage | null,
+  selectedLanguage: SearchLanguage,
+): SearchLanguage => runLanguage ?? selectedLanguage;
+
+/** 独立纯边界便于验证 HTML 根节点语言，不要求测试环境提供完整浏览器 DOM。 */
+export const applyDocumentLanguage = (
+  documentElement: { lang: string },
+  language: SearchLanguage,
+): void => {
+  documentElement.lang = language;
+};
+
 export function App({ h1Evaluation }: AppProps = {}) {
   const query = useStore(graphStore, state => state.query);
   const storedPresentationMode = useStore(
@@ -37,6 +56,9 @@ export function App({ h1Evaluation }: AppProps = {}) {
   );
   const nodeCount = useStore(graphStore, state => state.nodes.length);
   const isSearching = useStore(graphStore, state => state.isSearching);
+  const runLanguage = useStore(graphStore, state => state.language);
+  const [selectedLanguage, setSelectedLanguage] =
+    useState<SearchLanguage>(runLanguage ?? "zh-CN");
   const [h1Condition, setH1Condition] = useState<H1EvaluationCondition>(
     h1Evaluation?.initialCondition ?? "graph",
   );
@@ -45,31 +67,41 @@ export function App({ h1Evaluation }: AppProps = {}) {
   const presentationMode = storedPresentationMode ?? "graph";
   // H1 必须固定 Graph 条件，避免 Planner compact 模式成为额外实验变量。
   const graphPresentationMode = isH1Evaluation ? "graph" : presentationMode;
-  const searchStateLabel = isSearching
-    ? "搜索中"
+  const renderLanguage = resolveRenderLanguage(
+    runLanguage,
+    selectedLanguage,
+  );
+  const messages = getMessages(renderLanguage);
+  const searchState = isSearching
+    ? "searching"
     : query.length > 0
-      ? "已完成"
-      : "待搜索";
+      ? "complete"
+      : "idle";
+
+  /** lang 属性与实际可见文案共用 renderLanguage，供浏览器和辅助技术正确识别语言。 */
+  useEffect(() => {
+    applyDocumentLanguage(document.documentElement, renderLanguage);
+  }, [renderLanguage]);
 
   return (
     <main className="app-shell">
       <header className="app-header">
         <div className="app-header__intro">
-          <p>Graph is the search result page</p>
+          <p>{messages.app.slogan}</p>
           <h1>WayFinder</h1>
         </div>
 
-        <dl className="app-summary" aria-label="搜索摘要">
+        <dl className="app-summary" aria-label={messages.app.summaryAria}>
           <div>
-            <dt>当前查询</dt>
-            <dd>{query || "尚未开始"}</dd>
+            <dt>{messages.app.currentQuery}</dt>
+            <dd>{query || messages.app.notStarted}</dd>
           </div>
           <div>
-            <dt>搜索状态</dt>
-            <dd>{searchStateLabel}</dd>
+            <dt>{messages.app.searchStatus}</dt>
+            <dd>{messages.app.searchState[searchState]}</dd>
           </div>
           <div>
-            <dt>节点数量</dt>
+            <dt>{messages.app.nodeCount}</dt>
             <dd>{nodeCount}</dd>
           </div>
         </dl>
@@ -78,6 +110,9 @@ export function App({ h1Evaluation }: AppProps = {}) {
       <Omnibox
         startSearch={startStreamingSearch}
         openDirectUrl={openDirectUrl}
+        language={selectedLanguage}
+        renderLanguage={renderLanguage}
+        onLanguageChange={setSelectedLanguage}
       />
 
       {isH1Evaluation ? (
@@ -111,15 +146,13 @@ export function App({ h1Evaluation }: AppProps = {}) {
         aria-labelledby="graph-title"
       >
         <div className="graph-section__header">
-          <h2 id="graph-title">搜索结果</h2>
+          <h2 id="graph-title">{messages.app.searchResults}</h2>
           <p>
             {isH1Evaluation
               ? h1Condition === "graph"
                 ? "H1 评估 · Graph View · 选择节点查看资源"
                 : "H1 评估 · Structured Flat List · 选择节点查看资源"
-              : presentationMode === "compact"
-              ? "紧凑结果 · 选择节点查看资源"
-              : "滚轮缩放 · 拖动画布 · 选择节点查看资源"}
+              : messages.app.resultInstructions[presentationMode]}
           </p>
         </div>
         <div
@@ -135,9 +168,12 @@ export function App({ h1Evaluation }: AppProps = {}) {
           {isH1Evaluation && h1Condition === "structured-flat-list" ? (
             <H1StructuredFlatList />
           ) : (
-            <GraphView presentationMode={graphPresentationMode} />
+            <GraphView
+              presentationMode={graphPresentationMode}
+              language={renderLanguage}
+            />
           )}
-          <ResourcePanel />
+          <ResourcePanel language={renderLanguage} />
         </div>
       </section>
     </main>

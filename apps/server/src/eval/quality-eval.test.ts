@@ -179,7 +179,7 @@ const projectedCallCounts = {
 } as const;
 
 const runLog = RunLogRecordSchema.parse({
-  schemaVersion: "run-log.v3",
+  schemaVersion: "run-log.v4",
   createdAt: "2026-10-23T00:00:00.000Z",
   identifiers: {
     logId: "11111111-1111-4111-8111-111111111111",
@@ -235,10 +235,10 @@ const runLog = RunLogRecordSchema.parse({
   versions: {
     protocol: "0.1",
     resultGraph: "0.1",
-    plannerPrompt: "graph-planner.v2",
-    reviserPrompt: "graph-reviser.v3",
-    searchPlanGeneratorPrompt: "search-plan-generator.v2",
-    rerankerPrompt: "resource-reranker.v1",
+    plannerPrompt: "graph-planner.v3",
+    reviserPrompt: "graph-reviser.v4",
+    searchPlanGeneratorPrompt: "search-plan-generator.v3",
+    rerankerPrompt: "resource-reranker.v2",
     rankFusion: "rank-fusion.v1",
   },
   providers: { search: "tavily", llm: "deepseek" },
@@ -340,7 +340,7 @@ describe("WAY-86 Quality Eval 数据集", () => {
 
 describe("WAY-86 Quality Eval 查询投影", () => {
   it("保留计划、Top 3、官方排名、跨 Node 重复、多样性与 Run Log 遥测", async () => {
-    expect(QUALITY_EVAL_SCHEMA_VERSION).toBe("quality-eval.v9");
+    expect(QUALITY_EVAL_SCHEMA_VERSION).toBe("quality-eval.v10");
     const payloads: StreamEventPayload[] = [
       { type: "query.analysis", data: plan.analysis },
       { type: "graph.plan", data: plan },

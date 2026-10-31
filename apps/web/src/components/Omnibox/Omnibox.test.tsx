@@ -34,6 +34,27 @@ describe("Omnibox", () => {
     expect(openDirectUrl).not.toHaveBeenCalled();
   });
 
+  it("English 选择确定性透传 en-US，不改写用户 Query", async () => {
+    const startSearch = vi.fn(async () => undefined);
+    const submission = startOmniboxSubmission(
+      "What is MySQL?",
+      startSearch,
+      vi.fn(() => true),
+      "en-US",
+    );
+
+    expect(submission.kind).toBe("ai_search");
+    if (submission.kind !== "ai_search") {
+      throw new Error("English Query 应启动搜索");
+    }
+
+    await submission.completion;
+    expect(startSearch).toHaveBeenCalledExactlyOnceWith({
+      query: "What is MySQL?",
+      language: "en-US",
+    });
+  });
+
   it("纯空白输入不启动搜索", () => {
     const startSearch = vi.fn(async () => undefined);
     const openDirectUrl = vi.fn(() => true);
@@ -129,11 +150,14 @@ describe("Omnibox", () => {
     expect(openDirectUrl).not.toHaveBeenCalled();
   });
 
-  it("渲染单一搜索入口与唯一简体中文选项", () => {
+  it("渲染单一搜索入口与两个受控语言选项", () => {
     const markup = renderToStaticMarkup(
       <Omnibox
         startSearch={async () => undefined}
         openDirectUrl={() => true}
+        language="zh-CN"
+        renderLanguage="zh-CN"
+        onLanguageChange={() => undefined}
       />,
     );
 
@@ -141,8 +165,41 @@ describe("Omnibox", () => {
     expect(markup).toContain('type="search"');
     expect(markup).toContain('type="submit"');
     expect(markup.match(/<input\b/g)).toHaveLength(1);
-    expect(markup).toContain(">language</label>");
+    expect(markup).toContain(">语言</label>");
     expect(markup.match(/<select\b/g)).toHaveLength(1);
     expect(markup).toContain('<option value="zh-CN" selected="">简体中文</option>');
+    expect(markup).toContain('<option value="en-US">English</option>');
+  });
+
+  it("选择器值与旧 Run 展示语言分离，避免既有页面混语", () => {
+    const markup = renderToStaticMarkup(
+      <Omnibox
+        startSearch={async () => undefined}
+        openDirectUrl={() => true}
+        language="en-US"
+        renderLanguage="zh-CN"
+        onLanguageChange={() => undefined}
+      />,
+    );
+
+    expect(markup).toContain('<option value="en-US" selected="">English</option>');
+    expect(markup).toContain("搜索任意主题");
+    expect(markup).not.toContain("Search any topic");
+  });
+
+  it("没有旧 Run 时完整渲染 English 自产文案", () => {
+    const markup = renderToStaticMarkup(
+      <Omnibox
+        startSearch={async () => undefined}
+        openDirectUrl={() => true}
+        language="en-US"
+        renderLanguage="en-US"
+        onLanguageChange={() => undefined}
+      />,
+    );
+
+    expect(markup).toContain("Search any topic");
+    expect(markup).toContain(">Language</label>");
+    expect(markup).toContain(">Search</button>");
   });
 });
