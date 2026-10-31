@@ -23,7 +23,7 @@ import { z } from "zod";
 
 import { RunLogRecordSchema } from "../observability/run-log.js";
 
-export const QUALITY_METRICS_VERSION = "quality-metrics.v3" as const;
+export const QUALITY_METRICS_VERSION = "quality-metrics.v4" as const;
 
 /**
  * Quality Eval 使用的固定生产请求配置。它只参与内存身份计算，不进入新增诊断对象；

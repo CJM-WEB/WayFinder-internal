@@ -93,6 +93,7 @@ describe("MemoryCachedSearchProvider", () => {
       { ...BASE_REQUEST, maxResults: 5 },
       { ...BASE_REQUEST, capability: "code" },
       { ...BASE_REQUEST, freshnessSensitive: true },
+      { ...BASE_REQUEST, language: "en-US" },
       {
         kind: "broad_discovery",
         query: BASE_REQUEST.query,

@@ -320,13 +320,40 @@ describe("resolveValidatedGraphPlanForRun", () => {
   });
 
   it("Generator 的重复 Query 以 INVALID_GRAPH 失败且不返回部分计划", async () => {
-    const outline = createOutline("plan_first");
+    const baseOutline = createOutline("plan_first");
+    const outline = GraphOutlineSchema.parse({
+      ...baseOutline,
+      nodes: [
+        ...baseOutline.nodes,
+        {
+          id: "products",
+          title: "NVIDIA 产品",
+          description: "了解 NVIDIA 的主要产品线",
+          nodeType: "primary",
+          layer: 1,
+          status: "planned",
+        },
+      ],
+      edges: [
+        {
+          id: "overview-to-products",
+          source: "overview",
+          target: "products",
+          type: "recommended_next",
+        },
+      ],
+    });
     const duplicateBundle = SearchPlanBundleSchema.parse({
       plans: [
         {
           nodeId: "overview",
-          queries: ["NVIDIA 概览", " ｎｖｉｄｉａ\u00a0概览 "],
+          queries: ["NVIDIA 概览"],
           rankingProfile: "knowledge",
+        },
+        {
+          nodeId: "products",
+          queries: [" ｎｖｉｄｉａ\u00a0概览 "],
+          rankingProfile: "software",
         },
       ],
     });

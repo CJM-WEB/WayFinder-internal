@@ -237,13 +237,14 @@ export async function processNode(
       return candidate;
     });
 
-    // SerpAPI Bing 已返回首屏摘要；生产链路不再远程 Extract，空 pages 是正常输入。
+    // SerpAPI Adapter 已返回首屏摘要；生产链路不再远程 Extract，空 pages 是正常输入。
     const rerankTimeoutMs = Math.min(
       context.rerankTimeoutMs,
       runScope.requirePositiveRemainingMs(),
     );
     const reranked = await rerankCandidatesWithFallback({
       node,
+      language: context.language,
       candidates: providerOrdered,
       fallbackCandidates: preRanked,
       pages: [],
@@ -268,7 +269,7 @@ export async function processNode(
     } catch {
       // 观测投影同样属于旁路；内部身份核对异常不能覆盖已经完成的业务排序。
     }
-    const resources = finalizeResources(safetyOrdered);
+    const resources = finalizeResources(safetyOrdered, context.language);
     if (resources.length === 0) {
       throw new NodeJobError("SEARCH_PROVIDER_FAILED", true);
     }

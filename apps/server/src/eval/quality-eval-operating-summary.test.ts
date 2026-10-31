@@ -98,7 +98,7 @@ function createTelemetry(index: number) {
 
 function createReport() {
   return QualityEvalReportSchema.parse({
-    schemaVersion: "quality-eval.v11",
+    schemaVersion: "quality-eval.v12",
     issue: "WAY-86",
     evaluationRunId:
       "2026-10-23T09-00-00-000Z-11111111-1111-4111-8111-111111111111",
@@ -114,10 +114,10 @@ function createReport() {
       git: { commit: SOURCE_COMMIT, worktreeClean: true },
       contracts: { protocol: "0.1", resultGraph: "0.1" },
       prompts: {
-        planner: "graph-planner.v2",
-        reviser: "graph-reviser.v3",
-        searchPlanGenerator: "search-plan-generator.v1",
-        reranker: "resource-reranker.v1",
+        planner: "graph-planner.v3",
+        reviser: "graph-reviser.v4",
+        searchPlanGenerator: "search-plan-generator.v3",
+        reranker: "resource-reranker.v2",
       },
       ranking: "rank-fusion.v1",
       providers: {
@@ -150,7 +150,7 @@ function createReport() {
     results: Array.from({ length: 20 }, (_, index) => {
       const id = `wfq-${String(index + 1).padStart(3, "0")}`;
       return {
-        schemaVersion: "quality-eval.v9",
+        schemaVersion: "quality-eval.v10",
         comparisonKey: `wayfinder-regression.v1:${id}`,
         query: {
           id,
@@ -251,7 +251,7 @@ function createCompletedDuplicationResult(
       },
     ],
     metrics: {
-      version: "quality-metrics.v3",
+      version: "quality-metrics.v4",
       schemaValidity: "valid",
       nodeCount: 2,
       resourceCount: 2,

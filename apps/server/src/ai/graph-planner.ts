@@ -8,6 +8,7 @@
  */
 import { performance } from "node:perf_hooks";
 
+import type { SearchLanguage } from "@wayfinder/contracts";
 import { z } from "zod";
 
 import { validateGraphOutline } from "../graph/graph-validator.js";
@@ -24,7 +25,8 @@ import {
   type LLMProvider,
   type StructuredLLMInput,
 } from "./llm-provider.js";
-import { GRAPH_PLANNER_SYSTEM_PROMPT } from "./prompts/graph-planner.v2.js";
+import { GRAPH_PLANNER_SYSTEM_PROMPT } from "./prompts/graph-planner.v3.js";
+import { appendTargetLanguageSystemInstruction } from "./prompts/target-language-system-instruction.js";
 
 const GRAPH_OUTLINE_PROVIDER_SCHEMA: Readonly<Record<string, unknown>> =
   z.toJSONSchema(GraphOutlineSchema, {
@@ -54,6 +56,8 @@ export class GraphPlannerError extends Error {
 export type PlanGraphOutlineInput = Readonly<{
   /** 已由 SearchRequestSchema trim 并校验的原始 Query。 */
   query: string;
+  /** 冻结于本次 Run，用于约束 Analysis 与 Node 自产文本。 */
+  language: SearchLanguage;
   provider: LLMProvider;
   /** 整次 Run 共享的取消/绝对截止 Signal。 */
   signal: AbortSignal;
@@ -95,9 +99,15 @@ function readRemainingTimeoutMs(
   return remaining >= 1 ? remaining : null;
 }
 
-function createStructuredInput(query: string): StructuredLLMInput {
+function createStructuredInput(
+  query: string,
+  language: SearchLanguage,
+): StructuredLLMInput {
   return {
-    system: GRAPH_PLANNER_SYSTEM_PROMPT,
+    system: appendTargetLanguageSystemInstruction(
+      GRAPH_PLANNER_SYSTEM_PROMPT,
+      language,
+    ),
     user: query,
     schemaName: "graph_outline",
     schema: GRAPH_OUTLINE_PROVIDER_SCHEMA,
@@ -128,10 +138,10 @@ export async function planGraphOutline(
 
   let output: unknown;
   try {
-    output = await input.provider.structured(createStructuredInput(input.query), {
-      signal: input.signal,
-      timeoutMs,
-    });
+    output = await input.provider.structured(
+      createStructuredInput(input.query, input.language),
+      { signal: input.signal, timeoutMs },
+    );
   } catch (error: unknown) {
     // 父 Signal 的 reason 比 Provider 的迟到包装错误优先级更高。
     throwIfAborted(input.signal);

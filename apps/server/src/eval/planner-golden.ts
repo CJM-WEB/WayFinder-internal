@@ -741,6 +741,7 @@ export async function evaluatePlannerGoldenQuery(
     const plannerStartedAt = performance.now();
     const initialOutline = await planGraphOutline({
       query: input.query.query,
+      language: "zh-CN",
       provider: llmProvider,
       signal,
       timeoutMs: readRemainingLLMTimeoutMs(deadlineAt, llmStageTimeoutMs),
@@ -773,6 +774,7 @@ export async function evaluatePlannerGoldenQuery(
       const reviserStartedAt = performance.now();
       finalOutline = await reviseGraphOutline({
         query: input.query.query,
+        language: "zh-CN",
         initialOutline,
         evidence,
         provider: llmProvider,

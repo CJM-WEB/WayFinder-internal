@@ -96,7 +96,7 @@ function createReport(
   includeRankedResult = true,
 ) {
   return QualityEvalReportSchema.parse({
-    schemaVersion: "quality-eval.v11",
+    schemaVersion: "quality-eval.v12",
     issue: "WAY-86",
     evaluationRunId: `2026-10-23T00-00-0${runIndex}-000Z-0000000${runIndex}-0000-4000-8000-00000000000${runIndex}`,
     completedAt: `2026-10-23T00:00:0${runIndex}.000Z`,
@@ -111,10 +111,10 @@ function createReport(
       git: { commit, worktreeClean: true },
       contracts: { protocol: "0.1", resultGraph: "0.1" },
       prompts: {
-        planner: "graph-planner.v2",
-        reviser: "graph-reviser.v3",
-        searchPlanGenerator: "search-plan-generator.v1",
-        reranker: "resource-reranker.v1",
+        planner: "graph-planner.v3",
+        reviser: "graph-reviser.v4",
+        searchPlanGenerator: "search-plan-generator.v3",
+        reranker: "resource-reranker.v2",
       },
       ranking: "rank-fusion.v1",
       providers: {
@@ -176,7 +176,7 @@ function createReport(
           edges: [],
         } as const;
         return {
-          schemaVersion: "quality-eval.v9",
+          schemaVersion: "quality-eval.v10",
           comparisonKey: `wayfinder-regression.v1:${id}`,
           query: {
             id,
@@ -218,7 +218,7 @@ function createReport(
           ],
           duplicateResources: [],
           metrics: {
-            version: "quality-metrics.v3",
+            version: "quality-metrics.v4",
             schemaValidity: "valid",
             nodeCount: 1,
             resourceCount: 1,
@@ -244,7 +244,7 @@ function createReport(
       }
       const query = `Query ${index + 1}`;
       return {
-        schemaVersion: "quality-eval.v9",
+        schemaVersion: "quality-eval.v10",
         comparisonKey: `wayfinder-regression.v1:${id}`,
         query: {
           id,
@@ -299,7 +299,7 @@ function createReport(
         ],
         duplicateResources: [],
         metrics: {
-          version: "quality-metrics.v3",
+          version: "quality-metrics.v4",
           schemaValidity: "valid",
           nodeCount: 1,
           resourceCount: 0,
@@ -345,12 +345,29 @@ function createInput(): TestInput {
   };
 }
 
+/** 历史 Fixture 保留当时的 Prompt 与指标版本，禁止直接把新版本反贴到旧报告。 */
+function setHistoricalVersions(legacy: Record<string, unknown>): void {
+  const source = legacy.source as Record<string, unknown>;
+  source.prompts = {
+    planner: "graph-planner.v2",
+    reviser: "graph-reviser.v3",
+    searchPlanGenerator: "search-plan-generator.v2",
+    reranker: "resource-reranker.v1",
+  };
+  for (const result of legacy.results as Record<string, unknown>[]) {
+    if (result.metrics !== null) {
+      (result.metrics as Record<string, unknown>).version = "quality-metrics.v3";
+    }
+  }
+}
+
 function createLegacyReport(commit: string, runIndex: number): unknown {
   const legacy = structuredClone(createReport(commit, runIndex)) as Record<
     string,
     unknown
   >;
   legacy.schemaVersion = "quality-eval.v5";
+  setHistoricalVersions(legacy);
   (legacy.runPolicy as Record<string, unknown>).language = "und";
   const source = legacy.source as Record<string, unknown>;
   delete source.ranking;
@@ -378,6 +395,7 @@ function createV6LegacyReport(commit: string, runIndex: number): unknown {
     unknown
   >;
   legacy.schemaVersion = "quality-eval.v6";
+  setHistoricalVersions(legacy);
   (legacy.runPolicy as Record<string, unknown>).language = "und";
   for (const result of legacy.results as Record<string, unknown>[]) {
     result.schemaVersion = "quality-eval.v5";
@@ -395,6 +413,7 @@ function createV7LegacyReport(commit: string, runIndex: number): unknown {
     unknown
   >;
   legacy.schemaVersion = "quality-eval.v7";
+  setHistoricalVersions(legacy);
   const runPolicy = legacy.runPolicy as Record<string, unknown>;
   runPolicy.runDeadlineMs = 20_000;
   runPolicy.language = "und";
@@ -421,6 +440,7 @@ function createV8LegacyReport(
     unknown
   >;
   legacy.schemaVersion = "quality-eval.v8";
+  setHistoricalVersions(legacy);
   (legacy.runPolicy as Record<string, unknown>).language = "und";
   for (const result of legacy.results as Record<string, unknown>[]) {
     result.schemaVersion = "quality-eval.v6";
@@ -439,6 +459,7 @@ function createV9LegacyReport(commit: string, runIndex: number): unknown {
     unknown
   >;
   legacy.schemaVersion = "quality-eval.v9";
+  setHistoricalVersions(legacy);
   for (const result of legacy.results as Record<string, unknown>[]) {
     result.schemaVersion = "quality-eval.v7";
   }
@@ -452,6 +473,7 @@ function createV10LegacyReport(commit: string, runIndex: number): unknown {
     unknown
   >;
   legacy.schemaVersion = "quality-eval.v10";
+  setHistoricalVersions(legacy);
   const source = legacy.source as Record<string, unknown>;
   const prompts = source.prompts as Record<string, unknown>;
   prompts.planner = "graph-planner.v1";
@@ -470,6 +492,20 @@ function createV10LegacyReport(commit: string, runIndex: number): unknown {
   return legacy;
 }
 
+/** v11 已有两阶段遥测，迁移时必须保留它，不能套用更旧报告的 null 补位。 */
+function createV11LegacyReport(commit: string, runIndex: number): unknown {
+  const legacy = structuredClone(createReport(commit, runIndex)) as Record<
+    string,
+    unknown
+  >;
+  legacy.schemaVersion = "quality-eval.v11";
+  setHistoricalVersions(legacy);
+  for (const result of legacy.results as Record<string, unknown>[]) {
+    result.schemaVersion = "quality-eval.v9";
+  }
+  return legacy;
+}
+
 /** 用真实的未完成语义制造覆盖缺口，禁止在 completed 结果上伪造 null。 */
 function replaceWithUnmeasuredFailure(
   report: ReturnType<typeof createReport>,
@@ -477,7 +513,7 @@ function replaceWithUnmeasuredFailure(
 ): void {
   const current = report.results[index]!;
   report.results[index] = {
-    schemaVersion: "quality-eval.v9",
+    schemaVersion: "quality-eval.v10",
     comparisonKey: current.comparisonKey,
     query: current.query,
     executionStatus: "run_failed",
@@ -499,6 +535,84 @@ function replaceWithUnmeasuredFailure(
 }
 
 describe("WAY-90 Quality Eval A-B-B-A 比较", () => {
+  it("当前 v12 支持整组 en-US，且拒绝把中英文运行条件混合比较", () => {
+    const input = createInput();
+    for (const entry of input.blocks) entry.report.runPolicy.language = "en-US";
+    expect(compareQualityEvalBlocks(input).status).toBe("comparable");
+    input.blocks[0]!.report.runPolicy.language = "zh-CN";
+    expect(() => compareQualityEvalBlocks(input)).toThrow("数据集或运行条件不一致");
+  });
+
+  it("只读迁移 outer v11/query v9/metrics v3，保留原 Prompt、语言与阶段遥测", () => {
+    const reports = BLOCKS.map((block, index) => createV11LegacyReport(
+      block.startsWith("A") ? BASELINE_COMMIT : CANDIDATE_COMMIT,
+      index + 1,
+    ));
+    const snapshots = structuredClone(reports);
+    expect(QualityEvalReportSchema.safeParse(reports[0]).success).toBe(false);
+    const comparison = compareQualityEvalBlocks({
+      baselineCommit: BASELINE_COMMIT,
+      candidateCommit: CANDIDATE_COMMIT,
+      blocks: BLOCKS.map((block, index) => ({ block, report: reports[index] })),
+    });
+    expect(comparison.status).toBe("comparable");
+    expect(reports).toEqual(snapshots);
+  });
+
+  it.each([
+    createLegacyReport,
+    createV6LegacyReport,
+    createV7LegacyReport,
+    createV8LegacyReport,
+    createV9LegacyReport,
+    createV10LegacyReport,
+    createV11LegacyReport,
+  ])("历史版本不得接受伪造的 en-US 运行身份：%#", createHistorical => {
+    const forged = createHistorical(BASELINE_COMMIT, 1) as Record<string, unknown>;
+    (forged.runPolicy as Record<string, unknown>).language = "en-US";
+    expect(() => compareQualityEvalBlocks({
+      baselineCommit: BASELINE_COMMIT,
+      candidateCommit: CANDIDATE_COMMIT,
+      blocks: BLOCKS.map((block, index) => ({
+        block,
+        report: index === 0 ? forged : createV11LegacyReport(
+          block.startsWith("A") ? BASELINE_COMMIT : CANDIDATE_COMMIT,
+          index + 1,
+        ),
+      })),
+    })).toThrow("严格 Schema");
+  });
+
+  it("v11 已有的阶段遥测仍须严格校验，不能以 null 覆盖掩盖非法事实", () => {
+    const forged = createV11LegacyReport(BASELINE_COMMIT, 1) as Record<string, unknown>;
+    const result = (forged.results as Record<string, unknown>[])[0]!;
+    const telemetry = result.telemetry as Record<string, unknown>;
+    const timings = telemetry.timingsMs as Record<string, unknown>;
+    timings.graphOutlinePlanning = -1;
+    expect(() => compareQualityEvalBlocks({
+      baselineCommit: BASELINE_COMMIT,
+      candidateCommit: CANDIDATE_COMMIT,
+      blocks: BLOCKS.map((block, index) => ({
+        block,
+        report: index === 0 ? forged : createV11LegacyReport(
+          block.startsWith("A") ? BASELINE_COMMIT : CANDIDATE_COMMIT,
+          index + 1,
+        ),
+      })),
+    })).toThrow("严格 Schema");
+  });
+
+  it("当前 v12 只写新 Prompt，旧来源不能冒充双语言版本", () => {
+    const current = createReport(CANDIDATE_COMMIT, 1);
+    expect(current.source.prompts.searchPlanGenerator).toBe(
+      "search-plan-generator.v3",
+    );
+
+    const historical = structuredClone(current) as Record<string, unknown>;
+    setHistoricalVersions(historical);
+    expect(QualityEvalReportSchema.safeParse(historical).success).toBe(false);
+  });
+
   it("拒绝把历史 und 基线与当前 zh-CN 条件混合比较", () => {
     expect(() =>
       compareQualityEvalBlocks({

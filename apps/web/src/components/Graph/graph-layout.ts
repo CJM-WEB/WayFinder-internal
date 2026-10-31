@@ -8,12 +8,17 @@
  */
 import { Graph, layout } from "@dagrejs/dagre";
 import type { EdgeLabel, GraphLabel, NodeLabel } from "@dagrejs/dagre";
-import type { GraphEdge, NodeType, StreamNodeStatus } from "@wayfinder/contracts";
+import type {
+  GraphEdge,
+  NodeType,
+  SearchLanguage,
+  StreamNodeStatus,
+} from "@wayfinder/contracts";
 import { MarkerType, Position } from "@xyflow/react";
 import type { Edge, Node, XYPosition } from "@xyflow/react";
 
 import type { GraphStoreNode } from "../../stores/graph-store.js";
-import { NODE_STATUS_LABELS } from "./graph-labels.js";
+import { getMessages } from "../../i18n/messages.js";
 
 export const GRAPH_NODE_WIDTH = 240;
 export const GRAPH_NODE_HEIGHT = 112;
@@ -27,6 +32,7 @@ export type GraphNodeData = {
   nodeType: NodeType;
   status: StreamNodeStatus;
   resourceCount: number;
+  language: SearchLanguage;
 };
 
 export type GraphFlowNode = Node<GraphNodeData, "wayfinder">;
@@ -212,8 +218,12 @@ const layoutRelatedNodes = (
   );
 };
 
-const toFlowEdge = (edge: GraphEdge): GraphFlowEdge => {
+const toFlowEdge = (
+  edge: GraphEdge,
+  language: SearchLanguage,
+): GraphFlowEdge => {
   const isRecommended = edge.type === "recommended_next";
+  const messages = getMessages(language).graph;
 
   return {
     id: edge.id,
@@ -223,8 +233,8 @@ const toFlowEdge = (edge: GraphEdge): GraphFlowEdge => {
     targetHandle: isRecommended ? "main-target" : "related-target",
     // React Flow 的默认 Edge 即 Bezier 曲线；使用正式 type 名避免运行时回退告警。
     type: isRecommended ? "smoothstep" : "default",
-    label: isRecommended ? "推荐下一步" : "相关",
-    ariaLabel: isRecommended ? "推荐下一步" : "相关主题",
+    label: messages.edgeLabels[edge.type],
+    ariaLabel: messages.edgeAria[edge.type],
     className: isRecommended
       ? "graph-edge graph-edge--recommended"
       : "graph-edge graph-edge--related",
@@ -240,10 +250,12 @@ const toFlowEdge = (edge: GraphEdge): GraphFlowEdge => {
 export const buildGraphFlowElements = (
   nodes: readonly GraphStoreNode[],
   edges: readonly GraphEdge[],
+  language: SearchLanguage = "zh-CN",
 ): GraphFlowElements => {
   const mainPositions = layoutMainNodes(nodes, edges);
   const relatedPositions = layoutRelatedNodes(nodes, edges, mainPositions);
   const positions = new Map([...mainPositions, ...relatedPositions]);
+  const messages = getMessages(language).graph;
 
   return {
     nodes: nodes.map(node => ({
@@ -252,15 +264,19 @@ export const buildGraphFlowElements = (
       position: positions.get(node.id) ?? { x: 0, y: 0 },
       sourcePosition: Position.Bottom,
       targetPosition: Position.Top,
-      ariaLabel: `${node.title}，状态：${NODE_STATUS_LABELS[node.status]}`,
+      ariaLabel: messages.nodeAria(
+        node.title,
+        messages.statusLabels[node.status],
+      ),
       className: `graph-node graph-node--${node.nodeType} graph-node--${node.status}`,
       data: {
         title: node.title,
         nodeType: node.nodeType,
         status: node.status,
         resourceCount: "resources" in node ? node.resources.length : 0,
+        language,
       },
     })),
-    edges: edges.map(toFlowEdge),
+    edges: edges.map(edge => toFlowEdge(edge, language)),
   };
 };

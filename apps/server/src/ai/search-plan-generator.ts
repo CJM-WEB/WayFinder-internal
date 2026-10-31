@@ -2,7 +2,7 @@
  * 模块职责：一次性生成全图 SearchPlanBundle，并确定性装配公共 GraphPlan。
  *
  * 关键边界：
- * - LLM 只决定 nodeId、queries 与 rankingProfile；预算和 Provider Hint 由代码补齐；
+ * - LLM 只决定 nodeId、单条 Query 与 rankingProfile；预算和 Provider Hint 由代码补齐；
  * - Bundle 必须与 Final Outline Node ID 双射，所有 Query 在全图范围精确唯一；
  * - 不做模糊相似度判断、repair、重试或 fallback；任一失败都在 GraphPlan 发布前结束。
  */
@@ -28,11 +28,13 @@ import {
   type LLMProvider,
   type StructuredLLMInput,
 } from "./llm-provider.js";
-import { SEARCH_PLAN_GENERATOR_SYSTEM_PROMPT } from "./prompts/search-plan-generator.v1.js";
+import { SEARCH_PLAN_GENERATOR_SYSTEM_PROMPT } from "./prompts/search-plan-generator.v3.js";
+import { appendTargetLanguageSystemInstruction } from "./prompts/target-language-system-instruction.js";
 
 export const SearchPlanBundleItemSchema = z.strictObject({
   nodeId: z.string().min(1),
-  queries: z.array(z.string().min(1)).min(1).max(3),
+  // 生产生成边界固定单 Query；公共 SearchPlan Contract 仍兼容历史 1～3 条。
+  queries: z.array(z.string().min(1)).length(1),
   rankingProfile: RankingProfileSchema,
 });
 
@@ -176,7 +178,10 @@ function createStructuredInput(
   outline: GraphOutline,
 ): StructuredLLMInput {
   return {
-    system: SEARCH_PLAN_GENERATOR_SYSTEM_PROMPT,
+    system: appendTargetLanguageSystemInstruction(
+      SEARCH_PLAN_GENERATOR_SYSTEM_PROMPT,
+      language,
+    ),
     user: JSON.stringify({ query, language, outline }),
     schemaName: "search_plan_bundle",
     schema: SEARCH_PLAN_BUNDLE_PROVIDER_SCHEMA,

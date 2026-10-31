@@ -49,6 +49,37 @@ describe("preferLocalizedSiblings", () => {
     expect(preferLocalizedSiblings(inputs, "zh-CN")).toEqual(inputs);
   });
 
+  it("英文目标保留 Provider 顺序最靠前的英文副本", () => {
+    const inputs = [
+      candidate("https://example.com/zh-cn/docs"),
+      candidate("https://example.com/docs"),
+      candidate("https://example.com/en-us/docs"),
+      candidate("https://example.com/en-gb/docs"),
+    ];
+
+    expect(preferLocalizedSiblings(inputs, "en-US")).toEqual([inputs[2]]);
+  });
+
+  it("英文目标没有英文副本时不删除中文或中性入口", () => {
+    const inputs = [
+      candidate("https://example.com/zh-cn/docs"),
+      candidate("https://example.com/docs"),
+    ];
+
+    expect(preferLocalizedSiblings(inputs, "en-US")).toEqual(inputs);
+  });
+
+  it("英文目标支持唯一 Query 语言维度且不改写真实 URL", () => {
+    const inputs = [
+      candidate("https://example.com/docs?lang=zh-CN&topic=sql"),
+      candidate("https://example.com/docs?lang=en-US&topic=sql"),
+    ];
+    const snapshot = structuredClone(inputs);
+
+    expect(preferLocalizedSiblings(inputs, "en-US")).toEqual([inputs[1]]);
+    expect(inputs).toEqual(snapshot);
+  });
+
   it("支持标题 NFKC、空白折叠和 ASCII marker 规范化", () => {
     const inputs = [
       candidate("https://example.com/EN_us/docs", "  ＭｙＳＱＬ\nDocs "),

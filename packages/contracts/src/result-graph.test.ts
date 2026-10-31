@@ -372,7 +372,16 @@ describe("ResultGraph 严格根契约", () => {
     }
   });
 
-  it("query 只接受简体中文 language 且拒绝未知字段", () => {
+  it("query 接受明确支持的 language", () => {
+    expect(
+      ResultGraphSchema.safeParse({
+        ...validResultGraph,
+        query: { ...validResultGraph.query, language: "en-US" },
+      }).success,
+    ).toBe(true);
+  });
+
+  it("query 拒绝未知 language 与未知字段", () => {
     for (const query of [
       { ...validResultGraph.query, language: "und" },
       { ...validResultGraph.query, language: "en" },

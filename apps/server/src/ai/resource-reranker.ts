@@ -12,6 +12,7 @@ import type {
   GraphNodeCore,
   RankingProfile,
   ResourceCandidate,
+  SearchLanguage,
 } from "@wayfinder/contracts";
 import { z } from "zod";
 
@@ -22,7 +23,8 @@ import {
   type LLMProvider,
   type StructuredLLMInput,
 } from "./llm-provider.js";
-import { RESOURCE_RERANKER_SYSTEM_PROMPT } from "./prompts/resource-reranker.v1.js";
+import { RESOURCE_RERANKER_SYSTEM_PROMPT } from "./prompts/resource-reranker.v2.js";
+import { appendTargetLanguageSystemInstruction } from "./prompts/target-language-system-instruction.js";
 
 export const RESOURCE_RERANKER_MAX_NODE_ID_CODE_POINTS = 100;
 export const RESOURCE_RERANKER_MAX_NODE_TITLE_CODE_POINTS = 200;
@@ -161,6 +163,8 @@ export class ResourceRerankError extends Error {
 
 export type RerankResourcesInput = Readonly<{
   node: GraphNodeCore;
+  /** 冻结于本次 Run，用于约束 summary 与 whySelected 的自产文本。 */
+  language: SearchLanguage;
   candidates: readonly ResourceCandidate[];
   pages: readonly ExtractedPage[];
   provider: LLMProvider;
@@ -328,6 +332,7 @@ function projectPromptCandidate(
 
 function createStructuredInput(
   node: GraphNodeCore,
+  language: SearchLanguage,
   candidates: readonly ResourceCandidate[],
   pages: readonly ExtractedPage[],
 ): StructuredLLMInput {
@@ -387,7 +392,10 @@ function createStructuredInput(
   }
 
   return {
-    system: RESOURCE_RERANKER_SYSTEM_PROMPT,
+    system: appendTargetLanguageSystemInstruction(
+      RESOURCE_RERANKER_SYSTEM_PROMPT,
+      language,
+    ),
     user,
     schemaName: "resource_rerank",
     schema: RERANK_PROVIDER_SCHEMA,
@@ -515,6 +523,7 @@ export async function rerankResources(
   const deadlineAt = startedAt + input.timeoutMs;
   const structuredInput = createStructuredInput(
     input.node,
+    input.language,
     input.candidates,
     input.pages,
   );

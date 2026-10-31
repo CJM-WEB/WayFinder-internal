@@ -174,6 +174,7 @@ export async function resolveValidatedGraphPlanForRun(
   try {
     const initialOutlineCandidate = await planGraphOutline({
       query: input.query,
+      language: input.language,
       provider: input.llmProvider,
       signal: input.runScope.signal,
       timeoutMs: Math.min(
@@ -201,6 +202,7 @@ export async function resolveValidatedGraphPlanForRun(
 
       const revisedOutline = await reviseGraphOutline({
         query: input.query,
+        language: input.language,
         initialOutline,
         evidence,
         provider: input.llmProvider,

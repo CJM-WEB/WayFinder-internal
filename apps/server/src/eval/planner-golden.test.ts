@@ -114,8 +114,8 @@ function createCompactPlan(
         nodeType: "primary",
         layer: 0,
         searchPlan: {
-          queries: ["Python learning path", "Python official tutorial"],
-          maxResults: 10,
+          queries: ["Python learning path official tutorial"],
+          maxResults: 20,
           rankingProfile: "knowledge",
           providerHints: ["general"],
         },
@@ -211,8 +211,8 @@ describe("Planner Golden 单条 Query 编排", () => {
         edgeCount: 0,
         edgeCoverage: 0,
         plannedRequestDuplication: {
-          totalCount: 2,
-          uniqueCount: 2,
+          totalCount: 1,
+          uniqueCount: 1,
           intraNodeDuplicateOccurrenceCount: 0,
           crossNodeSharedGroupCount: 0,
           crossNodeExtraNodeOccurrenceCount: 0,
@@ -359,18 +359,18 @@ describe("Planner Golden 单条 Query 编排", () => {
     });
   });
 
-  it("Generator 失败样本保留两阶段已消耗耗时、调用与 Token 边界", async () => {
+  it("Generator Schema 失败样本保留两阶段已消耗耗时、调用与 Token 边界", async () => {
     const plan = createCompactPlan("plan_first");
     const bundle = toSearchPlanBundle(plan);
     const item = bundle.plans[0];
     if (item === undefined) throw new Error("测试 Bundle 必须包含一项");
-    const duplicateBundle: SearchPlanBundle = {
-      plans: [{ ...item, queries: ["MySQL 架构", " mysql 架构 "] }],
+    const invalidBundle: SearchPlanBundle = {
+      plans: [{ ...item, queries: ["MySQL 架构", "MySQL 存储引擎"] }],
     };
 
     const result = await evaluatePlannerGoldenQuery(
       createInput(
-        new FakeLLMProvider([toOutline(plan), duplicateBundle]),
+        new FakeLLMProvider([toOutline(plan), invalidBundle]),
       ),
     );
 
@@ -378,7 +378,7 @@ describe("Planner Golden 单条 Query 编排", () => {
       executionStatus: "failed",
       failure: {
         stage: "search_plan_generator",
-        reason: "duplicate_query",
+        reason: "schema_validation_failed",
       },
       callsByStage: {
         graphOutlinePlanning: { llm: 1, search: 0 },

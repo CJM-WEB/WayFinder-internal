@@ -11,6 +11,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   createRunLogRecorder,
+  parseRunLogRecordForRead,
   RunLogRecordSchema,
   type RunLogRecord,
 } from "./run-log.js";
@@ -328,7 +329,7 @@ describe("Run Log Recorder", () => {
 
   it("严格拒绝未列入白名单的敏感字段", () => {
     const base = RunLogRecordSchema.parse({
-      schemaVersion: "run-log.v3",
+      schemaVersion: "run-log.v4",
       createdAt: "2026-10-22T00:00:00.000Z",
       identifiers: {
         logId: IDS[0],
@@ -389,10 +390,10 @@ describe("Run Log Recorder", () => {
       versions: {
         protocol: "0.1",
         resultGraph: "0.1",
-        plannerPrompt: "graph-planner.v2",
-        reviserPrompt: "graph-reviser.v3",
-        searchPlanGeneratorPrompt: "search-plan-generator.v1",
-        rerankerPrompt: "resource-reranker.v1",
+        plannerPrompt: "graph-planner.v3",
+        reviserPrompt: "graph-reviser.v4",
+        searchPlanGeneratorPrompt: "search-plan-generator.v3",
+        rerankerPrompt: "resource-reranker.v2",
         rankFusion: "rank-fusion.v1",
       },
       providers: { search: "fake-search", llm: "fake-llm" },
@@ -454,6 +455,27 @@ describe("Run Log Recorder", () => {
         },
       }),
     ).toThrow();
+
+    // 历史版本只经只读入口读取，生产 Schema 不接受历史来源冒充当前证据。
+    const historical = {
+      ...base,
+      schemaVersion: "run-log.v3",
+      versions: {
+        ...base.versions,
+        plannerPrompt: "graph-planner.v2",
+        reviserPrompt: "graph-reviser.v3",
+        searchPlanGeneratorPrompt: "search-plan-generator.v1",
+        rerankerPrompt: "resource-reranker.v1",
+      },
+    };
+    const snapshot = structuredClone(historical);
+    expect(RunLogRecordSchema.safeParse(historical).success).toBe(false);
+    expect(parseRunLogRecordForRead(historical)).toEqual(snapshot);
+    expect(historical).toEqual(snapshot);
+    expect(() => parseRunLogRecordForRead({
+      ...historical,
+      versions: base.versions,
+    })).toThrow();
   });
 
   it("失败与取消只记录稳定 Code，不保存 Error 对象", async () => {

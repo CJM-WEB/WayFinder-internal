@@ -28,6 +28,7 @@ import {
   type FixedClock,
 } from "../../../tests/support/test-infrastructure.mjs";
 import { GraphOutlineSchema } from "./ai/graph-outline.js";
+import { LLMProviderError } from "./ai/llm-provider.js";
 import { SearchPlanBundleSchema } from "./ai/search-plan-generator.js";
 import { readSearchEventStream } from "../../web/src/lib/stream.js";
 import { createGraphStore } from "../../web/src/stores/graph-store.js";
@@ -38,7 +39,6 @@ import { registerSearchRoute } from "./routes/search.js";
 import type { SearchProvider } from "./search/provider.js";
 
 const QUERY = "TypeScript compiler guide";
-const BACKUP_QUERY = "TypeScript compiler reference";
 const LATE_QUERY = "TypeScript compiler internals";
 const RUN_ID = "run-streaming-regression";
 
@@ -270,6 +270,7 @@ type ScenarioInput = Readonly<{
   plan: GraphPlan;
   searchProvider: SearchProvider;
   includeRerank?: boolean;
+  rerankResponse?: unknown;
   expireBeforePlan?: boolean;
 }>;
 
@@ -278,6 +279,9 @@ function createScenarioServer(input: ScenarioInput): FastifyInstance {
   const llmResponses: unknown[] = [...createPlanningResponses(input.plan)];
   if (input.includeRerank === true) {
     llmResponses.push(createRerankOutput());
+  }
+  if (input.rerankResponse !== undefined) {
+    llmResponses.push(input.rerankResponse);
   }
   const providers = createConcurrencyLimitedProviders({
     searchProvider: input.searchProvider,
@@ -514,12 +518,11 @@ describe("Orchestration + NDJSON 服务端回归矩阵", () => {
     const clock = createFixedClock("2026-10-22T08:00:00.000Z");
     const server = createScenarioServer({
       clock,
-      plan: createPlan([QUERY, BACKUP_QUERY]),
+      plan: createPlan(),
       searchProvider: createFakeSearchProvider({
         [QUERY]: [createHit()],
-        [BACKUP_QUERY]: new Error("provider partial failure"),
       }),
-      includeRerank: true,
+      rerankResponse: new LLMProviderError("provider_failure", true),
     });
     const store = createGraphStore();
 
@@ -552,7 +555,7 @@ describe("Orchestration + NDJSON 服务端回归矩阵", () => {
           expect.objectContaining({
             id: "typescript-guide",
             status: "partial",
-            warnings: ["SEARCH_PROVIDER_PARTIAL"],
+            warnings: ["RERANK_FAILED"],
           }),
         ],
       });
@@ -561,21 +564,20 @@ describe("Orchestration + NDJSON 服务端回归矩阵", () => {
     }
   });
 
-  it("partial：单 Query 拒绝但仍有 Resource 时保留 Warning 并完成", async () => {
+  it("partial：单 Query 的 Rerank 失败时保留 Resource、Warning 并完成", async () => {
     const clock = createFixedClock("2026-10-22T08:00:00.000Z");
     const events = await runScenario({
       clock,
-      plan: createPlan([QUERY, BACKUP_QUERY]),
+      plan: createPlan(),
       searchProvider: createFakeSearchProvider({
         [QUERY]: [createHit()],
-        [BACKUP_QUERY]: new Error("provider partial failure"),
       }),
-      includeRerank: true,
+      rerankResponse: new LLMProviderError("provider_failure", true),
     });
 
     expect(events.find(event => event.type === "node.partial")).toMatchObject({
       type: "node.partial",
-      warnings: ["SEARCH_PROVIDER_PARTIAL"],
+      warnings: ["RERANK_FAILED"],
       resources: expect.arrayContaining([expect.objectContaining({ rank: 1 })]),
     });
     expect(events.at(-1)).toMatchObject({
@@ -588,7 +590,7 @@ describe("Orchestration + NDJSON 服务端回归矩阵", () => {
             nodes: [
               expect.objectContaining({
                 status: "partial",
-                warnings: ["SEARCH_PROVIDER_PARTIAL"],
+                warnings: ["RERANK_FAILED"],
               }),
             ],
           },

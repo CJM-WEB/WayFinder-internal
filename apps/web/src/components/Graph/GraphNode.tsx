@@ -6,17 +6,17 @@
 import { Handle, Position } from "@xyflow/react";
 import type { NodeProps } from "@xyflow/react";
 
+import { getMessages } from "../../i18n/messages.js";
 import type { GraphFlowNode } from "./graph-layout.js";
-import {
-  buildNodeStatusPresentation,
-  NODE_TYPE_LABELS,
-} from "./graph-labels.js";
+import { buildNodeStatusPresentation } from "./graph-labels.js";
 
 export function GraphNode({ data }: NodeProps<GraphFlowNode>) {
   const presentation = buildNodeStatusPresentation(
     data.status,
     data.resourceCount,
+    data.language,
   );
+  const messages = getMessages(data.language).graph;
 
   return (
     <article
@@ -39,7 +39,7 @@ export function GraphNode({ data }: NodeProps<GraphFlowNode>) {
       />
 
       <div className="graph-node__eyebrow">
-        <span>{NODE_TYPE_LABELS[data.nodeType]}</span>
+        <span>{messages.nodeTypeLabels[data.nodeType]}</span>
         <span className={`graph-node__status graph-node__status--${data.status}`}>
           <span className="graph-node__status-marker" aria-hidden="true">
             {presentation.marker}

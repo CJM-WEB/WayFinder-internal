@@ -1,6 +1,7 @@
 /**
  * 测试职责：冻结全图 Bundle 单次生成、双射、Query 唯一门禁与确定性 GraphPlan 装配。
  */
+import type { SearchLanguage } from "@wayfinder/contracts";
 import { z } from "zod";
 import { describe, expect, it } from "vitest";
 
@@ -17,7 +18,8 @@ import {
   LLMProviderError,
   type LLMProvider,
 } from "./llm-provider.js";
-import { SEARCH_PLAN_GENERATOR_SYSTEM_PROMPT } from "./prompts/search-plan-generator.v1.js";
+import { SEARCH_PLAN_GENERATOR_SYSTEM_PROMPT } from "./prompts/search-plan-generator.v3.js";
+import { appendTargetLanguageSystemInstruction } from "./prompts/target-language-system-instruction.js";
 import {
   SearchPlanBundleSchema,
   SearchPlanGenerationError,
@@ -75,7 +77,7 @@ function createBundle(): SearchPlanBundle {
     plans: [
       {
         nodeId: "mysql-overview",
-        queries: ["MySQL 是什么", "MySQL 数据库主要用途"],
+        queries: ["MySQL 定位与主要用途"],
         rankingProfile: "knowledge",
       },
       {
@@ -90,6 +92,7 @@ function createBundle(): SearchPlanBundle {
 function createArgs(
   provider: LLMProvider,
   overrides: Partial<{
+    language: SearchLanguage;
     outline: GraphOutline;
     signal: AbortSignal;
     timeoutMs: number;
@@ -101,7 +104,7 @@ function createArgs(
 ) {
   const base = {
     query: QUERY,
-    language: "zh-CN" as const,
+    language: overrides.language ?? "zh-CN",
     outline: overrides.outline ?? createOutline(),
     provider,
     signal: overrides.signal ?? new AbortController().signal,
@@ -130,7 +133,10 @@ describe("SearchPlan Generator", () => {
 
     expect(provider.calls).toHaveLength(1);
     expect(provider.calls[0]?.input).toMatchObject({
-      system: SEARCH_PLAN_GENERATOR_SYSTEM_PROMPT,
+      system: appendTargetLanguageSystemInstruction(
+        SEARCH_PLAN_GENERATOR_SYSTEM_PROMPT,
+        "zh-CN",
+      ),
       schemaName: "search_plan_bundle",
       schema: z.toJSONSchema(SearchPlanBundleSchema, {
         target: "draft-2020-12",
@@ -147,6 +153,20 @@ describe("SearchPlan Generator", () => {
     expect(provider.calls[0]?.options).toEqual({ signal, timeoutMs: 9_000 });
   });
 
+  it("en-US 同时进入可信 System 规则与结构化语言上下文", async () => {
+    const provider = new FakeLLMProvider([createBundle()]);
+
+    await generateSearchPlanBundle(
+      createArgs(provider, { language: "en-US" }),
+    );
+
+    expect(provider.calls[0]?.input.system).toContain("American English");
+    expect(provider.calls[0]?.input.system).not.toContain("Simplified Chinese");
+    expect(JSON.parse(provider.calls[0]?.input.user ?? "")).toMatchObject({
+      language: "en-US",
+    });
+  });
+
   it("按 Outline 顺序装配并确定 maxResults 与 providerHints", () => {
     const outline = createOutline();
     const reversed = SearchPlanBundleSchema.parse({
@@ -160,8 +180,8 @@ describe("SearchPlan Generator", () => {
       "mysql-architecture",
     ]);
     expect(graphPlan.nodes[0]?.searchPlan).toEqual({
-      queries: ["MySQL 是什么", "MySQL 数据库主要用途"],
-      maxResults: 10,
+      queries: ["MySQL 定位与主要用途"],
+      maxResults: 20,
       rankingProfile: "knowledge",
       providerHints: ["general"],
     });
@@ -199,7 +219,22 @@ describe("SearchPlan Generator", () => {
     );
   });
 
-  it("同 Node 与跨 Node 都使用同一个 Unicode 精确唯一门禁", async () => {
+  it.each([
+    ["0 条", []],
+    ["2 条", ["query one", "query two"]],
+    ["3 条", ["query one", "query two", "query three"]],
+  ] as const)("内部 Bundle Schema 拒绝%s Query", (_name, queries) => {
+    const candidate = {
+      plans: [
+        { ...createBundle().plans[0], queries },
+        createBundle().plans[1],
+      ],
+    };
+
+    expect(SearchPlanBundleSchema.safeParse(candidate).success).toBe(false);
+  });
+
+  it("跨 Node 使用 Unicode 精确唯一门禁", async () => {
     expect(normalizeSearchPlanQueryKey(" ＭｙＳＱＬ\u00a0  架构 ")).toBe(
       "mysql 架构",
     );
@@ -207,22 +242,6 @@ describe("SearchPlan Generator", () => {
       "mysql 架构",
     );
     expect(normalizeSearchPlanQueryKey("\u0085")).toBe("");
-
-    const sameNode = SearchPlanBundleSchema.parse({
-      plans: [
-        {
-          nodeId: "mysql-overview",
-          queries: ["MySQL 架构", " ＭｙＳＱＬ\u00a0架构 "],
-          rankingProfile: "knowledge",
-        },
-        createBundle().plans[1],
-      ],
-    });
-    await expect(
-      generateSearchPlanBundle(
-        createArgs(new FakeLLMProvider([sameNode])),
-      ),
-    ).rejects.toEqual(new SearchPlanGenerationError("duplicate_query"));
 
     const crossNode = SearchPlanBundleSchema.parse({
       plans: [
@@ -273,7 +292,16 @@ describe("SearchPlan Generator", () => {
   it("Schema 失败发布脱敏计数并直接失败", async () => {
     const diagnostics: SearchPlanBundleValidationDiagnostic[] = [];
     const provider = new FakeLLMProvider([
-      { plans: [{ nodeId: "mysql-overview", queries: [] }] },
+      {
+        plans: [
+          {
+            nodeId: "mysql-overview",
+            queries: ["MySQL overview", "MySQL purpose"],
+            rankingProfile: "knowledge",
+          },
+          createBundle().plans[1],
+        ],
+      },
       createBundle(),
     ]);
     await expect(

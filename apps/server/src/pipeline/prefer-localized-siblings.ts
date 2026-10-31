@@ -11,10 +11,12 @@ import type {
 } from "@wayfinder/contracts";
 
 const LANGUAGE_QUERY_KEYS = new Set(["lang", "language", "locale"]);
-const TARGET_LANGUAGE_MARKERS = new Set(["zh-cn", "zh-hans", "zh", "cn"]);
-const NON_TARGET_LANGUAGE_MARKERS = new Set(["en", "en-us", "en-gb"]);
+const LANGUAGE_MARKERS = Object.freeze({
+  "zh-CN": new Set(["zh-cn", "zh-hans", "zh", "cn"]),
+  "en-US": new Set(["en", "en-us", "en-gb"]),
+} as const satisfies Readonly<Record<SearchLanguage, ReadonlySet<string>>>);
 
-type LanguageKind = "target" | "non_target" | "neutral";
+type LanguageKind = SearchLanguage | "neutral";
 type GroupableCandidate = Readonly<{
   index: number;
   groupKey: string;
@@ -28,10 +30,12 @@ function normalizeLanguageMarker(value: string): string {
   );
 }
 
-function classifyLanguageMarker(value: string): Exclude<LanguageKind, "neutral"> | null {
+function classifyLanguageMarker(
+  value: string,
+): Exclude<LanguageKind, "neutral"> | null {
   const marker = normalizeLanguageMarker(value);
-  if (TARGET_LANGUAGE_MARKERS.has(marker)) return "target";
-  if (NON_TARGET_LANGUAGE_MARKERS.has(marker)) return "non_target";
+  if (LANGUAGE_MARKERS["zh-CN"].has(marker)) return "zh-CN";
+  if (LANGUAGE_MARKERS["en-US"].has(marker)) return "en-US";
   return null;
 }
 
@@ -97,15 +101,12 @@ function describeGroupableCandidate(
 
 /**
  * 当且仅当组内有明确目标语言时，保留 Provider 顺序最靠前的目标副本。
- * 两遍扫描允许中文副本出现在英文或中性入口之后，且保持其他候选相对顺序。
+ * 两遍扫描允许目标副本出现在其他语言或中性入口之后，且保持其他候选相对顺序。
  */
 export function preferLocalizedSiblings(
   candidates: readonly CandidateSearchHit[],
   language: SearchLanguage,
 ): CandidateSearchHit[] {
-  // 公共 Contract 当前只会产生 zh-CN；保留防御分支防止内部绕过类型。
-  if (language !== "zh-CN") return [...candidates];
-
   const described = candidates
     .map(describeGroupableCandidate)
     .filter((value): value is GroupableCandidate => value !== null);
@@ -119,7 +120,7 @@ export function preferLocalizedSiblings(
   const removedIndexes = new Set<number>();
   for (const group of groups.values()) {
     if (group.length < 2) continue;
-    const winner = group.find(candidate => candidate.languageKind === "target");
+    const winner = group.find(candidate => candidate.languageKind === language);
     if (winner === undefined) continue;
     for (const candidate of group) {
       if (candidate.index !== winner.index) removedIndexes.add(candidate.index);
