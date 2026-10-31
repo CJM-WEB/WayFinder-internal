@@ -1,5 +1,5 @@
 /**
- * 模块职责：在 SerpAPI Bing Search HTTP API 与 WayFinder SearchProvider Port 之间完成边界适配。
+ * 模块职责：在 SerpAPI Search HTTP API 与 WayFinder SearchProvider Port 之间完成边界适配。
  *
  * 关键约束：
  * - Provider JSON 始终以 unknown 接收，Envelope 与 organic result 分两层校验；
@@ -306,8 +306,9 @@ function assertSearchRequest(request: ProviderSearchRequest): void {
 }
 
 /**
- * 只发送已批准的第一页 Bing 参数。maxResults 是本地接纳上限，不映射为分页、
- * filters 或 no_cache 参数；URL 仅在 Adapter 内传给 Fetch，禁止写入错误与日志。
+ * WAY-115 仅把 Engine 切换为 Baidu 进行受控体验，其余请求参数保持既有行为。
+ * maxResults 是本地接纳上限，不映射为分页、filters 或 no_cache 参数；URL 仅在
+ * Adapter 内传给 Fetch，禁止写入错误与日志。
  */
 function createSearchUrl(
   query: string,
@@ -315,7 +316,7 @@ function createSearchUrl(
   apiKey: string,
 ): URL {
   const url = new URL(SERPAPI_BING_SEARCH_URL);
-  url.searchParams.set("engine", "bing");
+  url.searchParams.set("engine", "baidu");
   url.searchParams.set("q", query);
   url.searchParams.set("mkt", language);
   url.searchParams.set("safeSearch", "Strict");

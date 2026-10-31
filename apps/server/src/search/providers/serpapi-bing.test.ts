@@ -1,7 +1,7 @@
 /**
- * 测试职责：用离线 Fixture 冻结 WAY-106 SerpAPI Bing Adapter 的请求、逐项校验与规范化边界。
+ * 测试职责：用离线 Fixture 冻结 SerpAPI Adapter 的请求、逐项校验与规范化边界。
  *
- * 安全约束：测试不访问真实网络或 Secret；SerpAPI/Bing 私有字段只存在于模拟响应中，
+ * 安全约束：测试不访问真实网络或 Secret；SerpAPI 私有字段只存在于模拟响应中，
  * 业务输出不得包含完整响应、displayed_link、date 或伪造的 providerScore。
  */
 import type { ProviderSearchRequest } from "@wayfinder/contracts";
@@ -128,7 +128,7 @@ describe("SerpApiBingSearchProvider.search 请求与规范化", () => {
       "https://serpapi.com/search.json",
     );
     expect(Object.fromEntries(requestUrl.searchParams)).toEqual({
-      engine: "bing",
+      engine: "baidu",
       q: SEARCH_REQUEST.query,
       mkt: "zh-CN",
       safeSearch: "Strict",
