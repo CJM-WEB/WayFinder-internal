@@ -10,6 +10,7 @@
 import {
   SearchRequestSchema,
   type SearchRequest,
+  type ResultGraph,
 } from "@wayfinder/contracts";
 
 import {
@@ -40,6 +41,8 @@ export type SearchCoordinatorDependencies = Readonly<{
   fetchImplementation?: SearchFetch;
   readStreamImplementation?: SearchStreamReader;
   createRunId?: () => SearchRequest["runId"];
+  onStart?: (request: SearchRequest) => void;
+  onComplete?: (result: ResultGraph) => void;
 }>;
 
 type ActiveRun = Readonly<{
@@ -94,6 +97,7 @@ export function createStartStreamingSearch(
     );
     activeRun = { controller };
     dependencies.store.getState().startRun(request);
+    dependencies.onStart?.(request);
 
     /** 旧 Reader 结束时只能关闭自己的 Run，不能误关后来接管 Store 的请求。 */
     const closeRunIfActive = (): void => {
@@ -117,7 +121,17 @@ export function createStartStreamingSearch(
       await readStreamImplementation({
         response,
         signal: controller.signal,
-        onEvent: event => dependencies.store.getState().applyStreamEvent(event),
+        onEvent: event => {
+          const before = dependencies.store.getState();
+          // 交付回调只能观察真正被当前 Run 接纳的 complete，过期事件不能写进历史记录。
+          const acceptsComplete = event.type === "complete" &&
+            before.activeRunId === event.runId && before.isSearching &&
+            event.sequence > before.lastSequence && event.data.result.runId === event.runId;
+          before.applyStreamEvent(event);
+          if (acceptsComplete && event.type === "complete") {
+            dependencies.onComplete?.(event.data.result);
+          }
+        },
         closeRun: closeRunIfActive,
       });
     } catch (error) {

@@ -1,9 +1,13 @@
 /** 组件职责：组合统一 Omnibox、运行摘要、Graph 结果画布与当前节点的 Resource Panel。 */
 import { useStore } from "zustand";
 import { useEffect, useState } from "react";
-import type { SearchLanguage } from "@wayfinder/contracts";
+import type { EditableGraph, SearchLanguage } from "@wayfinder/contracts";
 
 import { startStreamingSearch } from "./api/search.js";
+import { startWorkspaceSearch } from "./api/workspace-search.js";
+import { WorkspaceSidebar } from "./components/Workspace/WorkspaceSidebar.js";
+import { selectCurrentGraph, workspaceStore } from "./stores/workspace-store.js";
+import { workspacePersistenceStore } from "./stores/workspace-persistence.js";
 import { H1StructuredFlatList } from "./components/Evaluation/H1StructuredFlatList.js";
 import { GraphView } from "./components/Graph/GraphView.js";
 import { Omnibox } from "./components/Omnibox/Omnibox.js";
@@ -29,6 +33,7 @@ const openDirectUrl = (url: string): boolean =>
 
 export type AppProps = Readonly<{
   h1Evaluation?: H1EvaluationRoute;
+  workspaceEnabled?: boolean;
 }>;
 
 /**
@@ -48,17 +53,36 @@ export const applyDocumentLanguage = (
   documentElement.lang = language;
 };
 
-export function App({ h1Evaluation }: AppProps = {}) {
-  const query = useStore(graphStore, state => state.query);
-  const storedPresentationMode = useStore(
-    graphStore,
-    state => state.presentationMode,
-  );
-  const nodeCount = useStore(graphStore, state => state.nodes.length);
-  const isSearching = useStore(graphStore, state => state.isSearching);
-  const runLanguage = useStore(graphStore, state => state.language);
+const EMPTY_GRAPH: Pick<EditableGraph, "nodes" | "edges" | "positions"> = {
+  nodes: [], edges: [], positions: {},
+};
+
+export function App({ h1Evaluation, workspaceEnabled = false }: AppProps = {}) {
+  const runtime = useStore(graphStore, state => state);
+  const currentDocument = useStore(workspaceStore, selectCurrentGraph);
+  const persistence = useStore(workspacePersistenceStore, state => state);
+  const useWorkspace = workspaceEnabled && h1Evaluation === undefined;
+  // 只有所属记录展示运行草图；后台完成仅保存自己的图，不能把用户切换抢回来。
+  const showsRun = useWorkspace && currentDocument !== null &&
+    currentDocument.lastRunId === runtime.activeRunId && runtime.isSearching;
+  const query = useWorkspace ? currentDocument?.query ?? "" : runtime.query;
+  const storedPresentationMode = useWorkspace && !showsRun ? currentDocument?.presentationMode ?? null : runtime.presentationMode;
+  const nodeCount = useWorkspace && !showsRun ? currentDocument?.nodes.length ?? 0 : runtime.nodes.length;
+  const isSearching = useWorkspace ? showsRun : runtime.isSearching;
+  const runLanguage = useWorkspace ? currentDocument?.language ?? null : runtime.language;
   const [selectedLanguage, setSelectedLanguage] =
     useState<SearchLanguage>(runLanguage ?? "zh-CN");
+  const selections = useStore(workspaceStore, state => state.selectedNodeIds);
+  const selectSavedNode = useStore(workspaceStore, state => state.selectNode);
+  const savedGraph = useWorkspace && !showsRun ? currentDocument ?? EMPTY_GRAPH : undefined;
+  const selectedNodeId = currentDocument === null ? null : selections[currentDocument.id] !== undefined
+    ? selections[currentDocument.id]
+    : currentDocument.lastRunId === runtime.activeRunId
+      ? runtime.selectedNodeId
+      : currentDocument.presentationMode === "compact"
+        ? currentDocument.nodes.find(node => node.status === "ready" || node.status === "partial")?.id ?? null
+        : null;
+  const selectedNode = savedGraph?.nodes.find(node => node.id === selectedNodeId) ?? null;
   const [h1Condition, setH1Condition] = useState<H1EvaluationCondition>(
     h1Evaluation?.initialCondition ?? "graph",
   );
@@ -84,7 +108,9 @@ export function App({ h1Evaluation }: AppProps = {}) {
   }, [renderLanguage]);
 
   return (
-    <main className="app-shell">
+    <main className={`app-shell${useWorkspace ? " app-shell--workspace" : ""}`}>
+      {useWorkspace ? <WorkspaceSidebar language={renderLanguage} /> : null}
+      <div className="workspace-main">
       <header className="app-header">
         <div className="app-header__intro">
           <p>{messages.app.slogan}</p>
@@ -107,13 +133,15 @@ export function App({ h1Evaluation }: AppProps = {}) {
         </dl>
       </header>
 
+      <fieldset className="workspace-search-controls" disabled={useWorkspace && (persistence.status === "loading" || persistence.error === "load")}>
       <Omnibox
-        startSearch={startStreamingSearch}
+        startSearch={useWorkspace ? startWorkspaceSearch : startStreamingSearch}
         openDirectUrl={openDirectUrl}
         language={selectedLanguage}
         renderLanguage={renderLanguage}
         onLanguageChange={setSelectedLanguage}
       />
+      </fieldset>
 
       {isH1Evaluation ? (
         <section className="h1-evaluation" aria-labelledby="h1-evaluation-title">
@@ -169,13 +197,18 @@ export function App({ h1Evaluation }: AppProps = {}) {
             <H1StructuredFlatList />
           ) : (
             <GraphView
+              key={`graph-${useWorkspace ? currentDocument?.id ?? "empty" : "run"}`}
               presentationMode={graphPresentationMode}
               language={renderLanguage}
+              {...(savedGraph === undefined ? {} : {
+                graph: savedGraph, selectedNodeId: selectedNodeId ?? null, onSelectNode: selectSavedNode,
+              })}
             />
           )}
-          <ResourcePanel language={renderLanguage} />
+          <ResourcePanel key={`panel-${useWorkspace ? currentDocument?.id ?? "empty" : "run"}`} language={renderLanguage} {...(savedGraph === undefined ? {} : { node: selectedNode })} />
         </div>
       </section>
+      </div>
     </main>
   );
 }

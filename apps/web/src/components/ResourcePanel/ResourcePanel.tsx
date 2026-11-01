@@ -6,6 +6,8 @@
  * 才允许打开已重新校验的 HTTP(S) URL。
  */
 import type {
+  EditableNode,
+  EditableResource,
   Resource,
   SearchLanguage,
   StreamNodeStatus,
@@ -35,9 +37,9 @@ type SelectedPanelModel = {
   language: SearchLanguage;
   nodeId: string;
   nodeTitle: string;
-  nodeStatus: StreamNodeStatus;
+  nodeStatus: StreamNodeStatus | EditableNode["status"];
   nodeStatusLabel: string;
-  resources: readonly Resource[];
+  resources: readonly (Resource | EditableResource)[];
   outcomeNotice: OutcomeNotice | null;
   emptyMessage: string | null;
 };
@@ -57,7 +59,7 @@ export type ResourcePanelModel =
  * Warning 与 Error 只暴露公共 Contract 的安全语义，底层 Provider 诊断不得进入 UI。
  */
 const buildOutcomeNotice = (
-  node: GraphStoreNode,
+  node: GraphStoreNode | EditableNode,
   messages: Messages["resourcePanel"],
 ): OutcomeNotice | null => {
   if (node.status === "partial") {
@@ -68,7 +70,7 @@ const buildOutcomeNotice = (
     };
   }
 
-  if (node.status === "failed") {
+  if (node.status === "failed" && node.error !== undefined) {
     return {
       kind: "error",
       title: messages.failedTitle,
@@ -84,7 +86,7 @@ const buildOutcomeNotice = (
  * failed Node 按 Contract 必须保留空数组，面板仍展示状态而不是把选择误判为空。
  */
 export const buildResourcePanelModel = (
-  node: GraphStoreNode | null,
+  node: GraphStoreNode | EditableNode | null,
   language: SearchLanguage = "zh-CN",
 ): ResourcePanelModel => {
   const messages = getMessages(language);
@@ -98,7 +100,9 @@ export const buildResourcePanelModel = (
   const emptyMessage =
     resources.length > 0 || outcomeNotice?.kind === "error"
       ? null
-      : messages.resourcePanel.processing;
+      : node.status === "empty" || node.status === "edited"
+        ? messages.resourcePanel.emptyNode
+        : messages.resourcePanel.processing;
 
   return {
     kind: "selected",
@@ -125,9 +129,9 @@ const DEFAULT_VISIBLE_RESOURCE_COUNT = 3;
 
 /** 纯函数冻结默认 Top 3 与本地展开语义；返回值始终保持 retained 排序。 */
 export function selectVisibleResources(
-  resources: readonly Resource[],
+  resources: readonly (Resource | EditableResource)[],
   expanded: boolean,
-): readonly Resource[] {
+): readonly (Resource | EditableResource)[] {
   return expanded
     ? resources
     : resources.slice(0, DEFAULT_VISIBLE_RESOURCE_COUNT);
@@ -294,8 +298,12 @@ export function ResourcePanelView({
 }
 
 /** 容器组件只负责订阅当前选择，避免展示层直接依赖 Store 动作。 */
-export function ResourcePanel({ language }: { language: SearchLanguage }) {
-  const selectedNode = useStore(graphStore, selectSelectedNode);
+export function ResourcePanel({ language, node }: {
+  language: SearchLanguage;
+  node?: GraphStoreNode | EditableNode | null;
+}) {
+  const runNode = useStore(graphStore, selectSelectedNode);
+  const selectedNode = node === undefined ? runNode : node;
 
   return (
     <ResourcePanelView

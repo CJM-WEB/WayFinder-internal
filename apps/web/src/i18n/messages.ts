@@ -8,6 +8,7 @@
  */
 import type {
   AppErrorCode,
+  EditableNode,
   GraphEdge,
   NodeType,
   NodeWarningCode,
@@ -17,6 +18,23 @@ import type {
 } from "@wayfinder/contracts";
 
 export type Messages = Readonly<{
+  workspace: Readonly<{
+    records: string;
+    newSearch: string;
+    rename: string;
+    delete: string;
+    saveTitle: string;
+    cancel: string;
+    titleLabel: string;
+    restoreDeleted: string;
+    emptyRecords: string;
+    loading: string;
+    saving: string;
+    saved: string;
+    loadFailure: string;
+    saveFailure: string;
+    retry: string;
+  }>;
   app: Readonly<{
     slogan: string;
     summaryAria: string;
@@ -46,9 +64,9 @@ export type Messages = Readonly<{
     empty: string;
     canvasAria: Readonly<Record<PresentationMode, string>>;
     nodeTypeLabels: Readonly<Record<NodeType, string>>;
-    statusLabels: Readonly<Record<StreamNodeStatus, string>>;
+    statusLabels: Readonly<Record<StreamNodeStatus | EditableNode["status"], string>>;
     statusDetails: Readonly<
-      Record<StreamNodeStatus, (resourceCount: number) => string>
+      Record<StreamNodeStatus | EditableNode["status"], (resourceCount: number) => string>
     >;
     edgeLabels: Readonly<Record<GraphEdge["type"], string>>;
     edgeAria: Readonly<Record<GraphEdge["type"], string>>;
@@ -76,6 +94,7 @@ export type Messages = Readonly<{
     chooseNode: string;
     chooseNodeHint: string;
     processing: string;
+    emptyNode: string;
     partialTitle: string;
     failedTitle: string;
     warningMessages: Readonly<Record<NodeWarningCode, string>>;
@@ -89,6 +108,13 @@ export type Messages = Readonly<{
  */
 export const MESSAGES: Record<SearchLanguage, Messages> = {
   "zh-CN": {
+    workspace: {
+      records: "搜索图记录", newSearch: "新建搜索", rename: "重命名", delete: "删除记录",
+      saveTitle: "保存名称", cancel: "取消", titleLabel: "记录名称", restoreDeleted: "撤销删除记录",
+      emptyRecords: "搜索后会在此保存记录。", loading: "正在读取本地记录…", saving: "正在保存…",
+      saved: "已保存到本浏览器", loadFailure: "无法读取本地记录，请重试；暂未覆盖已有数据。",
+      saveFailure: "本次更改未能保存，请重试。", retry: "重试保存或读取",
+    },
     app: {
       slogan: "Graph 即搜索结果页",
       summaryAria: "搜索摘要",
@@ -136,6 +162,8 @@ export const MESSAGES: Record<SearchLanguage, Messages> = {
         disambiguation: "消歧分支",
       },
       statusLabels: {
+        empty: "空节点",
+        edited: "已编辑",
         planned: "等待检索",
         searching: "检索中",
         filtering: "筛选中",
@@ -144,6 +172,8 @@ export const MESSAGES: Record<SearchLanguage, Messages> = {
         failed: "失败",
       },
       statusDetails: {
+        empty: () => "可以添加资源",
+        edited: count => `${count} 条资源 · 已编辑`,
         planned: () => "等待开始",
         searching: () => "正在检索网页",
         filtering: () => "正在筛选结果",
@@ -183,6 +213,7 @@ export const MESSAGES: Record<SearchLanguage, Messages> = {
       chooseNode: "选择一个节点",
       chooseNodeHint: "你可以自由查看任意节点，不必沿箭头顺序浏览。",
       processing: "该节点仍在处理，资源准备完成后将在此显示。",
+      emptyNode: "该节点尚无资源，可以添加链接或重新搜索。",
       partialTitle: "结果部分降级",
       failedTitle: "节点处理失败",
       warningMessages: {
@@ -204,6 +235,13 @@ export const MESSAGES: Record<SearchLanguage, Messages> = {
     },
   },
   "en-US": {
+    workspace: {
+      records: "Search graphs", newSearch: "New search", rename: "Rename", delete: "Delete record",
+      saveTitle: "Save name", cancel: "Cancel", titleLabel: "Record name", restoreDeleted: "Undo record deletion",
+      emptyRecords: "Your searches will be saved here.", loading: "Loading local records…", saving: "Saving…",
+      saved: "Saved in this browser", loadFailure: "Unable to load local records. Retry to continue; existing data has not been overwritten.",
+      saveFailure: "Your latest changes could not be saved. Please retry.", retry: "Retry saving or loading",
+    },
     app: {
       slogan: "The Graph is the search results page",
       summaryAria: "Search summary",
@@ -251,6 +289,8 @@ export const MESSAGES: Record<SearchLanguage, Messages> = {
         disambiguation: "Disambiguation",
       },
       statusLabels: {
+        empty: "Empty",
+        edited: "Edited",
         planned: "Waiting",
         searching: "Searching",
         filtering: "Filtering",
@@ -259,6 +299,8 @@ export const MESSAGES: Record<SearchLanguage, Messages> = {
         failed: "Failed",
       },
       statusDetails: {
+        empty: () => "Add resources to this node",
+        edited: count => `${count} resources · Edited`,
         planned: () => "Waiting to start",
         searching: () => "Searching the web",
         filtering: () => "Filtering results",
@@ -301,6 +343,7 @@ export const MESSAGES: Record<SearchLanguage, Messages> = {
       chooseNode: "Select a node",
       chooseNodeHint: "You can view any node without following the arrows in order.",
       processing: "This node is still processing. Resources will appear here when ready.",
+      emptyNode: "This node has no resources yet. Add a link or search again.",
       partialTitle: "Results partially degraded",
       failedTitle: "Node processing failed",
       warningMessages: {

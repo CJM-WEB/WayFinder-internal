@@ -19,12 +19,14 @@ type DeletedGraph = { document: EditableGraph; index: number; history: GraphHist
 type WorkspaceData = {
   documents: EditableGraph[];
   currentId: string | null;
+  selectedNodeIds: Record<string, string | null>;
   histories: Record<string, GraphHistory>;
   deletedGraphs: DeletedGraph[];
 };
 type WorkspaceActions = {
   addGraph: (graph: EditableGraph) => void;
   selectGraph: (id: string | null) => void;
+  selectNode: (id: string | null) => void;
   replaceGraph: (graph: EditableGraph) => void;
   renameGraph: (id: string, title: string) => void;
   deleteGraph: (id: string) => void;
@@ -37,7 +39,7 @@ export type WorkspaceStoreState = WorkspaceData & WorkspaceActions;
 
 const emptyHistory = (): GraphHistory => ({ past: [], future: [] });
 const initialState = (): WorkspaceData => ({
-  documents: [], currentId: null, histories: {}, deletedGraphs: [],
+  documents: [], currentId: null, selectedNodeIds: {}, histories: {}, deletedGraphs: [],
 });
 
 /** 空文档不伪造查询、搜索运行或节点；界面负责传入当前语言的记录标题。 */
@@ -93,6 +95,14 @@ export const createWorkspaceStore = () => createStore<WorkspaceStoreState>()((se
   selectGraph: id => {
     if (id !== null && !get().documents.some(document => document.id === id)) return;
     set({ currentId: id });
+  },
+  selectNode: id => {
+    set(state => {
+      const document = selectCurrentGraph(state);
+      if (document === null || (id !== null && !document.nodes.some(node => node.id === id))) return state;
+      if (state.selectedNodeIds[document.id] === id) return state;
+      return { selectedNodeIds: { ...state.selectedNodeIds, [document.id]: id } };
+    });
   },
   replaceGraph: input => {
     const document = EditableGraphSchema.parse(input);

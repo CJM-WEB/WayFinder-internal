@@ -15,6 +15,7 @@ import type {
   NodeTypes,
 } from "@xyflow/react";
 import type {
+  EditableGraph,
   PresentationMode,
   SearchLanguage,
 } from "@wayfinder/contracts";
@@ -43,18 +44,25 @@ const NODE_TYPES: NodeTypes = {
 export type GraphViewProps = Readonly<{
   presentationMode: PresentationMode;
   language: SearchLanguage;
+  graph?: Pick<EditableGraph, "nodes" | "edges" | "positions">;
+  selectedNodeId?: string | null;
+  onSelectNode?: (nodeId: string | null) => void;
 }>;
 
 /** 两种展示模式共用同一 Product Graph；Compact 只改变视图密度，不改写 Node 或 Edge。 */
-export function GraphView({ presentationMode, language }: GraphViewProps) {
-  const nodes = useStore(graphStore, state => state.nodes);
-  const edges = useStore(graphStore, state => state.edges);
-  const selectedNodeId = useStore(graphStore, state => state.selectedNodeId);
-  const selectNode = useStore(graphStore, state => state.selectNode);
+export function GraphView({ presentationMode, language, graph, selectedNodeId: providedSelection, onSelectNode }: GraphViewProps) {
+  const runNodes = useStore(graphStore, state => state.nodes);
+  const runEdges = useStore(graphStore, state => state.edges);
+  const runSelection = useStore(graphStore, state => state.selectedNodeId);
+  const selectRunNode = useStore(graphStore, state => state.selectNode);
+  const nodes = graph?.nodes ?? runNodes;
+  const edges = graph?.edges ?? runEdges;
+  const selectedNodeId = providedSelection === undefined ? runSelection : providedSelection;
+  const selectNode = onSelectNode ?? selectRunNode;
   const messages = getMessages(language).graph;
   const elements = useMemo(
-    () => buildGraphFlowElements(nodes, edges, language),
-    [nodes, edges, language],
+    () => buildGraphFlowElements(nodes, edges, language, graph?.positions),
+    [nodes, edges, language, graph?.positions],
   );
   /** React Flow 的内部可访问性文案也必须与页面唯一展示语言一致。 */
   const ariaLabels = useMemo<Partial<AriaLabelConfig>>(

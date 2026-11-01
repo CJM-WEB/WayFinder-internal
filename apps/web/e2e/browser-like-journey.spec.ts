@@ -455,3 +455,81 @@ test("fixture 覆盖 Graph Draft、Resource 交互、取消与第二次 Query", 
     .toHaveCount(1);
   expect(externalRequests).toEqual([]);
 });
+
+/** 使用真实 IndexedDB 与正式侧栏证明恢复和记录隔离，不把状态直接注入应用仓库。 */
+test("本地记录支持切换改名删除恢复，刷新及重新打开后不重新搜索", async ({ page, context }) => {
+  const events = createJourneyEvents();
+  await installBrowserFixture(page, events);
+  await page.goto("/");
+  const sidebar = page.getByRole("complementary", { name: "搜索图记录" });
+  const queryInput = page.getByRole("searchbox", { name: "搜索任意主题" });
+  const saved = sidebar.getByRole("status");
+  await expect(saved).toHaveText("已保存到本浏览器");
+
+  await queryInput.fill(FIRST_QUERY);
+  await queryInput.press("Enter");
+  await expect.poll(async () => (await readFixtureSnapshots(page)).length).toBe(1);
+  await emitFixtureEvents(page, 0, events.map((_event, index) => index));
+  await page.evaluate(() => window.__WAYFINDER_E2E__.close(0));
+  await expect(page.locator(".react-flow__node")).toHaveCount(4);
+  await expect(saved).toHaveText("已保存到本浏览器");
+  const firstRecord = sidebar.getByRole("listitem").filter({ has: page.getByRole("button", { name: FIRST_QUERY, exact: true }) });
+  await firstRecord.getByRole("button", { name: "重命名", exact: true }).click();
+  await firstRecord.getByRole("textbox", { name: "记录名称" }).fill("Python 资料");
+  await firstRecord.getByRole("button", { name: "保存名称" }).click();
+
+  await sidebar.getByRole("button", { name: "新建搜索", exact: true }).click();
+  await expect(page.locator(".react-flow__node")).toHaveCount(0);
+  await queryInput.fill(SECOND_QUERY);
+  await queryInput.press("Enter");
+  await expect.poll(async () => (await readFixtureSnapshots(page)).length).toBe(2);
+  const planIndexes = events.flatMap((event, index) => event.type === "query.analysis" || event.type === "graph.plan" ? [index] : []);
+  await emitFixtureEvents(page, 1, planIndexes);
+  await expect(page.locator('[data-node-status="planned"]')).toHaveCount(4);
+  await sidebar.getByRole("button", { name: "Python 资料", exact: true }).click();
+  await expect(page.getByRole("definition").filter({ hasText: FIRST_QUERY })).toHaveCount(1);
+  await expect(page.locator('[data-node-status="ready"]')).toHaveCount(2);
+
+  // 后台新图完成后仍停留在用户选择的旧图。
+  await emitFixtureEvents(page, 1, events.flatMap((_event, index) => planIndexes.includes(index) ? [] : [index]));
+  await page.evaluate(() => window.__WAYFINDER_E2E__.close(1));
+  await expect(saved).toHaveText("已保存到本浏览器");
+  await expect(page.getByRole("definition").filter({ hasText: FIRST_QUERY })).toHaveCount(1);
+  await sidebar.getByRole("button", { name: SECOND_QUERY, exact: true }).click();
+  const readyNode = page.locator(`.react-flow__node[data-id="${READY_NODE_ID}"]`);
+  await readyNode.click();
+  await page.getByRole("button", { name: "显示更多（1）" }).click();
+  await expect(page.getByRole("list", { name: "节点资源" }).getByRole("listitem")).toHaveCount(4);
+  const positionBefore = await readyNode.evaluate(node => getComputedStyle(node).transform);
+  await expect(saved).toHaveText("已保存到本浏览器");
+
+  await page.reload();
+  await expect(sidebar.getByRole("listitem")).toHaveCount(2);
+  await expect(page.getByRole("definition").filter({ hasText: SECOND_QUERY })).toHaveCount(1);
+  await expect(readyNode).toHaveCSS("transform", positionBefore);
+  expect(await readFixtureSnapshots(page)).toHaveLength(0);
+  await readyNode.click();
+  await page.getByRole("button", { name: "显示更多（1）" }).click();
+  const titles = await page.getByRole("list", { name: "节点资源" }).getByRole("heading", { level: 3 }).allTextContents();
+  expect(titles).toEqual(["Python Programming Language", "Python Documentation", "Python Language Reference", "Python Standard Library"]);
+
+  await sidebar.getByRole("button", { name: "Python 资料", exact: true }).click();
+  const renamedRecord = sidebar.getByRole("listitem").filter({ has: page.getByRole("button", { name: "Python 资料", exact: true }) });
+  await renamedRecord.getByRole("button", { name: "删除记录", exact: true }).click();
+  await expect(sidebar.getByRole("listitem")).toHaveCount(1);
+  await sidebar.getByRole("button", { name: "撤销删除记录", exact: true }).click();
+  await expect(sidebar.getByRole("listitem")).toHaveCount(2);
+  await expect(page.getByRole("definition").filter({ hasText: FIRST_QUERY })).toHaveCount(1);
+  await expect(saved).toHaveText("已保存到本浏览器");
+  expect(await readFixtureSnapshots(page)).toHaveLength(0);
+
+  const reopened = await context.newPage();
+  const searchRequests: string[] = [];
+  reopened.on("request", request => { if (new URL(request.url()).pathname === "/api/search") searchRequests.push(request.url()); });
+  await reopened.goto("/");
+  await expect(reopened.getByRole("complementary", { name: "搜索图记录" }).getByRole("listitem")).toHaveCount(2);
+  await expect(reopened.locator(".react-flow__node")).toHaveCount(4);
+  await expect(reopened.getByRole("definition").filter({ hasText: FIRST_QUERY })).toHaveCount(1);
+  expect(searchRequests).toEqual([]);
+  await reopened.close();
+});

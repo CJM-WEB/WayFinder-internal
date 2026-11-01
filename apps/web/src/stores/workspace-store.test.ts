@@ -99,3 +99,20 @@ describe("工作区快照", () => {
     expect(store.getState().documents).toHaveLength(1);
   });
 });
+
+it("选中节点按图隔离且恢复文档不继承会话选择", () => {
+  const store = createWorkspaceStore();
+  const first = fromResultGraph(pythonResultGraphFixture, "甲");
+  const second = fromResultGraph(pythonResultGraphFixture, "乙");
+  const nodeId = first.nodes[0]?.id;
+  if (nodeId === undefined) throw new Error("缺少测试节点");
+  store.getState().addGraph(first);
+  store.getState().selectNode(nodeId);
+  store.getState().addGraph(second);
+  expect(store.getState().selectedNodeIds["乙"]).toBeUndefined();
+  store.getState().selectNode(null);
+  store.getState().selectGraph("甲");
+  expect(store.getState().selectedNodeIds["甲"]).toBe(nodeId);
+  store.getState().restoreDocuments(store.getState().documents, "甲");
+  expect(store.getState().selectedNodeIds).toEqual({});
+});

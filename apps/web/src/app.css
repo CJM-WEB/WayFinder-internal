@@ -1030,3 +1030,46 @@ input {
     border-left: 0;
   }
 }
+
+/* 本地记录沿用现有浅绿卡片风格；窄屏时改为上方列表，避免压缩图和资源面板。 */
+.app-shell--workspace {
+  width: min(1480px, calc(100% - 32px));
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  align-items: start;
+  gap: 20px;
+}
+.workspace-main { min-width: 0; }
+.workspace-search-controls { min-width: 0; margin: 0; padding: 0; border: 0; }
+.workspace-sidebar {
+  padding: 16px;
+  border: 1px solid #d4e0d7;
+  border-radius: 20px;
+  background: #fff;
+  overflow-wrap: anywhere;
+}
+.workspace-sidebar h2 { margin: 0 0 16px; font-size: 1rem; }
+.workspace-sidebar button {
+  padding: 8px 10px;
+  border: 1px solid #b9cbbf;
+  border-radius: 10px;
+  color: #244d37;
+  background: #f4f8f4;
+  cursor: pointer;
+}
+.workspace-sidebar button:disabled { opacity: 0.5; cursor: default; }
+.workspace-records { list-style: none; margin: 16px 0; padding: 0; }
+.workspace-records li { margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px solid #e3ebe6; }
+.workspace-record__select { width: 100%; text-align: left; overflow-wrap: anywhere; }
+.workspace-record__select[aria-pressed="true"] { border-color: #46745a; background: #e0eee4; font-weight: 700; }
+.workspace-record__actions { display: flex; gap: 6px; margin-top: 6px; }
+.workspace-record__actions button { font-size: 0.72rem; }
+.workspace-records input { width: 100%; margin: 8px 0; padding: 7px; }
+.workspace-sidebar p { font-size: 0.78rem; color: #61786c; }
+.workspace-storage-error p { color: #a33c31; }
+.graph-node--empty, .graph-node--edited { border-color: #8ca79a; }
+@media (max-width: 900px) {
+  .app-shell--workspace { grid-template-columns: minmax(0, 1fr); }
+  .workspace-records { display: flex; flex-wrap: wrap; gap: 12px; }
+  .workspace-records li { width: min(220px, 100%); }
+}

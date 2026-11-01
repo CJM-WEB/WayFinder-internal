@@ -8,6 +8,7 @@ import { createRoot } from "react-dom/client";
 import "@xyflow/react/dist/style.css";
 
 import { App } from "./App.js";
+import { initializeWorkspacePersistence } from "./stores/workspace-persistence.js";
 import "./app.css";
 import { H2EvaluationApp } from "./components/Evaluation/H2EvaluationApp.js";
 import { resolveH1EvaluationRoute } from "./evaluation/h1-route.js";
@@ -22,10 +23,15 @@ if (rootElement === null) {
 const h1Evaluation = resolveH1EvaluationRoute(window.location.search);
 const h2Evaluation = resolveH2EvaluationRoute(window.location.search);
 
+// 先完成读取再允许编辑，防止空初始状态覆盖上一次保存的图；评估页不接入个人记录。
+if (h1Evaluation === null && h2Evaluation === null) {
+  await initializeWorkspacePersistence();
+}
+
 createRoot(rootElement).render(
   <StrictMode>
     {h2Evaluation === null ? (
-      <App {...(h1Evaluation === null ? {} : { h1Evaluation })} />
+      <App workspaceEnabled={h1Evaluation === null} {...(h1Evaluation === null ? {} : { h1Evaluation })} />
     ) : (
       <H2EvaluationApp initialCondition={h2Evaluation.initialCondition} />
     )}
