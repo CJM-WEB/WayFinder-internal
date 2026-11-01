@@ -286,6 +286,7 @@ export function createRunSearchHandler(
             }),
         language: input.language,
         ...(input.engine === undefined ? {} : { engine: input.engine }),
+        ...(input.nodeSearch === undefined ? {} : { nodeSearch: input.nodeSearch }),
       });
       observeSafely(() => recorder?.recordPlan(plan));
 

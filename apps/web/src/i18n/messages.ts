@@ -19,6 +19,11 @@ import type {
 } from "@wayfinder/contracts";
 
 export type Messages = Readonly<{
+  research: Readonly<{
+    startGraph: string; startNode: string; preview: string; searching: string;
+    failure: string; cancel: string; dismiss: string; append: string; replace: string;
+    fullHint: string; nodeHint: string; queryLabel: string; topicLabel: string; topicHint: string; invalidInput: string; missingTarget: string;
+  }>;
   searchEngine: Readonly<{
     label: string; nodeLabel: string; sourceLabel: string; unknownSource: string;
     labels: Readonly<Record<SearchEngine, string>>; baiduRegionNotice: string;
@@ -125,6 +130,11 @@ export type Messages = Readonly<{
  */
 export const MESSAGES: Record<SearchLanguage, Messages> = {
   "zh-CN": {
+    research: {
+      startGraph: "重新搜索全图", startNode: "重新搜索此节点", preview: "重搜预览", searching: "正在重新搜索，当前图保持不变。",
+      failure: "没有可应用的新结果，当前图保持不变。", cancel: "取消重搜", dismiss: "弃用新结果", append: "追加到此节点", replace: "应用替换",
+      fullHint: "全图只能整体替换；应用后可撤销恢复旧图。", nodeHint: "追加保留旧资源；替换覆盖此节点的全部旧资源，包括人工编辑。", queryLabel: "本次查询", topicLabel: "搜索主题", topicHint: "此图暂无原始查询，请先填写全图搜索主题。", invalidInput: "搜索主题须为 1 至 2000 个字符，节点标题不能为空。", missingTarget: "搜索图或目标节点已不存在，请重新选择。",
+    },
     searchEngine: {
       label: "搜索引擎", nodeLabel: "节点搜索引擎", sourceLabel: "实际搜索引擎", unknownSource: "未记录",
       labels: { baidu: "百度", google: "Google" }, baiduRegionNotice: "百度不保证地区定位。",
@@ -270,6 +280,11 @@ export const MESSAGES: Record<SearchLanguage, Messages> = {
     },
   },
   "en-US": {
+    research: {
+      startGraph: "Search entire graph again", startNode: "Search this node again", preview: "Search preview", searching: "Searching again. Your current graph is unchanged.",
+      failure: "No new results can be applied. Your current graph is unchanged.", cancel: "Cancel search", dismiss: "Discard new results", append: "Append to this node", replace: "Apply replacement",
+      fullHint: "The entire graph will be replaced. Undo restores the previous graph.", nodeHint: "Append keeps existing resources. Replacement overwrites all resources in this node, including your edits.", queryLabel: "Search query", topicLabel: "Search topic", topicHint: "This graph has no original query. Enter a topic before searching the entire graph.", invalidInput: "Enter a search topic between 1 and 2,000 characters and a non-empty node title.", missingTarget: "The graph or target node is no longer available. Select it again.",
+    },
     searchEngine: {
       label: "Search engine", nodeLabel: "Node search engine", sourceLabel: "Actual search engine", unknownSource: "Not recorded",
       labels: { baidu: "Baidu", google: "Google" }, baiduRegionNotice: "Baidu does not guarantee regional targeting.",

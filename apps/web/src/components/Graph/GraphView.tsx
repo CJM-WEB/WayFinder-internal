@@ -52,10 +52,11 @@ export type GraphViewProps = Readonly<{
   selectedNodeId?: string | null;
   onSelectNode?: (nodeId: string | null) => void;
   editableGraphId?: string;
+  flowId?: string;
 }>;
 
 /** 两种展示模式共用同一 Product Graph；Compact 只改变视图密度，不改写 Node 或 Edge。 */
-export function GraphView({ presentationMode, language, graph, selectedNodeId: providedSelection, onSelectNode, editableGraphId }: GraphViewProps) {
+export function GraphView({ presentationMode, language, graph, selectedNodeId: providedSelection, onSelectNode, editableGraphId, flowId }: GraphViewProps) {
   const runNodes = useStore(graphStore, state => state.nodes);
   const runEdges = useStore(graphStore, state => state.edges);
   const runSelection = useStore(graphStore, state => state.selectedNodeId);
@@ -156,6 +157,7 @@ export function GraphView({ presentationMode, language, graph, selectedNodeId: p
       aria-label={messages.canvasAria[presentationMode]}
     >
       <ReactFlow<GraphFlowNode, GraphFlowEdge>
+        {...(flowId === undefined ? {} : { id: flowId })}
         nodes={flowNodes}
         edges={elements.edges}
         nodeTypes={NODE_TYPES}

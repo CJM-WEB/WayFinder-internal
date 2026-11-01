@@ -6,6 +6,7 @@ import { resolveSearchEngine, SearchEngineSchema, type EditableGraph, type Resou
 import { useEffect, useState } from "react";
 import { useStore } from "zustand";
 
+import { researchStore } from "../../api/research.js";
 import { getMessages } from "../../i18n/messages.js";
 import {
   addNode, addResource, deleteNode, deleteResource, updateNode, updateResource, moveResource,
@@ -50,13 +51,13 @@ export function EditNotice({ problem, language }: { problem: EditProblem | null;
   </div>;
 }
 
-function EditField({ label, value, onChange, multiline = false }: {
-  label: string; value: string; onChange: (value: string) => void; multiline?: boolean;
+function EditField({ label, value, onChange, multiline = false, maxLength }: {
+  label: string; value: string; onChange: (value: string) => void; multiline?: boolean; maxLength?: number;
 }) {
   return <label className="workspace-edit-field">{label}
     {multiline
-      ? <textarea rows={3} value={value} onChange={event => onChange(event.target.value)} />
-      : <input value={value} onChange={event => onChange(event.target.value)} />}
+      ? <textarea rows={3} maxLength={maxLength} value={value} onChange={event => onChange(event.target.value)} />
+      : <input maxLength={maxLength} value={value} onChange={event => onChange(event.target.value)} />}
   </label>;
 }
 
@@ -64,7 +65,10 @@ function EditField({ label, value, onChange, multiline = false }: {
 export function WorkspaceToolbar({ language, disabled }: { language: SearchLanguage; disabled: boolean }) {
   const document = useStore(workspaceStore, selectCurrentGraph);
   const history = useStore(workspaceStore, state => state.histories[state.currentId ?? ""]);
+  const researching = useStore(researchStore, state => state.preview?.status === "searching");
   const [title, setTitle] = useState("");
+  const [researchTopic, setResearchTopic] = useState("");
+  useEffect(() => { setResearchTopic(""); }, [document?.id]);
   const edit = useGraphEdit(document?.id ?? null, language);
   const messages = getMessages(language).editor;
   return <fieldset className="workspace-edit-toolbar" disabled={disabled} aria-label={messages.toolbar}>
@@ -86,6 +90,15 @@ export function WorkspaceToolbar({ language, disabled }: { language: SearchLangu
       <EditField label={messages.newNodeTitle} value={title} onChange={setTitle} />
       <button type="submit" disabled={!title.trim()}>{messages.addNode}</button>
     </form>
+    {document === null ? null : <form className="workspace-research-topic" onSubmit={event => {
+      event.preventDefault();
+      if (!document.query.trim() && !researchTopic.trim()) return;
+      void researchStore.getState().start(document.id, undefined, researchTopic);
+    }}>
+      {document.query.trim() ? null : <EditField maxLength={2000} label={getMessages(language).research.topicLabel} value={researchTopic} onChange={setResearchTopic} />}
+      <button type="submit" disabled={researching || (!document.query.trim() && !researchTopic.trim())}>{getMessages(language).research.startGraph}</button>
+    </form>}
+    {document !== null && !document.query.trim() ? <p className="workspace-research-topic-hint">{getMessages(language).research.topicHint}</p> : null}
     <div className="workspace-edit-actions">
       <button type="button" disabled={!history?.past.length} onClick={() => workspaceStore.getState().undo()}>{messages.undo}</button>
       <button type="button" disabled={!history?.future.length} onClick={() => workspaceStore.getState().redo()}>{messages.redo}</button>
@@ -98,6 +111,7 @@ export function WorkspaceToolbar({ language, disabled }: { language: SearchLangu
 export function NodeEditor({ graphId, nodeId, language }: { graphId: string; nodeId: string; language: SearchLanguage }) {
   const document = useStore(workspaceStore, state => state.documents.find(graph => graph.id === graphId));
   const node = document?.nodes.find(item => item.id === nodeId);
+  const researching = useStore(researchStore, state => state.preview?.status === "searching");
   const [editing, setEditing] = useState(false);
   const [title, setTitle] = useState(node?.title ?? "");
   const [description, setDescription] = useState(node?.description ?? "");
@@ -122,6 +136,7 @@ export function NodeEditor({ graphId, nodeId, language }: { graphId: string; nod
       </select>
     </label>
     {engine === "baidu" ? <p role="note">{engineMessages.baiduRegionNotice}</p> : null}
+    <button type="button" disabled={researching} onClick={() => { void researchStore.getState().start(graphId, nodeId); }}>{getMessages(language).research.startNode}</button>
     {editing ? <form onSubmit={event => {
       event.preventDefault();
       if (edit.commit(graph => updateNode(graph, nodeId, { title: title.trim(), description }))) setEditing(false);

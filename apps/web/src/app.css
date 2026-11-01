@@ -1119,3 +1119,13 @@ input {
 /* 引擎下拉与现有语言选择使用相同样式；节点偏好不会覆盖资源的实际来源展示。 */
 .workspace-node-editor select { max-width: 100%; padding: 7px 9px; border: 1px solid #b9cbbf; border-radius: 8px; background: #fff; font: inherit; }
 @media (max-width: 1100px) { .omnibox__controls { flex-wrap: wrap; } }
+/* 预览与工作图分开展示，操作按钮先于结果；实际图和资源继续复用现有组件。 */
+.workspace-research-preview { margin-bottom: 18px; padding: 16px; border: 1px solid #8cab99; border-radius: 18px; background: #f8fcf9; }
+.workspace-research-preview h2 { margin-top: 0; font-size: 1rem; }
+.workspace-research-preview > button, .workspace-research-preview .workspace-edit-actions > button {
+  padding: 8px 10px; border: 1px solid #b9cbbf; border-radius: 8px; color: #244d37; background: #fff; cursor: pointer;
+}
+.workspace-preview-content { margin-top: 14px; }
+.workspace-preview-content--graph { display: grid; grid-template-columns: minmax(0, 1fr) 330px; gap: 12px; }
+@media (max-width: 1100px) { .workspace-preview-content--graph { grid-template-columns: minmax(0, 1fr); } }
+.workspace-edit-toolbar .workspace-research-topic-hint { flex-basis: 100%; margin: 0; color: #61786c; font-size: 0.78rem; }

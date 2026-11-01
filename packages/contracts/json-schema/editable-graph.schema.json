@@ -44,6 +44,142 @@
       "format": "date-time",
       "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
     },
+    "analysis": {
+      "anyOf": [
+        {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "intent": {
+                  "type": "string",
+                  "enum": [
+                    "learn",
+                    "understand",
+                    "news",
+                    "compare",
+                    "shop",
+                    "navigate",
+                    "how_to",
+                    "mixed"
+                  ]
+                },
+                "topic": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "freshnessSensitive": {
+                  "type": "boolean"
+                },
+                "ambiguityLevel": {
+                  "type": "string",
+                  "enum": [
+                    "low",
+                    "medium",
+                    "high"
+                  ]
+                },
+                "presentationMode": {
+                  "type": "string",
+                  "enum": [
+                    "graph",
+                    "compact"
+                  ]
+                },
+                "broadSearchQueries": {
+                  "maxItems": 0,
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "strategy": {
+                  "type": "string",
+                  "const": "plan_first"
+                }
+              },
+              "required": [
+                "intent",
+                "topic",
+                "freshnessSensitive",
+                "ambiguityLevel",
+                "presentationMode",
+                "broadSearchQueries",
+                "strategy"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "intent": {
+                  "type": "string",
+                  "enum": [
+                    "learn",
+                    "understand",
+                    "news",
+                    "compare",
+                    "shop",
+                    "navigate",
+                    "how_to",
+                    "mixed"
+                  ]
+                },
+                "topic": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "freshnessSensitive": {
+                  "type": "boolean"
+                },
+                "ambiguityLevel": {
+                  "type": "string",
+                  "enum": [
+                    "low",
+                    "medium",
+                    "high"
+                  ]
+                },
+                "presentationMode": {
+                  "type": "string",
+                  "enum": [
+                    "graph",
+                    "compact"
+                  ]
+                },
+                "broadSearchQueries": {
+                  "minItems": 1,
+                  "maxItems": 3,
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "strategy": {
+                  "type": "string",
+                  "const": "evidence_assisted"
+                }
+              },
+              "required": [
+                "intent",
+                "topic",
+                "freshnessSensitive",
+                "ambiguityLevel",
+                "presentationMode",
+                "broadSearchQueries",
+                "strategy"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "updatedAt": {
       "type": "string",
       "format": "date-time",

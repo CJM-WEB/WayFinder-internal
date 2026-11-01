@@ -3,6 +3,7 @@
  *
  * 执行顺序：Graph Planner → Initial Outline 校验 → 可选 Broad/Reviser → Final Outline
  * 校验 → 一次全图 SearchPlan Generation → 确定性装配 → Final GraphPlan 校验。
+ * 节点重搜复用已有分析或只生成缺失分析，再为目标构造私有单节点检索投影。
  * 任一阶段失败都不会保留旧计划、repair、重试或生成 compact/raw-query fallback。
  */
 import {
@@ -10,6 +11,8 @@ import {
   type AppError,
   type AppErrorCode,
   type GraphPlan,
+  type NodeSearchContext,
+  type QueryAnalysis,
   type SearchLanguage,
   type SearchEngine,
 } from "@wayfinder/contracts";
@@ -91,6 +94,7 @@ export type ResolveValidatedGraphPlanForRunInput = Readonly<{
   ) => void;
   language: SearchLanguage;
   engine?: SearchEngine;
+  nodeSearch?: NodeSearchContext;
 }>;
 
 function createResolutionError(
@@ -164,6 +168,33 @@ export function parseValidatedGraphPlanForRun(plan: unknown): GraphPlan {
 }
 
 /**
+ * 人工图不限节点数且可含独立节点；重搜只把当前目标投影为一份合法的单节点检索计划。
+ * compact / primary / layer 只约束这次计算，不回写用户节点类型、布局或原图 Analysis。
+ */
+function createNodeSearchOutline(
+  context: NodeSearchContext,
+  analysis: QueryAnalysis,
+): GraphOutline {
+  return parseValidatedGraphOutlineForRun({
+    analysis: {
+      ...analysis,
+      strategy: "plan_first",
+      broadSearchQueries: [],
+      presentationMode: "compact",
+    },
+    nodes: [{
+      id: context.node.id,
+      title: context.node.title,
+      description: context.node.description.trim() || context.node.title,
+      nodeType: "primary",
+      layer: 0,
+      status: "planned",
+    }],
+    edges: [],
+  });
+}
+
+/**
  * 解析一次 Run 的最终 GraphPlan；调用方拥有并负责释放 runScope。
  * 只有完整 Final GraphPlan 返回后，外层才可以发布事件或启动 Node jobs。
  */
@@ -174,26 +205,32 @@ export async function resolveValidatedGraphPlanForRun(
   let activeStage: "graphOutline" | "searchPlan" = "graphOutline";
 
   try {
-    const initialOutlineCandidate = await planGraphOutline({
-      query: input.query,
-      language: input.language,
-      provider: input.llmProvider,
-      signal: input.runScope.signal,
-      timeoutMs: Math.min(
-        input.llmStageTimeoutMs,
-        input.runScope.requirePositiveRemainingMs(),
-      ),
-      onValidationDiagnostic: input.onPlannerValidationDiagnostic,
-    });
+    // 有真实历史分析时不再规划全图；缺失分析才调用已有 Planner，不伪造 freshness 或 intent。
+    const initialOutlineCandidate = input.nodeSearch?.analysis != null
+      ? createNodeSearchOutline(input.nodeSearch, input.nodeSearch.analysis)
+      : await planGraphOutline({
+          query: input.query,
+          language: input.language,
+          provider: input.llmProvider,
+          signal: input.runScope.signal,
+          timeoutMs: Math.min(
+            input.llmStageTimeoutMs,
+            input.runScope.requirePositiveRemainingMs(),
+          ),
+          onValidationDiagnostic: input.onPlannerValidationDiagnostic,
+        });
     input.runScope.requirePositiveRemainingMs();
 
     // 防御内部调用被替换或未来重构绕过 Planner 自身校验。
     const initialOutline = parseValidatedGraphOutlineForRun(
       initialOutlineCandidate,
     );
-    let finalOutline = initialOutline;
+    let finalOutline = input.nodeSearch === undefined
+      ? initialOutline
+      : createNodeSearchOutline(input.nodeSearch, initialOutline.analysis);
 
-    if (initialOutline.analysis.strategy === "evidence_assisted") {
+    // 单节点模式只重建目标的查询，不执行全图发现 / 修订，也不采用 Planner 生成的其他节点。
+    if (input.nodeSearch === undefined && initialOutline.analysis.strategy === "evidence_assisted") {
       const evidence = await discoverBroadEvidence({
         analysis: initialOutline.analysis,
         provider: input.searchProvider,

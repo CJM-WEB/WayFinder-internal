@@ -144,8 +144,10 @@ function SelectedResourcePanel({
   model,
   openResource,
   editableGraphId,
+  idPrefix,
 }: {
   model: SelectedPanelModel;
+  idPrefix: string;
   openResource: BrowserUrlOpener;
   editableGraphId?: string;
 }) {
@@ -160,13 +162,13 @@ function SelectedResourcePanel({
   return (
     <aside
       className="resource-panel"
-      aria-labelledby="resource-panel-title"
+      aria-labelledby={`${idPrefix}resource-panel-title`}
       aria-live="polite"
     >
       <header className="resource-panel__header">
         <p className="resource-panel__eyebrow">{messages.selectedNode}</p>
         <div className="resource-panel__title-row">
-          <h2 id="resource-panel-title">{model.nodeTitle}</h2>
+          <h2 id={`${idPrefix}resource-panel-title`}>{model.nodeTitle}</h2>
           <span
             className={`resource-panel__status resource-panel__status--${model.nodeStatus}`}
           >
@@ -253,13 +255,13 @@ function SelectedResourcePanel({
                     </div>
                   </dl>
 
-                  <section aria-labelledby={`${resource.id}-summary`}>
-                    <h4 id={`${resource.id}-summary`}>{editableGraphId === undefined ? messages.aiSummary : editorMessages.resourceSummary}</h4>
+                  <section aria-labelledby={`${idPrefix}${resource.id}-summary`}>
+                    <h4 id={`${idPrefix}${resource.id}-summary`}>{editableGraphId === undefined ? messages.aiSummary : editorMessages.resourceSummary}</h4>
                     <p>{resource.summary}</p>
                   </section>
 
-                  <section aria-labelledby={`${resource.id}-why-selected`}>
-                    <h4 id={`${resource.id}-why-selected`}>
+                  <section aria-labelledby={`${idPrefix}${resource.id}-why-selected`}>
+                    <h4 id={`${idPrefix}${resource.id}-why-selected`}>
                       {messages.whySelected}
                     </h4>
                     <p>{resource.whySelected}</p>
@@ -305,8 +307,10 @@ export function ResourcePanelView({
   model,
   openResource = openBrowserTab,
   editableGraphId,
+  idPrefix = "",
 }: {
   model: ResourcePanelModel;
+  idPrefix?: string;
   openResource?: BrowserUrlOpener;
   editableGraphId?: string;
 }) {
@@ -329,6 +333,7 @@ export function ResourcePanelView({
       key={model.nodeId}
       model={model}
       openResource={openResource}
+      idPrefix={idPrefix}
       {...(editableGraphId === undefined ? {} : { editableGraphId })}
     />
   );

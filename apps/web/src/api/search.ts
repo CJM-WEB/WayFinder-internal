@@ -48,17 +48,19 @@ export type SearchCoordinatorDependencies = Readonly<{
 type ActiveRun = Readonly<{
   /** Controller（控制器）对象身份同时充当当前 Run 的唯一所有权令牌。 */
   controller: AbortController;
+  runId: SearchRequest["runId"];
 }>;
 
 export type StartStreamingSearchInput = Readonly<
-  Pick<SearchRequest, "query" | "language" | "engine">
+  Pick<SearchRequest, "query" | "language" | "engine" | "nodeSearch">
 >;
 
 /** 无 runId 的 UI 输入仍复用公共 Contract 字段，不在 Web 复制语义。 */
-const SearchInputSchema = SearchRequestSchema.pick({
+export const SearchInputSchema = SearchRequestSchema.pick({
   query: true,
   language: true,
   engine: true,
+  nodeSearch: true,
 });
 
 /** 默认 ID 由浏览器原生能力生成，不额外引入运行时依赖。 */
@@ -69,9 +71,13 @@ const createDefaultRunId = (): SearchRequest["runId"] =>
  * 创建一个串行拥有当前 Controller 的搜索入口。
  * 工厂闭包是所有权边界：只有仍持有当前 Controller 的 Run 才能在 finally 中清理它。
  */
+export type StreamingSearch = ((input: StartStreamingSearchInput) => Promise<void>) & {
+  cancel: () => void;
+};
+
 export function createStartStreamingSearch(
   dependencies: SearchCoordinatorDependencies,
-): (input: StartStreamingSearchInput) => Promise<void> {
+): StreamingSearch {
   const fetchImplementation =
     dependencies.fetchImplementation ?? globalThis.fetch.bind(globalThis);
   const readStreamImplementation =
@@ -79,7 +85,7 @@ export function createStartStreamingSearch(
   const createRunId = dependencies.createRunId ?? createDefaultRunId;
   let activeRun: ActiveRun | undefined;
 
-  return async (input: StartStreamingSearchInput): Promise<void> => {
+  const startSearch = async (input: StartStreamingSearchInput): Promise<void> => {
     /**
      * 先同时校验 Query 与 language，再分配 ID 和取消旧 Run。
      * 这样任一无效字段都不会破坏仍然有效的当前搜索。
@@ -96,7 +102,7 @@ export function createStartStreamingSearch(
     previousRun?.controller.abort(
       new DOMException("新 Query 已开始", "AbortError"),
     );
-    activeRun = { controller };
+    activeRun = { controller, runId: request.runId };
     dependencies.store.getState().startRun(request);
     dependencies.onStart?.(request);
 
@@ -123,9 +129,10 @@ export function createStartStreamingSearch(
         response,
         signal: controller.signal,
         onEvent: event => {
+          if (controller.signal.aborted || event.runId !== request.runId) return;
           const before = dependencies.store.getState();
           // 交付回调只能观察真正被当前 Run 接纳的 complete，过期事件不能写进历史记录。
-          const acceptsComplete = event.type === "complete" &&
+          const acceptsComplete = !controller.signal.aborted && event.runId === request.runId && event.type === "complete" &&
             before.activeRunId === event.runId && before.isSearching &&
             event.sequence > before.lastSequence && event.data.result.runId === event.runId;
           before.applyStreamEvent(event);
@@ -147,6 +154,16 @@ export function createStartStreamingSearch(
       }
     }
   };
+  return Object.assign(startSearch, {
+    cancel: (): void => {
+      const current = activeRun;
+      if (current === undefined) return;
+      current.controller.abort(new DOMException("用户取消搜索", "AbortError"));
+      if (activeRun?.controller === current.controller) activeRun = undefined;
+      const state = dependencies.store.getState();
+      if (state.activeRunId === current.runId && state.isSearching) state.finishRun();
+    },
+  });
 }
 
 /** 应用级入口；Omnibox 只需调用此函数，不负责 Controller 生命周期。 */

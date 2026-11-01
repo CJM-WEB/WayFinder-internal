@@ -27,6 +27,17 @@ const expectRejected = (graph: unknown): void => {
 };
 
 describe("可编辑图协议", () => {
+  it("旧记录可缺少分析，手动图可明确记录未知分析", () => {
+    const legacy = emptyGraph();
+    expect(EditableGraphSchema.parse(legacy)).toEqual(legacy);
+    expect(EditableGraphSchema.parse({ ...legacy, analysis: null }).analysis).toBeNull();
+    const analysis = {
+      intent: "learn", topic: "主题", freshnessSensitive: false, ambiguityLevel: "low",
+      strategy: "plan_first", broadSearchQueries: [], presentationMode: "graph",
+    };
+    expect(EditableGraphSchema.parse({ ...legacy, analysis }).analysis).toEqual(analysis);
+  });
+
   it("图与节点保存下一次引擎偏好，不改写既有资源来源", () => {
     const resource = { ...manualResource("资源"), origin: "search" as const, searchProvider: "serpapi_bing", engine: "google" as const };
     const graph = EditableGraphSchema.parse({

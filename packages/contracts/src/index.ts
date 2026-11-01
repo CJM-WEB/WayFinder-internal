@@ -31,19 +31,6 @@ export function resolveSearchEngine(
     : SearchEngineSchema.parse(engine);
 }
 
-/**
- * SearchRequest（搜索请求）描述一次 Run（运行）的入口身份、有效查询和已校验语言。
- * Query（查询）先 trim，再按 Unicode code point（码点）校验长度。
- * runId 只要求非空并保留原值；严格对象使未知字段明确失败，防止未声明参数被误认为已生效。
- */
-export const SearchRequestSchema = z.strictObject({
-  runId: z.string().min(1),
-  query: z.string().trim().min(1).max(2000),
-  language: SearchLanguageSchema,
-  engine: SearchEngineSchema.optional(),
-});
-export type SearchRequest = z.infer<typeof SearchRequestSchema>;
-
 /** Query（查询）分析阶段使用的稳定分类。 */
 export const IntentSchema = z.enum([
   "learn",
@@ -97,6 +84,34 @@ export const QueryAnalysisSchema = z.discriminatedUnion("strategy", [
   }),
 ]);
 export type QueryAnalysis = z.infer<typeof QueryAnalysisSchema>;
+
+/**
+ * 节点重搜只接收当前目标与已有分析，不传整张人工图、资源或连线。
+ * null 明确表示旧记录或手动图没有真实分析，由已有 Planner 在本次 Run 内生成。
+ */
+export const NodeSearchContextSchema = z.strictObject({
+  node: z.strictObject({
+    id: z.string().min(1),
+    title: z.string().trim().min(1),
+    description: z.string(),
+  }),
+  analysis: QueryAnalysisSchema.nullable(),
+});
+export type NodeSearchContext = z.infer<typeof NodeSearchContextSchema>;
+
+/**
+ * SearchRequest（搜索请求）描述一次 Run（运行）的入口身份、有效查询和已校验语言。
+ * 可选 nodeSearch 只改变本次检索范围；普通请求与旧 Fixture 保持原有形状。
+ * 严格对象拒绝未声明字段，所有输入均须在外部调用和流式响应开始前校验。
+ */
+export const SearchRequestSchema = z.strictObject({
+  runId: z.string().min(1),
+  query: z.string().trim().min(1).max(2000),
+  language: SearchLanguageSchema,
+  engine: SearchEngineSchema.optional(),
+  nodeSearch: NodeSearchContextSchema.optional(),
+});
+export type SearchRequest = z.infer<typeof SearchRequestSchema>;
 
 /** Graph（图）结构词表由计划图与最终结果图共同使用。 */
 export const NodeTypeSchema = z.enum([
@@ -1025,6 +1040,7 @@ export const EditableGraphSchema = z.strictObject({
   presentationMode: PresentationModeSchema,
   engine: SearchEngineSchema.optional(),
   createdAt: z.iso.datetime({ offset: true }),
+  analysis: QueryAnalysisSchema.nullable().optional(),
   updatedAt: z.iso.datetime({ offset: true }),
   lastRunId: z.string().min(1).nullable(),
   nodes: z.array(EditableNodeSchema),

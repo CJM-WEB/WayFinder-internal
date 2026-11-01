@@ -64,6 +64,7 @@ export const fromResultGraph = (result: ResultGraph, graphId: string): EditableG
     query: validated.query.raw,
     language: validated.query.language,
     presentationMode: validated.analysis.presentationMode,
+    analysis: validated.analysis,
     createdAt: validated.meta.createdAt,
     updatedAt: validated.meta.createdAt,
     lastRunId: validated.runId,

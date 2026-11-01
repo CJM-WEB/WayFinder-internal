@@ -4,6 +4,8 @@ import { useEffect, useState } from "react";
 import { resolveSearchEngine, type SearchEngine, type EditableGraph, type SearchLanguage } from "@wayfinder/contracts";
 
 import { startStreamingSearch } from "./api/search.js";
+import { researchStore } from "./api/research.js";
+import { WorkspaceResearchPreview } from "./components/Workspace/WorkspaceResearchPreview.js";
 import { startWorkspaceSearch } from "./api/workspace-search.js";
 import { WorkspaceEdgeEditor } from "./components/Workspace/WorkspaceEdgeEditor.js";
 import { WorkspaceToolbar } from "./components/Workspace/WorkspaceEditor.js";
@@ -62,6 +64,8 @@ const EMPTY_GRAPH: Pick<EditableGraph, "nodes" | "edges" | "positions"> = {
 export function App({ h1Evaluation, workspaceEnabled = false }: AppProps = {}) {
   const runtime = useStore(graphStore, state => state);
   const currentDocument = useStore(workspaceStore, selectCurrentGraph);
+  const preview = useStore(researchStore, state => state.preview);
+  const researchInputError = useStore(researchStore, state => state.inputError);
   const persistence = useStore(workspacePersistenceStore, state => state);
   const useWorkspace = workspaceEnabled && h1Evaluation === undefined;
   // 只有所属记录展示运行草图；后台完成仅保存自己的图，不能把用户切换抢回来。
@@ -115,9 +119,16 @@ export function App({ h1Evaluation, workspaceEnabled = false }: AppProps = {}) {
   const messages = getMessages(renderLanguage);
   const searchState = isSearching
     ? "searching"
-    : query.length > 0
+    : query.length > 0 || (useWorkspace && currentDocument !== null && currentDocument.lastRunId !== null)
       ? "complete"
       : "idle";
+
+  // 离开所属图或删除目标即取消临时请求，不能把迟到结果带入另一个记录。
+  useEffect(() => {
+    if (!useWorkspace || preview === null) return;
+    if (currentDocument?.id !== preview.graphId || (preview.nodeId !== null &&
+        !currentDocument.nodes.some(node => node.id === preview.nodeId))) researchStore.getState().cancel();
+  }, [useWorkspace, currentDocument?.id, currentDocument?.nodes, preview?.graphId, preview?.nodeId]);
 
   /** lang 属性与实际可见文案共用 renderLanguage，供浏览器和辅助技术正确识别语言。 */
   useEffect(() => {
@@ -152,7 +163,10 @@ export function App({ h1Evaluation, workspaceEnabled = false }: AppProps = {}) {
 
       <fieldset className="workspace-search-controls" disabled={useWorkspace && (persistence.status === "loading" || persistence.error === "load")}>
       <Omnibox
-        startSearch={useWorkspace ? startWorkspaceSearch : startStreamingSearch}
+        startSearch={useWorkspace ? input => {
+          researchStore.getState().cancel();
+          return startWorkspaceSearch(input);
+        } : startStreamingSearch}
         openDirectUrl={openDirectUrl}
         language={selectedLanguage}
         renderLanguage={renderLanguage}
@@ -162,9 +176,16 @@ export function App({ h1Evaluation, workspaceEnabled = false }: AppProps = {}) {
       </fieldset>
       {useWorkspace ? <WorkspaceToolbar language={renderLanguage} disabled={showsRun || persistence.status === "loading" || persistence.error === "load"} /> : null}
 
+      {useWorkspace && researchInputError !== null ? <p role="alert" className="workspace-edit-error">
+        {researchInputError === "target" ? messages.research.missingTarget : messages.research.invalidInput}
+      </p> : null}
       {useWorkspace && !showsRun && currentDocument !== null ? <WorkspaceEdgeEditor
         key={currentDocument.id} graphId={currentDocument.id} language={renderLanguage}
         disabled={persistence.status === "loading" || persistence.error === "load"}
+      /> : null}
+
+      {useWorkspace && preview !== null && preview.graphId === currentDocument?.id ? <WorkspaceResearchPreview
+        key={preview.runId ?? "pending"} language={renderLanguage}
       /> : null}
 
       {isH1Evaluation ? (
