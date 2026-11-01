@@ -43,6 +43,9 @@ export type Messages = Readonly<{
     moveUp: string; moveDown: string; dragResource: string; undo: string; redo: string;
     manualSource: string; manualGraphTitle: string; duplicateUrl: (nodeTitle: string) => string;
     locateDuplicate: string; invalidUrl: string; editFailure: string;
+    connections: (count: number) => string; selectConnection: string; newConnection: string;
+    sourceNode: string; targetNode: string; relationType: string; addConnection: string;
+    saveConnection: string; deleteConnection: string; invalidConnection: string; graphInstructions: string;
   }>;
   app: Readonly<{
     slogan: string;
@@ -131,6 +134,11 @@ export const MESSAGES: Record<SearchLanguage, Messages> = {
       whySelected: "选用理由", editResource: "编辑资源", saveResource: "保存资源", deleteResource: "删除资源",
       moveUp: "上移资源", moveDown: "下移资源", dragResource: "可上下拖拽调整资源顺序", undo: "撤销", redo: "重做",
       manualSource: "用户添加", manualGraphTitle: "未命名搜索图", duplicateUrl: title => `此 URL 已存在于「${title}」节点中。`,
+      connections: count => `节点关系（${count}）`, selectConnection: "选择连线", newConnection: "新增连线",
+      sourceNode: "起点节点", targetNode: "终点节点", relationType: "关系类型", addConnection: "添加连线",
+      saveConnection: "保存连线", deleteConnection: "删除连线",
+      invalidConnection: "连线无效：请连接现有节点的同类端口；推荐下一步不能形成环。",
+      graphInstructions: "拖动节点调整位置；上下端口连接推荐顺序，左右端口连接相关主题。",
       locateDuplicate: "定位已有资源所在节点", invalidUrl: "请输入有效的完整 HTTP(S) 地址。", editFailure: "无法保存此次编辑，请检查输入。",
     },
     app: {
@@ -267,6 +275,11 @@ export const MESSAGES: Record<SearchLanguage, Messages> = {
       whySelected: "Selection reason", editResource: "Edit resource", saveResource: "Save resource", deleteResource: "Delete resource",
       moveUp: "Move resource up", moveDown: "Move resource down", dragResource: "Drag to reorder resources", undo: "Undo", redo: "Redo",
       manualSource: "Added by you", manualGraphTitle: "Untitled search graph", duplicateUrl: title => `This URL already exists in the “${title}” node.`,
+      connections: count => `Node connections (${count})`, selectConnection: "Select connection", newConnection: "New connection",
+      sourceNode: "Source node", targetNode: "Target node", relationType: "Relation type", addConnection: "Add connection",
+      saveConnection: "Save connection", deleteConnection: "Delete connection",
+      invalidConnection: "Invalid connection. Use matching ports on existing nodes; recommended-next connections cannot form a cycle.",
+      graphInstructions: "Drag nodes to move them. Top/bottom ports define recommended order; side ports connect related topics.",
       locateDuplicate: "Go to the existing resource's node", invalidUrl: "Enter a valid, complete HTTP(S) address.", editFailure: "Unable to save this edit. Check the input.",
     },
     app: {

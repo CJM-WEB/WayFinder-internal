@@ -265,6 +265,8 @@ export const buildGraphFlowElements = (
     nodes: nodes.map(node => ({
       id: node.id,
       type: "wayfinder",
+      // 节点使用固定尺寸；受控拖动生成新位置对象时仍保留已知测量，避免反复丢失初始化状态。
+      measured: { width: GRAPH_NODE_WIDTH, height: GRAPH_NODE_HEIGHT },
       position: savedPositions[node.id] ?? positions.get(node.id) ?? { x: 0, y: 0 },
       sourcePosition: Position.Bottom,
       targetPosition: Position.Top,

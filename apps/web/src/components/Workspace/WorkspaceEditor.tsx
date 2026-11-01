@@ -9,7 +9,7 @@ import { useStore } from "zustand";
 import { getMessages } from "../../i18n/messages.js";
 import {
   addNode, addResource, deleteNode, deleteResource, updateNode, updateResource, moveResource,
-  DuplicateResourceUrlError, InvalidResourceUrlError,
+  DuplicateResourceUrlError, InvalidResourceUrlError, InvalidGraphConnectionError,
 } from "../../stores/workspace-edits.js";
 import { createEmptyGraph, selectCurrentGraph, workspaceStore } from "../../stores/workspace-store.js";
 
@@ -27,7 +27,7 @@ export function useGraphEdit(graphId: string | null, language: SearchLanguage) {
     } catch (error: unknown) {
       setProblem(error instanceof DuplicateResourceUrlError
         ? { message: messages.duplicateUrl(error.nodeTitle), nodeId: error.nodeId }
-        : { message: error instanceof InvalidResourceUrlError ? messages.invalidUrl : messages.editFailure, nodeId: null });
+        : { message: error instanceof InvalidResourceUrlError ? messages.invalidUrl : error instanceof InvalidGraphConnectionError ? messages.invalidConnection : messages.editFailure, nodeId: null });
       return false;
     }
   };

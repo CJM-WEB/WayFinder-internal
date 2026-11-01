@@ -5,7 +5,7 @@
  */
 import {
   canonicalizeHttpUrl, EditableGraphSchema, ResourceSchema,
-  type EditableGraph, type EditableNode, type EditableResource,
+  type EditableGraph, type EditableNode, type EditableResource, type GraphEdge,
 } from "@wayfinder/contracts";
 
 export class InvalidResourceUrlError extends Error {
@@ -15,6 +15,9 @@ export class DuplicateResourceUrlError extends Error {
   constructor(readonly nodeId: string, readonly nodeTitle: string) {
     super("资源 URL 已存在");
   }
+}
+export class InvalidGraphConnectionError extends Error {
+  constructor() { super("连线端点无效或推荐顺序形成循环"); }
 }
 
 /** 不把同值保存记成一次编辑；Zod 校验并复制最终快照，输入保持不变。 */
@@ -114,4 +117,30 @@ export function moveResource(graph: EditableGraph, nodeId: string, sourceId: str
     resources.splice(to, 0, resource);
     return { ...node, resources };
   });
+}
+
+/** 只提交拖动结束的位置；中间帧由画布维护，避免一次拖动耗尽会话历史。 */
+export function moveNode(graph: EditableGraph, nodeId: string, position: { x: number; y: number }): EditableGraph {
+  if (!graph.nodes.some(node => node.id === nodeId)) return graph;
+  return finish(graph, { ...graph, positions: { ...graph.positions, [nodeId]: position } });
+}
+
+/** 连线规则直接复用编辑图协议：引用存在、推荐顺序无环，相关线不限制成环。 */
+function replaceEdges(graph: EditableGraph, edges: GraphEdge[]): EditableGraph {
+  const next = { ...graph, edges };
+  if (!EditableGraphSchema.safeParse(next).success) throw new InvalidGraphConnectionError();
+  return finish(graph, next);
+}
+export function addEdge(
+  graph: EditableGraph, source: string, target: string, type: GraphEdge["type"], id: string = crypto.randomUUID(),
+): EditableGraph {
+  return replaceEdges(graph, [...graph.edges, { id, source, target, type }]);
+}
+export function updateEdge(
+  graph: EditableGraph, edgeId: string, patch: Partial<Pick<GraphEdge, "source" | "target" | "type">>,
+): EditableGraph {
+  return replaceEdges(graph, graph.edges.map(edge => edge.id === edgeId ? { ...edge, ...patch } : edge));
+}
+export function deleteEdge(graph: EditableGraph, edgeId: string): EditableGraph {
+  return finish(graph, { ...graph, edges: graph.edges.filter(edge => edge.id !== edgeId) });
 }

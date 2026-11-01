@@ -5,6 +5,7 @@ import type { EditableGraph, SearchLanguage } from "@wayfinder/contracts";
 
 import { startStreamingSearch } from "./api/search.js";
 import { startWorkspaceSearch } from "./api/workspace-search.js";
+import { WorkspaceEdgeEditor } from "./components/Workspace/WorkspaceEdgeEditor.js";
 import { WorkspaceToolbar } from "./components/Workspace/WorkspaceEditor.js";
 import { WorkspaceSidebar } from "./components/Workspace/WorkspaceSidebar.js";
 import { selectCurrentGraph, workspaceStore } from "./stores/workspace-store.js";
@@ -145,6 +146,11 @@ export function App({ h1Evaluation, workspaceEnabled = false }: AppProps = {}) {
       </fieldset>
       {useWorkspace ? <WorkspaceToolbar language={renderLanguage} disabled={showsRun || persistence.status === "loading" || persistence.error === "load"} /> : null}
 
+      {useWorkspace && !showsRun && currentDocument !== null ? <WorkspaceEdgeEditor
+        key={currentDocument.id} graphId={currentDocument.id} language={renderLanguage}
+        disabled={persistence.status === "loading" || persistence.error === "load"}
+      /> : null}
+
       {isH1Evaluation ? (
         <section className="h1-evaluation" aria-labelledby="h1-evaluation-title">
           <div>
@@ -182,7 +188,9 @@ export function App({ h1Evaluation, workspaceEnabled = false }: AppProps = {}) {
               ? h1Condition === "graph"
                 ? "H1 评估 · Graph View · 选择节点查看资源"
                 : "H1 评估 · Structured Flat List · 选择节点查看资源"
-              : messages.app.resultInstructions[presentationMode]}
+              : useWorkspace && currentDocument !== null && !showsRun
+                ? messages.editor.graphInstructions
+                : messages.app.resultInstructions[presentationMode]}
           </p>
         </div>
         <div
@@ -204,6 +212,7 @@ export function App({ h1Evaluation, workspaceEnabled = false }: AppProps = {}) {
               language={renderLanguage}
               {...(savedGraph === undefined ? {} : {
                 graph: savedGraph, selectedNodeId: selectedNodeId ?? null, onSelectNode: selectSavedNode,
+                ...(currentDocument === null || persistence.error === "load" ? {} : { editableGraphId: currentDocument.id }),
               })}
             />
           )}

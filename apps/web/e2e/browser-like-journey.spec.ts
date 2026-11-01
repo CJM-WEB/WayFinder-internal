@@ -626,3 +626,100 @@ test("手动节点与资源支持编辑、全图去重定位、拖拽排序和�
   await expect(page.locator(".react-flow__node")).toHaveCount(2);
   expect(await readFixtureSnapshots(page)).toHaveLength(0);
 });
+
+/** 布局与关系走真实画布手势；临时拖动只形成一次可撤销提交。 */
+test("节点拖动与连线编辑可撤销并持久保存，相关可成环而推荐顺序不可成环", async ({ page }) => {
+  const pageErrors: string[] = [];
+  const flowWarnings: string[] = [];
+  page.on("pageerror", error => pageErrors.push(error.message));
+  page.on("console", message => { if (message.type() === "warning" && message.text().includes("[React Flow]")) flowWarnings.push(message.text()); });
+  await installBrowserFixture(page, createJourneyEvents());
+  await page.goto("/");
+  const sidebar = page.getByRole("complementary", { name: "搜索图记录" });
+  await expect(sidebar.getByRole("status")).toHaveText("已保存到本浏览器");
+  const addNode = async (title: string): Promise<void> => {
+    await page.getByRole("textbox", { name: "新节点标题", exact: true }).fill(title);
+    await page.getByRole("button", { name: "新建节点", exact: true }).click();
+  };
+  await addNode("布局甲");
+  await addNode("布局乙");
+  await sidebar.getByRole("button", { name: "重命名", exact: true }).click();
+  await sidebar.getByRole("textbox", { name: "记录名称" }).fill("布局图");
+  await sidebar.getByRole("button", { name: "保存名称" }).click();
+  const firstNode = page.locator(".react-flow__node").filter({ has: page.getByRole("heading", { name: "布局甲", exact: true }) });
+  const secondNode = page.locator(".react-flow__node").filter({ has: page.getByRole("heading", { name: "布局乙", exact: true }) });
+  const before = await firstNode.evaluate(element => getComputedStyle(element).transform);
+  const heading = firstNode.getByRole("heading", { name: "布局甲", exact: true });
+  await heading.scrollIntoViewIfNeeded();
+  const bounds = await heading.boundingBox();
+  if (bounds === null) throw new Error("节点拖动起点不可见");
+  await page.mouse.move(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(bounds.x + bounds.width / 2 + 80, bounds.y + bounds.height / 2 + 50, { steps: 12 });
+  await page.mouse.up();
+  await expect(firstNode).not.toHaveCSS("transform", before);
+  const after = await firstNode.evaluate(element => getComputedStyle(element).transform);
+  await page.getByRole("button", { name: "撤销", exact: true }).click();
+  await expect(firstNode).toHaveCSS("transform", before);
+  await page.getByRole("button", { name: "重做", exact: true }).click();
+  await expect(firstNode).toHaveCSS("transform", after);
+  // 方向键不触发指针 DragStop，也必须保存为独立一步并可恢复。
+  await firstNode.focus();
+  await firstNode.press("ArrowRight");
+  await expect(firstNode).not.toHaveCSS("transform", after);
+  const keyboardAfter = await firstNode.evaluate(element => getComputedStyle(element).transform);
+  await expect(sidebar.getByRole("status")).toHaveText("已保存到本浏览器");
+  await page.getByRole("button", { name: "撤销", exact: true }).click();
+  await expect(firstNode).toHaveCSS("transform", after);
+  await page.getByRole("button", { name: "重做", exact: true }).click();
+  await expect(firstNode).toHaveCSS("transform", keyboardAfter);
+
+  // 同类端口通过原生指针拖线；编辑既有边仍使用相同的确定性关系规则。
+  await firstNode.locator('[data-handleid="main-source"]').dragTo(secondNode.locator('[data-handleid="main-target"]'));
+  await expect(page.locator(".react-flow__edge")).toHaveCount(1);
+  await expect(page.locator(".graph-edge--recommended")).toHaveCount(1);
+  await secondNode.locator('[data-handleid="related-source"]').dragTo(firstNode.locator('[data-handleid="related-target"]'));
+  await expect(page.locator(".react-flow__edge")).toHaveCount(2);
+  const edgeEditor = page.locator(".workspace-edge-editor");
+  await edgeEditor.locator("summary").click();
+  const edgeSelector = edgeEditor.getByRole("combobox", { name: "选择连线", exact: true });
+  const firstEdgeId = await edgeSelector.locator("option").nth(1).getAttribute("value");
+  if (firstEdgeId === null) throw new Error("缺少测试连线");
+  await edgeSelector.selectOption(firstEdgeId);
+  await edgeEditor.getByRole("combobox", { name: "关系类型", exact: true }).selectOption("related_to");
+  await edgeEditor.getByRole("button", { name: "保存连线", exact: true }).click();
+  await expect(page.locator(".graph-edge--related")).toHaveCount(2);
+  await edgeEditor.getByRole("combobox", { name: "关系类型", exact: true }).selectOption("recommended_next");
+  await edgeEditor.getByRole("button", { name: "保存连线", exact: true }).click();
+  await expect(page.locator(".graph-edge--recommended")).toHaveCount(1);
+
+  await edgeSelector.selectOption("");
+  await edgeEditor.getByRole("combobox", { name: "起点节点", exact: true }).selectOption({ label: "布局乙" });
+  await edgeEditor.getByRole("combobox", { name: "终点节点", exact: true }).selectOption({ label: "布局甲" });
+  await edgeEditor.getByRole("combobox", { name: "关系类型", exact: true }).selectOption("recommended_next");
+  await edgeEditor.getByRole("button", { name: "添加连线", exact: true }).click();
+  await expect(edgeEditor.getByRole("alert")).toContainText("推荐下一步不能形成环");
+  await expect(page.locator(".react-flow__edge")).toHaveCount(2);
+  await edgeSelector.selectOption(firstEdgeId);
+  await edgeEditor.getByRole("button", { name: "删除连线", exact: true }).click();
+  await expect(page.locator(".react-flow__edge")).toHaveCount(1);
+  await page.getByRole("button", { name: "撤销", exact: true }).click();
+  await expect(page.locator(".react-flow__edge")).toHaveCount(2);
+
+  // 原生 Delete 键不绕过显式删除入口，不允许画布与保存的数据出现两套内容。
+  await firstNode.press("Delete");
+  await expect(page.locator(".react-flow__node")).toHaveCount(2);
+  await sidebar.getByRole("button", { name: "新建搜索", exact: true }).click();
+  await addNode("其他记录节点");
+  await sidebar.getByRole("button", { name: "布局图", exact: true }).click();
+  await expect(firstNode).toHaveCSS("transform", keyboardAfter);
+  await expect(page.locator(".react-flow__edge")).toHaveCount(2);
+  await expect(sidebar.getByRole("status")).toHaveText("已保存到本浏览器");
+  await page.reload();
+  await expect(firstNode).toHaveCSS("transform", keyboardAfter);
+  await expect(page.locator(".react-flow__edge")).toHaveCount(2);
+  await expect(page.getByRole("button", { name: "撤销", exact: true })).toBeDisabled();
+  expect(await readFixtureSnapshots(page)).toHaveLength(0);
+  expect(pageErrors).toEqual([]);
+  expect(flowWarnings).toEqual([]);
+});
