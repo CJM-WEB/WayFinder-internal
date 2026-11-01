@@ -14,10 +14,15 @@ import type {
   NodeWarningCode,
   PresentationMode,
   SearchLanguage,
+  SearchEngine,
   StreamNodeStatus,
 } from "@wayfinder/contracts";
 
 export type Messages = Readonly<{
+  searchEngine: Readonly<{
+    label: string; nodeLabel: string; sourceLabel: string; unknownSource: string;
+    labels: Readonly<Record<SearchEngine, string>>; baiduRegionNotice: string;
+  }>;
   workspace: Readonly<{
     records: string;
     newSearch: string;
@@ -120,6 +125,10 @@ export type Messages = Readonly<{
  */
 export const MESSAGES: Record<SearchLanguage, Messages> = {
   "zh-CN": {
+    searchEngine: {
+      label: "搜索引擎", nodeLabel: "节点搜索引擎", sourceLabel: "实际搜索引擎", unknownSource: "未记录",
+      labels: { baidu: "百度", google: "Google" }, baiduRegionNotice: "百度不保证地区定位。",
+    },
     workspace: {
       records: "搜索图记录", newSearch: "新建搜索", rename: "重命名", delete: "删除记录",
       saveTitle: "保存名称", cancel: "取消", titleLabel: "记录名称", restoreDeleted: "撤销删除记录",
@@ -261,6 +270,10 @@ export const MESSAGES: Record<SearchLanguage, Messages> = {
     },
   },
   "en-US": {
+    searchEngine: {
+      label: "Search engine", nodeLabel: "Node search engine", sourceLabel: "Actual search engine", unknownSource: "Not recorded",
+      labels: { baidu: "Baidu", google: "Google" }, baiduRegionNotice: "Baidu does not guarantee regional targeting.",
+    },
     workspace: {
       records: "Search graphs", newSearch: "New search", rename: "Rename", delete: "Delete record",
       saveTitle: "Save name", cancel: "Cancel", titleLabel: "Record name", restoreDeleted: "Undo record deletion",

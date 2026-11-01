@@ -21,6 +21,7 @@ function projectCandidate(
 ): CandidateSearchHit {
   return {
     provider: hit.provider,
+    ...(hit.engine === undefined ? {} : { engine: hit.engine }),
     query: hit.query,
     title: hit.title,
     url: hit.url,

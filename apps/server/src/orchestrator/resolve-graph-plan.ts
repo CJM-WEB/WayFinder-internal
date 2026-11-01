@@ -11,6 +11,7 @@ import {
   type AppErrorCode,
   type GraphPlan,
   type SearchLanguage,
+  type SearchEngine,
 } from "@wayfinder/contracts";
 
 import {
@@ -89,6 +90,7 @@ export type ResolveValidatedGraphPlanForRunInput = Readonly<{
     code: AppErrorCode,
   ) => void;
   language: SearchLanguage;
+  engine?: SearchEngine;
 }>;
 
 function createResolutionError(
@@ -197,6 +199,7 @@ export async function resolveValidatedGraphPlanForRun(
         provider: input.searchProvider,
         signal: input.runScope.signal,
         language: input.language,
+        ...(input.engine === undefined ? {} : { engine: input.engine }),
       });
       input.runScope.requirePositiveRemainingMs();
 

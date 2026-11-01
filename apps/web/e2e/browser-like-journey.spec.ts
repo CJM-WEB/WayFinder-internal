@@ -12,6 +12,7 @@ import {
   StreamEventSchema,
   type Resource,
   type SearchLanguage,
+  type SearchEngine,
   type StreamEvent,
 } from "@wayfinder/contracts";
 import { expect, test, type Page } from "@playwright/test";
@@ -27,6 +28,7 @@ type BrowserFixtureSnapshot = Readonly<{
   runId: string;
   query: string;
   language: SearchLanguage;
+  engine: SearchEngine;
   aborted: boolean;
   cancelled: boolean;
 }>;
@@ -140,6 +142,7 @@ async function installBrowserFixture(
       runId: string;
       query: string;
       language: SearchLanguage;
+      engine: SearchEngine;
       signal: AbortSignal;
       controller: ReadableStreamDefaultController<Uint8Array>;
       aborted: boolean;
@@ -150,26 +153,23 @@ async function installBrowserFixture(
     const openCalls: BrowserOpenCall[] = [];
     const encoder = new TextEncoder();
 
-    const eventForRun = (template: StreamEvent, run: BrowserRun): StreamEvent =>
-      template.type === "complete"
-        ? {
-            ...template,
-            runId: run.runId,
-            data: {
-              ...template.data,
-              result: {
-                ...template.data.result,
-                runId: run.runId,
-                query: {
-                  ...template.data.result.query,
-                  raw: run.query,
-                  normalized: run.query,
-                  language: run.language,
-                },
-              },
-            },
-          }
-        : { ...template, runId: run.runId };
+    const eventForRun = (template: StreamEvent, run: BrowserRun): StreamEvent => {
+      // 固定样例按本次请求标注模拟实际来源，生产来源仍由真实 Adapter 独立验证。
+      if (template.type === "complete") return {
+        ...template, runId: run.runId,
+        data: { ...template.data, result: {
+          ...template.data.result, runId: run.runId,
+          query: { ...template.data.result.query, raw: run.query, normalized: run.query, language: run.language },
+          graph: { ...template.data.result.graph, nodes: template.data.result.graph.nodes.map(node => ({
+            ...node, resources: node.resources.map(resource => ({ ...resource, engine: run.engine })),
+          })) },
+        } },
+      };
+      if (template.type === "node.ready" || template.type === "node.partial") return {
+        ...template, runId: run.runId, resources: template.resources.map(resource => ({ ...resource, engine: run.engine })),
+      };
+      return { ...template, runId: run.runId };
+    };
 
     window.__WAYFINDER_E2E__ = {
       emit(targetRunIndex, eventIndexes, sourceRunIndex = targetRunIndex) {
@@ -199,6 +199,7 @@ async function installBrowserFixture(
           runId: run.runId,
           query: run.query,
           language: run.language,
+          engine: run.engine,
           aborted: run.aborted,
           cancelled: run.cancelled,
         })),
@@ -234,11 +235,13 @@ async function installBrowserFixture(
       const runId = body.runId;
       const query = body.query;
       const language = body.language;
+      const engine = "engine" in body ? body.engine : language === "zh-CN" ? "baidu" : "google";
       const signal = init.signal;
       if (
         typeof runId !== "string" ||
         typeof query !== "string" ||
         (language !== "zh-CN" && language !== "en-US") ||
+        (engine !== "baidu" && engine !== "google") ||
         !(signal instanceof AbortSignal)
       ) {
         throw new Error("E2E Search Request 不符合 Fixture 边界");
@@ -251,6 +254,7 @@ async function installBrowserFixture(
             runId,
             query,
             language,
+            engine,
             signal,
             controller,
             aborted: false,
@@ -722,4 +726,66 @@ test("节点拖动与连线编辑可撤销并持久保存，相关可成环而�
   expect(await readFixtureSnapshots(page)).toHaveLength(0);
   expect(pageErrors).toEqual([]);
   expect(flowWarnings).toEqual([]);
+});
+
+/** 引擎覆盖只影响下一次请求，偏好与资源实际来源分开，所有响应均为本地固定样例。 */
+test("引擎随语言默认且可独立覆盖，节点偏好保存而旧资源来源不变", async ({ page }) => {
+  const events = createJourneyEvents();
+  await installBrowserFixture(page, events);
+  await page.goto("/");
+  const sidebar = page.getByRole("complementary", { name: "搜索图记录" });
+  await expect(sidebar.getByRole("status")).toHaveText("已保存到本浏览器");
+  await expect(page.getByRole("combobox", { name: "搜索引擎", exact: true })).toHaveValue("baidu");
+  await page.getByRole("combobox", { name: "语言", exact: true }).selectOption("en-US");
+  const globalEngine = page.getByRole("combobox", { name: "Search engine", exact: true });
+  await expect(globalEngine).toHaveValue("google");
+  await globalEngine.selectOption("baidu");
+  await expect(page.getByRole("note")).toHaveText("Baidu does not guarantee regional targeting.");
+  expect(await readFixtureSnapshots(page)).toHaveLength(0);
+
+  await page.getByRole("searchbox", { name: "Search any topic" }).fill("Engine fixture");
+  await page.getByRole("searchbox", { name: "Search any topic" }).press("Enter");
+  await expect.poll(async () => (await readFixtureSnapshots(page))[0]).toMatchObject({ language: "en-US", engine: "baidu" });
+  await emitFixtureEvents(page, 0, events.map((_event, index) => index));
+  await page.evaluate(() => window.__WAYFINDER_E2E__.close(0));
+  await page.locator(`.react-flow__node[data-id="${READY_NODE_ID}"]`).click();
+  const firstCard = page.getByRole("list", { name: "Node resources" }).getByRole("listitem").first();
+  await expect(firstCard.getByRole("definition").filter({ hasText: "Baidu" })).toHaveCount(1);
+  await globalEngine.selectOption("google");
+  await expect(page.getByRole("combobox", { name: "Language", exact: true })).toHaveValue("en-US");
+  await expect(page.locator("html")).toHaveAttribute("lang", "en-US");
+  await expect(firstCard.getByRole("definition").filter({ hasText: "Baidu" })).toHaveCount(1);
+  const nodeEngine = page.getByRole("combobox", { name: "Node search engine", exact: true });
+  await expect(nodeEngine).toHaveValue("google");
+  await nodeEngine.selectOption("baidu");
+  expect(await readFixtureSnapshots(page)).toHaveLength(1);
+  await expect(page.getByRole("complementary", { name: "Search graphs", exact: true }).getByRole("status")).toHaveText("Saved in this browser");
+
+  await page.reload();
+  await expect(globalEngine).toHaveValue("google");
+  await page.locator(`.react-flow__node[data-id="${READY_NODE_ID}"]`).click();
+  await expect(nodeEngine).toHaveValue("baidu");
+  await expect(firstCard.getByRole("definition").filter({ hasText: "Baidu" })).toHaveCount(1);
+  expect(await readFixtureSnapshots(page)).toHaveLength(0);
+});
+
+
+/** 缺少显式引擎的人工图撤销后恢复语言默认，不能泄漏空页偏好。 */
+test("手动图引擎选择撤销后全局与节点均恢复语言默认", async ({ page }) => {
+  await installBrowserFixture(page, createJourneyEvents());
+  await page.goto("/");
+  const sidebar = page.getByRole("complementary", { name: "搜索图记录" });
+  await expect(sidebar.getByRole("status")).toHaveText("已保存到本浏览器");
+  await page.getByRole("textbox", { name: "新节点标题", exact: true }).fill("未选引擎节点");
+  await page.getByRole("button", { name: "新建节点", exact: true }).click();
+  const globalEngine = page.getByRole("combobox", { name: "搜索引擎", exact: true });
+  const nodeEngine = page.getByRole("combobox", { name: "节点搜索引擎", exact: true });
+  await expect(globalEngine).toHaveValue("baidu");
+  await expect(nodeEngine).toHaveValue("baidu");
+  await globalEngine.selectOption("google");
+  await expect(nodeEngine).toHaveValue("google");
+  await page.getByRole("button", { name: "撤销", exact: true }).click();
+  await expect(globalEngine).toHaveValue("baidu");
+  await expect(nodeEngine).toHaveValue("baidu");
+  expect(await readFixtureSnapshots(page)).toHaveLength(0);
 });

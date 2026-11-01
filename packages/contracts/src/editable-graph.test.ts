@@ -27,6 +27,17 @@ const expectRejected = (graph: unknown): void => {
 };
 
 describe("可编辑图协议", () => {
+  it("图与节点保存下一次引擎偏好，不改写既有资源来源", () => {
+    const resource = { ...manualResource("资源"), origin: "search" as const, searchProvider: "serpapi_bing", engine: "google" as const };
+    const graph = EditableGraphSchema.parse({
+      ...emptyGraph(), engine: "baidu",
+      nodes: [{ ...emptyNode("节点"), engine: "google", status: "edited", resources: [resource] }],
+    });
+    expect(graph.engine).toBe("baidu");
+    expect(graph.nodes[0]?.engine).toBe("google");
+    expect(graph.nodes[0]?.resources[0]).toMatchObject({ origin: "search", engine: "google" });
+  });
+
   it("允许空图、空节点及超过 AI 初稿上限的节点和资源", () => {
     const graph = emptyGraph();
     expect(EditableGraphSchema.parse(graph)).toEqual(graph);

@@ -1,7 +1,7 @@
 /** 组件职责：组合统一 Omnibox、运行摘要、Graph 结果画布与当前节点的 Resource Panel。 */
 import { useStore } from "zustand";
 import { useEffect, useState } from "react";
-import type { EditableGraph, SearchLanguage } from "@wayfinder/contracts";
+import { resolveSearchEngine, type SearchEngine, type EditableGraph, type SearchLanguage } from "@wayfinder/contracts";
 
 import { startStreamingSearch } from "./api/search.js";
 import { startWorkspaceSearch } from "./api/workspace-search.js";
@@ -74,6 +74,21 @@ export function App({ h1Evaluation, workspaceEnabled = false }: AppProps = {}) {
   const runLanguage = useWorkspace ? currentDocument?.language ?? null : runtime.language;
   const [selectedLanguage, setSelectedLanguage] =
     useState<SearchLanguage>(runLanguage ?? "zh-CN");
+  const [emptyPageEngine, setEmptyPageEngine] = useState<SearchEngine | undefined>();
+  // 空页偏好只属于尚未建立记录的下一次搜索；有图缺少偏好时必须回到语言默认，便于撤销。
+  const selectedEngine = resolveSearchEngine(selectedLanguage, currentDocument === null ? emptyPageEngine : currentDocument.engine);
+  const chooseEngine = (engine: SearchEngine): void => {
+    const state = workspaceStore.getState();
+    const graph = selectCurrentGraph(state);
+    if (!useWorkspace) return;
+    if (graph === null) setEmptyPageEngine(engine);
+    else if (graph.engine !== engine) state.replaceGraph({ ...graph, engine, updatedAt: new Date().toISOString() });
+  };
+  const chooseLanguage = (language: SearchLanguage): void => {
+    setSelectedLanguage(language);
+    // 语言选择确定下一次搜索默认引擎；用户随后仍可独立覆盖，不改既有图的语言或资源来源。
+    chooseEngine(resolveSearchEngine(language));
+  };
   const selections = useStore(workspaceStore, state => state.selectedNodeIds);
   const selectSavedNode = useStore(workspaceStore, state => state.selectNode);
   const savedGraph = useWorkspace && !showsRun ? currentDocument ?? EMPTY_GRAPH : undefined;
@@ -141,7 +156,8 @@ export function App({ h1Evaluation, workspaceEnabled = false }: AppProps = {}) {
         openDirectUrl={openDirectUrl}
         language={selectedLanguage}
         renderLanguage={renderLanguage}
-        onLanguageChange={setSelectedLanguage}
+        onLanguageChange={chooseLanguage}
+        {...(useWorkspace ? { engine: selectedEngine, onEngineChange: chooseEngine } : {})}
       />
       </fieldset>
       {useWorkspace ? <WorkspaceToolbar language={renderLanguage} disabled={showsRun || persistence.status === "loading" || persistence.error === "load"} /> : null}

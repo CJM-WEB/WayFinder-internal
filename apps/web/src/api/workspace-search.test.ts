@@ -35,3 +35,22 @@ describe("搜索与记录交付", () => {
     expect(store.getState().documents).toHaveLength(0);
   });
 });
+
+it("完成交付保留最新引擎偏好，不把该偏好重标为旧资源实际来源", () => {
+  const store = createWorkspaceStore();
+  const handoff = createWorkspaceSearchHandoff(store, () => "图");
+  handoff.onStart({ ...request(pythonResultGraphFixture.runId, "Python"), engine: "google" });
+  const graph = selectCurrentGraph(store.getState());
+  if (graph === null) throw new Error("缺少搜索图");
+  expect(graph.engine).toBe("google");
+  store.getState().replaceGraph({ ...graph, engine: "baidu" });
+  handoff.onComplete({ ...pythonResultGraphFixture, graph: {
+    ...pythonResultGraphFixture.graph,
+    nodes: pythonResultGraphFixture.graph.nodes.map(node => ({
+      ...node, resources: node.resources.map(resource => ({ ...resource, engine: "google" as const })),
+    })),
+  } });
+  const saved = selectCurrentGraph(store.getState());
+  expect(saved?.engine).toBe("baidu");
+  expect(saved?.nodes[0]?.resources[0]).toMatchObject({ engine: "google", origin: "search" });
+});

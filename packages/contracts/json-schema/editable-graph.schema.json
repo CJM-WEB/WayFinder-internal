@@ -32,6 +32,13 @@
         "compact"
       ]
     },
+    "engine": {
+      "type": "string",
+      "enum": [
+        "baidu",
+        "google"
+      ]
+    },
     "createdAt": {
       "type": "string",
       "format": "date-time",
@@ -136,6 +143,13 @@
               "providerHints"
             ],
             "additionalProperties": false
+          },
+          "engine": {
+            "type": "string",
+            "enum": [
+              "baidu",
+              "google"
+            ]
           },
           "status": {
             "type": "string",
@@ -303,6 +317,13 @@
                     "searchProvider": {
                       "type": "string",
                       "minLength": 1
+                    },
+                    "engine": {
+                      "type": "string",
+                      "enum": [
+                        "baidu",
+                        "google"
+                      ]
                     }
                   },
                   "required": [

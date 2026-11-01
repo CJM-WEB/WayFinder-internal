@@ -181,6 +181,13 @@
                             "type": "string",
                             "minLength": 1
                           },
+                          "engine": {
+                            "type": "string",
+                            "enum": [
+                              "baidu",
+                              "google"
+                            ]
+                          },
                           "publishedAt": {
                             "anyOf": [
                               {
@@ -382,6 +389,13 @@
                           "searchProvider": {
                             "type": "string",
                             "minLength": 1
+                          },
+                          "engine": {
+                            "type": "string",
+                            "enum": [
+                              "baidu",
+                              "google"
+                            ]
                           },
                           "publishedAt": {
                             "anyOf": [
@@ -616,6 +630,13 @@
                             "type": "string",
                             "minLength": 1
                           },
+                          "engine": {
+                            "type": "string",
+                            "enum": [
+                              "baidu",
+                              "google"
+                            ]
+                          },
                           "publishedAt": {
                             "anyOf": [
                               {
@@ -817,6 +838,13 @@
                           "searchProvider": {
                             "type": "string",
                             "minLength": 1
+                          },
+                          "engine": {
+                            "type": "string",
+                            "enum": [
+                              "baidu",
+                              "google"
+                            ]
                           },
                           "publishedAt": {
                             "anyOf": [

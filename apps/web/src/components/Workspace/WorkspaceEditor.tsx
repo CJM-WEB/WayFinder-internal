@@ -2,7 +2,7 @@
  * 模块职责：提供节点、资源与撤销的最小编辑界面；保存按钮才提交一次快照。
  * 编辑只调用确定性函数与本地状态，不把人工操作转化为 Search / LLM 指令。
  */
-import type { EditableGraph, Resource, SearchLanguage } from "@wayfinder/contracts";
+import { resolveSearchEngine, SearchEngineSchema, type EditableGraph, type Resource, type SearchLanguage } from "@wayfinder/contracts";
 import { useEffect, useState } from "react";
 import { useStore } from "zustand";
 
@@ -96,7 +96,8 @@ export function WorkspaceToolbar({ language, disabled }: { language: SearchLangu
 
 /** 标题修改与重新搜索独立，说明可为空；资源只需一个 URL 即可加入。 */
 export function NodeEditor({ graphId, nodeId, language }: { graphId: string; nodeId: string; language: SearchLanguage }) {
-  const node = useStore(workspaceStore, state => state.documents.find(graph => graph.id === graphId)?.nodes.find(item => item.id === nodeId));
+  const document = useStore(workspaceStore, state => state.documents.find(graph => graph.id === graphId));
+  const node = document?.nodes.find(item => item.id === nodeId);
   const [editing, setEditing] = useState(false);
   const [title, setTitle] = useState(node?.title ?? "");
   const [description, setDescription] = useState(node?.description ?? "");
@@ -104,8 +105,23 @@ export function NodeEditor({ graphId, nodeId, language }: { graphId: string; nod
   const edit = useGraphEdit(graphId, language);
   const messages = getMessages(language).editor;
   useEffect(() => { setTitle(node?.title ?? ""); setDescription(node?.description ?? ""); }, [node?.title, node?.description]);
-  if (node === undefined) return null;
+  if (node === undefined || document === undefined) return null;
+  const engineMessages = getMessages(language).searchEngine;
+  const engine = resolveSearchEngine(document.language, node.engine ?? document.engine);
   return <section className="workspace-node-editor">
+    <label className="workspace-edit-field">{engineMessages.nodeLabel}
+      <select value={engine} onChange={event => {
+        const next = SearchEngineSchema.parse(event.currentTarget.value);
+        edit.commit(graph => {
+          if (graph.nodes.find(item => item.id === nodeId)?.engine === next) return graph;
+          return { ...graph, updatedAt: new Date().toISOString(), nodes: graph.nodes.map(item => item.id === nodeId ? { ...item, engine: next } : item) };
+        });
+      }}>
+        <option value="baidu">{engineMessages.labels.baidu}</option>
+        <option value="google">{engineMessages.labels.google}</option>
+      </select>
+    </label>
+    {engine === "baidu" ? <p role="note">{engineMessages.baiduRegionNotice}</p> : null}
     {editing ? <form onSubmit={event => {
       event.preventDefault();
       if (edit.commit(graph => updateNode(graph, nodeId, { title: title.trim(), description }))) setEditing(false);

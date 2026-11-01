@@ -203,3 +203,11 @@ describe("Omnibox", () => {
     expect(markup).toContain(">Search</button>");
   });
 });
+
+it("显式引擎独立透传，选择百度不修改English语言", async () => {
+  const startSearch = vi.fn(async () => undefined);
+  const submission = startOmniboxSubmission("Engine fixture", startSearch, vi.fn(() => true), "en-US", "baidu");
+  if (submission.kind !== "ai_search") throw new Error("普通文字应进入搜索");
+  await submission.completion;
+  expect(startSearch).toHaveBeenCalledExactlyOnceWith({ query: "Engine fixture", language: "en-US", engine: "baidu" });
+});

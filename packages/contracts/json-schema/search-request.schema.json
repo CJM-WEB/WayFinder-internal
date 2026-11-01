@@ -17,6 +17,13 @@
         "zh-CN",
         "en-US"
       ]
+    },
+    "engine": {
+      "type": "string",
+      "enum": [
+        "baidu",
+        "google"
+      ]
     }
   },
   "required": [

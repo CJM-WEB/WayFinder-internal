@@ -51,13 +51,14 @@ type ActiveRun = Readonly<{
 }>;
 
 export type StartStreamingSearchInput = Readonly<
-  Pick<SearchRequest, "query" | "language">
+  Pick<SearchRequest, "query" | "language" | "engine">
 >;
 
 /** 无 runId 的 UI 输入仍复用公共 Contract 字段，不在 Web 复制语义。 */
 const SearchInputSchema = SearchRequestSchema.pick({
   query: true,
   language: true,
+  engine: true,
 });
 
 /** 默认 ID 由浏览器原生能力生成，不额外引入运行时依赖。 */

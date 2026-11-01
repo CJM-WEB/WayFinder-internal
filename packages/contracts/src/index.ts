@@ -16,6 +16,21 @@ import { z } from "zod";
 export const SearchLanguageSchema = z.enum(["zh-CN", "en-US"]);
 export type SearchLanguage = z.infer<typeof SearchLanguageSchema>;
 
+/** 搜索引擎是用户的检索选择，不改变已选语言或地区语境。 */
+export const SearchEngineSchema = z.enum(["baidu", "google"]);
+export type SearchEngine = z.infer<typeof SearchEngineSchema>;
+
+/** 只在执行边界解析缺省引擎，保留旧请求与历史资源中“字段缺失”的真实含义。 */
+export function resolveSearchEngine(
+  language: SearchLanguage,
+  engine?: SearchEngine,
+): SearchEngine {
+  const validatedLanguage = SearchLanguageSchema.parse(language);
+  return engine === undefined
+    ? validatedLanguage === "zh-CN" ? "baidu" : "google"
+    : SearchEngineSchema.parse(engine);
+}
+
 /**
  * SearchRequest（搜索请求）描述一次 Run（运行）的入口身份、有效查询和已校验语言。
  * Query（查询）先 trim，再按 Unicode code point（码点）校验长度。
@@ -25,6 +40,7 @@ export const SearchRequestSchema = z.strictObject({
   runId: z.string().min(1),
   query: z.string().trim().min(1).max(2000),
   language: SearchLanguageSchema,
+  engine: SearchEngineSchema.optional(),
 });
 export type SearchRequest = z.infer<typeof SearchRequestSchema>;
 
@@ -123,6 +139,7 @@ type ProviderSearchRequestCommon = {
   capability: SearchCapability;
   freshnessSensitive: boolean;
   language: SearchLanguage;
+  engine?: SearchEngine;
 };
 
 /**
@@ -145,6 +162,7 @@ export type ProviderSearchRequest =
  */
 export type NormalizedSearchHit = {
   provider: string;
+  engine?: SearchEngine;
   query: string;
   title: string;
   url: string;
@@ -173,6 +191,7 @@ export type ExtractedPage = {
 export type CandidateSearchHit = Pick<
   NormalizedSearchHit,
   | "provider"
+  | "engine"
   | "query"
   | "title"
   | "url"
@@ -307,6 +326,7 @@ export const ResourceSchema = z.strictObject({
     .record(z.string(), z.number().min(0).max(1))
     .optional(),
   searchProvider: z.string().min(1),
+  engine: SearchEngineSchema.optional(),
   publishedAt: z.iso.datetime({ offset: true }).nullable().optional(),
 });
 export type Resource = z.infer<typeof ResourceSchema>;
@@ -956,7 +976,7 @@ export type StreamEvent = z.infer<typeof StreamEventSchema>;
  * 编辑资源复用真实网页字段，但累计序位不受单次搜索容量限制。
  * 手动资源与搜索资源通过 origin（来源类型）区分，手动分支不接受伪造的搜索来源。
  */
-const editableResourceBaseSchema = ResourceSchema.omit({ searchProvider: true }).extend({
+const editableResourceBaseSchema = ResourceSchema.omit({ searchProvider: true, engine: true }).extend({
   summary: z.string(),
   whySelected: z.string(),
   rank: z.number().int().min(1),
@@ -966,6 +986,7 @@ export const EditableResourceSchema = z.discriminatedUnion("origin", [
   editableResourceBaseSchema.extend({
     origin: z.literal("search"),
     searchProvider: ResourceSchema.shape.searchProvider,
+    engine: SearchEngineSchema.optional(),
   }),
 ]);
 export type EditableResource = z.infer<typeof EditableResourceSchema>;
@@ -977,6 +998,7 @@ export const EditableNodeStatusSchema = z.enum([
 export const EditableNodeSchema = GraphNodeCoreSchema.extend({
   description: z.string(),
   searchPlan: SearchPlanSchema.optional(),
+  engine: SearchEngineSchema.optional(),
   status: EditableNodeStatusSchema,
   resources: z.array(EditableResourceSchema),
   warnings: z.array(NodeWarningCodeSchema),
@@ -1001,6 +1023,7 @@ export const EditableGraphSchema = z.strictObject({
   query: z.string().max(2000),
   language: SearchLanguageSchema,
   presentationMode: PresentationModeSchema,
+  engine: SearchEngineSchema.optional(),
   createdAt: z.iso.datetime({ offset: true }),
   updatedAt: z.iso.datetime({ offset: true }),
   lastRunId: z.string().min(1).nullable(),

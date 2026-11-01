@@ -152,6 +152,7 @@ function SelectedResourcePanel({
   const [expanded, setExpanded] = useState(false);
   const messages = getMessages(model.language).resourcePanel;
   const editorMessages = getMessages(model.language).editor;
+  const engineMessages = getMessages(model.language).searchEngine;
   const dragEdit = useGraphEdit(editableGraphId ?? null, model.language);
   const visibleResources = selectVisibleResources(model.resources, expanded);
   const hiddenResourceCount = model.resources.length - visibleResources.length;
@@ -238,6 +239,10 @@ function SelectedResourcePanel({
                   </header>
 
                   <dl className="resource-card__meta">
+                    {"origin" in resource && resource.origin === "manual" ? null : <div>
+                      <dt>{engineMessages.sourceLabel}</dt>
+                      <dd>{"engine" in resource && resource.engine !== undefined ? engineMessages.labels[resource.engine] : engineMessages.unknownSource}</dd>
+                    </div>}
                     <div>
                       <dt>{messages.domain}</dt>
                       <dd>{resource.domain}</dd>

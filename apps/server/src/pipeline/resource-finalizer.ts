@@ -107,6 +107,7 @@ function createResource(
     rank,
     ...(candidate.scores === undefined ? {} : { scores: candidate.scores }),
     searchProvider: candidate.hit.provider,
+    ...(candidate.hit.engine === undefined ? {} : { engine: candidate.hit.engine }),
     ...(publishedAt === undefined ? {} : { publishedAt }),
   });
 }

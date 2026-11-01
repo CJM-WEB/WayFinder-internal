@@ -2,7 +2,7 @@
  * 模块职责：把一次新搜索关联到稳定图记录，完成结果单向交付工作区。
  * 浏览旧记录不会调用本入口；运行草图仍由现有 graph-store 管理。
  */
-import type { SearchRequest, ResultGraph } from "@wayfinder/contracts";
+import { resolveSearchEngine, type SearchRequest, type ResultGraph } from "@wayfinder/contracts";
 
 import { createStartStreamingSearch } from "./search.js";
 import { buildGraphFlowElements } from "../components/Graph/graph-layout.js";
@@ -25,7 +25,7 @@ export const createWorkspaceSearchHandoff = (
 ) => ({
   onStart(request: SearchRequest): void {
     const document = createEmptyGraph(createGraphId(), request.query, request.language);
-    store.getState().addGraph({ ...document, query: request.query, lastRunId: request.runId });
+    store.getState().addGraph({ ...document, query: request.query, lastRunId: request.runId, engine: resolveSearchEngine(request.language, request.engine) });
   },
   onComplete(result: ResultGraph): void {
     const previous = store.getState().documents.find(document => document.lastRunId === result.runId);
@@ -35,6 +35,7 @@ export const createWorkspaceSearchHandoff = (
     const elements = buildGraphFlowElements(document.nodes, document.edges, document.language);
     store.getState().replaceGraph({
       ...document, title: previous.title, createdAt: previous.createdAt,
+      ...(previous.engine === undefined ? {} : { engine: previous.engine }),
       positions: Object.fromEntries(elements.nodes.map(node => [node.id, node.position])),
     });
   },
