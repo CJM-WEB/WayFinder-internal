@@ -1,5 +1,5 @@
 /**
- * 测试职责：冻结 WAY-87 自动质量指标的确定性公式、完整 ResultGraph 口径与脱敏失败定位。
+ * 测试职责：冻结 WAY-87/110 自动质量指标的确定性公式、完整 ResultGraph 口径与脱敏失败定位。
  *
  * 边界说明：这些测试不设置质量阈值或综合分；只验证事实计算，且不重复测试 Runner、
  * Provider 或文件系统安全边界。
@@ -12,9 +12,12 @@ import {
 import { describe, expect, it } from "vitest";
 
 import {
+  QUALITY_EVAL_PLANNED_REQUEST_CONFIG,
   QUALITY_METRICS_VERSION,
   QualityEvalMetricsSchema,
+  QualityEvalPlannedRequestDuplicationSchema,
   QualityEvalTelemetrySchema,
+  measureQualityEvalPlannedRequestDuplication,
   measureQualityEvalMetrics,
 } from "./quality-metrics.js";
 
@@ -71,7 +74,7 @@ function createReadyResult(urls: readonly string[]): ResultGraph {
     query: {
       raw: "VS Code download",
       normalized: "vs code download",
-      language: "und",
+      language: "zh-CN",
     },
     analysis: plan.analysis,
     graph: {
@@ -109,7 +112,7 @@ function createFailedResult(): ResultGraph {
     query: {
       raw: "VS Code download",
       normalized: "vs code download",
-      language: "und",
+      language: "zh-CN",
     },
     analysis: plan.analysis,
     graph: {
@@ -137,6 +140,8 @@ function createTelemetry(totalMs: number) {
   return QualityEvalTelemetrySchema.parse({
     timingsMs: {
       planning: 100,
+      graphOutlinePlanning: 60,
+      searchPlanPlanning: 40,
       nodeProcessing: 200,
       total: totalMs,
       // Provider 耗时可以并发累加，Deadline 指标只能读取 total。
@@ -149,6 +154,51 @@ function createTelemetry(totalMs: number) {
       logicalLlmCalls: 2,
       searchHttpAttempts: 1,
       extractHttpAttempts: 1,
+    },
+    planningStages: {
+      graphOutline: {
+        logicalLlmCalls: 1,
+        failureCode: null,
+        tokens: {
+          status: "complete",
+          observations: 1,
+          inputTokens: 1,
+          outputTokens: 1,
+          totalTokens: 2,
+        },
+      },
+      searchPlan: {
+        logicalLlmCalls: 1,
+        failureCode: null,
+        tokens: {
+          status: "complete",
+          observations: 1,
+          inputTokens: 1,
+          outputTokens: 1,
+          totalTokens: 2,
+        },
+      },
+    },
+    versions: { rankFusion: "rank-fusion.v1" },
+    ranking: {
+      llmSuccess: {
+        nodeCount: 1,
+        finalCandidateCount: 3,
+        providerTop1OverrideCount: 1,
+        heuristicTop1OverrideCount: 0,
+        providerTop3FinalOverlapCount: 3,
+        heuristicTop3FinalOverlapCount: 3,
+        top3ComparisonSlots: 3,
+      },
+      fallback: {
+        nodeCount: 0,
+        finalCandidateCount: 0,
+        providerTop1OverrideCount: 0,
+        heuristicTop1OverrideCount: 0,
+        providerTop3FinalOverlapCount: 0,
+        heuristicTop3FinalOverlapCount: 0,
+        top3ComparisonSlots: 0,
+      },
     },
     tokens: {
       status: "complete",
@@ -223,16 +273,219 @@ function createGraphFixture(
   return { plan: fixturePlan, result };
 }
 
+describe("WAY-110 SearchPlan 计划请求重复聚合", () => {
+  it("同一身份同时覆盖 Node 内重复与跨 Node 共享时保持互斥计数", () => {
+    const baseNode = plan.nodes[0];
+    if (baseNode === undefined) throw new Error("测试 Fixture 缺少基础 Node");
+    const duplicatePlan = GraphPlanSchema.parse({
+      ...plan,
+      nodes: [
+        {
+          ...baseNode,
+          id: "node-a",
+          searchPlan: {
+            ...baseNode.searchPlan,
+            queries: ["same request", "same request"],
+            maxResults: 10,
+          },
+        },
+        {
+          ...baseNode,
+          id: "node-b",
+          searchPlan: {
+            ...baseNode.searchPlan,
+            queries: ["same request", "other request"],
+            maxResults: 10,
+          },
+        },
+      ],
+      edges: [],
+    });
+
+    expect(
+      measureQualityEvalPlannedRequestDuplication(
+        duplicatePlan,
+        QUALITY_EVAL_PLANNED_REQUEST_CONFIG,
+      ),
+    ).toEqual({
+      totalCount: 4,
+      uniqueCount: 2,
+      intraNodeDuplicateOccurrenceCount: 1,
+      crossNodeSharedGroupCount: 1,
+      crossNodeExtraNodeOccurrenceCount: 1,
+    });
+  });
+
+  it("相似 Query 与相同 Query 的不同 maxResults 均不误判为同一身份", () => {
+    const baseNode = plan.nodes[0];
+    if (baseNode === undefined) throw new Error("测试 Fixture 缺少基础 Node");
+    const distinctPlan = GraphPlanSchema.parse({
+      ...plan,
+      nodes: [
+        {
+          ...baseNode,
+          id: "node-a",
+          searchPlan: {
+            ...baseNode.searchPlan,
+            queries: ["same request", "Same request"],
+            maxResults: 10,
+          },
+        },
+        {
+          ...baseNode,
+          id: "node-b",
+          searchPlan: {
+            ...baseNode.searchPlan,
+            queries: ["same request"],
+            maxResults: 20,
+          },
+        },
+      ],
+      edges: [],
+    });
+
+    expect(
+      measureQualityEvalPlannedRequestDuplication(
+        distinctPlan,
+        QUALITY_EVAL_PLANNED_REQUEST_CONFIG,
+      ),
+    ).toEqual({
+      totalCount: 3,
+      uniqueCount: 3,
+      intraNodeDuplicateOccurrenceCount: 0,
+      crossNodeSharedGroupCount: 0,
+      crossNodeExtraNodeOccurrenceCount: 0,
+    });
+  });
+
+  it("多 Node 多次重复严格拆分 Node 内 occurrence 与额外 Node occurrence", () => {
+    const baseNode = plan.nodes[0];
+    if (baseNode === undefined) throw new Error("测试 Fixture 缺少基础 Node");
+    const combinedPlan = GraphPlanSchema.parse({
+      ...plan,
+      nodes: [
+        {
+          ...baseNode,
+          id: "node-a",
+          searchPlan: {
+            ...baseNode.searchPlan,
+            queries: ["same", "same", "same"],
+            maxResults: 6,
+          },
+        },
+        {
+          ...baseNode,
+          id: "node-b",
+          searchPlan: {
+            ...baseNode.searchPlan,
+            queries: ["same", "same", "other-a"],
+            maxResults: 6,
+          },
+        },
+        {
+          ...baseNode,
+          id: "node-c",
+          searchPlan: {
+            ...baseNode.searchPlan,
+            queries: ["same", "other-b", "other-c"],
+            maxResults: 6,
+          },
+        },
+      ],
+      edges: [],
+    });
+
+    const measured = measureQualityEvalPlannedRequestDuplication(
+      combinedPlan,
+      QUALITY_EVAL_PLANNED_REQUEST_CONFIG,
+    );
+
+    expect(measured).toEqual({
+      totalCount: 9,
+      uniqueCount: 4,
+      intraNodeDuplicateOccurrenceCount: 3,
+      crossNodeSharedGroupCount: 1,
+      crossNodeExtraNodeOccurrenceCount: 2,
+    });
+    expect(measured.totalCount - measured.uniqueCount).toBe(
+      measured.intraNodeDuplicateOccurrenceCount +
+        measured.crossNodeExtraNodeOccurrenceCount,
+    );
+    expect(measured.crossNodeSharedGroupCount).toBeLessThanOrEqual(
+      measured.crossNodeExtraNodeOccurrenceCount,
+    );
+  });
+
+  it("严格 Schema 拒绝不变量、非安全整数与任何请求身份字段", () => {
+    const valid = {
+      totalCount: 4,
+      uniqueCount: 2,
+      intraNodeDuplicateOccurrenceCount: 1,
+      crossNodeSharedGroupCount: 1,
+      crossNodeExtraNodeOccurrenceCount: 1,
+    };
+
+    expect(QualityEvalPlannedRequestDuplicationSchema.parse(valid)).toEqual(
+      valid,
+    );
+    expect(
+      QualityEvalPlannedRequestDuplicationSchema.safeParse({
+        ...valid,
+        crossNodeExtraNodeOccurrenceCount: 0,
+      }).success,
+    ).toBe(false);
+    expect(
+      QualityEvalPlannedRequestDuplicationSchema.safeParse({
+        ...valid,
+        totalCount: Number.MAX_SAFE_INTEGER + 1,
+      }).success,
+    ).toBe(false);
+    for (const forbiddenField of [
+      "query",
+      "queryFingerprint",
+      "nodeId",
+      "groupIdentity",
+    ]) {
+      expect(
+        QualityEvalPlannedRequestDuplicationSchema.safeParse({
+          ...valid,
+          [forbiddenField]: "private-identity",
+        }).success,
+      ).toBe(false);
+    }
+  });
+
+  it("当前 Metrics Schema 拒绝伪装成新结构的 v1 工件", () => {
+    const measured = measureQualityEvalMetrics({
+      queryId: QUERY_ID,
+      plan,
+      result: createReadyResult(["https://example.com/item"]),
+      telemetry: createTelemetry(1_000),
+      expectedOfficialDomains: [],
+      runDeadlineMs: RUN_DEADLINE_MS,
+    });
+    expect(measured.status).toBe("measured");
+    if (measured.status !== "measured") return;
+
+    expect(
+      QualityEvalMetricsSchema.safeParse({
+        ...measured.metrics,
+        version: "quality-metrics.v1",
+      }).success,
+    ).toBe(false);
+  });
+});
+
 describe("WAY-87 确定性质量指标", () => {
-  it("使用完整 ResultGraph 统计 Resource，并冻结 excess-occurrence 重复率", () => {
+  it("合法 ResultGraph 的 Resource 重复率严格为 0", () => {
     const fixture = createGraphFixture([
       [
         "https://example.com/a",
         "https://example.com/b",
         "https://example.com/c",
-        "https://duplicate.example/item",
+        "https://example.com/d",
       ],
-      ["https://duplicate.example/item"],
+      ["https://example.com/e"],
     ]);
 
     const measured = measureQualityEvalMetrics({
@@ -252,9 +505,9 @@ describe("WAY-87 确定性质量指标", () => {
       resourceCount: 5,
       duplicateRate: {
         status: "measured",
-        duplicateOccurrences: 1,
+        duplicateOccurrences: 0,
         totalOccurrences: 5,
-        value: 0.2,
+        value: 0,
       },
       officialSource: { status: "notApplicable" },
       deadlineCompliance: { status: "within" },
@@ -271,36 +524,18 @@ describe("WAY-87 确定性质量指标", () => {
         officialSource: { status: "notApplicable" },
       },
     ]);
-    expect(measured.duplicateResources).toHaveLength(1);
-    expect(measured.duplicateResources[0]?.occurrences).toEqual([
-      { nodeId: "node-1", rank: 4 },
-      { nodeId: "node-2", rank: 1 },
-    ]);
+    expect(measured.duplicateResources).toEqual([]);
   });
 
-  it("三次重复只计算两个超额 occurrence，零资源时重复率不可用", () => {
-    const repeatedFixture = createGraphFixture([
-      ["https://duplicate.example/item"],
-      ["https://duplicate.example/item"],
-      ["https://duplicate.example/item"],
-      ["https://unique.example/item"],
-    ]);
-    const repeated = measureQualityEvalMetrics({
-      queryId: QUERY_ID,
-      ...repeatedFixture,
-      telemetry: createTelemetry(1_000),
-      expectedOfficialDomains: [],
-      runDeadlineMs: RUN_DEADLINE_MS,
-    });
-    expect(repeated.status).toBe("measured");
-    if (repeated.status === "measured") {
-      expect(repeated.metrics.duplicateRate).toEqual({
-        status: "measured",
-        duplicateOccurrences: 2,
-        totalOccurrences: 4,
-        value: 0.5,
-      });
-    }
+  it("跨 Node 重复图被 Contract 拒绝，零资源时重复率不可用", () => {
+    expect(() =>
+      createGraphFixture([
+        ["https://duplicate.example/item"],
+        ["https://duplicate.example/item"],
+        ["https://duplicate.example/item"],
+        ["https://unique.example/item"],
+      ]),
+    ).toThrow();
 
     const empty = measureQualityEvalMetrics({
       queryId: QUERY_ID,
@@ -550,6 +785,35 @@ describe("WAY-87 确定性质量指标", () => {
     });
     expect(JSON.stringify(invalid)).not.toContain(secret);
     expect(JSON.stringify(invalid)).not.toContain("/Users/private");
+  });
+
+  it("计划请求配置非法时返回固定失败，不抛异常或伪造零诊断", () => {
+    const invalidProviderId = "private-provider-identity";
+    const measured = measureQualityEvalMetrics({
+      queryId: QUERY_ID,
+      plan,
+      result: createReadyResult(["https://example.com/item"]),
+      telemetry: createTelemetry(1_000),
+      expectedOfficialDomains: [],
+      runDeadlineMs: RUN_DEADLINE_MS,
+      plannedRequestConfig: {
+        providerId: invalidProviderId,
+        language: "zh-CN",
+      },
+    });
+
+    expect(measured).toEqual({
+      status: "failed",
+      failure: {
+        queryId: QUERY_ID,
+        metric: "metricsProjection",
+        stage: "metricsProjection",
+        code: "policy_invalid",
+      },
+    });
+    expect(JSON.stringify(measured)).not.toContain(invalidProviderId);
+    expect(JSON.stringify(measured)).not.toContain("plannedRequestDuplication");
+    expect(JSON.stringify(measured)).not.toContain("download");
   });
 
   it("不产生综合分、通过率或自动质量门禁", () => {

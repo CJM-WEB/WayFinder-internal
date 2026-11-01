@@ -2,7 +2,7 @@
  * 测试职责：冻结 WAY-44 SearchProvider Port（搜索提供方端口）的最小结构。
  *
  * 关键约束：端口只消费共享的规范化内部类型，搜索与批量抽取都显式暴露
- * AbortSignal（取消信号）；Tavily 私有响应不属于此边界。
+ * AbortSignal（取消信号）；任何 Provider 私有响应都不属于此边界。
  */
 import type {
   ExtractedPage,

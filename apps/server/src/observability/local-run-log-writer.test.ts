@@ -26,7 +26,7 @@ const createdRoots: string[] = [];
 
 function createRecord(): RunLogRecord {
   return RunLogRecordSchema.parse({
-    schemaVersion: "run-log.v1",
+    schemaVersion: "run-log.v4",
     createdAt: "2026-10-22T00:00:00.000Z",
     identifiers: {
       logId: "00000000-0000-4000-8000-000000000001",
@@ -36,6 +36,8 @@ function createRecord(): RunLogRecord {
     outcome: "failed",
     timingsMs: {
       planning: null,
+      graphOutlinePlanning: null,
+      searchPlanPlanning: null,
       nodeProcessing: null,
       total: 0,
       provider: { search: 0, extract: 0, llm: 0 },
@@ -56,19 +58,65 @@ function createRecord(): RunLogRecord {
       searchHttpAttempts: 0,
       extractHttpAttempts: 0,
     },
+    planningStages: {
+      graphOutline: {
+        logicalLlmCalls: 0,
+        failureCode: "UNKNOWN",
+        tokens: {
+          status: "not_used",
+          observations: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          totalTokens: 0,
+        },
+      },
+      searchPlan: {
+        logicalLlmCalls: 0,
+        failureCode: null,
+        tokens: {
+          status: "not_used",
+          observations: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          totalTokens: 0,
+        },
+      },
+    },
     warningCodes: [],
     errorCodes: ["UNKNOWN"],
     versions: {
       protocol: "0.1",
       resultGraph: "0.1",
-      plannerPrompt: "graph-planner.v1",
-      reviserPrompt: "graph-reviser.v1",
-      rerankerPrompt: "resource-reranker.v1",
+      plannerPrompt: "graph-planner.v3",
+      reviserPrompt: "graph-reviser.v4",
+      searchPlanGeneratorPrompt: "search-plan-generator.v3",
+      rerankerPrompt: "resource-reranker.v2",
+      rankFusion: "rank-fusion.v1",
     },
     providers: { search: "fake-search", llm: "fake-llm" },
     cache: {
       search: { hitCount: 0, missCount: 0 },
       extract: { hitCount: 0, missCount: 0 },
+    },
+    ranking: {
+      llmSuccess: {
+        nodeCount: 0,
+        finalCandidateCount: 0,
+        providerTop1OverrideCount: 0,
+        heuristicTop1OverrideCount: 0,
+        providerTop3FinalOverlapCount: 0,
+        heuristicTop3FinalOverlapCount: 0,
+        top3ComparisonSlots: 0,
+      },
+      fallback: {
+        nodeCount: 0,
+        finalCandidateCount: 0,
+        providerTop1OverrideCount: 0,
+        heuristicTop1OverrideCount: 0,
+        providerTop3FinalOverlapCount: 0,
+        heuristicTop3FinalOverlapCount: 0,
+        top3ComparisonSlots: 0,
+      },
     },
     tokens: {
       status: "not_used",

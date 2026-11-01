@@ -3,9 +3,10 @@
  * 并同时返回 Node 汇总与逐 Query（查询）结算。
  *
  * 关键边界：
- * - V0 的所有 providerHints 只选择 Tavily，每条 Query 恰好调用一次；
+ * - V0 的所有 providerHints 只选择唯一 Search Provider，每条 Query 恰好调用一次；
  * - Provider 已负责单次调用的 Timeout 与有界重试，本层只共享 Run Signal；
- * - 原始调用合并后没有 Hit 就是搜索失败，URL 可用性过滤属于后续 Pipeline。
+ * - 逐 Query 结果按深度稳定轮询，URL 可用性与去重仍属于后续 Pipeline；
+ * - 原始调用合并后没有 Hit 就是搜索失败，不能伪装成局部成功。
  */
 import {
   calculateSearchPlanMaxResults,
@@ -14,6 +15,7 @@ import {
   type NodeSearchOutcome,
   type ProviderSearchRequest,
   type QuerySearchOutcome,
+  type SearchLanguage,
 } from "@wayfinder/contracts";
 
 import type { SearchProvider } from "./provider.js";
@@ -40,10 +42,10 @@ export type RunNodeSearchesInput = {
   /** 该值来自 GraphPlan.analysis，确保 Planner 分析仍是单一事实来源。 */
   freshnessSensitive: boolean;
   /** V0 唯一真实 Provider；Selector 仍隔离具体 Adapter 与业务编排。 */
-  tavilyProvider: SearchProvider;
+  searchProvider: SearchProvider;
   /** 整次 Run 共享的取消与绝对 Deadline Signal。 */
   signal: AbortSignal;
-  language?: string;
+  language: SearchLanguage;
 };
 
 /** 为一条 Query 构造无 Provider 私有字段的统一请求。 */
@@ -59,11 +61,38 @@ function createProviderRequest(
     maxResults: calculateSearchPlanMaxResults(
       input.node.searchPlan.queries.length,
     ),
-    // V0 所有 Hint 都映射到 Tavily 的通用搜索能力。
+    // V0 所有 Hint 都映射到唯一 Provider 的通用搜索能力。
     capability: "general",
     freshnessSensitive: input.freshnessSensitive,
-    ...(input.language === undefined ? {} : { language: input.language }),
+    language: input.language,
   };
+}
+
+/**
+ * 按结果深度稳定轮询逐 Query Hit，同时保持 Query 顺序与各 Query 内 Provider 顺序。
+ *
+ * 这里不做 URL 校验、去重或数量截断：这些职责继续由后续确定性 Pipeline 负责，
+ * 从而让重复或非法项被移除后，仍可从更深轮次补入合法候选。
+ */
+function mergeQueryHitsRoundRobin(
+  queryOutcomes: readonly QuerySearchOutcome[],
+): NodeSearchOutcome["hits"] {
+  const hits: NodeSearchOutcome["hits"] = [];
+  const maxDepth = queryOutcomes.reduce(
+    (maximum, outcome) => Math.max(maximum, outcome.hits.length),
+    0,
+  );
+
+  for (let depth = 0; depth < maxDepth; depth += 1) {
+    for (const outcome of queryOutcomes) {
+      const hit = outcome.hits[depth];
+      if (hit !== undefined) {
+        hits.push(hit);
+      }
+    }
+  }
+
+  return hits;
 }
 
 /**
@@ -76,7 +105,7 @@ export async function runNodeSearches(
 
   const provider = selectSearchProvider({
     providerHints: input.node.searchPlan.providerHints,
-    tavilyProvider: input.tavilyProvider,
+    searchProvider: input.searchProvider,
   });
   const settled = await Promise.allSettled(
     input.node.searchPlan.queries.map(query =>
@@ -105,7 +134,7 @@ export async function runNodeSearches(
             warnings: ["SEARCH_PROVIDER_PARTIAL"],
           };
     });
-  const hits = queryOutcomes.flatMap(outcome => outcome.hits);
+  const hits = mergeQueryHitsRoundRobin(queryOutcomes);
 
   if (hits.length === 0) {
     throw new NodeSearchError();

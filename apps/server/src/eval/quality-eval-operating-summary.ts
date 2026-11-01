@@ -11,10 +11,11 @@
 import { z } from "zod";
 
 import type { QualityEvalQueryResult } from "./quality-eval.js";
+import { QualityEvalPlannedRequestDuplicationSchema } from "./quality-metrics.js";
 import type { QualityEvalReport } from "./run-quality-eval.js";
 
 export const QUALITY_EVAL_OPERATING_SUMMARY_VERSION =
-  "quality-eval-operating-summary.v1" as const;
+  "quality-eval-operating-summary.v4" as const;
 
 const CALL_COUNT_KEYS = [
   "logicalSearchCalls",
@@ -89,6 +90,87 @@ const ProviderUsageSchema = z.discriminatedUnion("status", [
     observedTotals: CallCountsSchema,
   }),
   CoverageFactsSchema.extend({ status: z.literal("unavailable") }),
+]);
+
+const ResourceDuplicationTotalsSchema = z.strictObject({
+  measuredQueryCount: NonNegativeSafeIntegerSchema,
+  noResourceQueryCount: NonNegativeSafeIntegerSchema,
+  duplicateOccurrences: NonNegativeSafeIntegerSchema,
+  totalOccurrences: NonNegativeSafeIntegerSchema,
+});
+
+const DuplicationTotalsSchema = z.strictObject({
+  plannedRequests: QualityEvalPlannedRequestDuplicationSchema,
+  resources: ResourceDuplicationTotalsSchema,
+});
+
+const DuplicationSummarySchema = z.discriminatedUnion("status", [
+  CoverageFactsSchema.extend({
+    status: z.literal("complete"),
+    totals: DuplicationTotalsSchema,
+  }),
+  CoverageFactsSchema.extend({
+    status: z.literal("partial"),
+    observedTotals: DuplicationTotalsSchema,
+  }),
+  CoverageFactsSchema.extend({ status: z.literal("unavailable") }),
+]);
+
+const RankingTotalsSchema = z.strictObject({
+  observedNodeCount: NonNegativeSafeIntegerSchema,
+  llmSuccessNodeCount: NonNegativeSafeIntegerSchema,
+  fallbackNodeCount: NonNegativeSafeIntegerSchema,
+  finalCandidateCount: NonNegativeSafeIntegerSchema,
+});
+
+const RankingRatioSchema = z.discriminatedUnion("status", [
+  z.strictObject({
+    status: z.literal("measured"),
+    numerator: NonNegativeSafeIntegerSchema,
+    denominator: NonNegativeSafeIntegerSchema.min(1),
+    value: z.number().finite().min(0).max(1),
+  }),
+  z.strictObject({
+    status: z.literal("unavailable"),
+    reason: z.literal("noRankingObservations"),
+  }),
+]);
+
+const RankingModeRatesSchema = z.strictObject({
+  providerTop1Override: RankingRatioSchema,
+  heuristicTop1Override: RankingRatioSchema,
+  providerTop3FinalOverlap: RankingRatioSchema,
+  heuristicTop3FinalOverlap: RankingRatioSchema,
+});
+
+const RankingRatesSchema = z.strictObject({
+  llmSuccess: RankingModeRatesSchema,
+  fallback: RankingModeRatesSchema,
+});
+
+const RankingCoverageSchema = z.strictObject({
+  expectedQueryCount: z.number().int().min(1).max(20),
+  observedTelemetryQueryCount: z.number().int().min(0).max(20),
+  expectedRankedNodeCount: NonNegativeSafeIntegerSchema,
+  observedRankedNodeCount: NonNegativeSafeIntegerSchema,
+  incompleteQueryCount: z.number().int().min(0).max(20),
+});
+
+const RankingSummarySchema = z.discriminatedUnion("status", [
+  RankingCoverageSchema.extend({
+    status: z.literal("complete"),
+    totals: RankingTotalsSchema,
+    rates: RankingRatesSchema,
+  }),
+  RankingCoverageSchema.extend({
+    status: z.literal("partial"),
+    observedTotals: RankingTotalsSchema,
+    rates: RankingRatesSchema,
+  }),
+  RankingCoverageSchema.extend({
+    status: z.literal("unavailable"),
+    reason: z.enum(["noTelemetry", "noRankingEligibleNodes"]),
+  }),
 ]);
 
 const TokenTotalsSchema = z.strictObject({
@@ -180,7 +262,9 @@ export const QualityEvalOperatingSummarySchema = z.strictObject({
     }),
   }),
   latency: LatencySchema,
+  duplication: DuplicationSummarySchema,
   providerUsage: ProviderUsageSchema,
+  ranking: RankingSummarySchema,
   tokens: TokensSchema,
   cache: z.strictObject({
     status: z.literal("notMeasured"),
@@ -248,6 +332,105 @@ function addSafeInteger(
   return next;
 }
 
+function createZeroDuplicationTotals(): z.infer<
+  typeof DuplicationTotalsSchema
+> {
+  return {
+    plannedRequests: {
+      totalCount: 0,
+      uniqueCount: 0,
+      intraNodeDuplicateOccurrenceCount: 0,
+      crossNodeSharedGroupCount: 0,
+      crossNodeExtraNodeOccurrenceCount: 0,
+    },
+    resources: {
+      measuredQueryCount: 0,
+      noResourceQueryCount: 0,
+      duplicateOccurrences: 0,
+      totalOccurrences: 0,
+    },
+  };
+}
+
+/**
+ * 只汇总逐 Query 已验证的计划请求与既有 Resource 重复事实。缺少 Metrics 的 Query
+ * 进入 coverage 缺口，不能按零重复处理；计划数量与实际 Provider 调用保持独立。
+ */
+export function summarizeQualityEvalDuplication(
+  results: readonly QualityEvalQueryResult[],
+): z.infer<typeof DuplicationSummarySchema> {
+  const totals = createZeroDuplicationTotals();
+  const missingQueryIds: string[] = [];
+  let observedQueryCount = 0;
+
+  for (const result of results) {
+    if (result.metrics === null) {
+      missingQueryIds.push(result.query.id);
+      continue;
+    }
+    observedQueryCount += 1;
+    const planned = result.metrics.plannedRequestDuplication;
+    for (const key of Object.keys(
+      totals.plannedRequests,
+    ) as (keyof typeof totals.plannedRequests)[]) {
+      totals.plannedRequests[key] = addSafeInteger(
+        totals.plannedRequests[key],
+        planned[key],
+        "计划请求重复",
+      );
+    }
+
+    const resource = result.metrics.duplicateRate;
+    if (resource.status === "measured") {
+      totals.resources.measuredQueryCount = addSafeInteger(
+        totals.resources.measuredQueryCount,
+        1,
+        "Resource 重复已测 Query",
+      );
+      totals.resources.duplicateOccurrences = addSafeInteger(
+        totals.resources.duplicateOccurrences,
+        resource.duplicateOccurrences,
+        "Resource 重复 occurrence",
+      );
+      totals.resources.totalOccurrences = addSafeInteger(
+        totals.resources.totalOccurrences,
+        resource.totalOccurrences,
+        "Resource 总 occurrence",
+      );
+    } else {
+      totals.resources.noResourceQueryCount = addSafeInteger(
+        totals.resources.noResourceQueryCount,
+        1,
+        "零 Resource Query",
+      );
+    }
+  }
+
+  const facts: ProviderUsageFacts = {
+    expectedQueryCount: results.length,
+    observedQueryCount,
+    missingQueryIds,
+  };
+  if (observedQueryCount === results.length) {
+    return DuplicationSummarySchema.parse({
+      ...facts,
+      status: "complete",
+      totals,
+    });
+  }
+  if (observedQueryCount === 0) {
+    return DuplicationSummarySchema.parse({
+      ...facts,
+      status: "unavailable",
+    });
+  }
+  return DuplicationSummarySchema.parse({
+    ...facts,
+    status: "partial",
+    observedTotals: totals,
+  });
+}
+
 /**
  * Provider 调用覆盖率由 `telemetry` 是否存在决定；零调用仍是完整测量。
  * 该纯函数同时供 WAY-90 A-B-B-A 比较器复用，保持唯一聚合口径。
@@ -286,6 +469,188 @@ export function summarizeQualityEvalProviderUsage(
     return { ...facts, status: "unavailable" };
   }
   return { ...facts, status: "partial", observedTotals: totals };
+}
+
+function createRankingRatio(
+  numerator: number,
+  denominator: number,
+): z.infer<typeof RankingRatioSchema> {
+  if (denominator === 0) {
+    return { status: "unavailable", reason: "noRankingObservations" };
+  }
+  return {
+    status: "measured",
+    numerator,
+    denominator,
+    value: numerator / denominator,
+  };
+}
+
+/**
+ * 排序覆盖以 Query telemetry 是否存在为外层状态；比例分母只取真实完成排序的 Node
+ * 或实际 Top3 槽位，零观测明确为 unavailable，不能伪装成 0%。
+ */
+export function summarizeQualityEvalRanking(
+  results: readonly QualityEvalQueryResult[],
+): z.infer<typeof RankingSummarySchema> {
+  const totals = {
+    observedNodeCount: 0,
+    llmSuccessNodeCount: 0,
+    fallbackNodeCount: 0,
+    finalCandidateCount: 0,
+  };
+  const modes = {
+    llmSuccess: {
+      nodeCount: 0,
+      providerTop1OverrideCount: 0,
+      heuristicTop1OverrideCount: 0,
+      providerTop3FinalOverlapCount: 0,
+      heuristicTop3FinalOverlapCount: 0,
+      top3ComparisonSlots: 0,
+    },
+    fallback: {
+      nodeCount: 0,
+      providerTop1OverrideCount: 0,
+      heuristicTop1OverrideCount: 0,
+      providerTop3FinalOverlapCount: 0,
+      heuristicTop3FinalOverlapCount: 0,
+      top3ComparisonSlots: 0,
+    },
+  };
+  let observedTelemetryQueryCount = 0;
+  let expectedRankedNodeCount = 0;
+  let incompleteQueryCount = 0;
+
+  for (const result of results) {
+    const expectedForQuery =
+      result.executionStatus === "completed"
+        ? result.nodes.filter(
+            node =>
+              node.status === "ready" ||
+              node.status === "partial" ||
+              (node.status === "failed" &&
+                node.errorCode === "NO_UNIQUE_RESOURCE_AVAILABLE"),
+          ).length
+        : 0;
+    expectedRankedNodeCount = addSafeInteger(
+      expectedRankedNodeCount,
+      expectedForQuery,
+      "预期排序 Node",
+    );
+    if (result.telemetry === null) {
+      incompleteQueryCount += 1;
+      continue;
+    }
+    observedTelemetryQueryCount += 1;
+    const ranking = result.telemetry.ranking;
+    const observedNodeCount =
+      ranking.llmSuccess.nodeCount + ranking.fallback.nodeCount;
+    if (observedNodeCount !== expectedForQuery) incompleteQueryCount += 1;
+    totals.observedNodeCount = addSafeInteger(
+      totals.observedNodeCount,
+      observedNodeCount,
+      "排序 Node",
+    );
+    totals.llmSuccessNodeCount = addSafeInteger(
+      totals.llmSuccessNodeCount,
+      ranking.llmSuccess.nodeCount,
+      "三路融合 Node",
+    );
+    totals.fallbackNodeCount = addSafeInteger(
+      totals.fallbackNodeCount,
+      ranking.fallback.nodeCount,
+      "fallback Node",
+    );
+    totals.finalCandidateCount = addSafeInteger(
+      totals.finalCandidateCount,
+      ranking.llmSuccess.finalCandidateCount +
+        ranking.fallback.finalCandidateCount,
+      "最终候选",
+    );
+    for (const modeName of ["llmSuccess", "fallback"] as const) {
+      const target = modes[modeName];
+      const source = ranking[modeName];
+      target.nodeCount = addSafeInteger(
+        target.nodeCount,
+        source.nodeCount,
+        `${modeName} 排序 Node`,
+      );
+      target.providerTop1OverrideCount = addSafeInteger(
+        target.providerTop1OverrideCount,
+        source.providerTop1OverrideCount,
+        `${modeName} Provider Top1 override`,
+      );
+      target.heuristicTop1OverrideCount = addSafeInteger(
+        target.heuristicTop1OverrideCount,
+        source.heuristicTop1OverrideCount,
+        `${modeName} Heuristic Top1 override`,
+      );
+      target.providerTop3FinalOverlapCount = addSafeInteger(
+        target.providerTop3FinalOverlapCount,
+        source.providerTop3FinalOverlapCount,
+        `${modeName} Provider Top3 overlap`,
+      );
+      target.heuristicTop3FinalOverlapCount = addSafeInteger(
+        target.heuristicTop3FinalOverlapCount,
+        source.heuristicTop3FinalOverlapCount,
+        `${modeName} Heuristic Top3 overlap`,
+      );
+      target.top3ComparisonSlots = addSafeInteger(
+        target.top3ComparisonSlots,
+        source.top3ComparisonSlots,
+        `${modeName} Top3 比较槽位`,
+      );
+    }
+  }
+
+  const coverage = {
+    expectedQueryCount: results.length,
+    observedTelemetryQueryCount,
+    expectedRankedNodeCount,
+    observedRankedNodeCount: totals.observedNodeCount,
+    incompleteQueryCount,
+  };
+  if (
+    coverage.expectedRankedNodeCount === 0 &&
+    coverage.observedRankedNodeCount === 0
+  ) {
+    return {
+      ...coverage,
+      status: "unavailable",
+      reason: "noRankingEligibleNodes",
+    };
+  }
+  if (coverage.observedTelemetryQueryCount === 0) {
+    return { ...coverage, status: "unavailable", reason: "noTelemetry" };
+  }
+
+  const createModeRates = (
+    mode: (typeof modes)["llmSuccess"],
+  ): z.infer<typeof RankingModeRatesSchema> => ({
+    providerTop1Override: createRankingRatio(
+      mode.providerTop1OverrideCount,
+      mode.nodeCount,
+    ),
+    heuristicTop1Override: createRankingRatio(
+      mode.heuristicTop1OverrideCount,
+      mode.nodeCount,
+    ),
+    providerTop3FinalOverlap: createRankingRatio(
+      mode.providerTop3FinalOverlapCount,
+      mode.top3ComparisonSlots,
+    ),
+    heuristicTop3FinalOverlap: createRankingRatio(
+      mode.heuristicTop3FinalOverlapCount,
+      mode.top3ComparisonSlots,
+    ),
+  });
+  const rates = {
+    llmSuccess: createModeRates(modes.llmSuccess),
+    fallback: createModeRates(modes.fallback),
+  };
+  return coverage.incompleteQueryCount === 0
+    ? { ...coverage, status: "complete", totals, rates }
+    : { ...coverage, status: "partial", observedTotals: totals, rates };
 }
 
 function summarizeLatency(
@@ -479,7 +844,9 @@ export function createQualityEvalOperatingSummary(
     },
     quality: summarizeQuality(report.results),
     latency: summarizeLatency(report.results),
+    duplication: summarizeQualityEvalDuplication(report.results),
     providerUsage: summarizeQualityEvalProviderUsage(report.results),
+    ranking: summarizeQualityEvalRanking(report.results),
     tokens: summarizeTokens(report.results),
     cache: {
       status: "notMeasured",

@@ -1,5 +1,5 @@
 /**
- * 模块职责：定义 WAY-86/87/90 Golden / Full Quality Eval（质量评估）的统一版本化接口，
+ * 模块职责：定义 WAY-86/87/90/110 Golden / Full Quality Eval（质量评估）的统一版本化接口，
  * 并把完整生产 Search Run 投影成可比较的本地事实与确定性指标工件。
  *
  * 关键边界：
@@ -27,6 +27,7 @@ import type { RunLogRecord } from "../observability/run-log.js";
 import { classifyFreshness } from "../pipeline/freshness.js";
 import type { SearchStreamHandler } from "../routes/search.js";
 import {
+  QUALITY_EVAL_PLANNED_REQUEST_CONFIG,
   QualityEvalDuplicateResourceSchema,
   QualityEvalMetricFailureSchema,
   QualityEvalMetricsSchema,
@@ -34,13 +35,14 @@ import {
   QualityEvalTelemetrySchema,
   createQualityEvalMetricFailure,
   fingerprintQualityEvalCanonicalUrl,
+  measureQualityEvalPlannedRequestDuplication,
   measureQualityEvalMetrics,
   redactQualityEvalResourceUrl,
   type QualityEvalMetricFailure,
   type QualityEvalMetricMeasurement,
 } from "./quality-metrics.js";
 
-export const QUALITY_EVAL_SCHEMA_VERSION = "quality-eval.v4" as const;
+export const QUALITY_EVAL_SCHEMA_VERSION = "quality-eval.v10" as const;
 export const QUALITY_EVAL_DATASET_VERSION =
   "wayfinder-regression.v1" as const;
 
@@ -368,6 +370,21 @@ export const QualityEvalQueryResultSchema = z
           });
         }
       }
+      const expectedPlannedRequestDuplication =
+        measureQualityEvalPlannedRequestDuplication(
+          result.plan,
+          QUALITY_EVAL_PLANNED_REQUEST_CONFIG,
+        );
+      if (
+        JSON.stringify(result.metrics.plannedRequestDuplication) !==
+        JSON.stringify(expectedPlannedRequestDuplication)
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["metrics", "plannedRequestDuplication"],
+          message: "计划请求重复诊断与 Final GraphPlan 不一致",
+        });
+      }
     }
   });
 
@@ -383,6 +400,7 @@ export type EvaluateQualityEvalQueryInput = Readonly<{
   expectedOfficialDomains: readonly string[];
   handleSearch: SearchStreamHandler;
   readRunLog: () => RunLogRecord | undefined;
+  plannedRequestConfig?: unknown;
 }>;
 
 function projectRunLog(record: RunLogRecord | undefined): z.infer<
@@ -395,6 +413,8 @@ function projectRunLog(record: RunLogRecord | undefined): z.infer<
   const { counts } = record;
   return QualityEvalTelemetrySchema.parse({
     timingsMs: record.timingsMs,
+    planningStages: record.planningStages,
+    versions: { rankFusion: record.versions.rankFusion },
     counts: {
       logicalSearchCalls: counts.logicalSearchCalls,
       logicalExtractCalls: counts.logicalExtractCalls,
@@ -403,6 +423,7 @@ function projectRunLog(record: RunLogRecord | undefined): z.infer<
       searchHttpAttempts: counts.searchHttpAttempts,
       extractHttpAttempts: counts.extractHttpAttempts,
     },
+    ranking: record.ranking,
     tokens: record.tokens,
     estimatedCost: record.estimatedCost,
   });
@@ -591,7 +612,11 @@ export async function evaluateQualityEvalQuery(
   let streamSchemaInvalid = false;
   try {
     await input.handleSearch({
-      input: { runId: input.runId, query: input.query.query },
+      input: {
+        runId: input.runId,
+        query: input.query.query,
+        language: "zh-CN",
+      },
       signal: input.signal,
       emit: async payload => {
         const parsed = StreamEventPayloadSchema.safeParse(payload);
@@ -710,6 +735,8 @@ export async function evaluateQualityEvalQuery(
     telemetry,
     expectedOfficialDomains: input.expectedOfficialDomains,
     runDeadlineMs: input.runDeadlineMs,
+    plannedRequestConfig:
+      input.plannedRequestConfig ?? QUALITY_EVAL_PLANNED_REQUEST_CONFIG,
   });
   if (measurement.status === "failed") {
     return createExecutionFailure(

@@ -22,7 +22,7 @@ import type { LLMProvider } from "../ai/llm-provider.js";
 import { RUN_DEADLINE_MS } from "../config.js";
 import type { DeepSeekTokenUsage } from "../ai/providers/deepseek-llm-provider.js";
 import type { SearchProvider } from "../search/provider.js";
-import type { TavilyAttemptObservation } from "../search/providers/tavily.js";
+import type { SerpApiBingAttemptObservation } from "../search/providers/serpapi-bing.js";
 import {
   evaluateSingleNodeSmokeCase,
   type SingleNodeSmokeCase,
@@ -40,7 +40,7 @@ export type EvaluateH2RetrievalBaselineInput = Readonly<{
   rerankProvider: LLMProvider;
   rerankTimeoutMs: number;
   conditionOrder?: H2ConditionOrder;
-  readAttemptObservations?: () => readonly TavilyAttemptObservation[];
+  readAttemptObservations?: () => readonly SerpApiBingAttemptObservation[];
   readTokenUsages?: () => readonly DeepSeekTokenUsage[];
   runDeadlineMs?: number;
   parentSignal?: AbortSignal;
@@ -125,7 +125,7 @@ function buildSuccessfulNode(
 }
 
 /**
- * 两个条件串行共享同一 Provider Port，并分别获得相同且不超过 20 秒的绝对 Run Deadline。
+ * 两个条件串行共享同一 Provider Port，并分别获得相同且不超过 40 秒的绝对 Run Deadline。
  * conditionOrder 可用于受控交叉安排；页面只获得中性 A/B，不根据来源改变任何 UI。
  */
 export async function evaluateH2RetrievalBaseline(

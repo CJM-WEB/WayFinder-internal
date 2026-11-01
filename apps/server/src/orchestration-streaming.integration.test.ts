@@ -4,7 +4,7 @@
  *
  * 测试边界：只在 LLM、Search Provider 与 Clock 边界注入确定性 Fake；主矩阵使用
  * Fastify inject，Route → Reader 与断连证据使用临时本机 loopback。全部场景都不访问
- * 外部网络、不读取环境变量或 Secret，也不等待真实 20 秒。
+ * 外部网络、不读取环境变量或 Secret，也不等待真实 40 秒。
  */
 import {
   calculateSearchPlanMaxResults,
@@ -27,6 +27,9 @@ import {
   type Deferred,
   type FixedClock,
 } from "../../../tests/support/test-infrastructure.mjs";
+import { GraphOutlineSchema } from "./ai/graph-outline.js";
+import { LLMProviderError } from "./ai/llm-provider.js";
+import { SearchPlanBundleSchema } from "./ai/search-plan-generator.js";
 import { readSearchEventStream } from "../../web/src/lib/stream.js";
 import { createGraphStore } from "../../web/src/stores/graph-store.js";
 import { createPythonMockStream } from "../../web/src/testing/python-mock-stream.js";
@@ -36,7 +39,6 @@ import { registerSearchRoute } from "./routes/search.js";
 import type { SearchProvider } from "./search/provider.js";
 
 const QUERY = "TypeScript compiler guide";
-const BACKUP_QUERY = "TypeScript compiler reference";
 const LATE_QUERY = "TypeScript compiler internals";
 const RUN_ID = "run-streaming-regression";
 
@@ -69,6 +71,28 @@ function createPlan(queries: readonly string[] = [QUERY]): GraphPlan {
     ],
     edges: [],
   });
+}
+
+/** 从最终公共 Plan 投影两阶段 Fake 响应，所有业务装配仍走生产实现。 */
+function createPlanningResponses(plan: GraphPlan): readonly unknown[] {
+  return [
+    GraphOutlineSchema.parse({
+      analysis: plan.analysis,
+      nodes: plan.nodes.map(node => {
+        const { searchPlan, ...outlineNode } = node;
+        void searchPlan;
+        return outlineNode;
+      }),
+      edges: plan.edges,
+    }),
+    SearchPlanBundleSchema.parse({
+      plans: plan.nodes.map(node => ({
+        nodeId: node.id,
+        queries: node.searchPlan.queries,
+        rankingProfile: node.searchPlan.rankingProfile,
+      })),
+    }),
+  ];
 }
 
 function createHit(query = QUERY): NormalizedSearchHit {
@@ -168,7 +192,7 @@ class DeadlineAdvancingSearchProvider implements SearchProvider {
     signal: AbortSignal,
   ): Promise<NormalizedSearchHit[]> {
     signal.throwIfAborted();
-    this.clock.advanceBy(20_000);
+    this.clock.advanceBy(40_000);
     return [createHit()];
   }
 
@@ -246,19 +270,23 @@ type ScenarioInput = Readonly<{
   plan: GraphPlan;
   searchProvider: SearchProvider;
   includeRerank?: boolean;
+  rerankResponse?: unknown;
   expireBeforePlan?: boolean;
 }>;
 
 /** 真实组合层只替换外部能力；事件 Envelope、NDJSON 与业务状态机均使用生产实现。 */
 function createScenarioServer(input: ScenarioInput): FastifyInstance {
-  const llmResponses: unknown[] = [input.plan];
+  const llmResponses: unknown[] = [...createPlanningResponses(input.plan)];
   if (input.includeRerank === true) {
     llmResponses.push(createRerankOutput());
+  }
+  if (input.rerankResponse !== undefined) {
+    llmResponses.push(input.rerankResponse);
   }
   const providers = createConcurrencyLimitedProviders({
     searchProvider: input.searchProvider,
     llmProvider: new FakeLLMProvider(llmResponses),
-    concurrency: { search: 6, extract: 3, llm: 3 },
+    concurrency: { search: 6, llm: 3 },
   });
   const server = Fastify({ logger: false });
   registerSearchRoute(
@@ -266,18 +294,18 @@ function createScenarioServer(input: ScenarioInput): FastifyInstance {
     createRunSearchHandler({
       providers,
       officialSourcePolicy: { knownRiskyDownloadDomains: [] },
-      llmStageTimeoutMs: 15_000,
-      rerankTimeoutMs: 12_000,
-      language: "en",
+      llmStageTimeoutMs: 30_000,
+      rerankTimeoutMs: 24_000,
       normalizeQuery: query => {
         // 固定时钟只在测试专用入口推进，用同一生产状态机证明 GraphPlan 前 Deadline。
         if (input.expireBeforePlan === true) {
-          input.clock.advanceBy(20_000);
+          input.clock.advanceBy(40_000);
         }
         return query.normalize("NFKC").toLowerCase();
       },
       onPlannerValidationDiagnostic: () => undefined,
       onRevisionValidationDiagnostic: () => undefined,
+      onSearchPlanValidationDiagnostic: () => undefined,
       now: input.clock.now,
     }),
   );
@@ -291,7 +319,7 @@ async function runScenario(input: ScenarioInput): Promise<StreamEvent[]> {
     const response = await server.inject({
       method: "POST",
       url: "/api/search",
-      payload: { runId: RUN_ID, query: QUERY },
+      payload: { runId: RUN_ID, query: QUERY, language: "zh-CN" },
     });
     expect(response.statusCode).toBe(200);
     expect(response.headers["content-type"]).toBe(
@@ -366,26 +394,151 @@ describe("Orchestration + NDJSON 服务端回归矩阵", () => {
     });
   });
 
+  it("并发 Node 乱序完成时按 GraphPlan 固定 URL 所有权，并让增量终态与 complete 一致", async () => {
+    const clock = createFixedClock("2026-10-22T08:00:00.000Z");
+    const firstSearch = createDeferred<readonly NormalizedSearchHit[]>();
+    const secondSearchEntered = createDeferred<void>();
+    const plan = createTwoNodePlan();
+    const searchProvider: SearchProvider = {
+      id: "out-of-order-duplicate-search",
+      capabilities: ["general"],
+      search: async request => {
+        if (request.query === QUERY) {
+          return [...(await firstSearch.promise)];
+        }
+        if (request.query === LATE_QUERY) {
+          secondSearchEntered.resolve();
+          return [createHit(LATE_QUERY)];
+        }
+        throw new Error(`乱序去重测试未配置 Query：${request.query}`);
+      },
+    };
+    const providers = createConcurrencyLimitedProviders({
+      searchProvider,
+      llmProvider: new FakeLLMProvider([
+        ...createPlanningResponses(plan),
+        createRerankOutput(),
+        createRerankOutput(),
+      ]),
+      concurrency: { search: 6, llm: 3 },
+    });
+    const handler = createRunSearchHandler({
+      providers,
+      officialSourcePolicy: { knownRiskyDownloadDomains: [] },
+      llmStageTimeoutMs: 30_000,
+      rerankTimeoutMs: 24_000,
+      normalizeQuery: query => query.normalize("NFKC").toLowerCase(),
+      onPlannerValidationDiagnostic: () => undefined,
+      onRevisionValidationDiagnostic: () => undefined,
+      onSearchPlanValidationDiagnostic: () => undefined,
+      now: clock.now,
+    });
+    const payloads: StreamEventPayload[] = [];
+    const pending = handler({
+      input: { runId: RUN_ID, query: QUERY, language: "zh-CN" },
+      signal: new AbortController().signal,
+      emit: async payload => {
+        payloads.push(structuredClone(payload));
+      },
+    });
+
+    await secondSearchEntered.promise;
+    // 后序 Node 的 Provider 与 Reranker 可先完成，但连续计划前缀尚未形成时不能发布终态。
+    for (let flushIndex = 0; flushIndex < 10; flushIndex += 1) {
+      await Promise.resolve();
+    }
+    expect(
+      payloads.filter(payload =>
+        ["node.ready", "node.partial", "node.failed"].includes(payload.type),
+      ),
+    ).toEqual([]);
+
+    firstSearch.resolve([createHit(QUERY)]);
+    await pending;
+
+    const nodeTerminals = payloads.filter(
+      (payload): payload is Extract<
+        StreamEventPayload,
+        { type: "node.ready" | "node.partial" | "node.failed" }
+      > =>
+        payload.type === "node.ready" ||
+        payload.type === "node.partial" ||
+        payload.type === "node.failed",
+    );
+    expect(nodeTerminals.map(payload => [payload.nodeId, payload.type])).toEqual([
+      ["typescript-internals", "node.failed"],
+      ["typescript-guide", "node.ready"],
+    ]);
+    expect(nodeTerminals[0]).toMatchObject({
+      error: { code: "NO_UNIQUE_RESOURCE_AVAILABLE", retryable: false },
+    });
+
+    const complete = payloads.at(-1);
+    expect(complete).toMatchObject({
+      type: "complete",
+      data: {
+        finalStatus: "partial",
+        result: {
+          graph: {
+            nodes: [
+              expect.objectContaining({
+                id: "typescript-guide",
+                status: "ready",
+                resources: [
+                  expect.objectContaining({
+                    canonicalUrl: createHit().canonicalUrl,
+                    rank: 1,
+                  }),
+                ],
+              }),
+              expect.objectContaining({
+                id: "typescript-internals",
+                status: "failed",
+                resources: [],
+                error: {
+                  code: "NO_UNIQUE_RESOURCE_AVAILABLE",
+                  retryable: false,
+                },
+              }),
+            ],
+          },
+        },
+      },
+    });
+    if (complete?.type !== "complete") {
+      throw new Error("乱序去重测试缺少 complete 终态");
+    }
+    const canonicalUrls = complete.data.result.graph.nodes.flatMap(node =>
+      node.resources.map(resource => resource.canonicalUrl),
+    );
+    expect(canonicalUrls).toHaveLength(new Set(canonicalUrls).size);
+  });
+
   it("loopback：真实 Route 响应由 Web Reader 消费并原子收敛 Store", async () => {
     const clock = createFixedClock("2026-10-22T08:00:00.000Z");
     const server = createScenarioServer({
       clock,
-      plan: createPlan([QUERY, BACKUP_QUERY]),
+      plan: createPlan(),
       searchProvider: createFakeSearchProvider({
         [QUERY]: [createHit()],
-        [BACKUP_QUERY]: new Error("provider partial failure"),
       }),
-      includeRerank: true,
+      rerankResponse: new LLMProviderError("provider_failure", true),
     });
     const store = createGraphStore();
 
     try {
       const address = await server.listen({ host: "127.0.0.1", port: 0 });
-      store.getState().startRun({ runId: RUN_ID, query: QUERY });
+      store
+        .getState()
+        .startRun({ runId: RUN_ID, query: QUERY, language: "zh-CN" });
       const response = await globalThis.fetch(`${address}/api/search`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ runId: RUN_ID, query: QUERY }),
+        body: JSON.stringify({
+          runId: RUN_ID,
+          query: QUERY,
+          language: "zh-CN",
+        }),
       });
       await readSearchEventStream({
         response,
@@ -402,7 +555,7 @@ describe("Orchestration + NDJSON 服务端回归矩阵", () => {
           expect.objectContaining({
             id: "typescript-guide",
             status: "partial",
-            warnings: ["SEARCH_PROVIDER_PARTIAL"],
+            warnings: ["RERANK_FAILED"],
           }),
         ],
       });
@@ -411,21 +564,20 @@ describe("Orchestration + NDJSON 服务端回归矩阵", () => {
     }
   });
 
-  it("partial：单 Query 拒绝但仍有 Resource 时保留 Warning 并完成", async () => {
+  it("partial：单 Query 的 Rerank 失败时保留 Resource、Warning 并完成", async () => {
     const clock = createFixedClock("2026-10-22T08:00:00.000Z");
     const events = await runScenario({
       clock,
-      plan: createPlan([QUERY, BACKUP_QUERY]),
+      plan: createPlan(),
       searchProvider: createFakeSearchProvider({
         [QUERY]: [createHit()],
-        [BACKUP_QUERY]: new Error("provider partial failure"),
       }),
-      includeRerank: true,
+      rerankResponse: new LLMProviderError("provider_failure", true),
     });
 
     expect(events.find(event => event.type === "node.partial")).toMatchObject({
       type: "node.partial",
-      warnings: ["SEARCH_PROVIDER_PARTIAL"],
+      warnings: ["RERANK_FAILED"],
       resources: expect.arrayContaining([expect.objectContaining({ rank: 1 })]),
     });
     expect(events.at(-1)).toMatchObject({
@@ -438,7 +590,7 @@ describe("Orchestration + NDJSON 服务端回归矩阵", () => {
             nodes: [
               expect.objectContaining({
                 status: "partial",
-                warnings: ["SEARCH_PROVIDER_PARTIAL"],
+                warnings: ["RERANK_FAILED"],
               }),
             ],
           },
@@ -538,24 +690,24 @@ describe("Orchestration + NDJSON 服务端回归矩阵", () => {
     const plan = createTwoNodePlan();
     const providers = createConcurrencyLimitedProviders({
       searchProvider: new RejectedAndLateSearchProvider(lateSearch),
-      llmProvider: new FakeLLMProvider([plan]),
-      concurrency: { search: 6, extract: 3, llm: 3 },
+      llmProvider: new FakeLLMProvider(createPlanningResponses(plan)),
+      concurrency: { search: 6, llm: 3 },
     });
     const handler = createRunSearchHandler({
       providers,
       officialSourcePolicy: { knownRiskyDownloadDomains: [] },
-      llmStageTimeoutMs: 15_000,
-      rerankTimeoutMs: 12_000,
-      language: "en",
+      llmStageTimeoutMs: 30_000,
+      rerankTimeoutMs: 24_000,
       normalizeQuery: query => query.normalize("NFKC").toLowerCase(),
       onPlannerValidationDiagnostic: () => undefined,
       onRevisionValidationDiagnostic: () => undefined,
+      onSearchPlanValidationDiagnostic: () => undefined,
       now: clock.now,
     });
     const payloads: StreamEventPayload[] = [];
 
     await handler({
-      input: { runId: RUN_ID, query: QUERY },
+      input: { runId: RUN_ID, query: QUERY, language: "zh-CN" },
       signal: new AbortController().signal,
       emit: async payload => {
         payloads.push(structuredClone(payload));
@@ -564,7 +716,7 @@ describe("Orchestration + NDJSON 服务端回归矩阵", () => {
           payload.nodeId === "typescript-guide"
         ) {
           // 终态已由账本同步占位后再到期，Deadline 快照不能把它改写。
-          clock.advanceBy(20_000);
+          clock.advanceBy(40_000);
         }
       },
     });
@@ -646,11 +798,19 @@ describe("Orchestration + NDJSON 服务端回归矩阵", () => {
 
     try {
       const address = await server.listen({ host: "127.0.0.1", port: 0 });
-      store.getState().startRun({ runId: runIds[0]!, query: "first query" });
+      store.getState().startRun({
+        runId: runIds[0]!,
+        query: "first query",
+        language: "zh-CN",
+      });
       const responseA = await globalThis.fetch(`${address}/api/search`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ runId: runIds[0], query: "first query" }),
+        body: JSON.stringify({
+          runId: runIds[0],
+          query: "first query",
+          language: "zh-CN",
+        }),
         signal: clientController.signal,
       });
       const readA = readSearchEventStream({
@@ -671,7 +831,11 @@ describe("Orchestration + NDJSON 服务端回归矩阵", () => {
 
       await entered.promise;
       clientController.abort(clientReason);
-      store.getState().startRun({ runId: runIds[1]!, query: "second query" });
+      store.getState().startRun({
+        runId: runIds[1]!,
+        query: "second query",
+        language: "zh-CN",
+      });
       await readSearchEventStream({
         response: responseFromEvents(
           mockEvents.map(event => eventForRun(event, runIds[1]!)),

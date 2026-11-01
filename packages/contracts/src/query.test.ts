@@ -4,25 +4,55 @@
  * 关键约束：
  * - Query（查询）先 trim，再按 Unicode code point（码点）校验 1～2000 长度。
  * - runId 只要求非空字符串，不收紧格式、长度，也不改写首尾空白。
+ * - language 只接受明确的 zh-CN / en-US，不允许缺失、模糊值或静默回退。
  * - QueryAnalysis 七个字段全部必填，Strategy（策略）决定 Broad Query（广泛查询）的数量。
  * - 公共对象严格拒绝未知字段，公共类型从对应 Zod Schema 推导。
  */
 import { describe, expect, expectTypeOf, it } from "vitest";
 import type { z } from "zod";
 
-import { QueryAnalysisSchema, SearchRequestSchema } from "./index.js";
-import type { QueryAnalysis, SearchRequest } from "./index.js";
+import {
+  QueryAnalysisSchema,
+  SearchLanguageSchema,
+  SearchRequestSchema,
+} from "./index.js";
+import type {
+  QueryAnalysis,
+  SearchLanguage,
+  SearchRequest,
+} from "./index.js";
 
 describe("SearchRequest 请求边界", () => {
+  const language = "zh-CN" as const;
+
+  it.each(["zh-CN", "en-US"] as const)(
+    "接受显式支持的语言 %s",
+    supportedLanguage => {
+      expect(
+        SearchRequestSchema.parse({
+          runId: "run-language",
+          query: "MySQL",
+          language: supportedLanguage,
+        }),
+      ).toEqual({
+        runId: "run-language",
+        query: "MySQL",
+        language: supportedLanguage,
+      });
+    },
+  );
+
   it("去除 Query 首尾空白并保留有效内容", () => {
     expect(
       SearchRequestSchema.parse({
         runId: "run-001",
         query: "  Python 入门  ",
+        language,
       }),
     ).toEqual({
       runId: "run-001",
       query: "Python 入门",
+      language,
     });
   });
 
@@ -33,7 +63,8 @@ describe("SearchRequest 请求边界", () => {
     ["2000 个非 BMP 码点", ` ${"😀".repeat(2000)} `],
   ])("接受 trim 后%s", (_name, query) => {
     expect(
-      SearchRequestSchema.safeParse({ runId: "run-001", query }).success,
+      SearchRequestSchema.safeParse({ runId: "run-001", query, language })
+        .success,
     ).toBe(true);
   });
 
@@ -42,29 +73,37 @@ describe("SearchRequest 请求边界", () => {
     ["未限定格式与首尾空白", " arbitrary / identity? "],
     ["2001 个字符", "r".repeat(2001)],
   ])("runId 仅要求非空且保留原值：%s", (_name, runId) => {
-    expect(SearchRequestSchema.parse({ runId, query: "Python" })).toEqual({
+    expect(
+      SearchRequestSchema.parse({ runId, query: "Python", language }),
+    ).toEqual({
       runId,
       query: "Python",
+      language,
     });
   });
 
   it.each([
-    ["缺少 runId", { query: "Python" }],
-    ["缺少 query", { runId: "run-001" }],
-    ["runId 为空", { runId: "", query: "Python" }],
-    ["runId 不是字符串", { runId: 1, query: "Python" }],
-    ["Query 不是字符串", { runId: "run-001", query: 1 }],
-    ["Query 为空", { runId: "run-001", query: "" }],
-    ["Query 全为空白", { runId: "run-001", query: " \t\n " }],
+    ["缺少 runId", { query: "Python", language }],
+    ["缺少 query", { runId: "run-001", language }],
+    ["缺少 language", { runId: "run-001", query: "Python" }],
+    ["非法 language", { runId: "run-001", query: "Python", language: "en" }],
+    ["runId 为空", { runId: "", query: "Python", language }],
+    ["runId 不是字符串", { runId: 1, query: "Python", language }],
+    ["Query 不是字符串", { runId: "run-001", query: 1, language }],
+    ["Query 为空", { runId: "run-001", query: "", language }],
+    ["Query 全为空白", { runId: "run-001", query: " \t\n ", language }],
     [
       "trim 后有 2001 个 ASCII 字符",
-      { runId: "run-001", query: ` ${"a".repeat(2001)} ` },
+      { runId: "run-001", query: ` ${"a".repeat(2001)} `, language },
     ],
     [
       "trim 后有 2001 个非 BMP 码点",
-      { runId: "run-001", query: ` ${"😀".repeat(2001)} ` },
+      { runId: "run-001", query: ` ${"😀".repeat(2001)} `, language },
     ],
-    ["包含未知字段", { runId: "run-001", query: "Python", mode: "direct" }],
+    [
+      "包含未知字段",
+      { runId: "run-001", query: "Python", language, mode: "direct" },
+    ],
   ])("拒绝%s", (_name, input) => {
     expect(SearchRequestSchema.safeParse(input).success).toBe(false);
   });
@@ -72,6 +111,12 @@ describe("SearchRequest 请求边界", () => {
   it("SearchRequest 类型直接来自 Schema", () => {
     expectTypeOf<SearchRequest>().toEqualTypeOf<
       z.infer<typeof SearchRequestSchema>
+    >();
+  });
+
+  it("搜索语言类型直接来自唯一公共 Schema", () => {
+    expectTypeOf<SearchLanguage>().toEqualTypeOf<
+      z.infer<typeof SearchLanguageSchema>
     >();
   });
 });

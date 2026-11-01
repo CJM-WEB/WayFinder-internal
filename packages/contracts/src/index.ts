@@ -10,13 +10,21 @@
 import { z } from "zod";
 
 /**
- * SearchRequest（搜索请求）只描述一次 Run（运行）的入口身份和有效查询内容。
- * Query（查询）先 trim，再按 Unicode code point（码点）校验长度；语言和内容形式不受限制。
+ * Search Language（搜索语言）同时约束 UI、LLM 输出与 Provider 地区语境。
+ * 使用明确 Locale，避免模糊 `en` 或运行时 Locale 猜测造成跨层漂移。
+ */
+export const SearchLanguageSchema = z.enum(["zh-CN", "en-US"]);
+export type SearchLanguage = z.infer<typeof SearchLanguageSchema>;
+
+/**
+ * SearchRequest（搜索请求）描述一次 Run（运行）的入口身份、有效查询和已校验语言。
+ * Query（查询）先 trim，再按 Unicode code point（码点）校验长度。
  * runId 只要求非空并保留原值；严格对象使未知字段明确失败，防止未声明参数被误认为已生效。
  */
 export const SearchRequestSchema = z.strictObject({
   runId: z.string().min(1),
   query: z.string().trim().min(1).max(2000),
+  language: SearchLanguageSchema,
 });
 export type SearchRequest = z.infer<typeof SearchRequestSchema>;
 
@@ -114,7 +122,7 @@ type ProviderSearchRequestCommon = {
   maxResults: number;
   capability: SearchCapability;
   freshnessSensitive: boolean;
-  language?: string;
+  language: SearchLanguage;
 };
 
 /**
@@ -247,6 +255,7 @@ export const AppErrorCodeSchema = z.enum([
   "PLANNER_FAILED",
   "INVALID_GRAPH",
   "SEARCH_PROVIDER_FAILED",
+  "NO_UNIQUE_RESOURCE_AVAILABLE",
   "EXTRACTION_FAILED",
   "RERANK_FAILED",
   "RUN_DEADLINE_EXCEEDED",
@@ -658,16 +667,19 @@ export type NodeJobOutcome =
   | {
       status: "fulfilled";
       nodeId: string;
+      settlementOrdinal: number;
       value: ResultGraphNode;
     }
   | {
       status: "rejected";
       nodeId: string;
+      settlementOrdinal: number;
       error: NodeJobFailure;
     }
   | {
       status: "timed_out";
       nodeId: string;
+      settlementOrdinal: number;
       error: {
         code: "RUN_DEADLINE_EXCEEDED";
         retryable: true;
@@ -678,7 +690,7 @@ export type NodeJobOutcome =
 const resultGraphQuerySchema = z.strictObject({
   raw: z.string().min(1).max(2000),
   normalized: z.string().min(1).max(2000),
-  language: z.string().min(2),
+  language: SearchLanguageSchema,
 });
 
 /** 最终图复用最终节点与共享 Edge；根 Schema 统一校验跨对象引用关系。 */
@@ -776,7 +788,8 @@ export const ResultGraphSchema = z
       }
     });
 
-    // 3. Resource 身份与展示顺序只要求在各自 Node 内唯一。
+    // 3. 先保留既有 Node 内身份门禁，再单独定位跨 Node 的 canonicalUrl 重复。
+    const canonicalOwnerNodeIndex = new Map<string, number>();
     result.graph.nodes.forEach((node, nodeIndex) => {
       for (const field of ["id", "canonicalUrl", "rank"] as const) {
         for (const resourceIndex of duplicateValueIndexes(
@@ -796,6 +809,28 @@ export const ResultGraphSchema = z
           });
         }
       }
+
+      node.resources.forEach((resource, resourceIndex) => {
+        const ownerNodeIndex = canonicalOwnerNodeIndex.get(
+          resource.canonicalUrl,
+        );
+        if (ownerNodeIndex !== undefined && ownerNodeIndex !== nodeIndex) {
+          context.addIssue({
+            code: "custom",
+            path: [
+              "graph",
+              "nodes",
+              nodeIndex,
+              "resources",
+              resourceIndex,
+              "canonicalUrl",
+            ],
+            message: "Resource canonicalUrl must be unique across the graph",
+          });
+          return;
+        }
+        canonicalOwnerNodeIndex.set(resource.canonicalUrl, nodeIndex);
+      });
     });
 
     // 4. partial 是最终 Node 状态的派生值，调用方不能独立覆盖。

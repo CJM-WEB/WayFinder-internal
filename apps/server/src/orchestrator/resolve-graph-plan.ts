@@ -1,31 +1,46 @@
 /**
- * 模块职责：在同一个 Run Scope（运行作用域）内连接 Initial Planner（初始规划器）、
- * 可选 Broad Discovery（广泛发现）与 Graph Reviser（图修订器），并只返回最终通过
- * Contract（协议）与 Graph Validator（图校验器）的完整 GraphPlan（图计划）。
+ * 模块职责：在同一个 Run Scope 内执行失败关闭的两阶段规划并返回完整 GraphPlan。
  *
- * 关键边界：
- * - plan_first 不执行 Broad Discovery 或 Reviser；evidence_assisted 最多各执行一次；
- * - 所有外部调用复用同一个 Run Signal，阶段预算只取配置上限与 Run 剩余时间较小值；
- * - 仅 BroadDiscoveryError / GraphRevisionError 可保留 Initial Plan，取消与程序错误传播；
- * - 本模块不创建或释放 Deadline Scope，也不启动 Node、发送事件或构造 ResultGraph。
+ * 执行顺序：Graph Planner → Initial Outline 校验 → 可选 Broad/Reviser → Final Outline
+ * 校验 → 一次全图 SearchPlan Generation → 确定性装配 → Final GraphPlan 校验。
+ * 任一阶段失败都不会保留旧计划、repair、重试或生成 compact/raw-query fallback。
  */
-import { GraphPlanSchema, type GraphPlan } from "@wayfinder/contracts";
+import {
+  GraphPlanSchema,
+  type AppError,
+  type AppErrorCode,
+  type GraphPlan,
+  type SearchLanguage,
+} from "@wayfinder/contracts";
 
 import {
+  GraphOutlineSchema,
+  type GraphOutline,
+  type GraphOutlineValidationDiagnostic,
+} from "../ai/graph-outline.js";
+import {
+  GraphPlannerError,
+  planGraphOutline,
+} from "../ai/graph-planner.js";
+import {
   GraphRevisionError,
-  reviseGraphPlan,
+  reviseGraphOutline,
   type GraphRevisionValidationDiagnostic,
 } from "../ai/graph-reviser.js";
 import {
-  planOrCompactFallback,
-  type GraphPlannerOutcome,
-} from "../ai/graph-planner.js";
-import type { GraphPlanValidationDiagnostic } from "../ai/graph-plan-parser.js";
+  SearchPlanGenerationError,
+  assembleGraphPlan,
+  generateSearchPlanBundle,
+  type SearchPlanBundleValidationDiagnostic,
+} from "../ai/search-plan-generator.js";
 import {
   assertBoundedLLMTimeout,
   type LLMProvider,
 } from "../ai/llm-provider.js";
-import { validateGraphPlan } from "../graph/graph-validator.js";
+import {
+  validateGraphOutline,
+  validateGraphPlan,
+} from "../graph/graph-validator.js";
 import {
   BroadDiscoveryError,
   discoverBroadEvidence,
@@ -33,121 +48,241 @@ import {
 import type { SearchProvider } from "../search/provider.js";
 import type { AbsoluteRunDeadlineScope } from "./absolute-run-deadline.js";
 
-/** 规划阶段只消费 Scope，不拥有 Timer / Listener 的释放权。 */
 export type GraphPlanRunScope = Pick<
   AbsoluteRunDeadlineScope,
   "requirePositiveRemainingMs" | "signal"
 >;
 
+/** GraphPlan 发布前的预期失败只暴露公共 AppError，不保留阶段输入或原始 cause。 */
+export class GraphPlanResolutionError extends Error {
+  public readonly appError: AppError;
+
+  public constructor(appError: AppError) {
+    super("GRAPH_PLAN_RESOLUTION_FAILED");
+    this.name = "GraphPlanResolutionError";
+    this.appError = appError;
+  }
+}
+
 export type ResolveValidatedGraphPlanForRunInput = Readonly<{
-  /** 已由 SearchRequestSchema trim 并校验的原始 Query。 */
   query: string;
   llmProvider: LLMProvider;
   searchProvider: SearchProvider;
   runScope: GraphPlanRunScope;
-  /** Initial Planner 与 Reviser 各自调用时共用的 LLM 阶段上限。 */
+  /** Planner、Reviser、Generator 分别使用此阶段上限与 Run 剩余时间的较小值。 */
   llmStageTimeoutMs: number;
   onPlannerValidationDiagnostic: (
-    diagnostic: GraphPlanValidationDiagnostic,
+    diagnostic: GraphOutlineValidationDiagnostic,
   ) => void;
   onRevisionValidationDiagnostic: (
     diagnostic: GraphRevisionValidationDiagnostic,
   ) => void;
-  onPlannerOutcome?: (outcome: GraphPlannerOutcome) => void;
-  language?: string;
+  onSearchPlanValidationDiagnostic: (
+    diagnostic: SearchPlanBundleValidationDiagnostic,
+  ) => void;
+  /** 仅记录阶段边界；异常必须 fail-open，且不得接收 Outline / Bundle 内容。 */
+  onGraphOutlinePlanningFinished?: () => void;
+  onSearchPlanPlanningFinished?: () => void;
+  /** 只传递脱敏阶段与稳定 Code；观察器异常必须 fail-open。 */
+  onPlanningStageFailed?: (
+    stage: "graphOutline" | "searchPlan",
+    code: AppErrorCode,
+  ) => void;
+  language: SearchLanguage;
 }>;
 
-function throwRunReasonIfAborted(runScope: GraphPlanRunScope): void {
-  if (runScope.signal.aborted) {
-    throw runScope.signal.reason;
+function createResolutionError(
+  code: AppError["code"],
+  retryable: boolean,
+): GraphPlanResolutionError {
+  return new GraphPlanResolutionError({ code, retryable });
+}
+
+function notifyPlanningObserver(callback: (() => void) | undefined): void {
+  try {
+    callback?.();
+  } catch {
+    // Run Log 等可观测性旁路不能改变规划结果或错误语义。
   }
 }
 
-/**
- * 最终防御门禁不再 Repair（修复）内部漂移：Planner / Reviser 已完成批准的安全修复，
- * 此处若仍无效属于程序错误，必须在未来 Node jobs 启动前终止。
- */
+function notifyPlanningFailure(
+  callback: ResolveValidatedGraphPlanForRunInput["onPlanningStageFailed"],
+  stage: "graphOutline" | "searchPlan",
+  code: AppErrorCode,
+): void {
+  try {
+    callback?.(stage, code);
+  } catch {
+    // 失败分类日志与阶段计时一样不能改变业务语义。
+  }
+}
+
+/** 只映射已知阶段错误；诊断观察器与未知程序错误必须继续作为 UNKNOWN 处理。 */
+function mapKnownPlanningError(error: unknown): GraphPlanResolutionError | null {
+  if (error instanceof GraphPlannerError) {
+    return error.kind === "provider_failure" || error.kind === "budget_exhausted"
+      ? createResolutionError("PLANNER_FAILED", true)
+      : createResolutionError("INVALID_GRAPH", true);
+  }
+  if (error instanceof GraphRevisionError) {
+    return error.kind === "provider_failure" || error.kind === "budget_exhausted"
+      ? createResolutionError("PLANNER_FAILED", true)
+      : createResolutionError("INVALID_GRAPH", true);
+  }
+  if (error instanceof SearchPlanGenerationError) {
+    return error.kind === "provider_failure" || error.kind === "budget_exhausted"
+      ? createResolutionError("PLANNER_FAILED", true)
+      : createResolutionError("INVALID_GRAPH", true);
+  }
+  if (error instanceof BroadDiscoveryError) {
+    return createResolutionError("SEARCH_PROVIDER_FAILED", true);
+  }
+  return null;
+}
+
+/** Initial Outline 必须先通过此门禁，之后才允许读取 strategy / broadSearchQueries。 */
+export function parseValidatedGraphOutlineForRun(
+  outline: unknown,
+): GraphOutline {
+  const parsed = GraphOutlineSchema.safeParse(outline);
+  if (!parsed.success || !validateGraphOutline(parsed.data).valid) {
+    throw createResolutionError("INVALID_GRAPH", true);
+  }
+  return parsed.data;
+}
+
+/** 最终公共 GraphPlan 防御门禁也供 Node 终态协调器复用。 */
 export function parseValidatedGraphPlanForRun(plan: unknown): GraphPlan {
   const parsed = GraphPlanSchema.safeParse(plan);
   if (!parsed.success || !validateGraphPlan(parsed.data).valid) {
-    // 不附带 Zod Issue、Finding 或 Plan 内容，避免自由文本进入普通错误边界。
     throw new TypeError("Orchestrator GraphPlan 未通过最终校验");
   }
   return parsed.data;
 }
 
 /**
- * 解析一次 Run 的最终 GraphPlan。调用方必须在外层 finally 释放 runScope；返回成功
- * 只表示后续调度器可以安全读取 Node，不表示本函数已经启动任何 Node 工作。
+ * 解析一次 Run 的最终 GraphPlan；调用方拥有并负责释放 runScope。
+ * 只有完整 Final GraphPlan 返回后，外层才可以发布事件或启动 Node jobs。
  */
 export async function resolveValidatedGraphPlanForRun(
   input: ResolveValidatedGraphPlanForRunInput,
 ): Promise<GraphPlan> {
   assertBoundedLLMTimeout(input.llmStageTimeoutMs);
+  let activeStage: "graphOutline" | "searchPlan" = "graphOutline";
 
-  const plannerTimeoutMs = Math.min(
-    input.llmStageTimeoutMs,
-    input.runScope.requirePositiveRemainingMs(),
-  );
-  const initialPlan = await planOrCompactFallback({
-    query: input.query,
-    provider: input.llmProvider,
-    signal: input.runScope.signal,
-    timeoutMs: plannerTimeoutMs,
-    onValidationDiagnostic: input.onPlannerValidationDiagnostic,
-    ...(input.onPlannerOutcome === undefined
-      ? {}
-      : { onOutcome: input.onPlannerOutcome }),
-  });
-
-  // 防御忽略 Signal 或在 Deadline 后才结算普通错误的 Provider，禁止迟到 fallback 前进。
-  input.runScope.requirePositiveRemainingMs();
-
-  let finalPlan = initialPlan;
-  if (initialPlan.analysis.strategy === "evidence_assisted") {
-    let evidence;
-    try {
-      evidence = await discoverBroadEvidence({
-        analysis: initialPlan.analysis,
-        provider: input.searchProvider,
-        signal: input.runScope.signal,
-        ...(input.language === undefined ? {} : { language: input.language }),
-      });
-    } catch (error: unknown) {
-      throwRunReasonIfAborted(input.runScope);
-      if (!(error instanceof BroadDiscoveryError)) {
-        throw error;
-      }
-    }
-
-    if (evidence !== undefined) {
-      const revisionTimeoutMs = Math.min(
+  try {
+    const initialOutlineCandidate = await planGraphOutline({
+      query: input.query,
+      language: input.language,
+      provider: input.llmProvider,
+      signal: input.runScope.signal,
+      timeoutMs: Math.min(
         input.llmStageTimeoutMs,
         input.runScope.requirePositiveRemainingMs(),
-      );
-      try {
-        finalPlan = await reviseGraphPlan({
-          query: input.query,
-          initialPlan,
-          evidence,
-          provider: input.llmProvider,
-          signal: input.runScope.signal,
-          timeoutMs: revisionTimeoutMs,
-          onValidationDiagnostic: input.onRevisionValidationDiagnostic,
-        });
-      } catch (error: unknown) {
-        throwRunReasonIfAborted(input.runScope);
-        if (!(error instanceof GraphRevisionError)) {
-          throw error;
-        }
-      }
-    }
-  }
+      ),
+      onValidationDiagnostic: input.onPlannerValidationDiagnostic,
+    });
+    input.runScope.requirePositiveRemainingMs();
 
-  // 返回值是后续 Node 启动的唯一入口；过期或无效计划都不能越过这里。
-  input.runScope.requirePositiveRemainingMs();
-  const validatedPlan = parseValidatedGraphPlanForRun(finalPlan);
-  // Validator 是同步阶段，但仍可能跨越绝对截止时间；返回前必须再封闭这一竞态窗口。
-  input.runScope.requirePositiveRemainingMs();
-  return validatedPlan;
+    // 防御内部调用被替换或未来重构绕过 Planner 自身校验。
+    const initialOutline = parseValidatedGraphOutlineForRun(
+      initialOutlineCandidate,
+    );
+    let finalOutline = initialOutline;
+
+    if (initialOutline.analysis.strategy === "evidence_assisted") {
+      const evidence = await discoverBroadEvidence({
+        analysis: initialOutline.analysis,
+        provider: input.searchProvider,
+        signal: input.runScope.signal,
+        language: input.language,
+      });
+      input.runScope.requirePositiveRemainingMs();
+
+      const revisedOutline = await reviseGraphOutline({
+        query: input.query,
+        language: input.language,
+        initialOutline,
+        evidence,
+        provider: input.llmProvider,
+        signal: input.runScope.signal,
+        timeoutMs: Math.min(
+          input.llmStageTimeoutMs,
+          input.runScope.requirePositiveRemainingMs(),
+        ),
+        onValidationDiagnostic: input.onRevisionValidationDiagnostic,
+      });
+      input.runScope.requirePositiveRemainingMs();
+      finalOutline = parseValidatedGraphOutlineForRun(revisedOutline);
+    }
+
+    notifyPlanningObserver(input.onGraphOutlinePlanningFinished);
+    activeStage = "searchPlan";
+
+    // Stage 2 只能看到已经定稿且再次验证过的完整 Outline。
+    const bundle = await generateSearchPlanBundle({
+      query: input.query,
+      language: input.language,
+      outline: finalOutline,
+      provider: input.llmProvider,
+      signal: input.runScope.signal,
+      timeoutMs: Math.min(
+        input.llmStageTimeoutMs,
+        input.runScope.requirePositiveRemainingMs(),
+      ),
+      onValidationDiagnostic: input.onSearchPlanValidationDiagnostic,
+    });
+    input.runScope.requirePositiveRemainingMs();
+
+    const candidate = assembleGraphPlan(finalOutline, bundle);
+    let validatedPlan: GraphPlan;
+    try {
+      validatedPlan = parseValidatedGraphPlanForRun(candidate);
+    } catch (error: unknown) {
+      if (error instanceof TypeError) {
+        throw createResolutionError("INVALID_GRAPH", true);
+      }
+      throw error;
+    }
+    // 同步装配/Validator 也可能跨过绝对截止时间。
+    input.runScope.requirePositiveRemainingMs();
+    notifyPlanningObserver(input.onSearchPlanPlanningFinished);
+    return validatedPlan;
+  } catch (error: unknown) {
+    if (input.runScope.signal.aborted) {
+      const reason = input.runScope.signal.reason;
+      notifyPlanningFailure(
+        input.onPlanningStageFailed,
+        activeStage,
+        reason instanceof Error && reason.name === "TimeoutError"
+          ? "RUN_DEADLINE_EXCEEDED"
+          : "REQUEST_ABORTED",
+      );
+      throw reason;
+    }
+    if (error instanceof GraphPlanResolutionError) {
+      notifyPlanningFailure(
+        input.onPlanningStageFailed,
+        activeStage,
+        error.appError.code,
+      );
+      throw error;
+    }
+    const mapped = mapKnownPlanningError(error);
+    if (mapped !== null) {
+      notifyPlanningFailure(
+        input.onPlanningStageFailed,
+        activeStage,
+        mapped.appError.code,
+      );
+      throw mapped;
+    }
+    const code: AppErrorCode =
+      error instanceof Error && error.name === "TimeoutError"
+        ? "RUN_DEADLINE_EXCEEDED"
+        : "UNKNOWN";
+    notifyPlanningFailure(input.onPlanningStageFailed, activeStage, code);
+    throw error;
+  }
 }

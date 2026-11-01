@@ -10,7 +10,7 @@ const REQUIRED_ENVIRONMENT = {
   LLM_PROVIDER: "deepseek",
   LLM_MODEL: "deepseek-flash",
   LLM_API_KEY: "test-llm-key",
-  TAVILY_API_KEY: "test-tavily-key",
+  SERPAPI_API_KEY: "test-serpapi-key",
 } as const;
 
 function createRuntime(
@@ -35,7 +35,7 @@ describe("runServer", () => {
       expect.objectContaining({
         port: 4_321,
         llmApiKey: "test-llm-key",
-        tavilyApiKey: "test-tavily-key",
+        serpApiKey: "test-serpapi-key",
         runLogging: false,
       }),
     );
@@ -43,14 +43,14 @@ describe("runServer", () => {
     expect(runtime.setExitCode).not.toHaveBeenCalled();
   });
 
-  it.each(["LLM_API_KEY", "TAVILY_API_KEY"] as const)(
+  it.each(["LLM_API_KEY", "SERPAPI_API_KEY"] as const)(
     "%s 缺失时不监听，并以脱敏错误和失败退出码快速终止",
     async (missingSecret) => {
       const secretSentinel = "never-print-this-secret";
       const environment = {
         ...REQUIRED_ENVIRONMENT,
         LLM_API_KEY: secretSentinel,
-        TAVILY_API_KEY: secretSentinel,
+        SERPAPI_API_KEY: secretSentinel,
         [missingSecret]: "   ",
       };
       const runtime = createRuntime(environment);

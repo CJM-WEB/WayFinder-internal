@@ -57,6 +57,7 @@ const createActiveStore = () => {
   store.getState().startRun({
     runId,
     query: pythonResultGraphFixture.query.raw,
+    language: "zh-CN",
   });
   return store;
 };
@@ -162,6 +163,35 @@ describe("Graph store StreamEvent Reducer", () => {
     expect(store.getState().selectedNodeId).toBe(
       eventOfType("node.partial").nodeId,
     );
+  });
+
+  it("compact 不让全图去重失败占用首个可用 Node 的自动选择机会", () => {
+    const store = createActiveStore();
+    const plan = compactPlanEvent();
+    const failed = StreamEventSchema.parse({
+      ...eventOfType("node.failed"),
+      sequence: plan.sequence + 1,
+      error: {
+        code: "NO_UNIQUE_RESOURCE_AVAILABLE",
+        retryable: false,
+      },
+    });
+    const ready = replaceEnvelope(eventOfType("node.ready"), {
+      sequence: plan.sequence + 2,
+    });
+
+    store.getState().applyStreamEvent(plan);
+    store.getState().applyStreamEvent(failed);
+    expect(store.getState()).toMatchObject({
+      selectedNodeId: null,
+      hasResolvedInitialCompactSelection: false,
+    });
+
+    store.getState().applyStreamEvent(ready);
+    expect(store.getState()).toMatchObject({
+      selectedNodeId: eventOfType("node.ready").nodeId,
+      hasResolvedInitialCompactSelection: true,
+    });
   });
 
   it("graph 模式的 ready/partial 不自动选择", () => {
@@ -533,6 +563,7 @@ describe("Graph store StreamEvent Reducer", () => {
     store.getState().startRun({
       runId: "new-run",
       query: "new query",
+      language: "zh-CN",
     });
     store.getState().applyStreamEvent(
       replaceEnvelope(eventOfType("query.analysis"), {
@@ -564,7 +595,9 @@ describe("Graph store StreamEvent Reducer", () => {
     store.getState().applyStreamEvent(complete);
     expect(store.getState().selectedNodeId).toBe(selectedNodeId);
 
-    store.getState().startRun({ runId, query: "second run" });
+    store
+      .getState()
+      .startRun({ runId, query: "second run", language: "zh-CN" });
     store.getState().selectNode("missing-node");
     store.getState().applyStreamEvent(plan);
     expect(store.getState().selectedNodeId).toBeNull();

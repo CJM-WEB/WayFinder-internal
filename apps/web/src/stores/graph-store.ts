@@ -34,6 +34,7 @@ type GraphSnapshot =
 type GraphStoreData = {
   activeRunId: SearchRequest["runId"] | null;
   query: SearchRequest["query"];
+  language: SearchRequest["language"] | null;
   /** null 仅表示当前尚未收到 AI Search 的分析结果；Direct 永远不写入 Store。 */
   presentationMode: PresentationMode | null;
   nodes: GraphStoreNode[];
@@ -137,6 +138,7 @@ const createInitialGraphState = (): GraphStoreData => ({
   activeRunId: null,
   // 空字符串只表示尚未开始查询；真实请求仍由 SearchRequestSchema 保证非空。
   query: "",
+  language: null,
   presentationMode: null,
   nodes: [],
   edges: [],
@@ -157,6 +159,7 @@ export const createGraphStore = () =>
         ...createInitialGraphState(),
         activeRunId: request.runId,
         query: request.query,
+        language: request.language,
         isSearching: true,
       });
     },

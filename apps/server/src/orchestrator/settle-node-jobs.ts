@@ -1,11 +1,12 @@
 /**
- * 模块职责：在唯一 Absolute Run Deadline（绝对运行截止时间）内结算全部 Node job。
+ * 模块职责：在唯一 Absolute Run Deadline 内结算 Node 计算，并把每个 Outcome
+ * 同步交给终态协调器。
  *
  * 关键边界：
- * - 只通过已注册的 Promise 回调记录结算，不探测 Promise 私有状态；
- * - 普通失败、真正 Deadline 与用户取消保持三条独立控制流；
- * - Deadline 回调同步冻结快照，迟到工作只被观察，不能阻塞或改写返回值；
- * - 本模块不构造 failed Node、不生成 ResultGraph，也不发送 StreamEvent。
+ * - settlementOrdinal 是 1-based、Run 内严格单调且只在这里分配；
+ * - Outcome Slot 与协调器入口都在 Job 观察回调的首次 await 前完成；
+ * - Deadline 给未结算 Node 按 GraphPlan 顺序追加 ordinal，并等待真实终态写入；
+ * - 终态 Sink 失败立即中止共享 Run，不等待兄弟 Node 或 Deadline。
  */
 import type { NodeJobOutcome } from "@wayfinder/contracts";
 
@@ -23,17 +24,22 @@ type SettlementRunScope = Pick<
 
 export type SettleNodeJobsInput = Readonly<{
   runScope: SettlementRunScope;
+  acceptOutcome: (outcome: NodeJobOutcome) => Promise<void>;
+  /** 必须同步中止组成 runScope 的内部 Controller。 */
+  abortRun: (reason: unknown) => void;
 }>;
 
 type OutcomeSlot = {
   readonly nodeId: string;
   outcome: NodeJobOutcome | undefined;
+  terminalWrite: Promise<void> | undefined;
 };
 
 type RunTermination =
   | Readonly<{
       kind: "deadline";
       outcomes: readonly NodeJobOutcome[];
+      terminalWrites: Promise<void>;
     }>
   | Readonly<{
       kind: "cancelled";
@@ -42,30 +48,18 @@ type RunTermination =
 
 type SettlementCompletion =
   | Readonly<{ kind: "completed" }>
-  | Readonly<{ kind: "fatal"; error: NodeEventEmissionError }>;
+  | Readonly<{ kind: "fatal"; error: unknown }>;
 
 const DEADLINE_ERROR = Object.freeze({
   code: "RUN_DEADLINE_EXCEEDED" as const,
   retryable: true as const,
 });
 
-/** Deadline 到达的同步回调只读取本模块已经观察到的 Slot，不等待任何 Job。 */
-function snapshotAtDeadline(slots: readonly OutcomeSlot[]): NodeJobOutcome[] {
-  return slots.map(slot =>
-    slot.outcome ?? {
-      status: "timed_out",
-      nodeId: slot.nodeId,
-      error: DEADLINE_ERROR,
-    },
-  );
-}
-
 function collectCompletedOutcomes(
   slots: readonly OutcomeSlot[],
 ): readonly NodeJobOutcome[] {
   return slots.map(slot => {
     if (slot.outcome === undefined) {
-      // Promise.all 已完成却仍缺少 Slot 只能来自内部实现回归，不能伪造成 Timeout。
       throw new TypeError(`Node job ${slot.nodeId} 缺少结算结果`);
     }
     return slot.outcome;
@@ -73,11 +67,8 @@ function collectCompletedOutcomes(
 }
 
 /**
- * 按输入顺序返回稳定的 fulfilled / rejected / timed_out Outcome。
- *
- * 真正 Deadline 只由 Run Scope 的私有 reason 身份识别；用户即使传入同名
- * TimeoutError 也会保持原对象向上抛出。截止或取消后，每个 Promise 仍有观察处理器，
- * 因此忽略 Signal 的 Provider 迟到 reject 不会形成 Unhandled Rejection。
+ * 按输入顺序返回稳定 Outcome；ordinal 单独记录真实结算先后。用户取消不生成 Outcome，
+ * 而忽略 Signal 的迟到 Provider 仍保留观察器，避免 Unhandled Rejection。
  */
 export async function settleNodeJobsUntilAbsoluteDeadline(
   jobs: readonly NodeJobTask[],
@@ -86,59 +77,94 @@ export async function settleNodeJobsUntilAbsoluteDeadline(
   const slots: OutcomeSlot[] = jobs.map(job => ({
     nodeId: job.nodeId,
     outcome: undefined,
+    terminalWrite: undefined,
   }));
   let closed = false;
-  let firstFatalError: NodeEventEmissionError | undefined;
+  let nextSettlementOrdinal = 1;
+  let firstFatalError: unknown;
   let resolveFatal: (completion: SettlementCompletion) => void = () => undefined;
   const fatal = new Promise<SettlementCompletion>(resolve => {
     resolveFatal = resolve;
   });
 
-  /**
-   * Timer 回调可能因事件循环阻塞而延后；每个 Job 提交结果前仍须检查同一绝对时间。
-   * 若检查触发 Deadline，Signal listener 会同步关闭并冻结所有 Slot。
-   */
-  const mayCommitOutcome = (): boolean => {
-    if (closed) {
-      return false;
+  const reportFatal = (error: unknown): void => {
+    if (firstFatalError !== undefined) return;
+    firstFatalError = error;
+    // 先固定 fatal 事实，再同步 Abort；避免 Abort listener 把同一错误抢成用户取消分支。
+    resolveFatal({ kind: "fatal", error });
+    try {
+      input.abortRun(error);
+    } catch {
+      // Abort 入口不能用第二个异常覆盖真实 Sink / 状态错误。
     }
+  };
+
+  const mayCommitOutcome = (): boolean => {
+    if (closed) return false;
     try {
       input.runScope.requirePositiveRemainingMs();
     } catch (error: unknown) {
-      if (input.runScope.signal.aborted) {
-        return false;
-      }
+      if (input.runScope.signal.aborted) return false;
       throw error;
     }
     return !closed;
   };
 
+  /** 同步写 Slot 并调用协调器；返回值才是本回调的首次异步等待。 */
+  const commitOutcome = (
+    index: number,
+    outcome: NodeJobOutcome,
+  ): Promise<void> => {
+    const slot = slots[index]!;
+    slot.outcome = outcome;
+    let terminalWrite: Promise<void>;
+    try {
+      terminalWrite = input.acceptOutcome(outcome);
+    } catch (error: unknown) {
+      reportFatal(error);
+      return Promise.resolve();
+    }
+    slot.terminalWrite = terminalWrite;
+    return terminalWrite
+      .then(() => {
+        if (input.runScope.signal.aborted) return;
+        try {
+          // Writer 回调可能推进确定性测试时钟或真实事件循环时间；写入完成后立即复查。
+          input.runScope.requirePositiveRemainingMs();
+        } catch (error: unknown) {
+          if (!input.runScope.isDeadlineReason(error)) throw error;
+        }
+      })
+      .catch((error: unknown) => {
+        reportFatal(error);
+      });
+  };
+
   const observedJobs = jobs.map((job, index) =>
     job.promise.then(
       value => {
-        if (mayCommitOutcome()) {
-          slots[index]!.outcome = {
-            status: "fulfilled",
-            nodeId: job.nodeId,
-            value,
-          };
-        }
+        if (!mayCommitOutcome()) return;
+        const outcome: NodeJobOutcome = {
+          status: "fulfilled",
+          nodeId: job.nodeId,
+          settlementOrdinal: nextSettlementOrdinal++,
+          value,
+        };
+        return commitOutcome(index, outcome);
       },
       (error: unknown) => {
-        if (!mayCommitOutcome()) {
-          return;
-        }
-        // Event Sink 故障属于 Run/传输层；截止快照前发生时不能伪装成 Node 失败。
+        if (!mayCommitOutcome()) return;
         if (error instanceof NodeEventEmissionError) {
-          firstFatalError ??= error;
-          resolveFatal({ kind: "fatal", error: firstFatalError });
+          reportFatal(error);
           return;
         }
-        slots[index]!.outcome = {
+        const outcome: NodeJobOutcome = {
           status: "rejected",
           nodeId: job.nodeId,
+          settlementOrdinal: nextSettlementOrdinal++,
           error: toNodeJobError(error),
         };
+        return commitOutcome(index, outcome);
       },
     ),
   );
@@ -149,23 +175,53 @@ export async function settleNodeJobsUntilAbsoluteDeadline(
   let removeAbortListener = (): void => undefined;
   const termination = new Promise<RunTermination>(resolve => {
     const settleFromAbort = (): void => {
-      if (closed) {
-        return;
-      }
+      if (closed) return;
       closed = true;
       const reason = input.runScope.signal.reason;
-      if (input.runScope.isDeadlineReason(reason)) {
-        resolve({ kind: "deadline", outcomes: snapshotAtDeadline(slots) });
-      } else {
+      if (!input.runScope.isDeadlineReason(reason)) {
         resolve({ kind: "cancelled", reason });
+        return;
       }
+
+      // Deadline 同步冻结已有 Slot，并按 GraphPlan 顺序给缺失项追加连续 ordinal。
+      for (const [index, slot] of slots.entries()) {
+        if (slot.outcome !== undefined) continue;
+        const outcome: NodeJobOutcome = {
+          status: "timed_out",
+          nodeId: slot.nodeId,
+          settlementOrdinal: nextSettlementOrdinal++,
+          error: DEADLINE_ERROR,
+        };
+        // closed 只禁止 Job 迟到提交；Deadline 自身仍必须占 Slot 并安排终态写入。
+        slot.outcome = outcome;
+        try {
+          slot.terminalWrite = input.acceptOutcome(outcome);
+        } catch (error: unknown) {
+          reportFatal(error);
+          slot.terminalWrite = Promise.reject(error);
+          void slot.terminalWrite.catch(() => undefined);
+        }
+        void slot.terminalWrite.catch(reportFatal);
+        // 显式引用 index，防止未来改为稀疏 Slot 时静默丢失计划顺序。
+        void index;
+      }
+      const outcomes = collectCompletedOutcomes(slots);
+      const terminalWrites = Promise.all(
+        slots.map(slot => {
+          if (slot.terminalWrite === undefined) {
+            throw new TypeError(`Node ${slot.nodeId} 缺少终态写入 Promise`);
+          }
+          return slot.terminalWrite;
+        }),
+      ).then(() => undefined);
+      void terminalWrites.catch(reportFatal);
+      resolve({ kind: "deadline", outcomes, terminalWrites });
     };
 
     if (input.runScope.signal.aborted) {
       settleFromAbort();
       return;
     }
-
     input.runScope.signal.addEventListener("abort", settleFromAbort, {
       once: true,
     });
@@ -175,51 +231,31 @@ export async function settleNodeJobsUntilAbsoluteDeadline(
   });
 
   try {
-    // 让调用前已经 settled 的 Promise 先执行已安装的观察回调，避免把它猜成 pending。
+    // 让调用前已 settled 的 Promise 先执行观察回调，ordinal 因此仍由注册顺序稳定产生。
     await Promise.resolve();
-
-    if (firstFatalError !== undefined) {
-      throw firstFatalError;
-    }
+    if (firstFatalError !== undefined) throw firstFatalError;
     if (input.runScope.signal.aborted) {
       const aborted = await termination;
       if (aborted.kind === "deadline") {
+        await aborted.terminalWrites;
         return aborted.outcomes;
       }
       throw aborted.reason;
     }
-    if (slots.every(slot => slot.outcome !== undefined)) {
-      closed = true;
-      return collectCompletedOutcomes(slots);
+
+    try {
+      input.runScope.requirePositiveRemainingMs();
+    } catch (error: unknown) {
+      if (!input.runScope.isDeadlineReason(error)) throw error;
     }
 
-    if (!input.runScope.signal.aborted) {
-      // 封闭 Timer 尚未回调但统一时钟已经过期的窗口；本调用不会创建第二个 Timer。
-      try {
-        input.runScope.requirePositiveRemainingMs();
-      } catch (error: unknown) {
-        // requirePositiveRemainingMs 会先同步中止 Scope；真正 Deadline 由下方统一消费。
-        if (!input.runScope.isDeadlineReason(error)) {
-          throw error;
-        }
-      }
-    }
-
-    const result = await Promise.race([
-      fatal,
-      allObserved,
-      termination,
-    ]);
-
+    const result = await Promise.race([fatal, allObserved, termination]);
     if (result.kind === "deadline") {
+      await result.terminalWrites;
       return result.outcomes;
     }
-    if (result.kind === "cancelled") {
-      throw result.reason;
-    }
-    if (result.kind === "fatal") {
-      throw result.error;
-    }
+    if (result.kind === "cancelled") throw result.reason;
+    if (result.kind === "fatal") throw result.error;
 
     closed = true;
     return collectCompletedOutcomes(slots);

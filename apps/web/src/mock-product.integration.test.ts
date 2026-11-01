@@ -50,7 +50,9 @@ describe("Mock Product 前端纵切", () => {
     const store = createGraphStore();
     const opener = vi.fn(() => null);
 
-    store.getState().startRun({ runId: plan.runId, query: "Python" });
+    store
+      .getState()
+      .startRun({ runId: plan.runId, query: "Python", language: "zh-CN" });
     store.getState().applyStreamEvent(compactPlan);
     store.getState().applyStreamEvent(ready);
 
@@ -63,7 +65,7 @@ describe("Mock Product 前端纵切", () => {
     const markup = renderToStaticMarkup(
       createElement(ResourcePanelView, { model: panel, openResource: opener }),
     );
-    expect(markup).toContain(">Open</button>");
+    expect(markup).toContain(">打开</button>");
     expect(opener).not.toHaveBeenCalled();
   });
 
@@ -87,7 +89,9 @@ describe("Mock Product 前端纵切", () => {
     }
 
     const store = createGraphStore();
-    store.getState().startRun({ runId: plan.runId, query: "Python" });
+    store
+      .getState()
+      .startRun({ runId: plan.runId, query: "Python", language: "zh-CN" });
     let draftAtNotification:
       | ReturnType<typeof buildGraphFlowElements>
       | undefined;
@@ -197,6 +201,7 @@ describe("Mock Product 前端纵切", () => {
     store.getState().startRun({
       runId: result.runId,
       query: result.query.raw,
+      language: "zh-CN",
     });
     store.getState().setGraph(result.graph);
     store.getState().finishRun();

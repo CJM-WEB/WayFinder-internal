@@ -15,7 +15,7 @@ import { createRunSearchHandler } from "./orchestrator/run-search.js";
 import { registerSearchRoute } from "./routes/search.js";
 import { createMemoryCachedSearchProvider } from "./search/memory-cached-provider.js";
 import type { SearchProvider } from "./search/provider.js";
-import { TavilySearchProvider } from "./search/providers/tavily.js";
+import { SerpApiBingSearchProvider } from "./search/providers/serpapi-bing.js";
 import type { LLMProvider } from "./ai/llm-provider.js";
 import { registerWebAssets } from "./web-assets.js";
 
@@ -34,10 +34,9 @@ export type BuildProductionServerInput = Readonly<{
 
 function createBaseProviders(config: ServerConfig): ProductionBaseProviders {
   return {
-    searchProvider: new TavilySearchProvider({
-      apiKey: config.tavilyApiKey,
+    searchProvider: new SerpApiBingSearchProvider({
+      apiKey: config.serpApiKey,
       searchTimeoutMs: config.timeouts.searchMs,
-      extractTimeoutMs: config.timeouts.extractMs,
     }),
     llmProvider: new DeepSeekLLMProvider({ apiKey: config.llmApiKey }),
   };
@@ -74,10 +73,10 @@ export async function buildProductionServer(
       officialSourcePolicy: { knownRiskyDownloadDomains: [] },
       llmStageTimeoutMs: input.config.timeouts.plannerMs,
       rerankTimeoutMs: input.config.timeouts.rerankMs,
-      language: "und",
       normalizeQuery: query => query.normalize("NFKC").trim().toLowerCase(),
       onPlannerValidationDiagnostic: () => undefined,
       onRevisionValidationDiagnostic: () => undefined,
+      onSearchPlanValidationDiagnostic: () => undefined,
       ...(runLogSink === undefined ? {} : { runLogSink }),
     }),
   );

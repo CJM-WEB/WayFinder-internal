@@ -1,22 +1,15 @@
 /**
- * 测试职责：冻结 WAY-60 进程内 Search / Extract Cache（缓存）的确定性语义。
+ * 测试职责：冻结 WAY-60 进程内 Search Cache（缓存）的确定性语义。
  *
  * 关键边界：Key 不保存明文 Query/URL/Secret；TTL 非滑动；取消与 Provider 错误
- * 不写缓存；Extract 只复用成功 URL；命中观察不携带用户或网页内容。
+ * 不写缓存；命中观察不携带用户或网页内容。
  */
-import type {
-  ExtractedPage,
-  NormalizedSearchHit,
-  ProviderSearchRequest,
-} from "@wayfinder/contracts";
+import type { NormalizedSearchHit, ProviderSearchRequest } from "@wayfinder/contracts";
 import { describe, expect, it, vi } from "vitest";
 
 import {
-  createExtractCacheKey,
   createMemoryCachedSearchProvider,
   createSearchCacheKey,
-  EXTRACT_CACHE_MAX_ENTRY_SIZE_CODE_UNITS,
-  EXTRACT_CACHE_TTL_MS,
   SEARCH_CACHE_MAX_ENTRY_SIZE_BYTES,
   SEARCH_CACHE_TTL_MS,
   type SearchProviderCacheObservation,
@@ -47,14 +40,9 @@ function createHit(query: string, suffix = "handbook"): NormalizedSearchHit {
   };
 }
 
-function createPage(canonicalUrl: string): ExtractedPage {
-  return { canonicalUrl, content: `正文 ${canonicalUrl}` };
-}
-
 function createProvider(input?: {
   id?: string;
   search?: SearchProvider["search"];
-  extract?: NonNullable<SearchProvider["extract"]>;
 }): SearchProvider {
   return {
     id: input?.id ?? "test-provider",
@@ -62,7 +50,6 @@ function createProvider(input?: {
     search:
       input?.search ??
       (async request => [createHit(request.query)]),
-    ...(input?.extract === undefined ? {} : { extract: input.extract }),
   };
 }
 
@@ -106,16 +93,14 @@ describe("MemoryCachedSearchProvider", () => {
       { ...BASE_REQUEST, maxResults: 5 },
       { ...BASE_REQUEST, capability: "code" },
       { ...BASE_REQUEST, freshnessSensitive: true },
-      { ...BASE_REQUEST, language: "en" },
+      { ...BASE_REQUEST, language: "en-US" },
       {
         kind: "broad_discovery",
         query: BASE_REQUEST.query,
         maxResults: BASE_REQUEST.maxResults,
         capability: BASE_REQUEST.capability,
         freshnessSensitive: BASE_REQUEST.freshnessSensitive,
-        ...(BASE_REQUEST.language === undefined
-          ? {}
-          : { language: BASE_REQUEST.language }),
+        language: BASE_REQUEST.language,
       },
     ];
     for (const variant of variants) {
@@ -128,22 +113,13 @@ describe("MemoryCachedSearchProvider", () => {
     );
   });
 
-  it("Key 只暴露版本化摘要，并严格分离 Search 与 Extract 命名空间", () => {
+  it("Key 只暴露版本化摘要，不包含 Query 明文", () => {
     const searchKey = createSearchCacheKey("private-provider", {
       ...BASE_REQUEST,
       query: "sensitive query text",
     });
-    const extractKey = createExtractCacheKey(
-      "private-provider",
-      "https://example.com/private-path?token=not-a-real-secret",
-    );
-
     expect(searchKey).toMatch(/^search-v1:[a-f0-9]{64}$/u);
-    expect(extractKey).toMatch(/^extract-v1:[a-f0-9]{64}$/u);
     expect(searchKey).not.toContain("sensitive");
-    expect(extractKey).not.toContain("private-path");
-    expect(extractKey).not.toContain("token");
-    expect(searchKey).not.toBe(extractKey);
   });
 
   it("Search TTL 从写入开始且命中不续期，边界时重新委托 Provider", async () => {
@@ -380,255 +356,4 @@ describe("MemoryCachedSearchProvider", () => {
     ]);
   });
 
-  it("Extract 重叠批次只委托 Miss URL，并按原输入顺序合并与隔离结果", async () => {
-    const extract = vi.fn<NonNullable<SearchProvider["extract"]>>(
-      async canonicalUrls =>
-        canonicalUrls
-          .map(createPage)
-          .reverse(),
-    );
-    const observations: SearchProviderCacheObservation[] = [];
-    const provider = createMemoryCachedSearchProvider(
-      createProvider({ extract }),
-      { onObservation: observation => observations.push(observation) },
-    );
-    const signal = new AbortController().signal;
-    const a = "https://example.com/a";
-    const b = "https://example.com/b";
-    const c = "https://example.com/c";
-
-    expect(await provider.extract!([a, b], signal)).toEqual([
-      createPage(a),
-      createPage(b),
-    ]);
-    const overlap = await provider.extract!([b, c], signal);
-    expect(overlap).toEqual([createPage(b), createPage(c)]);
-    overlap[0]!.content = "被调用方修改";
-    expect(await provider.extract!([b], signal)).toEqual([createPage(b)]);
-
-    expect(extract.mock.calls.map(call => call[0])).toEqual([
-      [a, b],
-      [c],
-    ]);
-    expect(observations).toEqual([
-      { operation: "extract", hitCount: 0, missCount: 2 },
-      { operation: "extract", hitCount: 1, missCount: 1 },
-      { operation: "extract", hitCount: 1, missCount: 0 },
-    ]);
-  });
-
-  it("Extract 使用独立 LRU，并在 Hit 后保留最近使用项", async () => {
-    const a = "https://example.com/a";
-    const b = "https://example.com/b";
-    const c = "https://example.com/c";
-    const extract = vi.fn<NonNullable<SearchProvider["extract"]>>(
-      async canonicalUrls => canonicalUrls.map(createPage),
-    );
-    const provider = createMemoryCachedSearchProvider(
-      createProvider({ extract }),
-      { extractMaxEntries: 2 },
-    );
-    const signal = new AbortController().signal;
-
-    await provider.extract!([a, b], signal);
-    await provider.extract!([a], signal);
-    await provider.extract!([c], signal);
-    await provider.extract!([a], signal);
-    await provider.extract!([b], signal);
-
-    expect(extract.mock.calls.map(call => call[0])).toEqual([
-      [a, b],
-      [c],
-      [b],
-    ]);
-  });
-
-  it("Extract 只缓存实际成功页面，缺失 URL 下次仍为 Miss", async () => {
-    const a = "https://example.com/a";
-    const b = "https://example.com/b";
-    const extract = vi
-      .fn<NonNullable<SearchProvider["extract"]>>()
-      .mockResolvedValueOnce([createPage(a)])
-      .mockResolvedValueOnce([createPage(b)]);
-    const provider = createMemoryCachedSearchProvider(
-      createProvider({ extract }),
-    );
-    const signal = new AbortController().signal;
-
-    expect(await provider.extract!([a, b], signal)).toEqual([createPage(a)]);
-    expect(await provider.extract!([a, b], signal)).toEqual([
-      createPage(a),
-      createPage(b),
-    ]);
-    expect(extract.mock.calls.map(call => call[0])).toEqual([[a, b], [b]]);
-  });
-
-  it("Extract 空正文与超大正文正常返回但不缓存", async () => {
-    const blankUrl = "https://example.com/blank";
-    const largeUrl = "https://example.com/large";
-    const oversizedContent = "x".repeat(
-      EXTRACT_CACHE_MAX_ENTRY_SIZE_CODE_UNITS + 1,
-    );
-    const extract = vi.fn<NonNullable<SearchProvider["extract"]>>(
-      async canonicalUrls =>
-        canonicalUrls.map(canonicalUrl => ({
-          canonicalUrl,
-          content:
-            canonicalUrl === blankUrl ? "   " : oversizedContent,
-        })),
-    );
-    const provider = createMemoryCachedSearchProvider(
-      createProvider({ extract }),
-    );
-    const signal = new AbortController().signal;
-
-    const expected = [
-      { canonicalUrl: blankUrl, content: "   " },
-      { canonicalUrl: largeUrl, content: oversizedContent },
-    ];
-    await expect(
-      provider.extract!([blankUrl, largeUrl], signal),
-    ).resolves.toEqual(expected);
-    await expect(
-      provider.extract!([blankUrl, largeUrl], signal),
-    ).resolves.toEqual(expected);
-    expect(extract.mock.calls.map(call => call[0])).toEqual([
-      [blankUrl, largeUrl],
-      [blankUrl, largeUrl],
-    ]);
-  });
-
-  it.each([
-    [
-      "未知 URL",
-      (requestedUrl: string) => [
-        createPage(requestedUrl),
-        createPage("https://unexpected.example/page"),
-      ],
-    ],
-    [
-      "重复关联",
-      (requestedUrl: string) => [
-        createPage(requestedUrl),
-        createPage(requestedUrl),
-      ],
-    ],
-  ])("Extract %s 的 Fresh 批次整体不写缓存", async (_name, response) => {
-    const url = "https://example.com/page";
-    const extract = vi.fn<NonNullable<SearchProvider["extract"]>>(
-      async canonicalUrls => response(canonicalUrls[0]!),
-    );
-    const provider = createMemoryCachedSearchProvider(
-      createProvider({ extract }),
-    );
-    const signal = new AbortController().signal;
-
-    await provider.extract!([url], signal);
-    await provider.extract!([url], signal);
-    expect(extract).toHaveBeenCalledTimes(2);
-  });
-
-  it("Warm Cache 仍把重复或超出缓存批量上限的输入交给 Provider 校验", async () => {
-    const a = "https://example.com/a";
-    const b = "https://example.com/b";
-    const c = "https://example.com/c";
-    const providerError = new Error("invalid extract input");
-    const extract = vi.fn<NonNullable<SearchProvider["extract"]>>(
-      async canonicalUrls => {
-        if (
-          new Set(canonicalUrls).size !== canonicalUrls.length ||
-          canonicalUrls.length > 2
-        ) {
-          throw providerError;
-        }
-        return canonicalUrls.map(createPage);
-      },
-    );
-    const provider = createMemoryCachedSearchProvider(
-      createProvider({ extract }),
-      { maxCacheableExtractUrls: 2 },
-    );
-    const signal = new AbortController().signal;
-
-    await provider.extract!([a, b], signal);
-    await provider.extract!([c], signal);
-    await expect(provider.extract!([a, a], signal)).rejects.toBe(
-      providerError,
-    );
-    await expect(provider.extract!([a, b, c], signal)).rejects.toBe(
-      providerError,
-    );
-    expect(extract).toHaveBeenCalledTimes(4);
-  });
-
-  it("Extract TTL 为一小时且命中不续期", async () => {
-    let nowMs = 5_000;
-    const url = "https://example.com/page";
-    let extractCallCount = 0;
-    const extract = vi.fn<NonNullable<SearchProvider["extract"]>>(
-      async canonicalUrls => {
-        extractCallCount += 1;
-        return canonicalUrls.map(canonicalUrl => ({
-          canonicalUrl,
-          content: `调用 ${extractCallCount}`,
-        }));
-      },
-    );
-    const provider = createMemoryCachedSearchProvider(
-      createProvider({ extract }),
-      { nowMs: () => nowMs },
-    );
-    const signal = new AbortController().signal;
-
-    const first = await provider.extract!([url], signal);
-    nowMs += EXTRACT_CACHE_TTL_MS - 1;
-    expect(await provider.extract!([url], signal)).toEqual(first);
-    nowMs += 1;
-    expect(await provider.extract!([url], signal)).not.toEqual(first);
-    expect(extract).toHaveBeenCalledTimes(2);
-  });
-
-  it("Extract 异常与晚到取消结果均不写缓存", async () => {
-    const url = "https://example.com/page";
-    const providerError = new Error("extract failed");
-    const failedExtract = vi
-      .fn<NonNullable<SearchProvider["extract"]>>()
-      .mockRejectedValueOnce(providerError)
-      .mockResolvedValueOnce([createPage(url)]);
-    const failedProvider = createMemoryCachedSearchProvider(
-      createProvider({ extract: failedExtract }),
-    );
-    await expect(
-      failedProvider.extract!([url], new AbortController().signal),
-    ).rejects.toBe(providerError);
-    await failedProvider.extract!([url], new AbortController().signal);
-    expect(failedExtract).toHaveBeenCalledTimes(2);
-
-    let resolveLate: ((pages: ExtractedPage[]) => void) | undefined;
-    const lateExtract = vi.fn<NonNullable<SearchProvider["extract"]>>(
-      () =>
-        new Promise(resolve => {
-          resolveLate = resolve;
-        }),
-    );
-    const lateProvider = createMemoryCachedSearchProvider(
-      createProvider({ extract: lateExtract }),
-    );
-    const controller = new AbortController();
-    const reason = new Error("deadline");
-    const pending = lateProvider.extract!([url], controller.signal);
-    controller.abort(reason);
-    resolveLate?.([createPage(url)]);
-    await expect(pending).rejects.toBe(reason);
-
-    const retry = lateProvider.extract!([url], new AbortController().signal);
-    resolveLate?.([createPage(url)]);
-    await expect(retry).resolves.toEqual([createPage(url)]);
-    expect(lateExtract).toHaveBeenCalledTimes(2);
-  });
-
-  it("底层 Provider 没有 Extract 时不伪造该能力", () => {
-    const provider = createMemoryCachedSearchProvider(createProvider());
-    expect(provider.extract).toBeUndefined();
-  });
 });

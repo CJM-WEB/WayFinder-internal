@@ -18,6 +18,8 @@ import {
   createFixedClock,
   FakeSearchProvider,
 } from "../../../../tests/support/test-infrastructure.mjs";
+import { GraphOutlineSchema } from "../ai/graph-outline.js";
+import { SearchPlanBundleSchema } from "../ai/search-plan-generator.js";
 import type { RunLogRecord } from "./run-log.js";
 
 const PRIVATE_QUERY = "Authorization Bearer private-key Cookie=session-secret";
@@ -74,6 +76,27 @@ function createRerankOutput() {
   };
 }
 
+function createPlanningResponses(plan: GraphPlan): readonly unknown[] {
+  return [
+    GraphOutlineSchema.parse({
+      analysis: plan.analysis,
+      nodes: plan.nodes.map(node => {
+        const { searchPlan, ...outlineNode } = node;
+        void searchPlan;
+        return outlineNode;
+      }),
+      edges: plan.edges,
+    }),
+    SearchPlanBundleSchema.parse({
+      plans: plan.nodes.map(node => ({
+        nodeId: node.id,
+        queries: node.searchPlan.queries,
+        rankingProfile: node.searchPlan.rankingProfile,
+      })),
+    }),
+  ];
+}
+
 function createHit(): NormalizedSearchHit {
   const url = "https://private.example/resource";
   return {
@@ -98,9 +121,9 @@ describe("Run Search Logging Integration", () => {
     const clock = createFixedClock("2026-10-22T00:00:00.000Z");
     const plan = createPlan();
     const responses = [
-      plan,
+      ...createPlanningResponses(plan),
       createRerankOutput(),
-      plan,
+      ...createPlanningResponses(plan),
       createRerankOutput(),
     ];
     const hit = createHit();
@@ -144,15 +167,15 @@ describe("Run Search Logging Integration", () => {
       providers: createConcurrencyLimitedProviders({
         searchProvider: cachedSearchProvider,
         llmProvider,
-        concurrency: { search: 6, extract: 3, llm: 3 },
+        concurrency: { search: 6, llm: 3 },
       }),
       officialSourcePolicy: { knownRiskyDownloadDomains: [] },
-      llmStageTimeoutMs: 15_000,
-      rerankTimeoutMs: 12_000,
-      language: "en",
+      llmStageTimeoutMs: 30_000,
+      rerankTimeoutMs: 24_000,
       normalizeQuery: query => query.normalize("NFKC"),
       onPlannerValidationDiagnostic: () => undefined,
       onRevisionValidationDiagnostic: () => undefined,
+      onSearchPlanValidationDiagnostic: () => undefined,
       runLogSink: {
         write: async record => {
           records.push(record);
@@ -165,7 +188,7 @@ describe("Run Search Logging Integration", () => {
     for (const runId of ["../../first-secret", "../../second-secret"]) {
       const payloads: StreamEventPayload[] = [];
       await handler({
-        input: { runId, query: PRIVATE_QUERY },
+        input: { runId, query: PRIVATE_QUERY, language: "zh-CN" },
         signal: new AbortController().signal,
         emit: async payload => {
           payloads.push(payload);
@@ -181,25 +204,73 @@ describe("Run Search Logging Integration", () => {
         plannedNodes: 1,
         resources: 1,
         logicalSearchCalls: 1,
-        logicalExtractCalls: 1,
-        logicalLlmCalls: 2,
+        logicalExtractCalls: 0,
+        logicalLlmCalls: 3,
+      },
+      planningStages: {
+        graphOutline: {
+          logicalLlmCalls: 1,
+          failureCode: null,
+          tokens: {
+            status: "complete",
+            observations: 1,
+            inputTokens: 10,
+            outputTokens: 5,
+            totalTokens: 15,
+          },
+        },
+        searchPlan: {
+          logicalLlmCalls: 1,
+          failureCode: null,
+          tokens: {
+            status: "complete",
+            observations: 1,
+            inputTokens: 10,
+            outputTokens: 5,
+            totalTokens: 15,
+          },
+        },
       },
       cache: {
         search: { hitCount: 0, missCount: 1 },
-        extract: { hitCount: 0, missCount: 1 },
+        extract: { hitCount: 0, missCount: 0 },
+      },
+      ranking: {
+        llmSuccess: {
+          nodeCount: 1,
+          finalCandidateCount: 1,
+          providerTop1OverrideCount: 0,
+          heuristicTop1OverrideCount: 0,
+          providerTop3FinalOverlapCount: 1,
+          heuristicTop3FinalOverlapCount: 1,
+          top3ComparisonSlots: 1,
+        },
+        fallback: {
+          nodeCount: 0,
+          finalCandidateCount: 0,
+          providerTop1OverrideCount: 0,
+          heuristicTop1OverrideCount: 0,
+          providerTop3FinalOverlapCount: 0,
+          heuristicTop3FinalOverlapCount: 0,
+          top3ComparisonSlots: 0,
+        },
       },
       tokens: {
         status: "complete",
-        observations: 2,
-        inputTokens: 20,
-        outputTokens: 10,
-        totalTokens: 30,
+        observations: 3,
+        inputTokens: 30,
+        outputTokens: 15,
+        totalTokens: 45,
       },
     });
     expect(records[1]).toMatchObject({
       cache: {
         search: { hitCount: 1, missCount: 0 },
-        extract: { hitCount: 1, missCount: 0 },
+        extract: { hitCount: 0, missCount: 0 },
+      },
+      ranking: {
+        llmSuccess: { nodeCount: 1 },
+        fallback: { nodeCount: 0 },
       },
     });
     const serialized = JSON.stringify(records);
@@ -227,24 +298,29 @@ describe("Run Search Logging Integration", () => {
         }),
         llmProvider: new DeepSeekLLMProvider({
           apiKey: "test-only-key",
-          transport: async request => ({
-            status: "completed",
-            output_text: JSON.stringify(
-              request.text.format.name.includes("graph")
-                ? plan
-                : createRerankOutput(),
-            ),
-          }),
+          transport: async request => {
+            const [outline, bundle] = createPlanningResponses(plan);
+            const output =
+              request.text.format.name === "graph_outline"
+                ? outline
+                : request.text.format.name === "search_plan_bundle"
+                  ? bundle
+                  : createRerankOutput();
+            return {
+              status: "completed",
+              output_text: JSON.stringify(output),
+            };
+          },
         }),
-        concurrency: { search: 6, extract: 3, llm: 3 },
+        concurrency: { search: 6, llm: 3 },
       }),
       officialSourcePolicy: { knownRiskyDownloadDomains: [] },
-      llmStageTimeoutMs: 15_000,
-      rerankTimeoutMs: 12_000,
-      language: "en",
+      llmStageTimeoutMs: 30_000,
+      rerankTimeoutMs: 24_000,
       normalizeQuery: query => query,
       onPlannerValidationDiagnostic: () => undefined,
       onRevisionValidationDiagnostic: () => undefined,
+      onSearchPlanValidationDiagnostic: () => undefined,
       runLogSink: {
         write: async () => {
           throw new Error(PRIVATE_PAGE_BODY);
@@ -258,7 +334,11 @@ describe("Run Search Logging Integration", () => {
 
     await expect(
       handler({
-        input: { runId: "run-safe", query: PRIVATE_QUERY },
+        input: {
+          runId: "run-safe",
+          query: PRIVATE_QUERY,
+          language: "zh-CN",
+        },
         signal: new AbortController().signal,
         emit: async payload => {
           payloads.push(payload);
@@ -286,24 +366,29 @@ describe("Run Search Logging Integration", () => {
         }),
         llmProvider: new DeepSeekLLMProvider({
           apiKey: "test-only-key",
-          transport: async request => ({
-            status: "completed",
-            output_text: JSON.stringify(
-              request.text.format.name.includes("graph")
-                ? plan
-                : createRerankOutput(),
-            ),
-          }),
+          transport: async request => {
+            const [outline, bundle] = createPlanningResponses(plan);
+            const output =
+              request.text.format.name === "graph_outline"
+                ? outline
+                : request.text.format.name === "search_plan_bundle"
+                  ? bundle
+                  : createRerankOutput();
+            return {
+              status: "completed",
+              output_text: JSON.stringify(output),
+            };
+          },
         }),
-        concurrency: { search: 6, extract: 3, llm: 3 },
+        concurrency: { search: 6, llm: 3 },
       }),
       officialSourcePolicy: { knownRiskyDownloadDomains: [] },
-      llmStageTimeoutMs: 15_000,
-      rerankTimeoutMs: 12_000,
-      language: "en",
+      llmStageTimeoutMs: 30_000,
+      rerankTimeoutMs: 24_000,
       normalizeQuery: query => query,
       onPlannerValidationDiagnostic: () => undefined,
       onRevisionValidationDiagnostic: () => undefined,
+      onSearchPlanValidationDiagnostic: () => undefined,
       runLogSink: {
         write: () => new Promise<void>(() => undefined),
       },
@@ -314,7 +399,11 @@ describe("Run Search Logging Integration", () => {
 
     const outcome = await Promise.race([
       handler({
-        input: { runId: "run-safe", query: PRIVATE_QUERY },
+        input: {
+          runId: "run-safe",
+          query: PRIVATE_QUERY,
+          language: "zh-CN",
+        },
         signal: new AbortController().signal,
         emit: async payload => {
           payloads.push(payload);

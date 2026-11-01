@@ -2,7 +2,7 @@
  * 模块职责：在 Provider Port（提供方端口）边界集中限制真实外部调用并发。
  *
  * 生命周期边界：Composition Root（组合根）应只创建一个长生命周期实例，并让所有
- * Run 共用；Search、Extract、LLM 使用三个独立队列，不能限制整个 Node Pipeline。
+ * Run 共用；Search、LLM 使用两个独立队列，不能限制整个 Node Pipeline。
  * Cache 应包在 Search 装饰器外层，使命中缓存时不占真实外部调用槽位。
  */
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -14,16 +14,11 @@ import {
   LLMProviderError,
   type LLMProvider,
 } from "../ai/llm-provider.js";
-import {
-  MAX_EXTRACT_CONCURRENCY,
-  MAX_LLM_CONCURRENCY,
-  MAX_SEARCH_CONCURRENCY,
-} from "../config.js";
+import { MAX_LLM_CONCURRENCY, MAX_SEARCH_CONCURRENCY } from "../config.js";
 import type { SearchProvider } from "../search/provider.js";
 
 export type ProviderConcurrencyLimits = Readonly<{
   search: number;
-  extract: number;
   llm: number;
 }>;
 
@@ -43,7 +38,7 @@ export type CreateConcurrencyLimitedProvidersInput = Readonly<{
 type Limit = ReturnType<typeof pLimit>;
 
 function assertConcurrencyLimit(
-  label: "Search" | "Extract" | "LLM",
+  label: "Search" | "LLM",
   value: number,
   maximum: number,
 ): void {
@@ -153,7 +148,7 @@ function runLimited<T>(
 }
 
 /**
- * 创建进程级共享的三层并发装饰器。单次 Adapter 逻辑调用（含其内部有界重试）只占
+ * 创建进程级共享的两层并发装饰器。单次 Adapter 逻辑调用（含其内部有界重试）只占
  * 一个槽位；本模块不读取 Provider 私有字段、不创建第二个 Timer。LLM 只收窄调用方
  * 已有阶段预算，排队耗尽时使用与 SDK Timeout 相同的脱敏错误语义。
  */
@@ -166,20 +161,13 @@ export function createConcurrencyLimitedProviders(
     MAX_SEARCH_CONCURRENCY,
   );
   assertConcurrencyLimit(
-    "Extract",
-    input.concurrency.extract,
-    MAX_EXTRACT_CONCURRENCY,
-  );
-  assertConcurrencyLimit(
     "LLM",
     input.concurrency.llm,
     MAX_LLM_CONCURRENCY,
   );
 
   const searchLimit = pLimit(input.concurrency.search);
-  const extractLimit = pLimit(input.concurrency.extract);
   const llmLimit = pLimit(input.concurrency.llm);
-  const providerExtract = input.searchProvider.extract;
   const now = input.now ?? (() => performance.now());
 
   const searchProvider: SearchProvider = {
@@ -189,18 +177,6 @@ export function createConcurrencyLimitedProviders(
       runLimited(searchLimit, signal, () =>
         input.searchProvider.search(request, signal),
       ),
-    ...(providerExtract === undefined
-      ? {}
-      : {
-          extract: (canonicalUrls: string[], signal: AbortSignal) =>
-            runLimited(extractLimit, signal, () =>
-              providerExtract.call(
-                input.searchProvider,
-                canonicalUrls,
-                signal,
-              ),
-            ),
-        }),
   };
 
   const llmProvider: LLMProvider = {

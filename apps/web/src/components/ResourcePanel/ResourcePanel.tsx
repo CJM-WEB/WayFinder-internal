@@ -6,15 +6,14 @@
  * 才允许打开已重新校验的 HTTP(S) URL。
  */
 import type {
-  AppErrorCode,
-  NodeWarningCode,
   Resource,
+  SearchLanguage,
   StreamNodeStatus,
 } from "@wayfinder/contracts";
 import { useState } from "react";
 import { useStore } from "zustand";
 
-import { NODE_STATUS_LABELS } from "../Graph/graph-labels.js";
+import { getMessages, type Messages } from "../../i18n/messages.js";
 import {
   graphStore,
   selectSelectedNode,
@@ -28,10 +27,12 @@ import {
 
 type UnselectedPanelModel = {
   kind: "unselected";
+  language: SearchLanguage;
 };
 
 type SelectedPanelModel = {
   kind: "selected";
+  language: SearchLanguage;
   nodeId: string;
   nodeTitle: string;
   nodeStatus: StreamNodeStatus;
@@ -52,42 +53,26 @@ export type ResourcePanelModel =
   | SelectedPanelModel;
 
 /**
- * Warning 只暴露公共 Contract 的稳定语义，不显示 Provider 原始异常、网页内容或内部诊断。
- * Record 保证新增 Warning Code 时必须同步决定用户文案，不能静默退化为裸协议值。
+ * 只依据判别联合中的终态字段构造提示，不从 Resource 数量反向猜测状态。
+ * Warning 与 Error 只暴露公共 Contract 的安全语义，底层 Provider 诊断不得进入 UI。
  */
-const NODE_WARNING_MESSAGES: Record<NodeWarningCode, string> = {
-  SEARCH_PROVIDER_PARTIAL: "部分搜索来源暂时不可用，现有结果仍可浏览。",
-  EXTRACTION_FAILED: "部分网页正文读取失败，相关内容使用搜索摘要。",
-  RERANK_FAILED: "智能排序暂时不可用，当前结果使用基础排序。",
-};
-
-/** Error 文案保持简洁且可穷尽；详细 cause、Stack 与 Provider 响应只能进入脱敏 Run Log。 */
-const NODE_ERROR_MESSAGES: Record<AppErrorCode, string> = {
-  PLANNER_FAILED: "未能生成可用的检索计划。",
-  INVALID_GRAPH: "检索计划无效，未能执行该节点。",
-  SEARCH_PROVIDER_FAILED: "未能获取可用的搜索结果。",
-  EXTRACTION_FAILED: "未能读取可用的网页内容。",
-  RERANK_FAILED: "未能完成结果排序。",
-  RUN_DEADLINE_EXCEEDED: "该节点未能在本轮时限内完成。",
-  REQUEST_ABORTED: "该节点处理已中止。",
-  UNKNOWN: "该节点处理失败，暂无可用结果。",
-};
-
-/** 只依据判别联合中的终态字段构造提示，不从 Resource 数量反向猜测状态。 */
-const buildOutcomeNotice = (node: GraphStoreNode): OutcomeNotice | null => {
+const buildOutcomeNotice = (
+  node: GraphStoreNode,
+  messages: Messages["resourcePanel"],
+): OutcomeNotice | null => {
   if (node.status === "partial") {
     return {
       kind: "warning",
-      title: "结果部分降级",
-      messages: node.warnings.map(code => NODE_WARNING_MESSAGES[code]),
+      title: messages.partialTitle,
+      messages: node.warnings.map(code => messages.warningMessages[code]),
     };
   }
 
   if (node.status === "failed") {
     return {
       kind: "error",
-      title: "节点处理失败",
-      messages: [NODE_ERROR_MESSAGES[node.error.code]],
+      title: messages.failedTitle,
+      messages: [messages.errorMessages[node.error.code]],
     };
   }
 
@@ -100,24 +85,28 @@ const buildOutcomeNotice = (node: GraphStoreNode): OutcomeNotice | null => {
  */
 export const buildResourcePanelModel = (
   node: GraphStoreNode | null,
+  language: SearchLanguage = "zh-CN",
 ): ResourcePanelModel => {
+  const messages = getMessages(language);
+
   if (node === null) {
-    return { kind: "unselected" };
+    return { kind: "unselected", language };
   }
 
   const resources = "resources" in node ? node.resources : [];
-  const outcomeNotice = buildOutcomeNotice(node);
+  const outcomeNotice = buildOutcomeNotice(node, messages.resourcePanel);
   const emptyMessage =
     resources.length > 0 || outcomeNotice?.kind === "error"
       ? null
-      : "该节点仍在处理，资源准备完成后将在此显示。";
+      : messages.resourcePanel.processing;
 
   return {
     kind: "selected",
+    language,
     nodeId: node.id,
     nodeTitle: node.title,
     nodeStatus: node.status,
-    nodeStatusLabel: NODE_STATUS_LABELS[node.status],
+    nodeStatusLabel: messages.graph.statusLabels[node.status],
     resources,
     outcomeNotice,
     emptyMessage,
@@ -152,6 +141,7 @@ function SelectedResourcePanel({
   openResource: BrowserUrlOpener;
 }) {
   const [expanded, setExpanded] = useState(false);
+  const messages = getMessages(model.language).resourcePanel;
   const visibleResources = selectVisibleResources(model.resources, expanded);
   const hiddenResourceCount = model.resources.length - visibleResources.length;
 
@@ -162,7 +152,7 @@ function SelectedResourcePanel({
       aria-live="polite"
     >
       <header className="resource-panel__header">
-        <p className="resource-panel__eyebrow">Selected Node</p>
+        <p className="resource-panel__eyebrow">{messages.selectedNode}</p>
         <div className="resource-panel__title-row">
           <h2 id="resource-panel-title">{model.nodeTitle}</h2>
           <span
@@ -171,7 +161,7 @@ function SelectedResourcePanel({
             {model.nodeStatusLabel}
           </span>
         </div>
-        <p>{model.resources.length} 条可用资源</p>
+        <p>{messages.resourceCount(model.resources.length)}</p>
       </header>
 
       {model.outcomeNotice === null ? null : (
@@ -196,7 +186,11 @@ function SelectedResourcePanel({
         )
       ) : (
         <>
-          <div className="resource-list" role="list" aria-label="节点资源">
+          <div
+            className="resource-list"
+            role="list"
+            aria-label={messages.resourceListAria}
+          >
             {visibleResources.map(resource => {
               const safeUrl = resolveSafeHttpUrl(resource.url);
 
@@ -213,22 +207,24 @@ function SelectedResourcePanel({
 
                   <dl className="resource-card__meta">
                     <div>
-                      <dt>域名</dt>
+                      <dt>{messages.domain}</dt>
                       <dd>{resource.domain}</dd>
                     </div>
                     <div>
-                      <dt>来源类型</dt>
+                      <dt>{messages.sourceType}</dt>
                       <dd>{formatSourceType(resource.sourceType)}</dd>
                     </div>
                   </dl>
 
                   <section aria-labelledby={`${resource.id}-summary`}>
-                    <h4 id={`${resource.id}-summary`}>AI 摘要</h4>
+                    <h4 id={`${resource.id}-summary`}>{messages.aiSummary}</h4>
                     <p>{resource.summary}</p>
                   </section>
 
                   <section aria-labelledby={`${resource.id}-why-selected`}>
-                    <h4 id={`${resource.id}-why-selected`}>入选原因</h4>
+                    <h4 id={`${resource.id}-why-selected`}>
+                      {messages.whySelected}
+                    </h4>
                     <p>{resource.whySelected}</p>
                   </section>
 
@@ -236,17 +232,15 @@ function SelectedResourcePanel({
                     <button
                       type="button"
                       disabled={safeUrl === null}
-                      aria-label={`在新标签页打开 ${resource.title}`}
+                      aria-label={messages.openAria(resource.title)}
                       onClick={() =>
                         requestSafeUrlOpen(resource.url, openResource)
                       }
                     >
-                      Open
+                      {messages.open}
                     </button>
                     {safeUrl === null ? (
-                      <p role="status">
-                        链接不可用：仅支持有效的 HTTP(S) 地址。
-                      </p>
+                      <p role="status">{messages.invalidUrl}</p>
                     ) : null}
                   </footer>
                 </article>
@@ -259,7 +253,7 @@ function SelectedResourcePanel({
               type="button"
               onClick={() => setExpanded(true)}
             >
-              显示更多（{hiddenResourceCount}）
+              {messages.showMore(hiddenResourceCount)}
             </button>
           ) : null}
         </>
@@ -277,12 +271,14 @@ export function ResourcePanelView({
   openResource?: BrowserUrlOpener;
 }) {
   if (model.kind === "unselected") {
+    const messages = getMessages(model.language).resourcePanel;
+
     return (
       <aside className="resource-panel resource-panel--empty" aria-live="polite">
         <div>
-          <p className="resource-panel__eyebrow">Resource Panel</p>
-          <h2>选择一个节点</h2>
-          <p>你可以自由查看任意节点，不必沿箭头顺序浏览。</p>
+          <p className="resource-panel__eyebrow">{messages.panelName}</p>
+          <h2>{messages.chooseNode}</h2>
+          <p>{messages.chooseNodeHint}</p>
         </div>
       </aside>
     );
@@ -298,10 +294,12 @@ export function ResourcePanelView({
 }
 
 /** 容器组件只负责订阅当前选择，避免展示层直接依赖 Store 动作。 */
-export function ResourcePanel() {
+export function ResourcePanel({ language }: { language: SearchLanguage }) {
   const selectedNode = useStore(graphStore, selectSelectedNode);
 
   return (
-    <ResourcePanelView model={buildResourcePanelModel(selectedNode)} />
+    <ResourcePanelView
+      model={buildResourcePanelModel(selectedNode, language)}
+    />
   );
 }

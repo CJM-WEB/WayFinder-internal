@@ -78,16 +78,21 @@ describe("Graph store", () => {
   it("开始新 Run 时原子清空旧图、选择与序号", () => {
     const store = createGraphStore();
 
-    store.getState().startRun({ runId: "old-run", query: "old query" });
+    store
+      .getState()
+      .startRun({ runId: "old-run", query: "old query", language: "zh-CN" });
     store.getState().setGraph(graphPlan);
     store.getState().selectNode(graphPlan.nodes[0]?.id ?? null);
     store.getState().applyStreamEvent(createAnalysisEvent("old-run", 8));
 
-    store.getState().startRun({ runId: "new-run", query: "new query" });
+    store
+      .getState()
+      .startRun({ runId: "new-run", query: "new query", language: "zh-CN" });
 
     expect(store.getState()).toMatchObject({
       activeRunId: "new-run",
       query: "new query",
+      language: "zh-CN",
       presentationMode: null,
       nodes: [],
       edges: [],
@@ -135,7 +140,9 @@ describe("Graph store", () => {
   it("独立记录搜索状态与最后序号", () => {
     const store = createGraphStore();
 
-    store.getState().startRun({ runId: "run-27", query: "WayFinder" });
+    store
+      .getState()
+      .startRun({ runId: "run-27", query: "WayFinder", language: "zh-CN" });
     store.getState().applyStreamEvent(createAnalysisEvent("run-27", 12));
     store.getState().finishRun();
 
@@ -149,7 +156,9 @@ describe("Graph store", () => {
   it("reset 恢复完整初始状态", () => {
     const store = createGraphStore();
 
-    store.getState().startRun({ runId: "run-27", query: "WayFinder" });
+    store
+      .getState()
+      .startRun({ runId: "run-27", query: "WayFinder", language: "zh-CN" });
     store.getState().setGraph(graphPlan);
     store.getState().selectNode(graphPlan.nodes[0]?.id ?? null);
     store.getState().applyStreamEvent(createAnalysisEvent("run-27", 3));
@@ -158,6 +167,7 @@ describe("Graph store", () => {
     expect(store.getState()).toMatchObject({
       activeRunId: null,
       query: "",
+      language: null,
       presentationMode: null,
       nodes: [],
       edges: [],

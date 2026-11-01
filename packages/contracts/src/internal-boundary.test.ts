@@ -22,6 +22,7 @@ import type {
   ResourceCandidate,
   ResultGraphNode,
   SearchCapability,
+  SearchLanguage,
 } from "./index.js";
 
 const validProviderRequest: ProviderSearchRequest = {
@@ -31,7 +32,15 @@ const validProviderRequest: ProviderSearchRequest = {
   maxResults: 8,
   capability: "code",
   freshnessSensitive: false,
+  language: "zh-CN",
 };
+
+/** English 与简体中文复用同一个 Provider 请求边界，不新增平行字段。 */
+const validEnglishProviderRequest: ProviderSearchRequest = {
+  ...validProviderRequest,
+  language: "en-US",
+};
+void validEnglishProviderRequest;
 
 const consumeNormalizedHit = (hit: NormalizedSearchHit): void => {
   void hit;
@@ -57,7 +66,7 @@ const readCandidateRawMetadata = (
 };
 void readCandidateRawMetadata;
 
-// @ts-expect-error exactOptionalPropertyTypes 要求 language 要么省略，要么是 string。
+// @ts-expect-error Provider 请求必须使用公共 Contract 允许的语言。
 const invalidUndefinedLanguage: ProviderSearchRequest = { ...validProviderRequest, language: undefined };
 void invalidUndefinedLanguage;
 
@@ -68,6 +77,7 @@ const invalidNodeRequest: ProviderSearchRequest = {
   maxResults: 5,
   capability: "general",
   freshnessSensitive: false,
+  language: "zh-CN",
 };
 void invalidNodeRequest;
 
@@ -79,6 +89,7 @@ const invalidBroadRequest: ProviderSearchRequest = {
   maxResults: 5,
   capability: "general",
   freshnessSensitive: true,
+  language: "zh-CN",
 };
 void invalidBroadRequest;
 
@@ -93,7 +104,7 @@ describe("WAY-24 Provider Search 边界", () => {
       maxResults: number;
       capability: SearchCapability;
       freshnessSensitive: boolean;
-      language?: string;
+      language: SearchLanguage;
     }>();
     expectTypeOf<{
       kind: "node";
@@ -102,7 +113,7 @@ describe("WAY-24 Provider Search 边界", () => {
       maxResults: number;
       capability: SearchCapability;
       freshnessSensitive: boolean;
-      language?: string;
+      language: SearchLanguage;
     }>().toMatchTypeOf<
       Extract<ProviderSearchRequest, { kind: "node" }>
     >();
@@ -114,7 +125,7 @@ describe("WAY-24 Provider Search 边界", () => {
       maxResults: number;
       capability: SearchCapability;
       freshnessSensitive: boolean;
-      language?: string;
+      language: SearchLanguage;
     }>();
     expectTypeOf<{
       kind: "broad_discovery";
@@ -122,7 +133,7 @@ describe("WAY-24 Provider Search 边界", () => {
       maxResults: number;
       capability: SearchCapability;
       freshnessSensitive: boolean;
-      language?: string;
+      language: SearchLanguage;
     }>().toMatchTypeOf<
       Extract<ProviderSearchRequest, { kind: "broad_discovery" }>
     >();
@@ -217,15 +228,18 @@ const verifyNodeJobOutcomeNarrowing = (
 ): void => {
   switch (outcome.status) {
     case "fulfilled":
+      expectTypeOf(outcome.settlementOrdinal).toEqualTypeOf<number>();
       expectTypeOf(outcome.value).toEqualTypeOf<ResultGraphNode>();
       return;
 
     case "rejected":
+      expectTypeOf(outcome.settlementOrdinal).toEqualTypeOf<number>();
       expectTypeOf(outcome.error).toMatchTypeOf<Error>();
       expectTypeOf(outcome.error.code).toEqualTypeOf<ExpectedRejectedCode>();
       return;
 
     case "timed_out":
+      expectTypeOf(outcome.settlementOrdinal).toEqualTypeOf<number>();
       expectTypeOf(outcome.error.code).toEqualTypeOf<
         "RUN_DEADLINE_EXCEEDED"
       >();
@@ -260,11 +274,13 @@ describe("WAY-24 Node 结果边界", () => {
       | {
           status: "fulfilled";
           nodeId: string;
+          settlementOrdinal: number;
           value: ResultGraphNode;
         }
       | {
           status: "rejected";
           nodeId: string;
+          settlementOrdinal: number;
           error: Error & {
             code: ExpectedRejectedCode;
             retryable: boolean;
@@ -273,6 +289,7 @@ describe("WAY-24 Node 结果边界", () => {
       | {
           status: "timed_out";
           nodeId: string;
+          settlementOrdinal: number;
           error: {
             code: "RUN_DEADLINE_EXCEEDED";
             retryable: true;

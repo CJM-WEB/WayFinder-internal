@@ -56,4 +56,21 @@ describe("Graph Node 状态展示模型", () => {
       isLoading: false,
     });
   });
+
+  it("English 状态覆盖六态并正确处理资源单复数", () => {
+    const labels = StreamNodeStatusSchema.options.map(
+      status => buildNodeStatusPresentation(status, 2, "en-US").label,
+    );
+
+    expect(new Set(labels)).toHaveLength(StreamNodeStatusSchema.options.length);
+    expect(buildNodeStatusPresentation("ready", 1, "en-US").detail).toBe(
+      "1 available resource",
+    );
+    expect(buildNodeStatusPresentation("ready", 2, "en-US").detail).toBe(
+      "2 available resources",
+    );
+    expect(buildNodeStatusPresentation("partial", 2, "en-US").detail).toBe(
+      "2 available resources · Degraded",
+    );
+  });
 });

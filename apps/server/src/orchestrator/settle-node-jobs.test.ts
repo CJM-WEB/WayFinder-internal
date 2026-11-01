@@ -4,6 +4,7 @@
  */
 import {
   ResultGraphNodeSchema,
+  type NodeJobOutcome,
   type ResultGraphNode,
 } from "@wayfinder/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -18,8 +19,30 @@ import {
   NodeJobError,
 } from "../pipeline/process-node.js";
 import { createAbsoluteRunDeadline } from "./absolute-run-deadline.js";
-import { settleNodeJobsUntilAbsoluteDeadline } from "./settle-node-jobs.js";
+import {
+  settleNodeJobsUntilAbsoluteDeadline as settleNodeJobsProduction,
+} from "./settle-node-jobs.js";
 import type { NodeJobTask } from "./start-node-jobs.js";
+
+type TestSettlementInput = Readonly<{
+  runScope: Parameters<typeof settleNodeJobsProduction>[1]["runScope"];
+  acceptOutcome?: Parameters<
+    typeof settleNodeJobsProduction
+  >[1]["acceptOutcome"];
+  abortRun?: Parameters<typeof settleNodeJobsProduction>[1]["abortRun"];
+}>;
+
+/** 旧 Case 默认使用立即成功的终态写入；竞态 Case 可显式覆盖两个新入口。 */
+function settleNodeJobsUntilAbsoluteDeadline(
+  jobs: readonly NodeJobTask[],
+  input: TestSettlementInput,
+) {
+  return settleNodeJobsProduction(jobs, {
+    runScope: input.runScope,
+    acceptOutcome: input.acceptOutcome ?? (async () => undefined),
+    abortRun: input.abortRun ?? (() => undefined),
+  });
+}
 
 function createResultNode(nodeId: string): ResultGraphNode {
   return ResultGraphNodeSchema.parse({
@@ -133,6 +156,7 @@ describe("settleNodeJobsUntilAbsoluteDeadline", () => {
     expect(outcomes[0]).toEqual({
       status: "fulfilled",
       nodeId: "fulfilled",
+      settlementOrdinal: 1,
       value: fulfilledNode,
     });
     expect(outcomes[1]).toMatchObject({
@@ -175,6 +199,14 @@ describe("settleNodeJobsUntilAbsoluteDeadline", () => {
       ["rejected", "rejected"],
       ["late-resolve", "timed_out"],
       ["late-reject", "timed_out"],
+    ]);
+    expect(
+      outcomes.map(outcome => [outcome.nodeId, outcome.settlementOrdinal]),
+    ).toEqual([
+      ["fulfilled", 1],
+      ["rejected", 2],
+      ["late-resolve", 3],
+      ["late-reject", 4],
     ]);
 
     lateResolve.resolve(createResultNode("late-resolve"));
@@ -260,6 +292,7 @@ describe("settleNodeJobsUntilAbsoluteDeadline", () => {
       {
         status: "timed_out",
         nodeId: "node-1",
+        settlementOrdinal: 1,
         error: { code: "RUN_DEADLINE_EXCEEDED", retryable: true },
       },
     ]);
@@ -316,6 +349,79 @@ describe("settleNodeJobsUntilAbsoluteDeadline", () => {
     scope.dispose();
   });
 
+  it("按真实完成顺序分配 ordinal，但返回数组仍保持 GraphPlan 顺序", async () => {
+    const scope = createAbsoluteRunDeadline({
+      parentSignal: new AbortController().signal,
+      now: () => 0,
+    });
+    const first = createDeferred<ResultGraphNode>();
+    const second = createDeferred<ResultGraphNode>();
+    const third = createDeferred<ResultGraphNode>();
+    const accepted: NodeJobOutcome[] = [];
+    const settlement = settleNodeJobsUntilAbsoluteDeadline(
+      [
+        task("node-a", first.promise),
+        task("node-b", second.promise),
+        task("node-c", third.promise),
+      ],
+      {
+        runScope: scope,
+        acceptOutcome: async outcome => {
+          accepted.push(outcome);
+        },
+      },
+    );
+
+    third.resolve(createResultNode("node-c"));
+    first.resolve(createResultNode("node-a"));
+    second.resolve(createResultNode("node-b"));
+    const outcomes = await settlement;
+
+    expect(accepted.map(outcome => outcome.nodeId)).toEqual([
+      "node-c",
+      "node-a",
+      "node-b",
+    ]);
+    expect(
+      outcomes.map(outcome => [outcome.nodeId, outcome.settlementOrdinal]),
+    ).toEqual([
+      ["node-a", 2],
+      ["node-b", 3],
+      ["node-c", 1],
+    ]);
+    scope.dispose();
+  });
+
+  it("协调器终态写入拒绝时以原错误中止共享 Signal 和兄弟 Job", async () => {
+    const fatalController = new AbortController();
+    const scope = createAbsoluteRunDeadline({
+      parentSignal: fatalController.signal,
+      now: () => 0,
+    });
+    const completed = createDeferred<ResultGraphNode>();
+    const sibling = createDeferred<ResultGraphNode>();
+    const terminalWrite = createDeferred<void>();
+    const settlement = settleNodeJobsUntilAbsoluteDeadline(
+      [task("completed", completed.promise), task("sibling", sibling.promise)],
+      {
+        runScope: scope,
+        acceptOutcome: () => terminalWrite.promise,
+        abortRun: reason => fatalController.abort(reason),
+      },
+    );
+    completed.resolve(createResultNode("completed"));
+    await Promise.resolve();
+    const sinkError = new Error("terminal sink failed");
+    terminalWrite.reject(sinkError);
+
+    await expect(settlement).rejects.toBe(sinkError);
+    expect(scope.signal.aborted).toBe(true);
+    expect(scope.signal.reason).toBe(sinkError);
+    sibling.reject(scope.signal.reason);
+    await Promise.resolve();
+    scope.dispose();
+  });
+
   it("Timer 尚未回调但统一时钟已过期时同步形成 timed_out 快照", async () => {
     let nowMs = 0;
     const scope = createAbsoluteRunDeadline({
@@ -334,6 +440,7 @@ describe("settleNodeJobsUntilAbsoluteDeadline", () => {
       {
         status: "timed_out",
         nodeId: "node-1",
+        settlementOrdinal: 1,
         error: { code: "RUN_DEADLINE_EXCEEDED", retryable: true },
       },
     ]);
@@ -362,6 +469,7 @@ describe("settleNodeJobsUntilAbsoluteDeadline", () => {
       {
         status: "timed_out",
         nodeId: "node-1",
+        settlementOrdinal: 1,
         error: { code: "RUN_DEADLINE_EXCEEDED", retryable: true },
       },
     ]);

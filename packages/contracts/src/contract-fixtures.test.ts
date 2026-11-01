@@ -42,6 +42,7 @@ const expectedNegativeCaseNames = [
   "unsafe-resource-url",
   "duplicate-resource-id",
   "duplicate-resource-rank",
+  "duplicate-resource-across-nodes",
   "bad-edge-target",
   "invalid-result-node-status",
   "wrong-meta-partial",

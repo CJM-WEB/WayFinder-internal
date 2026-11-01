@@ -4,7 +4,7 @@
  * 关键约束：
  * - 只接受可解析的绝对 HTTP(S)，单项失败不能拖垮整批；
  * - canonicalUrl 与 domain 必须从原始 url 重新派生，且 rawMetadata 不得进入业务 Pipeline；
- * - canonical URL 或规范化标题重复时保留 first-seen，输出顺序保持稳定。
+ * - canonical URL 重复时保留 first-seen，输出顺序保持稳定。
  */
 import type {
   CandidateSearchHit,
@@ -131,7 +131,7 @@ describe("canonicalizeAndDeduplicateCandidates", () => {
     });
   });
 
-  it("跨域标题经 trim、空白折叠和小写化后精确去重", () => {
+  it("跨域标题相同也保留全部不同 URL", () => {
     const result = canonicalizeAndDeduplicateCandidates([
       createHit({
         title: "  Same\n  Title  ",
@@ -149,6 +149,7 @@ describe("canonicalizeAndDeduplicateCandidates", () => {
 
     expect(result.map(candidate => candidate.url)).toEqual([
       "https://first.example/article",
+      "https://second.example/report",
       "https://third.example/report",
     ]);
   });
@@ -169,6 +170,7 @@ describe("canonicalizeAndDeduplicateCandidates", () => {
     expect(result.map(candidate => candidate.title)).toEqual([
       "Alpha",
       "Beta",
+      " beta ",
       "Gamma",
     ]);
   });

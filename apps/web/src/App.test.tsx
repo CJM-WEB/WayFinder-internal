@@ -15,12 +15,18 @@ vi.mock("zustand", () => ({
   ): Selected => selector(store.getState()),
 }));
 
-import { App } from "./App.js";
+import {
+  App,
+  applyDocumentLanguage,
+  resolveRenderLanguage,
+} from "./App.js";
 import { pythonResultGraphFixture } from "./fixtures/python-result-graph.js";
 import { graphStore } from "./stores/graph-store.js";
 
 const applyPresentationMode = (presentationMode: PresentationMode): void => {
-  graphStore.getState().startRun({ runId: "run-mode", query: "测试模式" });
+  graphStore
+    .getState()
+    .startRun({ runId: "run-mode", query: "测试模式", language: "zh-CN" });
   graphStore.getState().applyStreamEvent(
     StreamEventSchema.parse({
       runId: "run-mode",
@@ -46,6 +52,20 @@ afterEach(() => {
 });
 
 describe("App Presentation Mode", () => {
+  it("已有 Run 锁定 renderLanguage，未开始时才跟随选择器", () => {
+    expect(resolveRenderLanguage(null, "en-US")).toBe("en-US");
+    expect(resolveRenderLanguage("zh-CN", "en-US")).toBe("zh-CN");
+    expect(resolveRenderLanguage("en-US", "zh-CN")).toBe("en-US");
+  });
+
+  it("把唯一 renderLanguage 同步到 HTML 根节点", () => {
+    const documentElement = { lang: "zh-CN" };
+
+    applyDocumentLanguage(documentElement, "en-US");
+
+    expect(documentElement.lang).toBe("en-US");
+  });
+
   it("分析到达前以 graph 空态呈现但不写回 Store", () => {
     const markup = renderToStaticMarkup(<App />);
 
@@ -64,6 +84,24 @@ describe("App Presentation Mode", () => {
     expect(markup).toContain("graph-section--compact");
     expect(markup).toContain("紧凑结果 · 选择节点查看资源");
     expect(graphStore.getState().selectedNodeId).toBeNull();
+  });
+
+  it("English Run 统一渲染正式 App、Graph 空态与 Resource Panel 文案", () => {
+    graphStore.getState().startRun({
+      runId: "run-english",
+      query: "What is MySQL?",
+      language: "en-US",
+    });
+
+    const markup = renderToStaticMarkup(<App />);
+
+    expect(markup).toContain("Current query");
+    expect(markup).toContain("Searching");
+    expect(markup).toContain("Search results");
+    expect(markup).toContain("No search results to display yet.");
+    expect(markup).toContain("Select a node");
+    expect(markup).toContain('value="en-US"');
+    expect(markup).not.toContain("搜索结果");
   });
 
   it("H1 Graph 条件固定探索式 Graph，避免 compact 成为额外实验变量", () => {

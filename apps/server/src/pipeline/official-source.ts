@@ -1,5 +1,5 @@
 /**
- * 模块职责：在 Hard Filter（硬过滤）之后、Heuristic Ranking（启发式排序）之前，
+ * 模块职责：在 Candidate Guard（候选守卫）之后、Heuristic Ranking（启发式排序）之前，
  * 从模型生成的 Query 上下文与候选 hostname 产生可复现的来源/风险信号。
  *
  * 安全边界：候选标题、摘要、pathname 与 Query 参数均为 Untrusted Input（不可信输入），

@@ -67,6 +67,7 @@ const buildSelectedModel = (resources: readonly Resource[]) => {
 
   return {
     kind: "selected" as const,
+    language: "zh-CN" as const,
     nodeId: node.id,
     nodeTitle: node.title,
     nodeStatus: node.status,
@@ -79,7 +80,10 @@ const buildSelectedModel = (resources: readonly Resource[]) => {
 
 describe("Resource Panel model", () => {
   it("未选择节点时返回明确空态", () => {
-    expect(buildResourcePanelModel(null)).toEqual({ kind: "unselected" });
+    expect(buildResourcePanelModel(null)).toEqual({
+      kind: "unselected",
+      language: "zh-CN",
+    });
   });
 
   it.each(["ready", "partial"] as const)(
@@ -127,7 +131,7 @@ describe("Resource Panel model", () => {
       expect(markup).toContain(
         `aria-label="在新标签页打开 ${resource.title}"`,
       );
-      expect(markup).toContain(">Open</button>");
+      expect(markup).toContain(">打开</button>");
     },
   );
 
@@ -278,7 +282,7 @@ describe("Resource Panel model", () => {
       expect(markup).toContain("resource-panel__outcome--error");
       expect(markup).toContain(message);
       expect(markup).not.toContain(code);
-      expect(markup).not.toContain(">Open</button>");
+      expect(markup).not.toContain(">打开</button>");
       expect(markup).not.toContain("显示更多");
 
       return message;
@@ -332,5 +336,32 @@ describe("Resource Panel model", () => {
 
     expect(markup).toContain("选择一个节点");
     expect(markup).toContain("不必沿箭头顺序浏览");
+  });
+
+  it("English 本地化自产文案并原样保留 Provider 与 LLM 字段", () => {
+    const node = fixtureNodeByStatus("ready");
+    const model = buildResourcePanelModel(node, "en-US");
+    if (model.kind !== "selected") {
+      throw new Error("ready Node 必须生成 selected 模型");
+    }
+    const resource = model.resources[0];
+    if (resource === undefined) {
+      throw new Error("ready Fixture 缺少 Resource");
+    }
+
+    const markup = renderToStaticMarkup(
+      createElement(ResourcePanelView, { model, openResource: vi.fn() }),
+    );
+
+    expect(markup).toContain("Selected node");
+    expect(markup).toContain("Ready");
+    expect(markup).toContain("AI summary");
+    expect(markup).toContain("Why it was selected");
+    expect(markup).toContain(`Open ${resource.title} in a new tab`);
+    expect(markup).toContain(resource.title);
+    expect(markup).toContain(resource.domain);
+    expect(markup).toContain(resource.summary);
+    expect(markup).toContain(resource.whySelected);
+    expect(markup).not.toContain("AI 摘要");
   });
 });

@@ -46,7 +46,7 @@
       "query": {
         "raw": "TypeScript resources",
         "normalized": "TypeScript resources",
-        "language": "en"
+        "language": "zh-CN"
       },
       "analysis": {
         "intent": "learn",
@@ -126,7 +126,7 @@
       "query": {
         "raw": "TypeScript resources",
         "normalized": "TypeScript resources",
-        "language": "en"
+        "language": "zh-CN"
       },
       "analysis": {
         "intent": "learn",
@@ -194,6 +194,103 @@
     }
   },
   {
+    "name": "duplicate-resource-across-nodes",
+    "schema": "resultGraph",
+    "expectedIssue": {
+      "code": "custom",
+      "path": ["graph", "nodes", 1, "resources", 0, "canonicalUrl"]
+    },
+    "input": {
+      "version": "0.1",
+      "runId": "run-duplicate-resource-across-nodes",
+      "query": {
+        "raw": "MySQL architecture",
+        "normalized": "mysql architecture",
+        "language": "zh-CN"
+      },
+      "analysis": {
+        "intent": "learn",
+        "topic": "MySQL architecture",
+        "freshnessSensitive": false,
+        "ambiguityLevel": "low",
+        "broadSearchQueries": [],
+        "strategy": "plan_first",
+        "presentationMode": "graph"
+      },
+      "graph": {
+        "nodes": [
+          {
+            "id": "mysql-overview",
+            "title": "MySQL 概览",
+            "description": "了解 MySQL 官方产品概览。",
+            "nodeType": "primary",
+            "layer": 0,
+            "searchPlan": {
+              "queries": ["MySQL official overview"],
+              "maxResults": 20,
+              "rankingProfile": "knowledge",
+              "providerHints": ["general"]
+            },
+            "status": "ready",
+            "resources": [
+              {
+                "id": "resource-mysql-overview",
+                "title": "MySQL",
+                "url": "https://www.mysql.com/",
+                "canonicalUrl": "https://www.mysql.com/",
+                "domain": "www.mysql.com",
+                "sourceType": "web",
+                "summary": "MySQL 官方网站。",
+                "whySelected": "提供官方入口。",
+                "rank": 1,
+                "searchProvider": "fixture"
+              }
+            ],
+            "warnings": []
+          },
+          {
+            "id": "mysql-architecture",
+            "title": "MySQL 架构",
+            "description": "了解 MySQL 架构与存储引擎。",
+            "nodeType": "primary",
+            "layer": 1,
+            "searchPlan": {
+              "queries": ["MySQL architecture storage engines"],
+              "maxResults": 20,
+              "rankingProfile": "knowledge",
+              "providerHints": ["general"]
+            },
+            "status": "ready",
+            "resources": [
+              {
+                "id": "resource-mysql-architecture",
+                "title": "MySQL Architecture",
+                "url": "https://www.mysql.com/",
+                "canonicalUrl": "https://www.mysql.com/",
+                "domain": "www.mysql.com",
+                "sourceType": "web",
+                "summary": "重复的 MySQL 官方网站。",
+                "whySelected": "用于验证跨 Node URL 唯一门禁。",
+                "rank": 1,
+                "searchProvider": "fixture"
+              }
+            ],
+            "warnings": []
+          }
+        ],
+        "edges": []
+      },
+      "meta": {
+        "createdAt": "2026-10-28T10:00:00Z",
+        "providersUsed": ["fixture"],
+        "partial": false,
+        "timingMs": {
+          "total": 10
+        }
+      }
+    }
+  },
+  {
     "name": "bad-edge-target",
     "schema": "resultGraph",
     "expectedIssue": {
@@ -206,7 +303,7 @@
       "query": {
         "raw": "Unavailable topic",
         "normalized": "Unavailable topic",
-        "language": "en"
+        "language": "zh-CN"
       },
       "analysis": {
         "intent": "learn",
@@ -294,7 +391,7 @@
       "query": {
         "raw": "Unavailable topic",
         "normalized": "Unavailable topic",
-        "language": "en"
+        "language": "zh-CN"
       },
       "analysis": {
         "intent": "learn",

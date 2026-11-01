@@ -1,13 +1,9 @@
 /**
- * 测试职责：冻结进程级 Provider 并发装饰器的三层独立配额、错误透明性和安全配置。
+ * 测试职责：冻结进程级 Provider 并发装饰器的两层独立配额、错误透明性和安全配置。
  * 本文件直接验证 LLM 排队扣时与取消，真实 Node 并行接线由
  * start-node-jobs.test.ts 联合验证。
  */
-import type {
-  ExtractedPage,
-  NormalizedSearchHit,
-  ProviderSearchRequest,
-} from "@wayfinder/contracts";
+import type { NormalizedSearchHit, ProviderSearchRequest } from "@wayfinder/contracts";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -30,6 +26,7 @@ const REQUEST: ProviderSearchRequest = {
   maxResults: 20,
   capability: "general",
   freshnessSensitive: false,
+  language: "zh-CN",
 };
 
 const STRUCTURED_INPUT: StructuredLLMInput = {
@@ -93,19 +90,14 @@ function createActivityGate<T>(): ActivityGate<T> {
 }
 
 describe("createConcurrencyLimitedProviders", () => {
-  it("向 Search、Extract 与 LLM 原始 Provider 保持同一 Run Signal", async () => {
+  it("向 Search 与 LLM 原始 Provider 保持同一 Run Signal", async () => {
     const receivedSearchSignals: AbortSignal[] = [];
-    const receivedExtractSignals: AbortSignal[] = [];
     const receivedLlmSignals: AbortSignal[] = [];
     const searchProvider: SearchProvider = {
       id: "signal-search",
       capabilities: ["general"],
       search: async (_request, signal) => {
         receivedSearchSignals.push(signal);
-        return [];
-      },
-      extract: async (_canonicalUrls, signal) => {
-        receivedExtractSignals.push(signal);
         return [];
       },
     };
@@ -119,13 +111,12 @@ describe("createConcurrencyLimitedProviders", () => {
     const limited = createConcurrencyLimitedProviders({
       searchProvider,
       llmProvider,
-      concurrency: { search: 1, extract: 1, llm: 1 },
+      concurrency: { search: 1, llm: 1 },
     });
     const signal = new AbortController().signal;
 
     await Promise.all([
       limited.searchProvider.search(REQUEST, signal),
-      limited.searchProvider.extract?.(["https://example.com"], signal),
       limited.llmProvider.structured(STRUCTURED_INPUT, {
         signal,
         timeoutMs: 1_000,
@@ -133,19 +124,16 @@ describe("createConcurrencyLimitedProviders", () => {
     ]);
 
     expect(receivedSearchSignals).toEqual([signal]);
-    expect(receivedExtractSignals).toEqual([signal]);
     expect(receivedLlmSignals).toEqual([signal]);
   });
 
-  it("Search、Extract、LLM 分别饱和 6/3/3，且互不占用彼此槽位", async () => {
+  it("Search 与 LLM 分别饱和 6/3，且互不占用彼此槽位", async () => {
     const searchGate = createActivityGate<NormalizedSearchHit[]>();
-    const extractGate = createActivityGate<ExtractedPage[]>();
     const llmGate = createActivityGate<unknown>();
     const searchProvider: SearchProvider = {
       id: "tracked-search",
       capabilities: ["general"],
       search: () => searchGate.run(),
-      extract: () => extractGate.run(),
     };
     const llmProvider: LLMProvider = {
       id: "tracked-llm",
@@ -154,19 +142,13 @@ describe("createConcurrencyLimitedProviders", () => {
     const limited = createConcurrencyLimitedProviders({
       searchProvider,
       llmProvider,
-      concurrency: { search: 6, extract: 3, llm: 3 },
+      concurrency: { search: 6, llm: 3 },
     });
     const signal = new AbortController().signal;
 
     const searches = Array.from({ length: 7 }, (_, index) =>
       limited.searchProvider.search(
         { ...REQUEST, query: `search-${index}` },
-        signal,
-      ),
-    );
-    const extracts = Array.from({ length: 4 }, (_, index) =>
-      limited.searchProvider.extract?.(
-        [`https://example.com/${index}`],
         signal,
       ),
     );
@@ -178,42 +160,25 @@ describe("createConcurrencyLimitedProviders", () => {
     );
 
     await vi.waitFor(() => {
-      expect([
-        searchGate.calls(),
-        extractGate.calls(),
-        llmGate.calls(),
-      ]).toEqual([6, 3, 3]);
+      expect([searchGate.calls(), llmGate.calls()]).toEqual([6, 3]);
     });
-    expect([searchGate.active(), extractGate.active(), llmGate.active()]).toEqual(
-      [6, 3, 3],
-    );
+    expect([searchGate.active(), llmGate.active()]).toEqual([6, 3]);
 
     searchGate.releaseOne([]);
-    extractGate.releaseOne([]);
     llmGate.releaseOne({});
     await vi.waitFor(() => {
-      expect([
-        searchGate.calls(),
-        extractGate.calls(),
-        llmGate.calls(),
-      ]).toEqual([7, 4, 4]);
+      expect([searchGate.calls(), llmGate.calls()]).toEqual([7, 4]);
     });
 
     searchGate.releaseAll([]);
-    extractGate.releaseAll([]);
     llmGate.releaseAll({});
     await Promise.all([
       ...searches,
-      ...extracts.map(operation => operation ?? Promise.resolve([])),
       ...llmCalls,
     ]);
 
-    expect([searchGate.peak(), extractGate.peak(), llmGate.peak()]).toEqual([
-      6, 3, 3,
-    ]);
-    expect([searchGate.active(), extractGate.active(), llmGate.active()]).toEqual(
-      [0, 0, 0],
-    );
+    expect([searchGate.peak(), llmGate.peak()]).toEqual([6, 3]);
+    expect([searchGate.active(), llmGate.active()]).toEqual([0, 0]);
   });
 
   it("LLM 取得槽位后从阶段 timeout 扣除队列等待时间", async () => {
@@ -233,7 +198,7 @@ describe("createConcurrencyLimitedProviders", () => {
     const limited = createConcurrencyLimitedProviders({
       searchProvider: UNUSED_SEARCH_PROVIDER,
       llmProvider,
-      concurrency: { search: 1, extract: 1, llm: 3 },
+      concurrency: { search: 1, llm: 3 },
       now: clock.now,
     });
     const signal = new AbortController().signal;
@@ -277,7 +242,7 @@ describe("createConcurrencyLimitedProviders", () => {
     const limited = createConcurrencyLimitedProviders({
       searchProvider: UNUSED_SEARCH_PROVIDER,
       llmProvider,
-      concurrency: { search: 1, extract: 1, llm: 3 },
+      concurrency: { search: 1, llm: 3 },
       now: clock.now,
     });
     const signal = new AbortController().signal;
@@ -317,7 +282,7 @@ describe("createConcurrencyLimitedProviders", () => {
     const limited = createConcurrencyLimitedProviders({
       searchProvider: UNUSED_SEARCH_PROVIDER,
       llmProvider,
-      concurrency: { search: 1, extract: 1, llm: 1 },
+      concurrency: { search: 1, llm: 1 },
     });
     const activeSignal = new AbortController().signal;
     const queuedController = new AbortController();
@@ -352,7 +317,7 @@ describe("createConcurrencyLimitedProviders", () => {
           return {};
         },
       },
-      concurrency: { search: 1, extract: 1, llm: 1 },
+      concurrency: { search: 1, llm: 1 },
       now: () => times.shift() ?? 50,
     });
 
@@ -379,7 +344,7 @@ describe("createConcurrencyLimitedProviders", () => {
           return {};
         },
       },
-      concurrency: { search: 1, extract: 1, llm: 1 },
+      concurrency: { search: 1, llm: 1 },
       now: () => times.shift() ?? 0,
     });
 
@@ -426,7 +391,7 @@ describe("createConcurrencyLimitedProviders", () => {
           id: "unused-llm",
           structured: async () => ({}),
         },
-        concurrency: { search: 1, extract: 1, llm: 1 },
+        concurrency: { search: 1, llm: 1 },
       });
       const signal = new AbortController().signal;
       const first = limited.searchProvider.search(REQUEST, signal);
@@ -454,7 +419,7 @@ describe("createConcurrencyLimitedProviders", () => {
     const limited = createConcurrencyLimitedProviders({
       searchProvider,
       llmProvider,
-      concurrency: { search: 6, extract: 3, llm: 3 },
+      concurrency: { search: 6, llm: 3 },
     });
 
     expect(limited.searchProvider.extract).toBeUndefined();
@@ -462,7 +427,7 @@ describe("createConcurrencyLimitedProviders", () => {
       createConcurrencyLimitedProviders({
         searchProvider,
         llmProvider,
-        concurrency: { search: 7, extract: 3, llm: 3 },
+        concurrency: { search: 7, llm: 3 },
       }),
     ).toThrow(new RangeError("Search 并发上限必须是 1 到 6 的安全整数"));
   });

@@ -137,6 +137,7 @@ describe("readSearchEventStream", () => {
     store.getState().startRun({
       runId: "run-stream-reader",
       query: "WayFinder",
+      language: "zh-CN",
     });
     const first = createEvent(1);
     const afterFailure = createEvent(2);
@@ -193,6 +194,7 @@ describe("readSearchEventStream", () => {
     store.getState().startRun({
       runId: "run-stream-reader",
       query: "WayFinder",
+      language: "zh-CN",
     });
     let pullCount = 0;
     const stream = new ReadableStream<Uint8Array>({
@@ -466,9 +468,13 @@ describe("readSearchEventStream", () => {
 
   it("旧 Reader 的关闭钩子不会关闭已启动的新 Run", async () => {
     const store = createGraphStore();
-    store.getState().startRun({ runId: "old-run", query: "old" });
+    store
+      .getState()
+      .startRun({ runId: "old-run", query: "old", language: "zh-CN" });
     const closeOldRun = closeActiveRun(store, "old-run");
-    store.getState().startRun({ runId: "new-run", query: "new" });
+    store
+      .getState()
+      .startRun({ runId: "new-run", query: "new", language: "zh-CN" });
 
     await readSearchEventStream({
       response: createResponse(streamChunks([])),
@@ -491,6 +497,7 @@ describe("readSearchEventStream", () => {
     store.getState().startRun({
       runId,
       query: pythonResultGraphFixture.query.raw,
+      language: "zh-CN",
     });
     store.getState().setGraph(pythonResultGraphFixture.graph);
     store.getState().selectNode(selectedNodeId);

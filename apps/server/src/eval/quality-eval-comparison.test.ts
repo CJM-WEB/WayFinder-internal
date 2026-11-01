@@ -1,5 +1,5 @@
 /**
- * 测试职责：冻结 WAY-90 A-B-B-A 报告的完整度、六项调用总计与可比性门禁。
+ * 测试职责：冻结 WAY-90/110 A-B-B-A 报告的完整度、调用、重复诊断与可比性门禁。
  *
  * 边界说明：Fixture 只使用脱敏失败结果；测试不访问网络、不自动判定产品质量，
  * 也不允许用部分遥测冒充完整总计。
@@ -13,36 +13,90 @@ const BASELINE_COMMIT = "a".repeat(40);
 const CANDIDATE_COMMIT = "b".repeat(40);
 const BLOCKS = ["A1", "B1", "B2", "A2"] as const;
 
-function createTelemetry(value: number) {
+function createTelemetry(value: number, ranked = false) {
+  const emptyMode = {
+    nodeCount: 0,
+    finalCandidateCount: 0,
+    providerTop1OverrideCount: 0,
+    heuristicTop1OverrideCount: 0,
+    providerTop3FinalOverlapCount: 0,
+    heuristicTop3FinalOverlapCount: 0,
+    top3ComparisonSlots: 0,
+  } as const;
   return {
     timingsMs: {
       planning: 0,
+      graphOutlinePlanning: 0,
+      searchPlanPlanning: 0,
       nodeProcessing: 0,
       total: 0,
       provider: { search: 0, extract: 0, llm: 0 },
     },
     counts: {
       logicalSearchCalls: value,
-      logicalExtractCalls: value,
-      extractUrlCount: value,
-      logicalLlmCalls: value,
+      logicalExtractCalls: 0,
+      extractUrlCount: 0,
+      logicalLlmCalls: 1,
       searchHttpAttempts: value,
-      extractHttpAttempts: value,
+      extractHttpAttempts: 0,
+    },
+    planningStages: {
+      graphOutline: {
+        logicalLlmCalls: 1,
+        failureCode: null,
+        tokens: {
+          status: "complete",
+          observations: 1,
+          inputTokens: value,
+          outputTokens: value,
+          totalTokens: value * 2,
+        },
+      },
+      searchPlan: {
+        logicalLlmCalls: 0,
+        failureCode: null,
+        tokens: {
+          status: "not_used",
+          observations: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          totalTokens: 0,
+        },
+      },
+    },
+    versions: { rankFusion: "rank-fusion.v1" },
+    ranking: {
+      llmSuccess: ranked
+        ? {
+            nodeCount: 1,
+            finalCandidateCount: 1,
+            providerTop1OverrideCount: 0,
+            heuristicTop1OverrideCount: 0,
+            providerTop3FinalOverlapCount: 1,
+            heuristicTop3FinalOverlapCount: 1,
+            top3ComparisonSlots: 1,
+          }
+        : emptyMode,
+      fallback: emptyMode,
     },
     tokens: {
       status: "complete",
-      observations: 0,
-      inputTokens: 0,
-      outputTokens: 0,
-      totalTokens: 0,
+      observations: 1,
+      inputTokens: value,
+      outputTokens: value,
+      totalTokens: value * 2,
     },
     estimatedCost: { status: "unavailable", reason: "pricing_not_frozen" },
   } as const;
 }
 
-function createReport(commit: string, runIndex: number) {
+function createReport(
+  commit: string,
+  runIndex: number,
+  includeRankedResult = true,
+) {
   return QualityEvalReportSchema.parse({
-    schemaVersion: "quality-eval.v4",
+    schemaVersion: "quality-eval.v12",
     issue: "WAY-86",
     evaluationRunId: `2026-10-23T00-00-0${runIndex}-000Z-0000000${runIndex}-0000-4000-8000-00000000000${runIndex}`,
     completedAt: `2026-10-23T00:00:0${runIndex}.000Z`,
@@ -57,12 +111,14 @@ function createReport(commit: string, runIndex: number) {
       git: { commit, worktreeClean: true },
       contracts: { protocol: "0.1", resultGraph: "0.1" },
       prompts: {
-        planner: "graph-planner.v1",
-        reviser: "graph-reviser.v1",
-        reranker: "resource-reranker.v1",
+        planner: "graph-planner.v3",
+        reviser: "graph-reviser.v4",
+        searchPlanGenerator: "search-plan-generator.v3",
+        reranker: "resource-reranker.v2",
       },
+      ranking: "rank-fusion.v1",
       providers: {
-        search: "tavily",
+        search: "serpapi_bing",
         llm: "deepseek",
         llmModel: "deepseek-flash",
       },
@@ -71,17 +127,16 @@ function createReport(commit: string, runIndex: number) {
       execution: "sequential",
       repetitionsPerQuery: 1,
       cache: "cold_disabled",
-      runDeadlineMs: 20_000,
-      language: "und",
+      runDeadlineMs: 40_000,
+      language: "zh-CN",
       queryNormalization: "nfkc_trim_lowercase",
       riskyDownloadDomainPolicy: "not_frozen_empty",
       timeoutsMs: {
         search: 2_500,
-        extract: 3_700,
         planner: 10_000,
         rerank: 10_000,
       },
-      concurrency: { search: 6, extract: 3, llm: 3 },
+      concurrency: { search: 6, llm: 3 },
     },
     artifactPolicy: {
       localOnly: true,
@@ -91,35 +146,176 @@ function createReport(commit: string, runIndex: number) {
     },
     results: Array.from({ length: 20 }, (_, index) => {
       const id = `wfq-${String(index + 1).padStart(3, "0")}`;
-      const deadlineFailure = index === 0;
+      if (includeRankedResult && index === 0) {
+        const plan = {
+          analysis: {
+            intent: "learn",
+            topic: "Query 1",
+            freshnessSensitive: false,
+            ambiguityLevel: "low",
+            broadSearchQueries: [],
+            strategy: "plan_first",
+            presentationMode: "compact",
+          },
+          nodes: [
+            {
+              id: "node-1",
+              title: "测试节点",
+              description: "冻结比较 Fixture 的最终可见节点。",
+              nodeType: "primary",
+              layer: 0,
+              status: "planned",
+              searchPlan: {
+                queries: ["Query 1"],
+                maxResults: 20,
+                rankingProfile: "knowledge",
+                providerHints: ["general"],
+              },
+            },
+          ],
+          edges: [],
+        } as const;
+        return {
+          schemaVersion: "quality-eval.v10",
+          comparisonKey: `wayfinder-regression.v1:${id}`,
+          query: {
+            id,
+            query: "Query 1",
+            category: "knowledge",
+            rationale: "固定比较 Fixture。",
+          },
+          executionStatus: "completed",
+          finalStatus: "complete",
+          errorCode: null,
+          freshnessReferenceAt: "2026-10-23T00:00:00.000Z",
+          plan,
+          nodes: [
+            {
+              id: "node-1",
+              status: "ready",
+              warnings: [],
+              errorCode: null,
+              resourceCount: 1,
+              topResources: [
+                {
+                  id: "resource_1",
+                  title: "测试资源",
+                  url: "https://example.com/",
+                  canonicalUrl: "https://example.com/",
+                  domain: "example.com",
+                  sourceType: "web",
+                  summary: "测试摘要。",
+                  whySelected: "用于冻结匿名比较覆盖率。",
+                  rank: 1,
+                  searchProvider: "serpapi_bing",
+                  publishedAt: null,
+                },
+              ],
+              officialSource: { status: "notApplicable" },
+              diversity: { distinctExactDomainCount: 1 },
+              freshness: { status: "notApplicable" },
+            },
+          ],
+          duplicateResources: [],
+          metrics: {
+            version: "quality-metrics.v4",
+            schemaValidity: "valid",
+            nodeCount: 1,
+            resourceCount: 1,
+            plannedRequestDuplication: {
+              totalCount: 1,
+              uniqueCount: 1,
+              intraNodeDuplicateOccurrenceCount: 0,
+              crossNodeSharedGroupCount: 0,
+              crossNodeExtraNodeOccurrenceCount: 0,
+            },
+            duplicateRate: {
+              status: "measured",
+              duplicateOccurrences: 0,
+              totalOccurrences: 1,
+              value: 0,
+            },
+            officialSource: { status: "notApplicable" },
+            deadlineCompliance: { status: "within" },
+          },
+          metricFailure: null,
+          telemetry: createTelemetry(index, true),
+        };
+      }
+      const query = `Query ${index + 1}`;
       return {
-        schemaVersion: "quality-eval.v4",
+        schemaVersion: "quality-eval.v10",
         comparisonKey: `wayfinder-regression.v1:${id}`,
         query: {
           id,
-          query: `Query ${index + 1}`,
+          query,
           category: "knowledge",
           rationale: "固定比较 Fixture。",
         },
-        executionStatus: "run_failed",
-        finalStatus: null,
-        errorCode: deadlineFailure
-          ? "RUN_DEADLINE_EXCEEDED"
-          : "PLANNER_FAILED",
-        freshnessReferenceAt: null,
-        plan: null,
-        nodes: [],
-        duplicateResources: [],
-        metrics: null,
-        metricFailure: {
-          queryId: id,
-          metric: deadlineFailure ? "deadlineCompliance" : "execution",
-          stage: deadlineFailure ? "runDeadline" : "pipeline",
-          code: deadlineFailure
-            ? "RUN_DEADLINE_EXCEEDED"
-            : "PLANNER_FAILED",
+        executionStatus: "completed",
+        finalStatus: "partial",
+        errorCode: null,
+        freshnessReferenceAt: "2026-10-23T00:00:00.000Z",
+        plan: {
+          analysis: {
+            intent: "learn",
+            topic: query,
+            freshnessSensitive: false,
+            ambiguityLevel: "low",
+            broadSearchQueries: [],
+            strategy: "plan_first",
+            presentationMode: "compact",
+          },
+          nodes: [
+            {
+              id: `node-${index + 1}`,
+              title: "测试节点",
+              description: "冻结比较 Fixture 的无资源节点。",
+              nodeType: "primary",
+              layer: 0,
+              status: "planned",
+              searchPlan: {
+                queries: [query],
+                maxResults: 20,
+                rankingProfile: "knowledge",
+                providerHints: ["general"],
+              },
+            },
+          ],
+          edges: [],
         },
-        // 第一条失败 Query 的零调用仍是完整测量，不能误判为 unavailable。
+        nodes: [
+          {
+            id: `node-${index + 1}`,
+            status: "failed",
+            warnings: [],
+            errorCode: "SEARCH_PROVIDER_FAILED",
+            resourceCount: 0,
+            topResources: [],
+            officialSource: { status: "notApplicable" },
+            diversity: { distinctExactDomainCount: 0 },
+            freshness: { status: "notApplicable" },
+          },
+        ],
+        duplicateResources: [],
+        metrics: {
+          version: "quality-metrics.v4",
+          schemaValidity: "valid",
+          nodeCount: 1,
+          resourceCount: 0,
+          plannedRequestDuplication: {
+            totalCount: 1,
+            uniqueCount: 1,
+            intraNodeDuplicateOccurrenceCount: 0,
+            crossNodeSharedGroupCount: 0,
+            crossNodeExtraNodeOccurrenceCount: 0,
+          },
+          duplicateRate: { status: "unavailable", reason: "noResources" },
+          officialSource: { status: "notApplicable" },
+          deadlineCompliance: { status: "within" },
+        },
+        metricFailure: null,
+        // 零 Provider 调用仍是完整测量，不能误判为 unavailable。
         telemetry: createTelemetry(index),
       };
     }),
@@ -149,8 +345,518 @@ function createInput(): TestInput {
   };
 }
 
+/** 历史 Fixture 保留当时的 Prompt 与指标版本，禁止直接把新版本反贴到旧报告。 */
+function setHistoricalVersions(legacy: Record<string, unknown>): void {
+  const source = legacy.source as Record<string, unknown>;
+  source.prompts = {
+    planner: "graph-planner.v2",
+    reviser: "graph-reviser.v3",
+    searchPlanGenerator: "search-plan-generator.v2",
+    reranker: "resource-reranker.v1",
+  };
+  for (const result of legacy.results as Record<string, unknown>[]) {
+    if (result.metrics !== null) {
+      (result.metrics as Record<string, unknown>).version = "quality-metrics.v3";
+    }
+  }
+}
+
+function createLegacyReport(commit: string, runIndex: number): unknown {
+  const legacy = structuredClone(createReport(commit, runIndex)) as Record<
+    string,
+    unknown
+  >;
+  legacy.schemaVersion = "quality-eval.v5";
+  setHistoricalVersions(legacy);
+  (legacy.runPolicy as Record<string, unknown>).language = "und";
+  const source = legacy.source as Record<string, unknown>;
+  delete source.ranking;
+  for (const result of legacy.results as Record<string, unknown>[]) {
+    result.schemaVersion = "quality-eval.v4";
+    const metrics = result.metrics;
+    if (metrics !== null) {
+      const legacyMetrics = metrics as Record<string, unknown>;
+      legacyMetrics.version = "quality-metrics.v1";
+      delete legacyMetrics.plannedRequestDuplication;
+    }
+    const telemetry = result.telemetry;
+    if (telemetry !== null) {
+      delete (telemetry as Record<string, unknown>).versions;
+      delete (telemetry as Record<string, unknown>).ranking;
+    }
+  }
+  return legacy;
+}
+
+/** 外层 v6/query v5 保留 Ranking 遥测，仅缺少 WAY-110 计划请求诊断。 */
+function createV6LegacyReport(commit: string, runIndex: number): unknown {
+  const legacy = structuredClone(createReport(commit, runIndex)) as Record<
+    string,
+    unknown
+  >;
+  legacy.schemaVersion = "quality-eval.v6";
+  setHistoricalVersions(legacy);
+  (legacy.runPolicy as Record<string, unknown>).language = "und";
+  for (const result of legacy.results as Record<string, unknown>[]) {
+    result.schemaVersion = "quality-eval.v5";
+    const metrics = result.metrics as Record<string, unknown>;
+    metrics.version = "quality-metrics.v1";
+    delete metrics.plannedRequestDuplication;
+  }
+  return legacy;
+}
+
+/** 外层 v7/query v6 代表旧 20 秒真实运行策略，不能伪装成当前 40 秒证据。 */
+function createV7LegacyReport(commit: string, runIndex: number): unknown {
+  const legacy = structuredClone(createReport(commit, runIndex)) as Record<
+    string,
+    unknown
+  >;
+  legacy.schemaVersion = "quality-eval.v7";
+  setHistoricalVersions(legacy);
+  const runPolicy = legacy.runPolicy as Record<string, unknown>;
+  runPolicy.runDeadlineMs = 20_000;
+  runPolicy.language = "und";
+  for (const result of legacy.results as Record<string, unknown>[]) {
+    result.schemaVersion = "quality-eval.v6";
+    const metrics = result.metrics;
+    if (metrics !== null) {
+      (metrics as Record<string, unknown>).version = "quality-metrics.v2";
+    }
+  }
+  return legacy;
+}
+
+/** outer v8/query v6/metrics v2 是 40 秒但仍使用 und 的最后历史组合。 */
+function createV8LegacyReport(
+  commit: string,
+  runIndex: number,
+  failureIndex?: number,
+): unknown {
+  const current = createReport(commit, runIndex);
+  if (failureIndex !== undefined) replaceWithUnmeasuredFailure(current, failureIndex);
+  const legacy = structuredClone(current) as Record<
+    string,
+    unknown
+  >;
+  legacy.schemaVersion = "quality-eval.v8";
+  setHistoricalVersions(legacy);
+  (legacy.runPolicy as Record<string, unknown>).language = "und";
+  for (const result of legacy.results as Record<string, unknown>[]) {
+    result.schemaVersion = "quality-eval.v6";
+    const metrics = result.metrics;
+    if (metrics !== null) {
+      (metrics as Record<string, unknown>).version = "quality-metrics.v2";
+    }
+  }
+  return legacy;
+}
+
+/** outer v9/query v7/metrics v3 是 WAY-111 的 zh-CN 历史报告组合。 */
+function createV9LegacyReport(commit: string, runIndex: number): unknown {
+  const legacy = structuredClone(createReport(commit, runIndex)) as Record<
+    string,
+    unknown
+  >;
+  legacy.schemaVersion = "quality-eval.v9";
+  setHistoricalVersions(legacy);
+  for (const result of legacy.results as Record<string, unknown>[]) {
+    result.schemaVersion = "quality-eval.v7";
+  }
+  return legacy;
+}
+
+/** outer v10/query v8 是 WAY-112 最后一个一体化 Planner 报告组合。 */
+function createV10LegacyReport(commit: string, runIndex: number): unknown {
+  const legacy = structuredClone(createReport(commit, runIndex)) as Record<
+    string,
+    unknown
+  >;
+  legacy.schemaVersion = "quality-eval.v10";
+  setHistoricalVersions(legacy);
+  const source = legacy.source as Record<string, unknown>;
+  const prompts = source.prompts as Record<string, unknown>;
+  prompts.planner = "graph-planner.v1";
+  prompts.reviser = "graph-reviser.v1";
+  delete prompts.searchPlanGenerator;
+  for (const result of legacy.results as Record<string, unknown>[]) {
+    result.schemaVersion = "quality-eval.v8";
+    const telemetry = result.telemetry;
+    if (telemetry !== null) {
+      const timingsMs = (telemetry as Record<string, unknown>)
+        .timingsMs as Record<string, unknown>;
+      delete timingsMs.graphOutlinePlanning;
+      delete timingsMs.searchPlanPlanning;
+    }
+  }
+  return legacy;
+}
+
+/** v11 已有两阶段遥测，迁移时必须保留它，不能套用更旧报告的 null 补位。 */
+function createV11LegacyReport(commit: string, runIndex: number): unknown {
+  const legacy = structuredClone(createReport(commit, runIndex)) as Record<
+    string,
+    unknown
+  >;
+  legacy.schemaVersion = "quality-eval.v11";
+  setHistoricalVersions(legacy);
+  for (const result of legacy.results as Record<string, unknown>[]) {
+    result.schemaVersion = "quality-eval.v9";
+  }
+  return legacy;
+}
+
+/** 用真实的未完成语义制造覆盖缺口，禁止在 completed 结果上伪造 null。 */
+function replaceWithUnmeasuredFailure(
+  report: ReturnType<typeof createReport>,
+  index: number,
+): void {
+  const current = report.results[index]!;
+  report.results[index] = {
+    schemaVersion: "quality-eval.v10",
+    comparisonKey: current.comparisonKey,
+    query: current.query,
+    executionStatus: "run_failed",
+    finalStatus: null,
+    errorCode: "PLANNER_FAILED",
+    freshnessReferenceAt: null,
+    plan: null,
+    nodes: [],
+    duplicateResources: [],
+    metrics: null,
+    metricFailure: {
+      queryId: current.query.id,
+      metric: "execution",
+      stage: "pipeline",
+      code: "PLANNER_FAILED",
+    },
+    telemetry: null,
+  };
+}
+
 describe("WAY-90 Quality Eval A-B-B-A 比较", () => {
-  it("完整汇总四个 Block，并把失败 Query 的零调用视为有效测量", () => {
+  it("当前 v12 支持整组 en-US，且拒绝把中英文运行条件混合比较", () => {
+    const input = createInput();
+    for (const entry of input.blocks) entry.report.runPolicy.language = "en-US";
+    expect(compareQualityEvalBlocks(input).status).toBe("comparable");
+    input.blocks[0]!.report.runPolicy.language = "zh-CN";
+    expect(() => compareQualityEvalBlocks(input)).toThrow("数据集或运行条件不一致");
+  });
+
+  it("只读迁移 outer v11/query v9/metrics v3，保留原 Prompt、语言与阶段遥测", () => {
+    const reports = BLOCKS.map((block, index) => createV11LegacyReport(
+      block.startsWith("A") ? BASELINE_COMMIT : CANDIDATE_COMMIT,
+      index + 1,
+    ));
+    const snapshots = structuredClone(reports);
+    expect(QualityEvalReportSchema.safeParse(reports[0]).success).toBe(false);
+    const comparison = compareQualityEvalBlocks({
+      baselineCommit: BASELINE_COMMIT,
+      candidateCommit: CANDIDATE_COMMIT,
+      blocks: BLOCKS.map((block, index) => ({ block, report: reports[index] })),
+    });
+    expect(comparison.status).toBe("comparable");
+    expect(reports).toEqual(snapshots);
+  });
+
+  it.each([
+    createLegacyReport,
+    createV6LegacyReport,
+    createV7LegacyReport,
+    createV8LegacyReport,
+    createV9LegacyReport,
+    createV10LegacyReport,
+    createV11LegacyReport,
+  ])("历史版本不得接受伪造的 en-US 运行身份：%#", createHistorical => {
+    const forged = createHistorical(BASELINE_COMMIT, 1) as Record<string, unknown>;
+    (forged.runPolicy as Record<string, unknown>).language = "en-US";
+    expect(() => compareQualityEvalBlocks({
+      baselineCommit: BASELINE_COMMIT,
+      candidateCommit: CANDIDATE_COMMIT,
+      blocks: BLOCKS.map((block, index) => ({
+        block,
+        report: index === 0 ? forged : createV11LegacyReport(
+          block.startsWith("A") ? BASELINE_COMMIT : CANDIDATE_COMMIT,
+          index + 1,
+        ),
+      })),
+    })).toThrow("严格 Schema");
+  });
+
+  it("v11 已有的阶段遥测仍须严格校验，不能以 null 覆盖掩盖非法事实", () => {
+    const forged = createV11LegacyReport(BASELINE_COMMIT, 1) as Record<string, unknown>;
+    const result = (forged.results as Record<string, unknown>[])[0]!;
+    const telemetry = result.telemetry as Record<string, unknown>;
+    const timings = telemetry.timingsMs as Record<string, unknown>;
+    timings.graphOutlinePlanning = -1;
+    expect(() => compareQualityEvalBlocks({
+      baselineCommit: BASELINE_COMMIT,
+      candidateCommit: CANDIDATE_COMMIT,
+      blocks: BLOCKS.map((block, index) => ({
+        block,
+        report: index === 0 ? forged : createV11LegacyReport(
+          block.startsWith("A") ? BASELINE_COMMIT : CANDIDATE_COMMIT,
+          index + 1,
+        ),
+      })),
+    })).toThrow("严格 Schema");
+  });
+
+  it("当前 v12 只写新 Prompt，旧来源不能冒充双语言版本", () => {
+    const current = createReport(CANDIDATE_COMMIT, 1);
+    expect(current.source.prompts.searchPlanGenerator).toBe(
+      "search-plan-generator.v3",
+    );
+
+    const historical = structuredClone(current) as Record<string, unknown>;
+    setHistoricalVersions(historical);
+    expect(QualityEvalReportSchema.safeParse(historical).success).toBe(false);
+  });
+
+  it("拒绝把历史 und 基线与当前 zh-CN 条件混合比较", () => {
+    expect(() =>
+      compareQualityEvalBlocks({
+        baselineCommit: BASELINE_COMMIT,
+        candidateCommit: CANDIDATE_COMMIT,
+        blocks: BLOCKS.map((block, index) => ({
+          block,
+          report: block.startsWith("A")
+            ? createLegacyReport(BASELINE_COMMIT, index + 1)
+            : createReport(CANDIDATE_COMMIT, index + 1),
+        })),
+      }),
+    ).toThrow("数据集或运行条件不一致");
+  });
+
+  it("显式归一化 outer v6/query v5 计划请求诊断，且不修改旧报告", () => {
+    const legacy = createV6LegacyReport(BASELINE_COMMIT, 1);
+    const snapshot = structuredClone(legacy);
+    // 当前外层 Schema 严格拒绝 v6；只有比较器的显式 legacy 路径可以归一化。
+    expect(QualityEvalReportSchema.safeParse(legacy).success).toBe(false);
+    expect(() =>
+      compareQualityEvalBlocks({
+        baselineCommit: BASELINE_COMMIT,
+        candidateCommit: CANDIDATE_COMMIT,
+        blocks: BLOCKS.map((block, index) => ({
+          block,
+          report:
+            block === "A1"
+              ? legacy
+              : createReport(
+                  block.startsWith("A") ? BASELINE_COMMIT : CANDIDATE_COMMIT,
+                  index + 1,
+                ),
+        })),
+      }),
+    ).toThrow("数据集或运行条件不一致");
+    expect(legacy).toEqual(snapshot);
+  });
+
+  it("显式且不可变地迁移整组 outer v8/query v6/metrics v2 报告", () => {
+    const reports = BLOCKS.map((block, index) =>
+      createV8LegacyReport(
+        block.startsWith("A") ? BASELINE_COMMIT : CANDIDATE_COMMIT,
+        index + 1,
+      ),
+    );
+    const snapshots = structuredClone(reports);
+    expect(
+      reports.every(report => !QualityEvalReportSchema.safeParse(report).success),
+    ).toBe(true);
+
+    const compared = compareQualityEvalBlocks({
+      baselineCommit: BASELINE_COMMIT,
+      candidateCommit: CANDIDATE_COMMIT,
+      blocks: BLOCKS.map((block, index) => ({ block, report: reports[index] })),
+    });
+
+    expect(compared.status).toBe("comparable");
+    expect(reports).toEqual(snapshots);
+  });
+
+  it("迁移时保留旧 v8 失败 Query 的 null metrics", () => {
+    const reports = BLOCKS.map((block, index) =>
+      createV8LegacyReport(
+        block.startsWith("A") ? BASELINE_COMMIT : CANDIDATE_COMMIT,
+        index + 1,
+        block === "A1" ? 0 : undefined,
+      ),
+    );
+    const snapshots = structuredClone(reports);
+
+    const compared = compareQualityEvalBlocks({
+      baselineCommit: BASELINE_COMMIT,
+      candidateCommit: CANDIDATE_COMMIT,
+      blocks: BLOCKS.map((block, index) => ({ block, report: reports[index] })),
+    });
+
+    expect(compared.status).toBe("inconclusive");
+    expect(reports).toEqual(snapshots);
+  });
+
+  it("显式且不可变地迁移整组 outer v9/query v7/metrics v3 报告", () => {
+    const reports = BLOCKS.map((block, index) =>
+      createV9LegacyReport(
+        block.startsWith("A") ? BASELINE_COMMIT : CANDIDATE_COMMIT,
+        index + 1,
+      ),
+    );
+    const snapshots = structuredClone(reports);
+    expect(
+      reports.every(report => !QualityEvalReportSchema.safeParse(report).success),
+    ).toBe(true);
+
+    const compared = compareQualityEvalBlocks({
+      baselineCommit: BASELINE_COMMIT,
+      candidateCommit: CANDIDATE_COMMIT,
+      blocks: BLOCKS.map((block, index) => ({ block, report: reports[index] })),
+    });
+
+    expect(compared.status).toBe("comparable");
+    expect(reports).toEqual(snapshots);
+  });
+
+  it("显式迁移 outer v10/query v8，但不伪造历史分阶段耗时或 Prompt", () => {
+    const reports = BLOCKS.map((block, index) =>
+      createV10LegacyReport(
+        block.startsWith("A") ? BASELINE_COMMIT : CANDIDATE_COMMIT,
+        index + 1,
+      ),
+    );
+    const snapshots = structuredClone(reports);
+
+    const compared = compareQualityEvalBlocks({
+      baselineCommit: BASELINE_COMMIT,
+      candidateCommit: CANDIDATE_COMMIT,
+      blocks: BLOCKS.map((block, index) => ({ block, report: reports[index] })),
+    });
+
+    expect(compared.status).toBe("comparable");
+    expect(reports).toEqual(snapshots);
+  });
+
+  it("拒绝历史上不可能的 outer v9 + und 组合", () => {
+    const forged = createV9LegacyReport(BASELINE_COMMIT, 1) as Record<
+      string,
+      unknown
+    >;
+    (forged.runPolicy as Record<string, unknown>).language = "und";
+
+    expect(() =>
+      compareQualityEvalBlocks({
+        baselineCommit: BASELINE_COMMIT,
+        candidateCommit: CANDIDATE_COMMIT,
+        blocks: BLOCKS.map((block, index) => ({
+          block,
+          report:
+            block === "A1"
+              ? forged
+              : createReport(
+                  block.startsWith("A") ? BASELINE_COMMIT : CANDIDATE_COMMIT,
+                  index + 1,
+                ),
+        })),
+      }),
+    ).toThrow("Quality Eval A1 报告不符合严格 Schema");
+  });
+
+  it("拒绝历史上不可能的 v8/v6/v2 + zh-CN 组合", () => {
+    const forged = createV8LegacyReport(BASELINE_COMMIT, 1) as Record<
+      string,
+      unknown
+    >;
+    (forged.runPolicy as Record<string, unknown>).language = "zh-CN";
+
+    expect(() =>
+      compareQualityEvalBlocks({
+        baselineCommit: BASELINE_COMMIT,
+        candidateCommit: CANDIDATE_COMMIT,
+        blocks: BLOCKS.map((block, index) => ({
+          block,
+          report:
+            block === "A1"
+              ? forged
+              : createReport(
+                  block.startsWith("A") ? BASELINE_COMMIT : CANDIDATE_COMMIT,
+                  index + 1,
+                ),
+        })),
+      }),
+    ).toThrow("Quality Eval A1 报告不符合严格 Schema");
+  });
+
+  it("拒绝把 outer v7 的 20 秒运行策略伪装为当前 40 秒证据", () => {
+    const legacy = createV7LegacyReport(BASELINE_COMMIT, 1);
+    expect(QualityEvalReportSchema.safeParse(legacy).success).toBe(false);
+
+    expect(() =>
+      compareQualityEvalBlocks({
+        baselineCommit: BASELINE_COMMIT,
+        candidateCommit: CANDIDATE_COMMIT,
+        blocks: BLOCKS.map((block, index) => ({
+          block,
+          report:
+            block === "A1"
+              ? legacy
+              : createReport(
+                  block.startsWith("A")
+                    ? BASELINE_COMMIT
+                    : CANDIDATE_COMMIT,
+                  index + 1,
+                ),
+        })),
+      }),
+    ).toThrow("Quality Eval A1 报告不符合严格 Schema");
+  });
+
+  it("20 条都有遥测但没有最终可见 Node 时仍判为 inconclusive", () => {
+    const input = createInput();
+    input.blocks[1]!.report = createReport(CANDIDATE_COMMIT, 2, false);
+
+    const compared = compareQualityEvalBlocks(input);
+
+    expect(compared.status).toBe("inconclusive");
+    expect(compared.blocks[1]).toMatchObject({
+      block: "B1",
+      status: "partial",
+      ranking: {
+        status: "unavailable",
+        reason: "noRankingEligibleNodes",
+        observedTelemetryQueryCount: 20,
+      },
+    });
+  });
+
+  it("最终可见 Node 与 Ranking 观测数不一致时拒绝 comparable", () => {
+    const input = createInput();
+    input.blocks[1]!.report.results[0]!.telemetry!.ranking =
+      createTelemetry(0).ranking;
+
+    const compared = compareQualityEvalBlocks(input);
+
+    expect(compared.status).toBe("inconclusive");
+    expect(compared.blocks[1]).toMatchObject({
+      block: "B1",
+      status: "partial",
+      ranking: {
+        status: "partial",
+        expectedRankedNodeCount: 1,
+        observedRankedNodeCount: 0,
+        incompleteQueryCount: 1,
+      },
+    });
+  });
+
+  it("Search-only Block 出现任一 Extract 事实时使用固定错误拒绝", () => {
+    const input = createInput();
+    input.blocks[1]!.report.results[2]!.telemetry!.counts.logicalExtractCalls = 1;
+
+    expect(() => compareQualityEvalBlocks(input)).toThrow(
+      "Search-only Block 出现 Extract 调用或耗时",
+    );
+  });
+
+  it("完整汇总四个 Block，并保持计划请求与实际调用独立", () => {
     const compared = compareQualityEvalBlocks(createInput());
 
     expect(compared.status).toBe("comparable");
@@ -158,30 +864,92 @@ describe("WAY-90 Quality Eval A-B-B-A 比较", () => {
     expect(JSON.stringify(compared).toLowerCase()).not.toMatch(
       /keep|revert/u,
     );
-    expect(compared.blocks[0]).toEqual({
+    expect(compared.blocks[0]).toMatchObject({
       block: "A1",
       condition: "A",
       evaluationRunId:
         "2026-10-23T00-00-01-000Z-00000001-0000-4000-8000-000000000001",
       sourceCommit: BASELINE_COMMIT,
-      expectedQueryCount: 20,
-      observedTelemetryCount: 20,
-      missingQueryIds: [],
       status: "complete",
-      totals: {
-        logicalSearchCalls: 190,
-        logicalExtractCalls: 190,
-        extractUrlCount: 190,
-        logicalLlmCalls: 190,
-        searchHttpAttempts: 190,
-        extractHttpAttempts: 190,
+      latency: { status: "complete", p50Ms: 0, sampleCount: 20 },
+      providerUsage: {
+        status: "complete",
+        expectedQueryCount: 20,
+        observedQueryCount: 20,
+        totals: {
+          logicalSearchCalls: 190,
+          logicalExtractCalls: 0,
+          extractUrlCount: 0,
+          logicalLlmCalls: 20,
+          searchHttpAttempts: 190,
+          extractHttpAttempts: 0,
+        },
+      },
+      duplication: {
+        status: "complete",
+        expectedQueryCount: 20,
+        observedQueryCount: 20,
+        totals: {
+          plannedRequests: {
+            totalCount: 20,
+            uniqueCount: 20,
+            intraNodeDuplicateOccurrenceCount: 0,
+            crossNodeSharedGroupCount: 0,
+            crossNodeExtraNodeOccurrenceCount: 0,
+          },
+          resources: {
+            measuredQueryCount: 1,
+            noResourceQueryCount: 19,
+            duplicateOccurrences: 0,
+            totalOccurrences: 1,
+          },
+        },
+      },
+      ranking: {
+        status: "complete",
+        expectedQueryCount: 20,
+        observedTelemetryQueryCount: 20,
+        expectedRankedNodeCount: 1,
+        observedRankedNodeCount: 1,
+        incompleteQueryCount: 0,
+        totals: {
+          observedNodeCount: 1,
+          llmSuccessNodeCount: 1,
+          fallbackNodeCount: 0,
+          finalCandidateCount: 1,
+        },
+        rates: {
+          llmSuccess: {
+            providerTop1Override: {
+              status: "measured",
+              numerator: 0,
+              denominator: 1,
+              value: 0,
+            },
+            providerTop3FinalOverlap: {
+              status: "measured",
+              numerator: 1,
+              denominator: 1,
+              value: 1,
+            },
+          },
+        },
+      },
+      tokens: {
+        status: "complete",
+        totals: { observations: 20, totalTokens: 380 },
+      },
+      cache: { status: "notMeasured", mode: "cold_disabled" },
+      estimatedCost: {
+        status: "unavailable",
+        reason: "pricing_not_frozen",
       },
     });
   });
 
   it("单条缺失只输出 observedTotals，并使四 Block 比较为 inconclusive", () => {
     const input = createInput();
-    input.blocks[1]!.report.results[4]!.telemetry = null;
+    replaceWithUnmeasuredFailure(input.blocks[1]!.report, 4);
 
     const compared = compareQualityEvalBlocks(input);
 
@@ -192,17 +960,26 @@ describe("WAY-90 Quality Eval A-B-B-A 比较", () => {
     expect(compared.blocks[1]).toMatchObject({
       block: "B1",
       status: "partial",
-      observedTelemetryCount: 19,
-      missingQueryIds: ["wfq-005"],
-      observedTotals: { logicalSearchCalls: 186 },
+      providerUsage: {
+        status: "partial",
+        observedQueryCount: 19,
+        missingQueryIds: ["wfq-005"],
+        observedTotals: { logicalSearchCalls: 186 },
+      },
+      duplication: {
+        status: "partial",
+        observedQueryCount: 19,
+        missingQueryIds: ["wfq-005"],
+      },
     });
-    expect(compared.blocks[1]).not.toHaveProperty("totals");
+    expect(compared.blocks[1]?.providerUsage).not.toHaveProperty("totals");
   });
 
   it("全部缺失时明确标为 unavailable，不生成任何总计", () => {
     const input = createInput();
-    for (const result of input.blocks[2]!.report.results) {
-      result.telemetry = null;
+    input.blocks[2]!.report = createReport(CANDIDATE_COMMIT, 3, false);
+    for (let index = 0; index < input.blocks[2]!.report.results.length; index += 1) {
+      replaceWithUnmeasuredFailure(input.blocks[2]!.report, index);
     }
 
     const compared = compareQualityEvalBlocks(input);
@@ -210,13 +987,26 @@ describe("WAY-90 Quality Eval A-B-B-A 比较", () => {
     expect(compared.blocks[2]).toMatchObject({
       block: "B2",
       status: "unavailable",
-      observedTelemetryCount: 0,
-      missingQueryIds: Array.from({ length: 20 }, (_, index) =>
-        `wfq-${String(index + 1).padStart(3, "0")}`,
-      ),
+      providerUsage: {
+        status: "unavailable",
+        observedQueryCount: 0,
+        missingQueryIds: Array.from({ length: 20 }, (_, index) =>
+          `wfq-${String(index + 1).padStart(3, "0")}`,
+        ),
+      },
+      duplication: {
+        status: "unavailable",
+        observedQueryCount: 0,
+      },
+      ranking: {
+        status: "unavailable",
+        reason: "noRankingEligibleNodes",
+      },
     });
-    expect(compared.blocks[2]).not.toHaveProperty("totals");
-    expect(compared.blocks[2]).not.toHaveProperty("observedTotals");
+    expect(compared.blocks[2]?.providerUsage).not.toHaveProperty("totals");
+    expect(compared.blocks[2]?.providerUsage).not.toHaveProperty(
+      "observedTotals",
+    );
   });
 
   it.each([
@@ -348,8 +1138,14 @@ describe("WAY-90 Quality Eval A-B-B-A 比较", () => {
 
   it("拒绝会让聚合结果失真的安全整数溢出", () => {
     const input = createInput();
-    input.blocks[0]!.report.results[0]!.telemetry =
-      createTelemetry(Number.MAX_SAFE_INTEGER);
+    const telemetry = createTelemetry(0, true);
+    input.blocks[0]!.report.results[0]!.telemetry = {
+      ...telemetry,
+      counts: {
+        ...telemetry.counts,
+        logicalSearchCalls: Number.MAX_SAFE_INTEGER,
+      },
+    };
     input.blocks[0]!.report.results[1]!.telemetry = createTelemetry(1);
 
     expect(() => compareQualityEvalBlocks(input)).toThrow("安全整数范围");

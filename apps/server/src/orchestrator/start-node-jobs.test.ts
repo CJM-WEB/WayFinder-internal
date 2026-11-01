@@ -94,7 +94,7 @@ describe("startNodeJobs", () => {
     const providers = createConcurrencyLimitedProviders({
       searchProvider: rawSearchProvider,
       llmProvider: unusedLlmProvider,
-      concurrency: { search: 6, extract: 3, llm: 3 },
+      concurrency: { search: 6, llm: 3 },
     });
     const cancelled = createAbortFixture("Node Search 排队期间取消");
     const events: NodeStreamEventPayload[] = [];
@@ -104,6 +104,7 @@ describe("startNodeJobs", () => {
         officialSourcePolicy: { knownRiskyDownloadDomains: [] },
         nowMs: Date.parse("2026-10-22T00:00:00.000Z"),
         rerankTimeoutMs: 12_000,
+        language: "zh-CN",
         emit: async payload => {
           events.push(structuredClone(payload));
         },
@@ -165,7 +166,7 @@ describe("startNodeJobs", () => {
         id: "unused-llm",
         structured: async () => ({}),
       },
-      concurrency: { search: 6, extract: 3, llm: 3 },
+      concurrency: { search: 6, llm: 3 },
     });
 
     expect(() =>
@@ -175,6 +176,7 @@ describe("startNodeJobs", () => {
           officialSourcePolicy: { knownRiskyDownloadDomains: [] },
           nowMs: 0,
           rerankTimeoutMs: 12_000,
+          language: "zh-CN",
           emit: async () => undefined,
         },
         providers,

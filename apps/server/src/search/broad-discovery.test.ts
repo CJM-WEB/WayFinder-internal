@@ -76,7 +76,7 @@ describe("discoverBroadEvidence", () => {
       analysis: createAnalysis([query]),
       provider,
       signal,
-      language: "en",
+      language: "zh-CN",
     });
 
     expect(provider.searchCalls).toEqual([
@@ -87,7 +87,7 @@ describe("discoverBroadEvidence", () => {
           maxResults: BROAD_DISCOVERY_RESULTS_PER_QUERY,
           capability: "general",
           freshnessSensitive: true,
-          language: "en",
+          language: "zh-CN",
         },
         signal,
       },
@@ -127,6 +127,7 @@ describe("discoverBroadEvidence", () => {
       analysis: createAnalysis(queries),
       provider,
       signal,
+      language: "zh-CN",
     });
     await Promise.resolve();
 
@@ -163,6 +164,7 @@ describe("discoverBroadEvidence", () => {
       analysis: createAnalysis(["query-a", "query-b", "query-c"]),
       provider,
       signal: new AbortController().signal,
+      language: "zh-CN",
     });
 
     expect(provider.searchCalls).toHaveLength(3);
@@ -188,6 +190,7 @@ describe("discoverBroadEvidence", () => {
       analysis: createAnalysis(["query-a", "query-b"]),
       provider,
       signal: new AbortController().signal,
+      language: "zh-CN",
     });
 
     expect(calls).toEqual(["query-a", "query-b"]);
@@ -209,6 +212,7 @@ describe("discoverBroadEvidence", () => {
         analysis: createAnalysis(["query-a", "query-b"]),
         provider,
         signal: new AbortController().signal,
+        language: "zh-CN",
       }),
     ).rejects.toEqual(new BroadDiscoveryError());
     expect(provider.searchCalls).toHaveLength(2);
@@ -227,6 +231,7 @@ describe("discoverBroadEvidence", () => {
           analysis: createAnalysis(queries),
           provider,
           signal: new AbortController().signal,
+          language: "zh-CN",
         }),
       ).rejects.toThrow(TypeError);
       expect(provider.searchCalls).toHaveLength(0);
@@ -246,6 +251,7 @@ describe("discoverBroadEvidence", () => {
         analysis: planFirstAnalysis,
         provider,
         signal: new AbortController().signal,
+        language: "zh-CN",
       }),
     ).rejects.toThrow(TypeError);
     expect(provider.searchCalls).toHaveLength(0);
@@ -263,6 +269,7 @@ describe("discoverBroadEvidence", () => {
         analysis: createAnalysis(["query"]),
         provider,
         signal: abortFixture.signal,
+        language: "zh-CN",
       }),
     ).rejects.toBe(abortFixture.reason);
     expect(provider.searchCalls).toHaveLength(0);
@@ -279,6 +286,7 @@ describe("discoverBroadEvidence", () => {
       analysis: createAnalysis(["query"]),
       provider,
       signal: abortFixture.signal,
+      language: "zh-CN",
     });
     abortFixture.abort();
 
@@ -305,6 +313,7 @@ describe("discoverBroadEvidence", () => {
         analysis: createAnalysis(["query"]),
         provider,
         signal: controller.signal,
+        language: "zh-CN",
       }),
     ).rejects.toBe(reason);
     expect(requests).toHaveLength(1);

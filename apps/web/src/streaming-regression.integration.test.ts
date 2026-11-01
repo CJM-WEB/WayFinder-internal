@@ -108,7 +108,7 @@ describe("NDJSON Reader + Store 客户端回归矩阵", () => {
       createRunId: () => RUN_ID,
     });
 
-    await search("Python");
+    await search({ query: "Python", language: "zh-CN" });
 
     expect(fetchImplementation).toHaveBeenCalledOnce();
     expect(store.getState()).toMatchObject({
@@ -151,7 +151,7 @@ describe("NDJSON Reader + Store 客户端回归矩阵", () => {
       status: "filtering",
     });
 
-    const searchPromise = search("Python");
+    const searchPromise = search({ query: "Python", language: "zh-CN" });
     streamController.enqueue(
       encoder.encode(
         toNdjson([
@@ -204,7 +204,7 @@ describe("NDJSON Reader + Store 客户端回归矩阵", () => {
       createRunId: () => RUN_ID,
     });
 
-    const searchPromise = search("Python");
+    const searchPromise = search({ query: "Python", language: "zh-CN" });
     streamController?.enqueue(
       encoder.encode(toNdjson([eventOfType("graph.plan")])),
     );
@@ -245,9 +245,9 @@ describe("NDJSON Reader + Store 客户端回归矩阵", () => {
       createRunId: () => runIds[runIndex++] ?? "unexpected-run",
     });
 
-    const runA = search("first query");
+    const runA = search({ query: "first query", language: "zh-CN" });
     await vi.waitFor(() => expect(signals).toHaveLength(1));
-    const runB = search("second query");
+    const runB = search({ query: "second query", language: "zh-CN" });
     await runB;
 
     expect(signals[0]?.aborted).toBe(true);

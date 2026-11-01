@@ -3,7 +3,10 @@
  *
  * Handle（连接点）不属于状态展示，测试中替换为空组件，避免依赖 React Flow 画布上下文。
  */
-import type { StreamNodeStatus } from "@wayfinder/contracts";
+import type {
+  SearchLanguage,
+  StreamNodeStatus,
+} from "@wayfinder/contracts";
 import type { NodeProps } from "@xyflow/react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
@@ -21,6 +24,7 @@ import { GraphNode } from "./GraphNode.js";
 const createNodeProps = (
   status: StreamNodeStatus,
   resourceCount: number,
+  language: SearchLanguage = "zh-CN",
 ): NodeProps<GraphFlowNode> => ({
   id: `node-${status}`,
   type: "wayfinder",
@@ -29,6 +33,7 @@ const createNodeProps = (
     nodeType: "primary",
     status,
     resourceCount,
+    language,
   },
   dragging: false,
   zIndex: 0,
@@ -68,5 +73,16 @@ describe("GraphNode 渐进状态接线", () => {
     expect(markup).toContain(marker);
     expect(markup).toContain(label);
     expect(markup).toContain(detail);
+  });
+
+  it("English Node 使用对应类型、状态和资源计数文案", () => {
+    const markup = renderToStaticMarkup(
+      <GraphNode {...createNodeProps("ready", 1, "en-US")} />,
+    );
+
+    expect(markup).toContain("Main path");
+    expect(markup).toContain("Ready");
+    expect(markup).toContain("1 available resource");
+    expect(markup).not.toContain("条可用资源");
   });
 });

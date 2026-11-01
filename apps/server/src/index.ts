@@ -14,12 +14,7 @@ export type { ServerConfig } from "./config.js";
 export type { SearchProvider } from "./search/provider.js";
 export {
   createMemoryCachedSearchProvider,
-  DEFAULT_MAX_CACHEABLE_EXTRACT_URLS,
-  DEFAULT_EXTRACT_CACHE_MAX_ENTRIES,
   DEFAULT_SEARCH_CACHE_MAX_ENTRIES,
-  EXTRACT_CACHE_MAX_ENTRY_SIZE_CODE_UNITS,
-  EXTRACT_CACHE_MAX_SIZE_CODE_UNITS,
-  EXTRACT_CACHE_TTL_MS,
   SEARCH_CACHE_MAX_ENTRY_SIZE_BYTES,
   SEARCH_CACHE_MAX_SIZE_BYTES,
   SEARCH_CACHE_TTL_MS,
@@ -29,13 +24,13 @@ export type {
   SearchProviderCacheObservation,
 } from "./search/memory-cached-provider.js";
 export {
-  TavilyProviderError,
-  TavilySearchProvider,
-} from "./search/providers/tavily.js";
+  SerpApiBingProviderError,
+  SerpApiBingSearchProvider,
+} from "./search/providers/serpapi-bing.js";
 export type {
-  TavilyAttemptObservation,
-  TavilySearchProviderOptions,
-} from "./search/providers/tavily.js";
+  SerpApiBingAttemptObservation,
+  SerpApiBingSearchProviderOptions,
+} from "./search/providers/serpapi-bing.js";
 export {
   selectSearchProvider,
 } from "./search/router.js";
@@ -86,6 +81,7 @@ export type {
   RunLogRecord,
   RunLogRecorder,
   RunLogSink,
+  RunPlanningStage,
   RunProviderOperation,
 } from "./observability/run-log.js";
 export {
@@ -119,10 +115,24 @@ export type {
   GraphPlanValidationDiagnostic,
   GraphPlanValidationIssueDiagnostic,
 } from "./ai/graph-plan-parser.js";
-export { planOrCompactFallback } from "./ai/graph-planner.js";
+export {
+  GraphOutlineSchema,
+  GraphOutlineValidationError,
+  parseGraphOutlineOutput,
+} from "./ai/graph-outline.js";
 export type {
-  GraphPlannerOutcome,
-  PlanOrCompactFallbackInput,
+  GraphOutline,
+  GraphOutlineNode,
+  GraphOutlineValidationDiagnostic,
+  GraphOutlineValidationIssueDiagnostic,
+} from "./ai/graph-outline.js";
+export {
+  GraphPlannerError,
+  planGraphOutline,
+} from "./ai/graph-planner.js";
+export type {
+  GraphPlannerErrorKind,
+  PlanGraphOutlineInput,
 } from "./ai/graph-planner.js";
 export {
   GRAPH_REVISER_MAX_DOMAIN_CODE_POINTS,
@@ -132,13 +142,26 @@ export {
   GRAPH_REVISER_MAX_SNIPPET_CODE_POINTS,
   GRAPH_REVISER_MAX_TITLE_CODE_POINTS,
   GraphRevisionError,
-  reviseGraphPlan,
+  reviseGraphOutline,
 } from "./ai/graph-reviser.js";
 export type {
   GraphRevisionErrorKind,
   GraphRevisionValidationDiagnostic,
-  ReviseGraphPlanInput,
+  ReviseGraphOutlineInput,
 } from "./ai/graph-reviser.js";
+export {
+  SearchPlanBundleSchema,
+  SearchPlanGenerationError,
+  assembleGraphPlan,
+  generateSearchPlanBundle,
+  normalizeSearchPlanQueryKey,
+} from "./ai/search-plan-generator.js";
+export type {
+  GenerateSearchPlanBundleInput,
+  SearchPlanBundle,
+  SearchPlanBundleValidationDiagnostic,
+  SearchPlanGenerationErrorKind,
+} from "./ai/search-plan-generator.js";
 export {
   DEEPSEEK_LLM_MODEL,
   DEEPSEEK_LLM_PROVIDER_ID,

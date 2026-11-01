@@ -19,10 +19,13 @@ import { z } from "zod";
 
 import {
   GRAPH_PLANNER_PROMPT_VERSION,
-} from "../ai/prompts/graph-planner.v1.js";
+} from "../ai/prompts/graph-planner.v3.js";
 import {
   GRAPH_REVISER_PROMPT_VERSION,
-} from "../ai/prompts/graph-reviser.v1.js";
+} from "../ai/prompts/graph-reviser.v4.js";
+import {
+  SEARCH_PLAN_GENERATOR_PROMPT_VERSION,
+} from "../ai/prompts/search-plan-generator.v3.js";
 import {
   DEEPSEEK_LLM_MODEL,
   DEEPSEEK_LLM_PROVIDER_ID,
@@ -30,7 +33,7 @@ import {
 } from "../ai/providers/deepseek-llm-provider.js";
 import type { DeepSeekTokenUsage } from "../ai/providers/deepseek-llm-provider.js";
 import { parseServerConfig } from "../config.js";
-import { TavilySearchProvider } from "../search/providers/tavily.js";
+import { SerpApiBingSearchProvider } from "../search/providers/serpapi-bing.js";
 import {
   evaluatePlannerGoldenQuery,
   PLANNER_GOLDEN_RUN_DEADLINE_MS,
@@ -78,7 +81,7 @@ type GitBaseline = Readonly<{
 }>;
 
 type PlannerGoldenSuiteReport = Readonly<{
-  schemaVersion: 1;
+  schemaVersion: 2;
   issue: "WAY-43";
   runId: string;
   completedAt: string;
@@ -99,9 +102,10 @@ type PlannerGoldenSuiteReport = Readonly<{
     queryFile: "tests/eval-queries.json";
     plannerPromptVersion: typeof GRAPH_PLANNER_PROMPT_VERSION;
     reviserPromptVersion: typeof GRAPH_REVISER_PROMPT_VERSION;
+    searchPlanGeneratorPromptVersion: typeof SEARCH_PLAN_GENERATOR_PROMPT_VERSION;
     llmProvider: typeof DEEPSEEK_LLM_PROVIDER_ID;
     llmModel: typeof DEEPSEEK_LLM_MODEL;
-    searchProvider: "tavily";
+    searchProvider: "serpapi_bing";
   }>;
   runPolicy: Readonly<{
     repetitionsPerQuery: 1;
@@ -121,9 +125,9 @@ type PlannerGoldenSuiteReport = Readonly<{
   automatedSummary: Readonly<{
     queryCount: number;
     completedCount: number;
+    failedCount: number;
     interruptedCount: number;
     schemaValidPlanCount: number;
-    fallbackCount: number;
     observedStrategies: readonly ("evidence_assisted" | "plan_first")[];
     bothStrategiesObserved: boolean;
     engineeringDisposition:
@@ -246,12 +250,6 @@ function createRunId(now = new Date()): string {
 // 保留既有导出名，共用第三个 Eval Markdown 消费者触发的单一编码实现。
 export const encodeMarkdownText = encodeMarkdownArtifactText;
 
-function formatFallback(result: PlannerGoldenCompletedResult): string {
-  return result.fallback === null
-    ? "无"
-    : `${result.fallback.stage}:${result.fallback.reason}`;
-}
-
 export function renderCompletedReview(
   result: PlannerGoldenCompletedResult,
 ): string {
@@ -263,6 +261,7 @@ export function renderCompletedReview(
 - 标题：${encodeMarkdownText(node.title)}
 - 描述：${encodeMarkdownText(node.description)}
 - SearchPlan Queries：${node.searchPlan.queries.map(encodeMarkdownText).join("；")}
+- 原始主题/实体锚定 1～5：
 - 必要性 1～5：
 - 粒度 1～5：
 - 与其他 Node 不重复 1～5：
@@ -279,18 +278,16 @@ export function renderCompletedReview(
           `| ${encodeMarkdownText(edge.source)} | ${encodeMarkdownText(edge.target)} | ${edge.type} |  |`,
         )
         .join("\n");
-  const strategy = result.strategy ?? "unavailable（Planner fallback）";
-  const presentationMode =
-    result.presentationMode ?? "unavailable（Planner fallback）";
-
   return `## ${encodeMarkdownText(result.query.id)}
 
 - Query：${encodeMarkdownText(result.query.query)}
 - 分类：${encodeMarkdownText(result.query.category)}
-- 实际 Strategy：\`${strategy}\`
-- Presentation Mode：\`${presentationMode}\`
-- 回退：${formatFallback(result)}
+- 实际 Strategy：\`${result.strategy}\`
+- Presentation Mode：\`${result.presentationMode}\`
+- Graph Outline 规划耗时：${result.timingsMs.graphOutlinePlanning}ms
+- SearchPlan 规划耗时：${result.timingsMs.searchPlanPlanning}ms
 - 自动指标：Schema ${result.metrics.schemaValid}，Validator ${result.metrics.validatorValid}，DAG ${result.metrics.dagValid}，Node ${result.metrics.nodeCount}，Edge ${result.metrics.edgeCount}，Edge Coverage ${result.metrics.edgeCoverage}
+- 计划请求重复：总数 ${result.metrics.plannedRequestDuplication.totalCount}，唯一 ${result.metrics.plannedRequestDuplication.uniqueCount}，节点内多余 ${result.metrics.plannedRequestDuplication.intraNodeDuplicateOccurrenceCount}，跨 Node 共享组 ${result.metrics.plannedRequestDuplication.crossNodeSharedGroupCount}
 - 报告净化：Evidence ${result.reportSanitization.evidenceRedactionCount}，URL ${result.reportSanitization.urlRedactionCount}，截断字段 ${result.reportSanitization.truncatedFieldCount}
 
 ### Node 人工评分
@@ -304,6 +301,8 @@ ${nodes}
 ${edges}
 
 - 语义重复 Node 对（填写 Node ID，并说明理由）：
+- 跨 Node 检索意图区分度 1～5：
+- 跨 Node 高度相似 Query 证据（无则写无）：
 - Strategy 质量 1～5：
 - Strategy 判断说明：合适 / 不合适 / 不确定
 - Overall Outcome：pass / targetedIterate / fail / inconclusive
@@ -312,11 +311,15 @@ ${edges}
 }
 
 function renderInterruptedReview(result: Exclude<PlannerGoldenQueryResult, PlannerGoldenCompletedResult>): string {
+  const failure = result.executionStatus === "failed"
+    ? `\n- 失败阶段：\`${result.failure.stage}\`\n- 失败分类：\`${result.failure.reason}\``
+    : "";
   return `## ${encodeMarkdownText(result.query.id)}
 
 - Query：${encodeMarkdownText(result.query.query)}
 - 分类：${encodeMarkdownText(result.query.category)}
 - 执行状态：\`${result.executionStatus}\`
+${failure}
 - 自动 Outcome：无（由人员判断）
 - 人工 Outcome：pass / targetedIterate / fail / inconclusive
 - 审核备注：
@@ -335,7 +338,8 @@ export function renderHumanReview(report: PlannerGoldenSuiteReport): string {
 - Run ID：\`${report.runId}\`
 - Git Commit：\`${report.source.git.commit}\`
 - Planner Prompt：\`${report.source.plannerPromptVersion}\`
-Reviser Prompt：\`${report.source.reviserPromptVersion}\`
+- Reviser Prompt：\`${report.source.reviserPromptVersion}\`
+- SearchPlan Generator Prompt：\`${report.source.searchPlanGeneratorPromptVersion}\`
 
 ## Test Charter（测试章程）
 
@@ -356,6 +360,7 @@ Reviser Prompt：\`${report.source.reviserPromptVersion}\`
 - Node 必要性总体观察：
 - Node 粒度总体观察：
 - 语义重复总体观察：
+- 原始实体锚定与跨 Node 检索区分度观察：
 - Edge Coverage 与推荐顺序观察：
 - Strategy 观察：
 - SearchPlan 观察：
@@ -382,10 +387,12 @@ export function summarizeResults(
     (strategy): strategy is "evidence_assisted" | "plan_first" =>
       completed.some(result => result.strategy === strategy),
   );
-  const fallbackCount = completed.filter(result => result.fallback !== null).length;
-  const interruptedCount = results.length - completed.length;
+  const failedCount = results.filter(
+    result => result.executionStatus === "failed",
+  ).length;
+  const interruptedCount = results.length - completed.length - failedCount;
   const bothStrategiesObserved = observedStrategies.length === 2;
-  const engineeringDisposition = interruptedCount > 0
+  const engineeringDisposition = interruptedCount > 0 || failedCount > 0
     ? "executionIncomplete"
     : !bothStrategiesObserved
       ? "insufficientStrategyEvidence"
@@ -402,11 +409,11 @@ export function summarizeResults(
   return {
     queryCount: results.length,
     completedCount: completed.length,
+    failedCount,
     interruptedCount,
     schemaValidPlanCount: completed.filter(
       result => result.metrics.schemaValid && result.metrics.validatorValid,
     ).length,
-    fallbackCount,
     observedStrategies,
     bothStrategiesObserved,
     engineeringDisposition,
@@ -475,14 +482,11 @@ async function runPlannerGolden(): Promise<string> {
         apiKey: config.llmApiKey,
         onTokenUsage: usage => tokenUsages.push(usage),
       });
-      const searchProvider = new TavilySearchProvider({
-        apiKey: config.tavilyApiKey,
+      const searchProvider = new SerpApiBingSearchProvider({
+        apiKey: config.serpApiKey,
         searchTimeoutMs: config.timeouts.searchMs,
-        extractTimeoutMs: config.timeouts.extractMs,
-        onAttempt: ({ operation }) => {
-          if (operation === "search") {
-            searchHttpAttempts += 1;
-          }
+        onAttempt: () => {
+          searchHttpAttempts += 1;
         },
       });
       results.push(
@@ -498,7 +502,7 @@ async function runPlannerGolden(): Promise<string> {
     }
 
     const report: PlannerGoldenSuiteReport = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       issue: "WAY-43",
       runId,
       completedAt: new Date().toISOString(),
@@ -519,9 +523,11 @@ async function runPlannerGolden(): Promise<string> {
         queryFile: "tests/eval-queries.json",
         plannerPromptVersion: GRAPH_PLANNER_PROMPT_VERSION,
         reviserPromptVersion: GRAPH_REVISER_PROMPT_VERSION,
+        searchPlanGeneratorPromptVersion:
+          SEARCH_PLAN_GENERATOR_PROMPT_VERSION,
         llmProvider: DEEPSEEK_LLM_PROVIDER_ID,
         llmModel: DEEPSEEK_LLM_MODEL,
-        searchProvider: "tavily",
+        searchProvider: "serpapi_bing",
       },
       runPolicy: {
         repetitionsPerQuery: 1,

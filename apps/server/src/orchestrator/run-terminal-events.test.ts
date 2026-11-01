@@ -1,23 +1,21 @@
 /**
- * 测试职责：冻结 Run 级 Node exactly-once、complete 门禁和无 GraphPlan 失败分流。
+ * 测试职责：冻结 WAY-112 连续前缀、全图 URL 所有权、ordinal 发送顺序和 exactly-once 终态。
  *
- * 重点竞态：Node 终态已同步占位但写入仍受背压时，Deadline Outcome 不能再合成 failed，
- * 最终 ResultGraph 也必须保留先发生的终态。客户端 Reader 与旧 runId 防护由 Web 层负责。
+ * 关键竞态：后序 Node 可以先完成计算，但只有 GraphPlan 连续前缀形成后才能发送终态；
+ * 所有权始终按计划/rank，发送顺序只在同批释放项中按真实结算 ordinal。
  */
 import {
   GraphPlanSchema,
   ResultGraphNodeSchema,
   type GraphPlan,
   type NodeJobOutcome,
+  type Resource,
   type ResultGraph,
-  type StreamEvent,
   type StreamEventPayload,
 } from "@wayfinder/contracts";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import { createDeferred } from "../../../../tests/support/test-infrastructure.mjs";
-import type { NodeStreamEventPayload } from "../pipeline/process-node.js";
-import { createRunEventWriter } from "../streaming/run-event-writer.js";
 import {
   createRunTerminalEventState,
   emitRunFailedWithoutGraphPlan,
@@ -70,58 +68,44 @@ function createPlan(nodeIds: readonly string[] = ["node-a"]): GraphPlan {
   });
 }
 
-function createResource(nodeId: string) {
+function createResource(
+  id: string,
+  canonicalUrl: string,
+  rank = 1,
+): Resource {
+  const hostname = new URL(canonicalUrl).hostname;
   return {
-    id: `resource-${nodeId}`,
-    title: `资源 ${nodeId}`,
-    url: `https://example.com/${nodeId}`,
-    canonicalUrl: `https://example.com/${nodeId}`,
-    domain: "example.com",
+    id,
+    title: `资源 ${id}`,
+    url: canonicalUrl,
+    canonicalUrl,
+    domain: hostname,
     sourceType: "documentation",
-    summary: `${nodeId} 摘要`,
-    whySelected: `${nodeId} 与节点相关`,
-    rank: 1,
+    summary: `${id} 摘要`,
+    whySelected: `${id} 与节点相关`,
+    rank,
+    scores: { relevance: 0.8 },
     searchProvider: "fake-search",
   };
-}
-
-function terminalPayload(
-  nodeId: string,
-  status: "ready" | "partial",
-): Extract<
-  NodeStreamEventPayload,
-  { type: "node.ready" | "node.partial" }
-> {
-  return status === "ready"
-    ? {
-        type: "node.ready",
-        nodeId,
-        resources: [createResource(nodeId)],
-        warnings: [],
-      }
-    : {
-        type: "node.partial",
-        nodeId,
-        resources: [createResource(nodeId)],
-        warnings: ["RERANK_FAILED"],
-      };
 }
 
 function successfulOutcome(
   plan: GraphPlan,
   nodeId: string,
-  status: "ready" | "partial",
+  settlementOrdinal: number,
+  resources: readonly Resource[],
+  status: "ready" | "partial" = "ready",
 ): NodeJobOutcome {
   const planNode = plan.nodes.find(node => node.id === nodeId);
   if (planNode === undefined) throw new TypeError("测试计划缺少 Node");
-
   return {
     status: "fulfilled",
     nodeId,
+    settlementOrdinal,
     value: ResultGraphNodeSchema.parse({
       ...planNode,
       status,
-      resources: [createResource(nodeId)],
+      resources,
       warnings: status === "partial" ? ["RERANK_FAILED"] : [],
     }),
   };
@@ -129,24 +113,27 @@ function successfulOutcome(
 
 function rejectedOutcome(
   nodeId: string,
-  code: "SEARCH_PROVIDER_FAILED" | "RERANK_FAILED" =
-    "SEARCH_PROVIDER_FAILED",
-  retryable = true,
+  settlementOrdinal: number,
 ): NodeJobOutcome {
   return {
     status: "rejected",
     nodeId,
+    settlementOrdinal,
     error: Object.assign(new Error("内部 Provider 细节"), {
-      code,
-      retryable,
+      code: "SEARCH_PROVIDER_FAILED" as const,
+      retryable: true,
     }),
   };
 }
 
-function timedOutOutcome(nodeId: string): NodeJobOutcome {
+function timedOutOutcome(
+  nodeId: string,
+  settlementOrdinal: number,
+): NodeJobOutcome {
   return {
     status: "timed_out",
     nodeId,
+    settlementOrdinal,
     error: { code: "RUN_DEADLINE_EXCEEDED", retryable: true },
   };
 }
@@ -172,7 +159,6 @@ function createRunScope() {
       },
     },
     deadline: () => controller.abort(deadlineReason),
-    /** 模拟墙上时钟已过期，但事件循环还没有执行 Timer 回调。 */
     expireWithoutTimer: () => {
       clockExpired = true;
     },
@@ -180,12 +166,24 @@ function createRunScope() {
   };
 }
 
-function completeInput(outcomes: readonly NodeJobOutcome[]) {
-  return { runId: "run-70", query: QUERY, outcomes, meta: META };
+function completeInput(): CompleteRunWithTerminalEventsInput {
+  return { runId: "run-112", query: QUERY, meta: META };
+}
+
+function terminalPayloads(payloads: readonly StreamEventPayload[]) {
+  return payloads.filter(
+    (
+      payload,
+    ): payload is Extract<
+      StreamEventPayload,
+      { type: "node.ready" | "node.partial" | "node.failed" }
+    > =>
+      ["node.ready", "node.partial", "node.failed"].includes(payload.type),
+  );
 }
 
 describe("createRunTerminalEventState", () => {
-  it("混合结果中每个 Node 只有一个终态且 complete 最后发送", async () => {
+  it("缓冲后序 Node，并把 URL 所有权与同批 ordinal 发送顺序分离", async () => {
     const plan = createPlan(["node-a", "node-b", "node-c"]);
     const scope = createRunScope();
     const payloads: StreamEventPayload[] = [];
@@ -196,41 +194,182 @@ describe("createRunTerminalEventState", () => {
         payloads.push(structuredClone(payload));
       },
     });
-
-    await state.emitNode(terminalPayload("node-b", "partial"));
-    await state.emitNode({
-      type: "node.failed",
-      nodeId: "node-c",
-      error: { code: "SEARCH_PROVIDER_FAILED", retryable: true },
-    });
-    await state.emitNode(terminalPayload("node-a", "ready"));
-    const result = await state.complete(
-      completeInput([
-        rejectedOutcome("node-c"),
-        successfulOutcome(plan, "node-a", "ready"),
-        successfulOutcome(plan, "node-b", "partial"),
+    const shared = "https://example.com/shared";
+    const bWrite = state.acceptOutcome(
+      successfulOutcome(plan, "node-b", 1, [
+        createResource("b-shared", shared, 1),
+        createResource("b-unique", "https://example.com/b", 2),
       ]),
     );
+    await Promise.resolve();
+    expect(payloads).toEqual([]);
 
-    expect(payloads.map(payload => payload.type)).toEqual([
-      "node.partial",
-      "node.failed",
-      "node.ready",
-      "complete",
+    const aWrite = state.acceptOutcome(
+      successfulOutcome(plan, "node-a", 2, [
+        createResource("a-shared", shared),
+      ]),
+    );
+    await Promise.all([aWrite, bWrite]);
+    expect(terminalPayloads(payloads).map(payload => payload.nodeId)).toEqual([
+      "node-b",
+      "node-a",
     ]);
-    expect(result.graph.nodes.map(node => [node.id, node.status])).toEqual([
-      ["node-a", "ready"],
-      ["node-b", "partial"],
-      ["node-c", "failed"],
-    ]);
-    expect(result.meta.partial).toBe(true);
+    expect(payloads[0]).toMatchObject({
+      type: "node.ready",
+      nodeId: "node-b",
+      resources: [
+        {
+          id: "b-unique",
+          canonicalUrl: "https://example.com/b",
+          rank: 1,
+        },
+      ],
+    });
+
+    await state.acceptOutcome(
+      successfulOutcome(plan, "node-c", 3, [
+        createResource("c", "https://example.com/c"),
+      ]),
+    );
+    const result = await state.complete(completeInput());
+    expect(result.graph.nodes[0]?.resources[0]?.id).toBe("a-shared");
+    expect(result.graph.nodes[1]?.resources[0]?.id).toBe("b-unique");
     expect(payloads.at(-1)).toMatchObject({
       type: "complete",
-      data: { finalStatus: "partial", result },
+      data: { finalStatus: "complete", result },
     });
   });
 
-  it("全部 ready 时只发送一个 complete 并派生 complete finalStatus", async () => {
+  it("交换实际完成顺序只改变终态发送顺序，不改变仲裁 Payload 或最终 Graph", async () => {
+    const plan = createPlan(["node-a", "node-b"]);
+    const shared = "https://example.com/shared";
+    const runOrder = async (order: readonly ["node-a" | "node-b", "node-a" | "node-b"]) => {
+      const scope = createRunScope();
+      const payloads: StreamEventPayload[] = [];
+      const state = createRunTerminalEventState({
+        plan,
+        runScope: scope.runScope,
+        emit: async payload => {
+          payloads.push(structuredClone(payload));
+        },
+      });
+      const writes = order.map((nodeId, index) =>
+        state.acceptOutcome(
+          successfulOutcome(
+            plan,
+            nodeId,
+            index + 1,
+            nodeId === "node-a"
+              ? [createResource("a-shared", shared)]
+              : [
+                  createResource("b-shared", shared, 1),
+                  createResource("b-unique", "https://example.com/b", 2),
+                ],
+          ),
+        ),
+      );
+      await Promise.all(writes);
+      const result = await state.complete(completeInput());
+      const terminalsByNodeId = Object.fromEntries(
+        terminalPayloads(payloads)
+          .map(payload => [payload.nodeId, payload] as const)
+          .sort(([left], [right]) => left.localeCompare(right)),
+      );
+      return {
+        result,
+        terminalsByNodeId,
+        terminalOrder: terminalPayloads(payloads).map(payload => payload.nodeId),
+      };
+    };
+
+    const planOrder = await runOrder(["node-a", "node-b"]);
+    const reverseOrder = await runOrder(["node-b", "node-a"]);
+
+    expect(reverseOrder.result).toEqual(planOrder.result);
+    expect(reverseOrder.terminalsByNodeId).toEqual(planOrder.terminalsByNodeId);
+    expect(planOrder.terminalOrder).toEqual(["node-a", "node-b"]);
+    expect(reverseOrder.terminalOrder).toEqual(["node-b", "node-a"]);
+  });
+
+  it.each(["rejected", "timed_out"] as const)(
+    "前序 Node %s 时不占 URL，后序 Node 获得所有权",
+    async previousStatus => {
+      const plan = createPlan(["node-a", "node-b"]);
+      const scope = createRunScope();
+      const payloads: StreamEventPayload[] = [];
+      const state = createRunTerminalEventState({
+        plan,
+        runScope: scope.runScope,
+        emit: async payload => {
+          payloads.push(payload);
+        },
+      });
+      const previous =
+        previousStatus === "rejected"
+          ? rejectedOutcome("node-a", 1)
+          : timedOutOutcome("node-a", 1);
+      await state.acceptOutcome(previous);
+      await state.acceptOutcome(
+        successfulOutcome(plan, "node-b", 2, [
+          createResource("b-shared", "https://example.com/shared"),
+        ]),
+      );
+
+      const result = await state.complete(completeInput());
+      expect(result.graph.nodes[1]).toMatchObject({
+        id: "node-b",
+        status: "ready",
+        resources: [{ id: "b-shared" }],
+      });
+      expect(terminalPayloads(payloads)).toHaveLength(2);
+    },
+  );
+
+  it("删除重复项后重排 rank，并保留 partial、Warning 与其他 Resource 字段", async () => {
+    const plan = createPlan(["node-a", "node-b"]);
+    const scope = createRunScope();
+    const payloads: StreamEventPayload[] = [];
+    const state = createRunTerminalEventState({
+      plan,
+      runScope: scope.runScope,
+      emit: async payload => {
+        payloads.push(structuredClone(payload));
+      },
+    });
+    const shared = createResource("a-shared", "https://example.com/shared");
+    const unique = createResource("b-unique", "https://example.com/unique", 2);
+    await state.acceptOutcome(
+      successfulOutcome(plan, "node-a", 1, [shared]),
+    );
+    await state.acceptOutcome(
+      successfulOutcome(
+        plan,
+        "node-b",
+        2,
+        [
+          createResource("b-shared", shared.canonicalUrl, 1),
+          unique,
+        ],
+        "partial",
+      ),
+    );
+
+    const result = await state.complete(completeInput());
+    const node = result.graph.nodes[1];
+    expect(node).toMatchObject({
+      status: "partial",
+      warnings: ["RERANK_FAILED"],
+      resources: [{ ...unique, rank: 1 }],
+    });
+    expect(payloads[1]).toMatchObject({
+      type: "node.partial",
+      nodeId: "node-b",
+      resources: [{ ...unique, rank: 1 }],
+      warnings: ["RERANK_FAILED"],
+    });
+  });
+
+  it(" fulfilled Node 被仲裁清空时生成不可重试的新错误", async () => {
     const plan = createPlan(["node-a", "node-b"]);
     const scope = createRunScope();
     const payloads: StreamEventPayload[] = [];
@@ -241,94 +380,84 @@ describe("createRunTerminalEventState", () => {
         payloads.push(payload);
       },
     });
-
-    await Promise.all(
-      plan.nodes.map(node => state.emitNode(terminalPayload(node.id, "ready"))),
+    const url = "https://example.com/shared";
+    await state.acceptOutcome(
+      successfulOutcome(plan, "node-a", 1, [createResource("a", url)]),
     );
-    await state.complete(
-      completeInput(
-        plan.nodes.map(node => successfulOutcome(plan, node.id, "ready")),
-      ),
+    await state.acceptOutcome(
+      successfulOutcome(plan, "node-b", 2, [createResource("b", url)]),
     );
 
-    expect(payloads.at(-1)).toMatchObject({
-      type: "complete",
-      data: { finalStatus: "complete" },
+    const result = await state.complete(completeInput());
+    expect(result.graph.nodes[1]).toMatchObject({
+      id: "node-b",
+      status: "failed",
+      resources: [],
+      warnings: [],
+      error: {
+        code: "NO_UNIQUE_RESOURCE_AVAILABLE",
+        retryable: false,
+      },
     });
-    expect(payloads.filter(payload => payload.type === "complete")).toHaveLength(
-      1,
-    );
+    expect(payloads[1]).toEqual({
+      type: "node.failed",
+      nodeId: "node-b",
+      error: {
+        code: "NO_UNIQUE_RESOURCE_AVAILABLE",
+        retryable: false,
+      },
+    });
   });
 
-  it.each([
-    ["重复 ready", terminalPayload("node-a", "ready")],
-    [
-      "混发 failed",
-      {
-        type: "node.failed",
-        nodeId: "node-a",
-        error: { code: "SEARCH_PROVIDER_FAILED", retryable: true },
-      } satisfies NodeStreamEventPayload,
-    ],
-  ])("在底层写入前拒绝同一 Node 的%s", async (_name, duplicate) => {
+  it("只比较完整 canonicalUrl，不合并协议、host、Path、斜杠、Query 或语言版本", async () => {
+    const plan = createPlan(["node-a", "node-b"]);
     const scope = createRunScope();
-    const emit = vi.fn(async (payload: StreamEventPayload) => {
-      void payload;
-    });
-    const state = createRunTerminalEventState({
-      plan: createPlan(),
-      runScope: scope.runScope,
-      emit,
-    });
-
-    await state.emitNode(terminalPayload("node-a", "ready"));
-    await expect(state.emitNode(duplicate)).rejects.toThrow(
-      "Node 终态重复：node-a",
-    );
-    expect(emit).toHaveBeenCalledTimes(1);
-  });
-
-  it("拒绝未知 Node 且不访问底层 Writer", async () => {
-    const scope = createRunScope();
-    const emit = vi.fn(async (payload: StreamEventPayload) => {
-      void payload;
-    });
-    const state = createRunTerminalEventState({
-      plan: createPlan(),
-      runScope: scope.runScope,
-      emit,
-    });
-
-    await expect(
-      state.emitNode(terminalPayload("node-unknown", "ready")),
-    ).rejects.toThrow("Node 事件引用了未计划的 Node");
-    expect(emit).not.toHaveBeenCalled();
-  });
-
-  it("缺少已结算 Node 终态时拒绝 complete", async () => {
-    const plan = createPlan();
-    const scope = createRunScope();
-    const emit = vi.fn(async (payload: StreamEventPayload) => {
-      void payload;
-    });
     const state = createRunTerminalEventState({
       plan,
       runScope: scope.runScope,
-      emit,
+      emit: async () => undefined,
     });
-
-    await expect(
-      state.complete(
-        completeInput([successfulOutcome(plan, "node-a", "ready")]),
+    const firstUrls = [
+      "https://example.com/",
+      "https://example.com/path",
+      "http://example.com/protocol",
+      "https://www.example.com/host",
+      "https://example.com/query?topic=one",
+      "https://example.com/en/",
+    ];
+    const secondUrls = [
+      "https://example.com/1234/",
+      "https://example.com/path/",
+      "https://example.com/protocol",
+      "https://example.com/host",
+      "https://example.com/query?topic=two",
+      "https://example.com/cn/",
+    ];
+    await state.acceptOutcome(
+      successfulOutcome(
+        plan,
+        "node-a",
+        1,
+        firstUrls.map((url, index) => createResource(`a-${index}`, url, index + 1)),
       ),
-    ).rejects.toThrow("已结算 Node 缺少终态事件：node-a");
-    expect(emit).not.toHaveBeenCalled();
+    );
+    await state.acceptOutcome(
+      successfulOutcome(
+        plan,
+        "node-b",
+        2,
+        secondUrls.map((url, index) => createResource(`b-${index}`, url, index + 1)),
+      ),
+    );
+
+    const result = await state.complete(completeInput());
+    expect(result.graph.nodes[0]?.resources).toHaveLength(6);
+    expect(result.graph.nodes[1]?.resources).toHaveLength(6);
   });
 
-  it("只为真正未提交终态的 timed_out Node 合成 failed 后 complete", async () => {
-    const plan = createPlan(["node-a", "node-b"]);
+  it("在底层写入前拒绝未知 Node、重复 Node 与非法 ordinal", async () => {
+    const plan = createPlan(["node-a"]);
     const scope = createRunScope();
-    scope.deadline();
     const payloads: StreamEventPayload[] = [];
     const state = createRunTerminalEventState({
       plan,
@@ -337,243 +466,104 @@ describe("createRunTerminalEventState", () => {
         payloads.push(payload);
       },
     });
-
-    const result = await state.complete(
-      completeInput(plan.nodes.map(node => timedOutOutcome(node.id))),
-    );
-
-    expect(payloads.map(payload => payload.type)).toEqual([
-      "node.failed",
-      "node.failed",
-      "complete",
+    const value = successfulOutcome(plan, "node-a", 1, [
+      createResource("a", "https://example.com/a"),
     ]);
-    expect(
-      payloads.slice(0, 2).map(payload =>
-        payload.type === "node.failed" ? payload.nodeId : "unexpected",
-      ),
-    ).toEqual(["node-a", "node-b"]);
-    expect(result.graph.nodes.every(node => node.status === "failed")).toBe(
-      true,
-    );
+    expect(() =>
+      state.acceptOutcome({ ...value, settlementOrdinal: 2 }),
+    ).toThrow("settlementOrdinal");
+    expect(() =>
+      state.acceptOutcome({ ...value, nodeId: "node-missing" }),
+    ).toThrow("未计划");
+    await state.acceptOutcome(value);
+    expect(() => state.acceptOutcome(value)).toThrow("重复");
+    expect(terminalPayloads(payloads)).toHaveLength(1);
   });
 
-  it("Deadline 保留已接纳但仍在背压中的 ready，并在其写完后 complete", async () => {
-    const plan = createPlan();
+  it("在任何终态副作用前拒绝 fulfilled value 与计划 Node 身份不一致", () => {
+    const plan = createPlan(["node-a", "node-b"]);
+    const scope = createRunScope();
+    const payloads: StreamEventPayload[] = [];
+    const state = createRunTerminalEventState({
+      plan,
+      runScope: scope.runScope,
+      emit: async payload => {
+        payloads.push(payload);
+      },
+    });
+    const mismatched = {
+      ...successfulOutcome(plan, "node-b", 1, [
+        createResource("b", "https://example.com/b"),
+      ]),
+      nodeId: "node-a",
+    } satisfies NodeJobOutcome;
+
+    expect(() => state.acceptOutcome(mismatched)).toThrow("身份与计划不一致");
+    expect(payloads).toEqual([]);
+  });
+
+  it("同批首个终态 Sink 失败时所有已释放 Promise 以原错误拒绝", async () => {
+    const plan = createPlan(["node-a", "node-b"]);
     const scope = createRunScope();
     const firstWrite = createDeferred<void>();
-    const wireEvents: StreamEvent[] = [];
-    const writer = createRunEventWriter({
-      runId: "run-70",
-      connectionSignal: new AbortController().signal,
-      now: () => Date.parse("2026-10-22T08:00:00Z"),
-      writeEvent: async event => {
-        wireEvents.push(event);
-        if (event.type === "node.ready") await firstWrite.promise;
-      },
-    });
-    const state = createRunTerminalEventState({
-      plan,
-      runScope: scope.runScope,
-      emit: writer.emit,
-    });
-
-    const readyWrite = state.emitNode(terminalPayload("node-a", "ready"));
-    scope.deadline();
-    const completion = state.complete(
-      completeInput([timedOutOutcome("node-a")]),
-    );
-    await Promise.resolve();
-
-    expect(wireEvents.map(event => event.type)).toEqual(["node.ready"]);
-    firstWrite.resolve();
-    await readyWrite;
-    const result = await completion;
-    await writer.close();
-
-    expect(wireEvents.map(event => event.type)).toEqual([
-      "node.ready",
-      "complete",
-    ]);
-    expect(wireEvents.map(event => event.sequence)).toEqual([1, 2]);
-    expect(result.graph.nodes[0]?.status).toBe("ready");
-    expect(result.meta.partial).toBe(false);
-  });
-
-  it("Timer 延迟时拒绝过期 ready，随后只为 timed_out 合成 failed", async () => {
-    const scope = createRunScope();
-    const payloads: StreamEventPayload[] = [];
-    const state = createRunTerminalEventState({
-      plan: createPlan(),
-      runScope: scope.runScope,
-      emit: async payload => {
-        payloads.push(payload);
-      },
-    });
-    scope.expireWithoutTimer();
-
-    await expect(
-      state.emitNode(terminalPayload("node-a", "ready")),
-    ).rejects.toMatchObject({ name: "TimeoutError" });
-    const result = await state.complete(
-      completeInput([timedOutOutcome("node-a")]),
-    );
-
-    expect(payloads.map(payload => payload.type)).toEqual([
-      "node.failed",
-      "complete",
-    ]);
-    expect(result.graph.nodes[0]?.status).toBe("failed");
-  });
-
-  it.each([
-    ["status", "partial" as const],
-    ["content", "ready" as const],
-  ])("已接纳终态与 observed %s 冲突时拒绝 complete", async (kind, status) => {
-    const plan = createPlan();
-    const scope = createRunScope();
-    const payloads: StreamEventPayload[] = [];
-    const state = createRunTerminalEventState({
-      plan,
-      runScope: scope.runScope,
-      emit: async payload => {
-        payloads.push(payload);
-      },
-    });
-    await state.emitNode(terminalPayload("node-a", "ready"));
-    const conflicting = successfulOutcome(plan, "node-a", status);
-    const conflictingValue =
-      conflicting.status === "fulfilled"
-        ? {
-            ...conflicting.value,
-            resources:
-              kind === "content"
-                ? conflicting.value.resources.map((resource, index) =>
-                    index === 0
-                      ? {
-                          ...resource,
-                          summary: "与已发送终态不同的摘要",
-                        }
-                      : resource,
-                  )
-                : conflicting.value.resources,
-            warnings: conflicting.value.warnings,
-          }
-        : undefined;
-
-    await expect(
-      state.complete(
-        completeInput([
-          conflicting.status === "fulfilled"
-            ? {
-                ...conflicting,
-                value: conflictingValue!,
-              }
-            : conflicting,
-        ]),
-      ),
-    ).rejects.toThrow("Node");
-    expect(payloads.map(payload => payload.type)).toEqual(["node.ready"]);
-  });
-
-  it("已接纳 ready 与 observed rejected 类别冲突时拒绝 complete", async () => {
-    const scope = createRunScope();
-    const payloads: StreamEventPayload[] = [];
-    const state = createRunTerminalEventState({
-      plan: createPlan(),
-      runScope: scope.runScope,
-      emit: async payload => {
-        payloads.push(payload);
-      },
-    });
-    await state.emitNode(terminalPayload("node-a", "ready"));
-
-    await expect(
-      state.complete(completeInput([rejectedOutcome("node-a")])),
-    ).rejects.toThrow("Node outcome 与已接受终态冲突：node-a");
-    expect(payloads.map(payload => payload.type)).toEqual(["node.ready"]);
-  });
-
-  it("已接纳 failed 与 observed 错误内容冲突时拒绝 complete", async () => {
-    const scope = createRunScope();
-    const payloads: StreamEventPayload[] = [];
-    const state = createRunTerminalEventState({
-      plan: createPlan(),
-      runScope: scope.runScope,
-      emit: async payload => {
-        payloads.push(payload);
-      },
-    });
-    await state.emitNode({
-      type: "node.failed",
-      nodeId: "node-a",
-      error: { code: "SEARCH_PROVIDER_FAILED", retryable: true },
-    });
-
-    await expect(
-      state.complete(
-        completeInput([rejectedOutcome("node-a", "RERANK_FAILED", false)]),
-      ),
-    ).rejects.toThrow("Node 错误与已接受终态内容冲突：node-a");
-    expect(payloads.map(payload => payload.type)).toEqual(["node.failed"]);
-  });
-
-  it("已接纳终态异步写失败时传播原错误且不重试", async () => {
-    const plan = createPlan();
-    const scope = createRunScope();
-    const terminalWrite = createDeferred<void>();
-    const writeError = new Error("accepted terminal failed");
     const payloads: StreamEventPayload[] = [];
     const state = createRunTerminalEventState({
       plan,
       runScope: scope.runScope,
       emit: payload => {
         payloads.push(payload);
-        return terminalWrite.promise;
+        return firstWrite.promise;
       },
     });
+    const bWrite = state.acceptOutcome(
+      successfulOutcome(plan, "node-b", 1, [
+        createResource("b", "https://example.com/b"),
+      ]),
+    );
+    const aWrite = state.acceptOutcome(
+      successfulOutcome(plan, "node-a", 2, [
+        createResource("a", "https://example.com/a"),
+      ]),
+    );
+    const sinkError = new Error("terminal sink failed");
+    firstWrite.reject(sinkError);
 
-    const pendingTerminal = state.emitNode(terminalPayload("node-a", "ready"));
-    terminalWrite.reject(writeError);
-    await expect(pendingTerminal).rejects.toBe(writeError);
-    await expect(
-      state.complete(
-        completeInput([successfulOutcome(plan, "node-a", "ready")]),
-      ),
-    ).rejects.toBe(writeError);
-    expect(payloads.map(payload => payload.type)).toEqual(["node.ready"]);
+    await expect(bWrite).rejects.toBe(sinkError);
+    await expect(aWrite).rejects.toBe(sinkError);
+    await expect(state.complete(completeInput())).rejects.toBe(sinkError);
+    expect(payloads).toHaveLength(1);
   });
 
-  it("complete 异步写失败时传播原错误且不补发", async () => {
-    const plan = createPlan();
+  it("前序终态 Sink 失败会关闭仍被计划缺口阻塞的后序 Promise", async () => {
+    const plan = createPlan(["node-a", "node-b", "node-c"]);
     const scope = createRunScope();
-    const writeError = new Error("complete failed");
-    const payloads: StreamEventPayload[] = [];
+    const firstWrite = createDeferred<void>();
     const state = createRunTerminalEventState({
       plan,
       runScope: scope.runScope,
-      emit: async payload => {
-        payloads.push(payload);
-        if (payload.type === "complete") throw writeError;
-      },
+      emit: () => firstWrite.promise,
     });
-    await state.emitNode(terminalPayload("node-a", "ready"));
+    const cWrite = state.acceptOutcome(
+      successfulOutcome(plan, "node-c", 1, [
+        createResource("c", "https://example.com/c"),
+      ]),
+    );
+    const aWrite = state.acceptOutcome(
+      successfulOutcome(plan, "node-a", 2, [
+        createResource("a", "https://example.com/a"),
+      ]),
+    );
+    const sinkError = new Error("first terminal sink failed");
+    firstWrite.reject(sinkError);
 
-    await expect(
-      state.complete(
-        completeInput([successfulOutcome(plan, "node-a", "ready")]),
-      ),
-    ).rejects.toBe(writeError);
-    expect(payloads.map(payload => payload.type)).toEqual([
-      "node.ready",
-      "complete",
-    ]);
+    await expect(aWrite).rejects.toBe(sinkError);
+    await expect(cWrite).rejects.toBe(sinkError);
   });
 
-  it("终态背压期间用户取消，解除背压后仍不得 complete", async () => {
-    const plan = createPlan();
+  it("终态背压跨过 Deadline 时保留已占位 Outcome，解除背压后仍可 complete", async () => {
+    const plan = createPlan(["node-a"]);
     const scope = createRunScope();
     const terminalWrite = createDeferred<void>();
-    const userReason = new Error("用户在终态背压期间取消");
     const payloads: StreamEventPayload[] = [];
     const state = createRunTerminalEventState({
       plan,
@@ -585,85 +575,78 @@ describe("createRunTerminalEventState", () => {
           : Promise.resolve();
       },
     });
-
-    const pendingTerminal = state.emitNode(terminalPayload("node-a", "ready"));
-    const completion = state.complete(
-      completeInput([successfulOutcome(plan, "node-a", "ready")]),
+    const accepted = state.acceptOutcome(
+      successfulOutcome(plan, "node-a", 1, [
+        createResource("a", "https://example.com/a"),
+      ]),
     );
-    scope.cancel(userReason);
+    scope.deadline();
     terminalWrite.resolve();
+    await accepted;
 
-    await pendingTerminal;
-    await expect(completion).rejects.toBe(userReason);
-    expect(payloads.map(payload => payload.type)).toEqual(["node.ready"]);
+    const result = await state.complete(completeInput());
+    expect(result.graph.nodes[0]?.status).toBe("ready");
+    expect(payloads.map(payload => payload.type)).toEqual([
+      "node.ready",
+      "complete",
+    ]);
   });
 
-  it("Deadline 合成 failed 写入失败时传播原错误且不发送 complete", async () => {
+  it("用户取消后不再接纳 Outcome、终态或 complete", () => {
+    const plan = createPlan(["node-a"]);
     const scope = createRunScope();
-    scope.deadline();
-    const writeError = new Error("terminal sink failed");
     const payloads: StreamEventPayload[] = [];
     const state = createRunTerminalEventState({
-      plan: createPlan(),
+      plan,
       runScope: scope.runScope,
       emit: async payload => {
         payloads.push(payload);
-        throw writeError;
       },
     });
+    const reason = new Error("user cancelled");
+    scope.cancel(reason);
 
-    await expect(
-      state.complete(completeInput([timedOutOutcome("node-a")])),
-    ).rejects.toBe(writeError);
-    expect(payloads.map(payload => payload.type)).toEqual(["node.failed"]);
+    expect(() =>
+      state.acceptOutcome(
+        successfulOutcome(plan, "node-a", 1, [
+          createResource("a", "https://example.com/a"),
+        ]),
+      ),
+    ).toThrow(reason);
+    expect(payloads).toEqual([]);
   });
 
-  it("GraphPlan 后用户取消原样退出且不补 Node 或 Run 终态", async () => {
+  it("用户取消会用原 reason 关闭尚未形成计划前缀的缓冲 Promise", async () => {
+    const plan = createPlan(["node-a", "node-b"]);
     const scope = createRunScope();
-    const userReason = new DOMException("用户主动停止", "TimeoutError");
-    scope.cancel(userReason);
-    const emit = vi.fn(async (payload: StreamEventPayload) => {
-      void payload;
-    });
+    const payloads: StreamEventPayload[] = [];
     const state = createRunTerminalEventState({
-      plan: createPlan(),
+      plan,
       runScope: scope.runScope,
-      emit,
+      emit: async payload => {
+        payloads.push(payload);
+      },
     });
+    const bWrite = state.acceptOutcome(
+      successfulOutcome(plan, "node-b", 1, [
+        createResource("b", "https://example.com/b"),
+      ]),
+    );
+    const reason = new Error("user cancelled with buffered outcome");
 
-    await expect(
-      state.complete(completeInput([timedOutOutcome("node-a")])),
-    ).rejects.toBe(userReason);
-    expect(emit).not.toHaveBeenCalled();
+    scope.cancel(reason);
+
+    await expect(bWrite).rejects.toBe(reason);
+    await expect(state.complete(completeInput())).rejects.toBe(reason);
+    expect(payloads).toEqual([]);
   });
 });
 
 describe("emitRunFailedWithoutGraphPlan", () => {
-  it("普通全局失败只发送脱敏 run.failed", async () => {
+  it("墙上时钟过期时发送唯一 RUN_DEADLINE_EXCEEDED", async () => {
     const scope = createRunScope();
     const payloads: StreamEventPayload[] = [];
-
-    await emitRunFailedWithoutGraphPlan({
-      error: { code: "INVALID_GRAPH", retryable: false },
-      runScope: scope.runScope,
-      emit: async payload => {
-        payloads.push(payload);
-      },
-    });
-
-    expect(payloads).toEqual([
-      {
-        type: "run.failed",
-        error: { code: "INVALID_GRAPH", retryable: false },
-      },
-    ]);
-  });
-
-  it("无 GraphPlan 的真正 Deadline 映射为可重试 run.failed", async () => {
-    const scope = createRunScope();
-    scope.deadline();
-    const payloads: StreamEventPayload[] = [];
-
+    scope.expireWithoutTimer();
     await emitRunFailedWithoutGraphPlan({
       error: { code: "UNKNOWN", retryable: false },
       runScope: scope.runScope,
@@ -671,7 +654,6 @@ describe("emitRunFailedWithoutGraphPlan", () => {
         payloads.push(payload);
       },
     });
-
     expect(payloads).toEqual([
       {
         type: "run.failed",
@@ -680,93 +662,20 @@ describe("emitRunFailedWithoutGraphPlan", () => {
     ]);
   });
 
-  it("Timer 未回调但绝对时间已过时仍映射 Deadline", async () => {
+  it("用户取消保持原 reason，且不发送 run.failed", async () => {
     const scope = createRunScope();
-    scope.expireWithoutTimer();
     const payloads: StreamEventPayload[] = [];
-
-    await emitRunFailedWithoutGraphPlan({
-      error: { code: "INVALID_GRAPH", retryable: false },
-      runScope: scope.runScope,
-      emit: async payload => {
-        payloads.push(payload);
-      },
-    });
-
-    expect(payloads).toEqual([
-      {
-        type: "run.failed",
-        error: { code: "RUN_DEADLINE_EXCEEDED", retryable: true },
-      },
-    ]);
-  });
-
-  it("run.failed 异步写失败时传播原错误且不重试", async () => {
-    const scope = createRunScope();
-    const writeError = new Error("run failed sink error");
-    const payloads: StreamEventPayload[] = [];
-
+    const reason = new Error("user cancelled");
+    scope.cancel(reason);
     await expect(
       emitRunFailedWithoutGraphPlan({
         error: { code: "UNKNOWN", retryable: false },
         runScope: scope.runScope,
         emit: async payload => {
           payloads.push(payload);
-          throw writeError;
         },
       }),
-    ).rejects.toBe(writeError);
-    expect(payloads.map(payload => payload.type)).toEqual(["run.failed"]);
-  });
-
-  it("run.failed 背压中先取消时保留用户 reason", async () => {
-    const scope = createRunScope();
-    const userReason = new DOMException("用户背压期间取消", "AbortError");
-    const writeError = new Error("late run.failed sink failure");
-    const write = createDeferred<void>();
-    const pending = emitRunFailedWithoutGraphPlan({
-      error: { code: "UNKNOWN", retryable: false },
-      runScope: scope.runScope,
-      emit: () => write.promise,
-    });
-
-    scope.cancel(userReason);
-    write.reject(writeError);
-
-    await expect(pending).rejects.toBe(userReason);
-  });
-
-  it("用户携带同名 TimeoutError 时仍原样取消且零事件", async () => {
-    const scope = createRunScope();
-    const userReason = new DOMException("用户主动停止", "TimeoutError");
-    scope.cancel(userReason);
-    const emit = vi.fn(async (payload: StreamEventPayload) => {
-      void payload;
-    });
-
-    await expect(
-      emitRunFailedWithoutGraphPlan({
-        error: { code: "UNKNOWN", retryable: false },
-        runScope: scope.runScope,
-        emit,
-      }),
-    ).rejects.toBe(userReason);
-    expect(emit).not.toHaveBeenCalled();
-  });
-
-  it("禁止把 REQUEST_ABORTED 伪装成健康流上的 run.failed", async () => {
-    const scope = createRunScope();
-    const emit = vi.fn(async (payload: StreamEventPayload) => {
-      void payload;
-    });
-
-    await expect(
-      emitRunFailedWithoutGraphPlan({
-        error: { code: "REQUEST_ABORTED", retryable: false },
-        runScope: scope.runScope,
-        emit,
-      }),
-    ).rejects.toThrow("用户取消不能作为 Streaming run.failed 发送");
-    expect(emit).not.toHaveBeenCalled();
+    ).rejects.toBe(reason);
+    expect(payloads).toEqual([]);
   });
 });

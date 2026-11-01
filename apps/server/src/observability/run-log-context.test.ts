@@ -111,7 +111,7 @@ describe("Run Log Async Context", () => {
         id: "fake-llm",
         structured: async () => ({}),
       },
-      concurrency: { search: 1, extract: 1, llm: 1 },
+      concurrency: { search: 1, llm: 1 },
     });
     const signal = new AbortController().signal;
 
@@ -125,6 +125,7 @@ describe("Run Log Async Context", () => {
             maxResults: 1,
             capability: "general",
             freshnessSensitive: false,
+          language: "zh-CN",
           },
           signal,
         ),
@@ -139,6 +140,7 @@ describe("Run Log Async Context", () => {
             maxResults: 1,
             capability: "general",
             freshnessSensitive: false,
+          language: "zh-CN",
           },
           signal,
         ),

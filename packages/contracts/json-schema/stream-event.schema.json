@@ -837,6 +837,7 @@
                 "PLANNER_FAILED",
                 "INVALID_GRAPH",
                 "SEARCH_PROVIDER_FAILED",
+                "NO_UNIQUE_RESOURCE_AVAILABLE",
                 "EXTRACTION_FAILED",
                 "RERANK_FAILED",
                 "RUN_DEADLINE_EXCEEDED",
@@ -927,7 +928,10 @@
                     },
                     "language": {
                       "type": "string",
-                      "minLength": 2
+                      "enum": [
+                        "zh-CN",
+                        "en-US"
+                      ]
                     }
                   },
                   "required": [
@@ -1677,6 +1681,7 @@
                                       "PLANNER_FAILED",
                                       "INVALID_GRAPH",
                                       "SEARCH_PROVIDER_FAILED",
+                                      "NO_UNIQUE_RESOURCE_AVAILABLE",
                                       "EXTRACTION_FAILED",
                                       "RERANK_FAILED",
                                       "RUN_DEADLINE_EXCEEDED",
@@ -1860,6 +1865,7 @@
                 "PLANNER_FAILED",
                 "INVALID_GRAPH",
                 "SEARCH_PROVIDER_FAILED",
+                "NO_UNIQUE_RESOURCE_AVAILABLE",
                 "EXTRACTION_FAILED",
                 "RERANK_FAILED",
                 "RUN_DEADLINE_EXCEEDED",

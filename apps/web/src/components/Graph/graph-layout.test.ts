@@ -94,6 +94,32 @@ describe("Graph layout", () => {
     }
   });
 
+  it("English 映射 Node 与 Edge 的可见标签、可访问名称和渲染语言", () => {
+    const result = buildGraphFlowElements(
+      fixtureNodes,
+      fixtureEdges,
+      "en-US",
+    );
+    const readyNode = result.nodes.find(node => node.data.status === "ready");
+    const recommendedEdge = result.edges.find(
+      edge => edge.data?.edgeType === "recommended_next",
+    );
+    const relatedEdge = result.edges.find(
+      edge => edge.data?.edgeType === "related_to",
+    );
+
+    expect(readyNode?.data.language).toBe("en-US");
+    expect(readyNode?.ariaLabel).toContain("status: Ready");
+    expect(recommendedEdge).toMatchObject({
+      label: "Recommended next",
+      ariaLabel: "Recommended next",
+    });
+    expect(relatedEdge).toMatchObject({
+      label: "Related",
+      ariaLabel: "Related topic",
+    });
+  });
+
   it("保留 Python fixture 的全部节点、全部边与有限坐标", () => {
     const result = buildGraphFlowElements(fixtureNodes, fixtureEdges);
 

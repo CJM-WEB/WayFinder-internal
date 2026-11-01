@@ -5,7 +5,7 @@
  * 安全边界：
  * - CLI Guard（闸门）先于 Git、文件、环境、Provider 与网络副作用；
  * - 正式 Eval 只允许基于已提交且干净的工作树，不进入普通无 Secret CI；
- * - 每个 Query 复用生产 20 秒绝对 Deadline，但 Suite 不共享一个 20 秒 Deadline；
+ * - 每个 Query 复用生产 40 秒绝对 Deadline，但 Suite 不共享一个 40 秒 Deadline；
  * - 不启用跨 Query Cache，避免前序 Query 污染后序延迟、调用量与成本证据；
  * - 写入前执行严格 Schema 和递归敏感值扫描，错误只输出固定脱敏文案。
  */
@@ -25,10 +25,12 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import { z } from "zod";
+import { SearchLanguageSchema } from "@wayfinder/contracts";
 
-import { GRAPH_PLANNER_PROMPT_VERSION } from "../ai/prompts/graph-planner.v1.js";
-import { GRAPH_REVISER_PROMPT_VERSION } from "../ai/prompts/graph-reviser.v1.js";
-import { RESOURCE_RERANKER_PROMPT_VERSION } from "../ai/prompts/resource-reranker.v1.js";
+import { GRAPH_PLANNER_PROMPT_VERSION } from "../ai/prompts/graph-planner.v3.js";
+import { GRAPH_REVISER_PROMPT_VERSION } from "../ai/prompts/graph-reviser.v4.js";
+import { RESOURCE_RERANKER_PROMPT_VERSION } from "../ai/prompts/resource-reranker.v2.js";
+import { SEARCH_PLAN_GENERATOR_PROMPT_VERSION } from "../ai/prompts/search-plan-generator.v3.js";
 import {
   DEEPSEEK_LLM_MODEL,
   DEEPSEEK_LLM_PROVIDER_ID,
@@ -38,10 +40,13 @@ import { RUN_DEADLINE_MS, parseServerConfig } from "../config.js";
 import type { RunLogRecord } from "../observability/run-log.js";
 import { createConcurrencyLimitedProviders } from "../orchestrator/provider-concurrency.js";
 import { createRunSearchHandler } from "../orchestrator/run-search.js";
-import { TavilySearchProvider } from "../search/providers/tavily.js";
+import { SerpApiBingSearchProvider } from "../search/providers/serpapi-bing.js";
+import { RANK_FUSION_VERSION } from "../pipeline/rank-fusion.js";
+import {
+  QUALITY_EVAL_PLANNED_REQUEST_CONFIG,
+} from "./quality-metrics.js";
 import {
   QUALITY_EVAL_DATASET_VERSION,
-  QUALITY_EVAL_SCHEMA_VERSION,
   QualityEvalQueryResultSchema,
   evaluateQualityEvalDataset,
   evaluateQualityEvalQuery,
@@ -66,6 +71,9 @@ const RESULT_ROOT = resolve(REPOSITORY_ROOT, "data/eval-results/way-86");
 const RUN_ID_PATTERN =
   /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z-[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 
+/** Provider 与运行策略已迁移到 Search-only，不能复用旧 Tavily + Extract 报告版本。 */
+export const QUALITY_EVAL_REPORT_SCHEMA_VERSION = "quality-eval.v12" as const;
+
 export type QualityEvalCliOptions = Readonly<{
   dataset: QualityEvalDatasetKind;
 }>;
@@ -76,7 +84,7 @@ const GitBaselineSchema = z.strictObject({
 });
 
 export const QualityEvalReportSchema = z.strictObject({
-  schemaVersion: z.literal(QUALITY_EVAL_SCHEMA_VERSION),
+  schemaVersion: z.literal(QUALITY_EVAL_REPORT_SCHEMA_VERSION),
   issue: z.literal("WAY-86"),
   evaluationRunId: z.string().regex(RUN_ID_PATTERN),
   completedAt: z.iso.datetime({ offset: true }),
@@ -96,10 +104,12 @@ export const QualityEvalReportSchema = z.strictObject({
     prompts: z.strictObject({
       planner: z.literal(GRAPH_PLANNER_PROMPT_VERSION),
       reviser: z.literal(GRAPH_REVISER_PROMPT_VERSION),
+      searchPlanGenerator: z.literal(SEARCH_PLAN_GENERATOR_PROMPT_VERSION),
       reranker: z.literal(RESOURCE_RERANKER_PROMPT_VERSION),
     }),
+    ranking: z.literal(RANK_FUSION_VERSION),
     providers: z.strictObject({
-      search: z.literal("tavily"),
+      search: z.literal("serpapi_bing"),
       llm: z.literal(DEEPSEEK_LLM_PROVIDER_ID),
       llmModel: z.literal(DEEPSEEK_LLM_MODEL),
     }),
@@ -109,18 +119,16 @@ export const QualityEvalReportSchema = z.strictObject({
     repetitionsPerQuery: z.literal(1),
     cache: z.literal("cold_disabled"),
     runDeadlineMs: z.literal(RUN_DEADLINE_MS),
-    language: z.literal("und"),
+    language: SearchLanguageSchema,
     queryNormalization: z.literal("nfkc_trim_lowercase"),
     riskyDownloadDomainPolicy: z.literal("not_frozen_empty"),
     timeoutsMs: z.strictObject({
       search: z.number().int().min(1).max(RUN_DEADLINE_MS),
-      extract: z.number().int().min(1).max(RUN_DEADLINE_MS),
       planner: z.number().int().min(1).max(RUN_DEADLINE_MS),
       rerank: z.number().int().min(1).max(RUN_DEADLINE_MS),
     }),
     concurrency: z.strictObject({
       search: z.number().int().min(1),
-      extract: z.number().int().min(1),
       llm: z.number().int().min(1),
     }),
   }),
@@ -495,10 +503,9 @@ async function runQualityEval(
   try {
     const providers = createConcurrencyLimitedProviders({
       // 不包 Memory Cache，明确保持跨 Query 冷执行。
-      searchProvider: new TavilySearchProvider({
-        apiKey: config.tavilyApiKey,
+      searchProvider: new SerpApiBingSearchProvider({
+        apiKey: config.serpApiKey,
         searchTimeoutMs: config.timeouts.searchMs,
-        extractTimeoutMs: config.timeouts.extractMs,
       }),
       llmProvider: new DeepSeekLLMProvider({ apiKey: config.llmApiKey }),
       concurrency: config.concurrency,
@@ -513,11 +520,11 @@ async function runQualityEval(
           officialSourcePolicy: { knownRiskyDownloadDomains: [] },
           llmStageTimeoutMs: config.timeouts.plannerMs,
           rerankTimeoutMs: config.timeouts.rerankMs,
-          language: "und",
           normalizeQuery: value =>
             value.normalize("NFKC").trim().toLowerCase(),
           onPlannerValidationDiagnostic: () => undefined,
           onRevisionValidationDiagnostic: () => undefined,
+          onSearchPlanValidationDiagnostic: () => undefined,
           runLogSink: {
             write: record => {
               // Handler 的 finish 不等待日志落盘；同步赋值保证返回后可立即读取唯一记录。
@@ -535,6 +542,7 @@ async function runQualityEval(
             dataset.officialDomainsByQueryId[query.id] ?? [],
           handleSearch: handler,
           readRunLog: () => runLog,
+          plannedRequestConfig: QUALITY_EVAL_PLANNED_REQUEST_CONFIG,
         });
       },
     });
@@ -546,7 +554,7 @@ async function runQualityEval(
     }
 
     const report: QualityEvalReport = QualityEvalReportSchema.parse({
-      schemaVersion: QUALITY_EVAL_SCHEMA_VERSION,
+      schemaVersion: QUALITY_EVAL_REPORT_SCHEMA_VERSION,
       issue: "WAY-86",
       evaluationRunId,
       completedAt: new Date().toISOString(),
@@ -569,10 +577,12 @@ async function runQualityEval(
         prompts: {
           planner: GRAPH_PLANNER_PROMPT_VERSION,
           reviser: GRAPH_REVISER_PROMPT_VERSION,
+          searchPlanGenerator: SEARCH_PLAN_GENERATOR_PROMPT_VERSION,
           reranker: RESOURCE_RERANKER_PROMPT_VERSION,
         },
+        ranking: RANK_FUSION_VERSION,
         providers: {
-          search: "tavily",
+          search: QUALITY_EVAL_PLANNED_REQUEST_CONFIG.providerId,
           llm: DEEPSEEK_LLM_PROVIDER_ID,
           llmModel: DEEPSEEK_LLM_MODEL,
         },
@@ -582,12 +592,11 @@ async function runQualityEval(
         repetitionsPerQuery: 1,
         cache: "cold_disabled",
         runDeadlineMs: RUN_DEADLINE_MS,
-        language: "und",
+        language: QUALITY_EVAL_PLANNED_REQUEST_CONFIG.language,
         queryNormalization: "nfkc_trim_lowercase",
         riskyDownloadDomainPolicy: "not_frozen_empty",
         timeoutsMs: {
           search: config.timeouts.searchMs,
-          extract: config.timeouts.extractMs,
           planner: config.timeouts.plannerMs,
           rerank: config.timeouts.rerankMs,
         },
@@ -603,12 +612,12 @@ async function runQualityEval(
     });
     assertQualityEvalArtifactSafety(report, [
       config.llmApiKey,
-      config.tavilyApiKey,
+      config.serpApiKey,
     ]);
     const operatingSummary = createQualityEvalOperatingSummary(report);
     assertQualityEvalArtifactSafety(operatingSummary, [
       config.llmApiKey,
-      config.tavilyApiKey,
+      config.serpApiKey,
     ]);
     const humanReview = renderQualityEvalHumanReview({
       evaluationRunId,
@@ -622,7 +631,7 @@ async function runQualityEval(
     });
     assertQualityEvalArtifactSafety(humanReview, [
       config.llmApiKey,
-      config.tavilyApiKey,
+      config.serpApiKey,
     ]);
     await writeQualityEvalFinalArtifacts(
       {

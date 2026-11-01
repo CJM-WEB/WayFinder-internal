@@ -11,6 +11,7 @@
 import {
   StreamEventSchema,
   type Resource,
+  type SearchLanguage,
   type StreamEvent,
 } from "@wayfinder/contracts";
 import { expect, test, type Page } from "@playwright/test";
@@ -25,6 +26,7 @@ const READY_NODE_ID = "python-introduction";
 type BrowserFixtureSnapshot = Readonly<{
   runId: string;
   query: string;
+  language: SearchLanguage;
   aborted: boolean;
   cancelled: boolean;
 }>;
@@ -77,10 +79,10 @@ function createJourneyEvents(): readonly StreamEvent[] {
     },
     {
       ...firstResource,
-      id: "resource-python-tutorial-e2e",
-      title: "Python Tutorial",
-      url: "https://docs.python.org/3/tutorial/",
-      canonicalUrl: "https://docs.python.org/3/tutorial/",
+      id: "resource-python-reference-e2e",
+      title: "Python Language Reference",
+      url: "https://docs.python.org/3/reference/",
+      canonicalUrl: "https://docs.python.org/3/reference/",
       domain: "docs.python.org",
       sourceType: "official_documentation",
       rank: 3,
@@ -137,6 +139,7 @@ async function installBrowserFixture(
     type BrowserRun = {
       runId: string;
       query: string;
+      language: SearchLanguage;
       signal: AbortSignal;
       controller: ReadableStreamDefaultController<Uint8Array>;
       aborted: boolean;
@@ -161,6 +164,7 @@ async function installBrowserFixture(
                   ...template.data.result.query,
                   raw: run.query,
                   normalized: run.query,
+                  language: run.language,
                 },
               },
             },
@@ -194,6 +198,7 @@ async function installBrowserFixture(
         runs.map(run => ({
           runId: run.runId,
           query: run.query,
+          language: run.language,
           aborted: run.aborted,
           cancelled: run.cancelled,
         })),
@@ -221,16 +226,19 @@ async function installBrowserFixture(
         typeof body !== "object" ||
         body === null ||
         !("runId" in body) ||
-        !("query" in body)
+        !("query" in body) ||
+        !("language" in body)
       ) {
         throw new Error("E2E Search Request 不符合 Fixture 边界");
       }
       const runId = body.runId;
       const query = body.query;
+      const language = body.language;
       const signal = init.signal;
       if (
         typeof runId !== "string" ||
         typeof query !== "string" ||
+        (language !== "zh-CN" && language !== "en-US") ||
         !(signal instanceof AbortSignal)
       ) {
         throw new Error("E2E Search Request 不符合 Fixture 边界");
@@ -242,6 +250,7 @@ async function installBrowserFixture(
           run = {
             runId,
             query,
+            language,
             signal,
             controller,
             aborted: false,
@@ -304,6 +313,36 @@ const emitFixtureEvents = (
       ...(sourceRunIndex === undefined ? {} : { source: sourceRunIndex }),
     },
   );
+
+test("English 选择器控制请求与页面语言，既有 Run 不随下一次选择混语", async ({
+  page,
+}) => {
+  await installBrowserFixture(page, createJourneyEvents());
+  await page.goto("/");
+
+  const languageSelector = page.getByRole("combobox", { name: "语言" });
+  await languageSelector.selectOption("en-US");
+
+  await expect(page.locator("html")).toHaveAttribute("lang", "en-US");
+  const queryInput = page.getByRole("searchbox", {
+    name: "Search any topic",
+  });
+  await queryInput.fill("What is MySQL?");
+  await queryInput.press("Enter");
+  await expect.poll(async () => (await readFixtureSnapshots(page)).length)
+    .toBe(1);
+  await expect.poll(async () => (await readFixtureSnapshots(page))[0])
+    .toMatchObject({ query: "What is MySQL?", language: "en-US" });
+
+  const activeRunSelector = page.getByRole("combobox", { name: "Language" });
+  await activeRunSelector.selectOption("zh-CN");
+
+  await expect(activeRunSelector).toHaveValue("zh-CN");
+  await expect(page.locator("html")).toHaveAttribute("lang", "en-US");
+  await expect(page.getByRole("heading", { name: "Search results" }))
+    .toBeVisible();
+  await expect(page.getByRole("heading", { name: "搜索结果" })).toHaveCount(0);
+});
 
 test("fixture 覆盖 Graph Draft、Resource 交互、取消与第二次 Query", async ({
   page,

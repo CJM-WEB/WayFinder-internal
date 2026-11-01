@@ -1,12 +1,22 @@
 /**
- * 模块职责：对已通过 GraphPlanSchema 的计划执行确定性跨对象校验。
+ * 模块职责：对已通过 Schema 的 GraphOutline / GraphPlan 执行确定性跨对象校验。
  *
  * 边界约束：
  * - 只报告可由代码稳定判断的问题，不推断 Node 或 Query 的主观语义质量。
- * - 不修改输入，也不删除或补写 Node / Edge；确定性 Repair 属于 WAY-38。
+ * - 不修改输入，也不删除或补写 Node / Edge；任一 Finding 都由调用方失败关闭。
  * - Finding 只包含稳定 code、Contract 路径和数字元数据，避免泄漏模型自由文本。
  */
-import type { GraphEdge, GraphPlan } from "@wayfinder/contracts";
+import type {
+  GraphEdge,
+  GraphPlan,
+  QueryAnalysis,
+  SearchPlan,
+} from "@wayfinder/contracts";
+
+import type {
+  GraphOutline,
+  GraphOutlineNode,
+} from "../ai/graph-outline.js";
 
 export type GraphPlanFindingCode =
   | "TOTAL_NODE_COUNT_OUT_OF_RANGE"
@@ -47,6 +57,15 @@ type ProjectedEdge = Readonly<{
   targetIndex: number;
   type: GraphEdge["type"];
 }>;
+
+/** 两阶段共享的最小图结构；最终 GraphPlan Node 可以安全赋给该只读投影。 */
+type GraphStructure = Readonly<{
+  analysis: QueryAnalysis;
+  nodes: readonly GraphOutlineNode[];
+  edges: readonly GraphEdge[];
+}>;
+
+type ReadSearchPlan = (nodeIndex: number) => SearchPlan | undefined;
 
 const TOTAL_NODE_MIN = 1;
 const TOTAL_NODE_MAX = 8;
@@ -149,9 +168,13 @@ function addUndirectedEdge(
 
 /**
  * 按固定阶段和原数组索引生成 Finding；追加顺序就是公共的稳定顺序。
- * 输入已由 WAY-36 完成结构收窄，本函数不重新实现完整 Zod Contract。
+ * 输入已由对应 Schema 完成结构收窄，本函数不重新实现完整 Zod Contract。
+ * readSearchPlan 仅由最终 GraphPlan 传入，使 Outline 不需要伪造第二阶段字段。
  */
-export function validateGraphPlan(plan: GraphPlan): GraphPlanValidationResult {
+function validateGraphStructure(
+  plan: GraphStructure,
+  readSearchPlan?: ReadSearchPlan,
+): GraphPlanValidationResult {
   const findings: GraphPlanFinding[] = [];
   const primaryCount = plan.nodes.filter(
     node => node.nodeType === "primary",
@@ -248,32 +271,35 @@ export function validateGraphPlan(plan: GraphPlan): GraphPlanValidationResult {
     );
   }
 
-  // 阶段 2：只补充 Schema 未覆盖的空白文本与 V0 Provider 能力硬约束。
+  // 阶段 2：只补充 Schema 未覆盖的 Unicode 空白文本与 V0 Provider 能力硬约束。
   for (const [nodeIndex, node] of plan.nodes.entries()) {
-    if (node.title.trim().length === 0) {
+    if (/^\p{White_Space}*$/u.test(node.title)) {
       findings.push({
         code: "EMPTY_NODE_TITLE",
         path: ["nodes", nodeIndex, "title"],
       });
     }
 
-    for (const [queryIndex, query] of node.searchPlan.queries.entries()) {
-      if (query.trim().length === 0) {
+    const searchPlan = readSearchPlan?.(nodeIndex);
+    if (searchPlan !== undefined) {
+      for (const [queryIndex, query] of searchPlan.queries.entries()) {
+        if (/^\p{White_Space}*$/u.test(query)) {
+          findings.push({
+            code: "EMPTY_SEARCH_QUERY",
+            path: ["nodes", nodeIndex, "searchPlan", "queries", queryIndex],
+          });
+        }
+      }
+
+      if (
+        searchPlan.providerHints.length !== 1 ||
+        searchPlan.providerHints[0] !== "general"
+      ) {
         findings.push({
-          code: "EMPTY_SEARCH_QUERY",
-          path: ["nodes", nodeIndex, "searchPlan", "queries", queryIndex],
+          code: "UNSUPPORTED_PROVIDER_HINTS",
+          path: ["nodes", nodeIndex, "searchPlan", "providerHints"],
         });
       }
-    }
-
-    if (
-      node.searchPlan.providerHints.length !== 1 ||
-      node.searchPlan.providerHints[0] !== "general"
-    ) {
-      findings.push({
-        code: "UNSUPPORTED_PROVIDER_HINTS",
-        path: ["nodes", nodeIndex, "searchPlan", "providerHints"],
-      });
     }
   }
 
@@ -527,4 +553,19 @@ export function validateGraphPlan(plan: GraphPlan): GraphPlanValidationResult {
   }
 
   return { valid: findings.length === 0, findings };
+}
+
+/** 第一阶段只验证图结构，SearchPlan 规则必须等第二阶段完成后再执行。 */
+export function validateGraphOutline(
+  outline: GraphOutline,
+): GraphPlanValidationResult {
+  return validateGraphStructure(outline);
+}
+
+/** 最终 GraphPlan 在共享图规则之外继续执行 SearchPlan 与 Provider Hint 门禁。 */
+export function validateGraphPlan(plan: GraphPlan): GraphPlanValidationResult {
+  return validateGraphStructure(
+    plan,
+    nodeIndex => plan.nodes[nodeIndex]?.searchPlan,
+  );
 }

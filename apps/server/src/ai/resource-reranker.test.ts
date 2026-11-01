@@ -8,6 +8,7 @@ import type {
   ExtractedPage,
   GraphNodeCore,
   ResourceCandidate,
+  SearchLanguage,
 } from "@wayfinder/contracts";
 import { describe, expect, it } from "vitest";
 
@@ -18,7 +19,8 @@ import {
   FakeLLMProvider,
 } from "../../../../tests/support/test-infrastructure.mjs";
 import { LLMProviderError, type LLMProvider } from "./llm-provider.js";
-import { RESOURCE_RERANKER_SYSTEM_PROMPT } from "./prompts/resource-reranker.v1.js";
+import { RESOURCE_RERANKER_SYSTEM_PROMPT } from "./prompts/resource-reranker.v2.js";
+import { appendTargetLanguageSystemInstruction } from "./prompts/target-language-system-instruction.js";
 import {
   rerankResources,
   RESOURCE_RERANKER_MAX_CONTENT_CODE_POINTS,
@@ -92,6 +94,7 @@ function createOutput(candidates: readonly ResourceCandidate[]) {
 function createArgs(
   provider: LLMProvider,
   overrides: Partial<{
+    language: SearchLanguage;
     node: GraphNodeCore;
     candidates: readonly ResourceCandidate[];
     pages: readonly ExtractedPage[];
@@ -106,6 +109,7 @@ function createArgs(
   ];
   const base = {
     node: overrides.node ?? createNode(),
+    language: overrides.language ?? "zh-CN",
     candidates,
     pages: overrides.pages ?? [],
     provider,
@@ -199,7 +203,10 @@ describe("rerankResources 成功路径", () => {
     expect(provider.calls).toHaveLength(1);
     expect(provider.calls[0]?.options).toEqual({ signal, timeoutMs: 8_000 });
     expect(provider.calls[0]?.input).toMatchObject({
-      system: RESOURCE_RERANKER_SYSTEM_PROMPT,
+      system: appendTargetLanguageSystemInstruction(
+        RESOURCE_RERANKER_SYSTEM_PROMPT,
+        "zh-CN",
+      ),
       schemaName: "resource_rerank",
     });
     expect(provider.calls[0]?.input.schema).toEqual(
@@ -211,6 +218,22 @@ describe("rerankResources 成功路径", () => {
     expect(JSON.stringify(output.ranking)).not.toContain("http");
     expect(candidates).toEqual(candidatesSnapshot);
     expect(pages).toEqual(pagesSnapshot);
+  });
+
+  it("en-US 只把美式英语规则加入 System 层", async () => {
+    const candidates = [createCandidate(1)];
+    const provider = new FakeLLMProvider([createOutput(candidates)]);
+
+    await rerankResources(
+      createArgs(provider, { candidates, language: "en-US" }),
+    );
+
+    expect(provider.calls[0]?.input.system).toContain("American English");
+    expect(provider.calls[0]?.input.system).not.toContain("Simplified Chinese");
+    const packet = JSON.parse(provider.calls[0]?.input.user ?? "") as {
+      trustedControl: Record<string, unknown>;
+    };
+    expect(packet.trustedControl).not.toHaveProperty("language");
   });
 
   it("将网页注入文本限制在 UNTRUSTED_EXTERNAL_CONTENT 数据区", async () => {
@@ -232,7 +255,12 @@ describe("rerankResources 成功路径", () => {
     );
 
     const call = provider.calls[0];
-    expect(call?.input.system).toBe(RESOURCE_RERANKER_SYSTEM_PROMPT);
+    expect(call?.input.system).toBe(
+      appendTargetLanguageSystemInstruction(
+        RESOURCE_RERANKER_SYSTEM_PROMPT,
+        "zh-CN",
+      ),
+    );
     expect(call?.input.system).not.toContain(injection);
     expect(call?.input.user).toContain(injection);
     const packet = JSON.parse(call?.input.user ?? "") as {

@@ -23,7 +23,7 @@ import type {
 } from "@wayfinder/contracts";
 import { z } from "zod";
 
-import { RESOURCE_RERANKER_PROMPT_VERSION } from "../ai/prompts/resource-reranker.v1.js";
+import { RESOURCE_RERANKER_PROMPT_VERSION } from "../ai/prompts/resource-reranker.v2.js";
 import {
   DEEPSEEK_LLM_MODEL,
   DEEPSEEK_LLM_PROVIDER_ID,
@@ -36,7 +36,6 @@ import {
   type ResourceRerankDecision,
 } from "../ai/resource-reranker.js";
 import type { LLMProvider } from "../ai/llm-provider.js";
-import { applySourceDiversity } from "../pipeline/diversity.js";
 
 const execFileAsync = promisify(execFile);
 const EXPECTED_CASE_COUNT = 6;
@@ -52,7 +51,7 @@ const RESULT_ROOT = resolve(
   REPOSITORY_ROOT,
   "data/eval-results/way-55",
 );
-const GOLDEN_RUN_DEADLINE_MS = 20_000;
+const GOLDEN_RUN_DEADLINE_MS = 40_000;
 
 const GoldenCandidateSchema = z.strictObject({
   candidateId: z.string().regex(/^[A-Za-z0-9_-]+$/),
@@ -151,9 +150,9 @@ const GoldenEnvironmentSchema = z.object({
   RERANK_TIMEOUT_MS: z
     .string()
     .regex(/^[1-9]\d*$/)
-    .default("12000")
+    .default("24000")
     .transform(value => Number.parseInt(value, 10))
-    .pipe(z.number().int().min(1).max(15_000)),
+    .pipe(z.number().int().min(1).max(30_000)),
 });
 
 export type ResourceRerankerGoldenCase = z.infer<
@@ -338,31 +337,16 @@ export async function evaluateResourceRerankerGoldenCase(input: {
   try {
     const decisions = await rerankResources({
       ...runtime,
+      language: "zh-CN",
       provider: input.provider,
       signal,
       timeoutMs: input.timeoutMs,
       ...(input.now === undefined ? {} : { now: input.now }),
     });
     const preDiversityOrder = decisions.map(decision => decision.candidateId);
-    const candidateById = new Map(
-      runtime.candidates.map(candidate => [candidate.candidateId, candidate]),
-    );
-    const rerankedCandidates = preDiversityOrder.map(candidateId => {
-      const candidate = candidateById.get(candidateId);
-      if (candidate === undefined) {
-        // rerankResources 已校验完整唯一映射；这里是 Golden Harness 的内部不变量。
-        throw new TypeError("Golden Reranker Candidate 映射不变量被破坏");
-      }
-      return candidate;
-    });
-    const diversifiedCandidates = applySourceDiversity(rerankedCandidates);
-    const actualOrder = diversifiedCandidates.map(
-      candidate => candidate.candidateId,
-    );
-    const actualIds = new Set(actualOrder);
-    const diversityRemovedCandidateIds = preDiversityOrder.filter(
-      candidateId => !actualIds.has(candidateId),
-    );
+    // WAY-107 不再进行破坏性同域删除；保留报告字段只为兼容既有工件读取。
+    const actualOrder = [...preDiversityOrder];
+    const diversityRemovedCandidateIds: string[] = [];
     return {
       id: input.goldenCase.id,
       category: input.goldenCase.category,

@@ -22,7 +22,7 @@ const REQUIRED_ENVIRONMENT = {
   LLM_PROVIDER: "deepseek",
   LLM_MODEL: "deepseek-flash",
   LLM_API_KEY: "test-llm-key",
-  TAVILY_API_KEY: "test-tavily-key",
+  SERPAPI_API_KEY: "test-serpapi-key",
 } as const;
 
 function expectConfigError(
@@ -50,22 +50,20 @@ describe("parseServerConfig", () => {
       llmProvider: "deepseek",
       llmModel: "deepseek-flash",
       llmApiKey: "test-llm-key",
-      tavilyApiKey: "test-tavily-key",
+      serpApiKey: "test-serpapi-key",
       timeouts: {
-        searchMs: 8_000,
-        extractMs: 10_000,
-        plannerMs: 15_000,
-        rerankMs: 12_000,
+        searchMs: 16_000,
+        plannerMs: 30_000,
+        rerankMs: 24_000,
       },
       concurrency: {
         search: 6,
-        extract: 3,
         llm: 3,
       },
       runDeadlineMs: RUN_DEADLINE_MS,
       runLogging: false,
     });
-    expect(RUN_DEADLINE_MS).toBe(20_000);
+    expect(RUN_DEADLINE_MS).toBe(40_000);
   });
 
   it("只接受严格 Run Log 布尔值，并保持共享部署默认关闭", () => {
@@ -99,7 +97,7 @@ describe("parseServerConfig", () => {
     expect([...names].sort()).toEqual(SERVER_ENVIRONMENT_VARIABLES);
     expect(Object.fromEntries(assignments)).toMatchObject({
       LLM_API_KEY: "",
-      TAVILY_API_KEY: "",
+      SERPAPI_API_KEY: "",
       RUN_LOGGING: "false",
     });
   });
@@ -108,23 +106,20 @@ describe("parseServerConfig", () => {
     const config = parseServerConfig({
       ...REQUIRED_ENVIRONMENT,
       PORT: "65535",
-      SEARCH_TIMEOUT_MS: "20000",
-      EXTRACT_TIMEOUT_MS: "20000",
-      PLANNER_TIMEOUT_MS: "15000",
-      RERANK_TIMEOUT_MS: "15000",
+      SEARCH_TIMEOUT_MS: "40000",
+      PLANNER_TIMEOUT_MS: "30000",
+      RERANK_TIMEOUT_MS: "30000",
       SEARCH_CONCURRENCY: "1",
-      EXTRACT_CONCURRENCY: "1",
       LLM_CONCURRENCY: "1",
     });
 
     expect(config.port).toBe(65_535);
     expect(config.timeouts).toEqual({
-      searchMs: 20_000,
-      extractMs: 20_000,
-      plannerMs: 15_000,
-      rerankMs: 15_000,
+      searchMs: 40_000,
+      plannerMs: 30_000,
+      rerankMs: 30_000,
     });
-    expect(config.concurrency).toEqual({ search: 1, extract: 1, llm: 1 });
+    expect(config.concurrency).toEqual({ search: 1, llm: 1 });
   });
 
   it.each([
@@ -132,12 +127,11 @@ describe("parseServerConfig", () => {
     ["PORT", "65536"],
     ["PORT", "3000.5"],
     ["SEARCH_TIMEOUT_MS", "0"],
-    ["EXTRACT_TIMEOUT_MS", "20001"],
-    ["PLANNER_TIMEOUT_MS", "15001"],
-    ["RERANK_TIMEOUT_MS", "15001"],
+    ["SEARCH_TIMEOUT_MS", "40001"],
+    ["PLANNER_TIMEOUT_MS", "30001"],
+    ["RERANK_TIMEOUT_MS", "30001"],
     ["RERANK_TIMEOUT_MS", "NaN"],
     ["SEARCH_CONCURRENCY", "7"],
-    ["EXTRACT_CONCURRENCY", "4"],
     ["LLM_CONCURRENCY", "4"],
   ])("拒绝越界或非整数配置 %s=%s", (field, value) => {
     const error = expectConfigError({
@@ -162,14 +156,14 @@ describe("parseServerConfig", () => {
     expect(error.fields).toContain(field);
   });
 
-  it.each(["LLM_API_KEY", "TAVILY_API_KEY"] as const)(
+  it.each(["LLM_API_KEY", "SERPAPI_API_KEY"] as const)(
     "%s 缺失或仅含空白时快速失败，且错误不包含任何 Secret 值",
     (missingSecret) => {
       const secretSentinel = "never-print-this-secret";
       const error = expectConfigError({
         ...REQUIRED_ENVIRONMENT,
         LLM_API_KEY: secretSentinel,
-        TAVILY_API_KEY: secretSentinel,
+        SERPAPI_API_KEY: secretSentinel,
         [missingSecret]: "   ",
       });
 
