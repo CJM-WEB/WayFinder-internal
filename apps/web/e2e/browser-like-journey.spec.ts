@@ -533,3 +533,96 @@ test("本地记录支持切换改名删除恢复，刷新及重新打开后不�
   expect(searchRequests).toEqual([]);
   await reopened.close();
 });
+
+/** 纯手动编辑走真实界面和持久化，禁止把编辑误接成搜索或模型调用。 */
+test("手动节点与资源支持编辑、全图去重定位、拖拽排序和撤销恢复", async ({ page }) => {
+  await installBrowserFixture(page, createJourneyEvents());
+  await page.goto("/");
+  const sidebar = page.getByRole("complementary", { name: "搜索图记录" });
+  await expect(sidebar.getByRole("status")).toHaveText("已保存到本浏览器");
+  const addNode = async (title: string): Promise<void> => {
+    await page.getByRole("textbox", { name: "新节点标题", exact: true }).fill(title);
+    await page.getByRole("button", { name: "新建节点", exact: true }).click();
+  };
+  await addNode("资料节点");
+  await page.getByRole("button", { name: "编辑节点", exact: true }).click();
+  await page.getByRole("textbox", { name: "节点标题", exact: true }).fill("主要资料");
+  await page.getByRole("textbox", { name: "节点说明", exact: true }).fill("用户自行整理的网页");
+  await page.getByRole("button", { name: "保存节点", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "主要资料", exact: true })).toHaveCount(2);
+
+  for (let index = 0; index < 7; index += 1) {
+    await page.getByRole("textbox", { name: "资源 URL", exact: true }).fill(`https://resource-${index}.example.com/page`);
+    await page.getByRole("button", { name: "添加资源", exact: true }).click();
+  }
+  await page.getByRole("button", { name: "显示更多（4）" }).click();
+  const resourceList = page.getByRole("list", { name: "节点资源" });
+  const cards = resourceList.getByRole("listitem");
+  await expect(cards).toHaveCount(7);
+  await cards.first().getByRole("button", { name: "编辑资源", exact: true }).click();
+  await cards.first().getByRole("textbox", { name: "资源标题", exact: true }).fill("我的首个链接");
+  await cards.first().getByRole("textbox", { name: "网页说明", exact: true }).fill("我写的网页说明");
+  await cards.first().getByRole("textbox", { name: "选用理由", exact: true }).fill("适合当前研究主题");
+  await cards.first().getByRole("button", { name: "保存资源", exact: true }).click();
+  await expect(cards.first().getByText("我写的网页说明", { exact: true })).toBeVisible();
+  await cards.first().getByRole("button", { name: "编辑资源", exact: true }).click();
+  await cards.first().getByRole("textbox", { name: "资源标题", exact: true }).fill("未保存的草稿");
+  await cards.first().getByRole("textbox", { name: "网页说明", exact: true }).fill("取消的说明");
+  await cards.first().getByRole("button", { name: "取消编辑", exact: true }).click();
+  await cards.first().getByRole("button", { name: "编辑资源", exact: true }).click();
+  await expect(cards.first().getByRole("textbox", { name: "资源标题", exact: true })).toHaveValue("我的首个链接");
+  await expect(cards.first().getByRole("textbox", { name: "网页说明", exact: true })).toHaveValue("我写的网页说明");
+  await cards.first().getByRole("button", { name: "取消编辑", exact: true }).click();
+
+  await addNode("另一个节点");
+  await page.getByRole("textbox", { name: "资源 URL", exact: true }).fill("https://resource-0.example.com/page?utm_source=test#section");
+  await page.getByRole("button", { name: "添加资源", exact: true }).click();
+  await expect(page.getByRole("alert")).toContainText("主要资料");
+  await page.getByRole("button", { name: "定位已有资源所在节点", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "主要资料", exact: true })).toHaveCount(2);
+  await page.getByRole("button", { name: "显示更多（4）" }).click();
+  await expect(cards).toHaveCount(7);
+
+  // 使用浏览器原生拖拽；撤销与重做只恢复数组顺序，不调用搜索。
+  const grip = cards.first().locator(".resource-card__drag-handle");
+  await grip.scrollIntoViewIfNeeded();
+  const gripBounds = await grip.boundingBox();
+  if (gripBounds === null) throw new Error("拖拽起点不可见");
+  await page.mouse.move(gripBounds.x + gripBounds.width / 2, gripBounds.y + gripBounds.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(gripBounds.x + gripBounds.width / 2 + 12, gripBounds.y + gripBounds.height / 2, { steps: 5 });
+  // 长资源卡片位于滚动面板中；拖动保持按下，滚动到真实目标后再释放。
+  const dropHeader = cards.nth(1).locator(".resource-card__header");
+  await dropHeader.evaluate(element => element.scrollIntoView({ block: "center" }));
+  const dropBounds = await dropHeader.boundingBox();
+  if (dropBounds === null) throw new Error("拖拽目标不可见");
+  await page.mouse.move(dropBounds.x + dropBounds.width / 2, dropBounds.y + dropBounds.height / 2, { steps: 8 });
+  await page.mouse.move(dropBounds.x + dropBounds.width / 2 + 1, dropBounds.y + dropBounds.height / 2);
+  await page.mouse.up();
+  await expect(cards.nth(0).getByRole("heading", { level: 3 })).toHaveText("resource-1.example.com");
+  await expect(cards.nth(1).getByRole("heading", { level: 3 })).toHaveText("我的首个链接");
+  await page.getByRole("button", { name: "撤销", exact: true }).click();
+  await expect(cards.first().getByRole("heading", { level: 3 })).toHaveText("我的首个链接");
+  await page.getByRole("button", { name: "重做", exact: true }).click();
+  await expect(cards.first().getByRole("heading", { level: 3 })).toHaveText("resource-1.example.com");
+  await cards.last().getByRole("button", { name: "删除资源", exact: true }).click();
+  await expect(cards).toHaveCount(6);
+  await page.getByRole("button", { name: "撤销", exact: true }).click();
+  await expect(cards).toHaveCount(7);
+  await expect(sidebar.getByRole("status")).toHaveText("已保存到本浏览器");
+  expect(await readFixtureSnapshots(page)).toHaveLength(0);
+
+  await page.reload();
+  await expect(page.locator(".react-flow__node")).toHaveCount(2);
+  await page.locator(".react-flow__node").filter({ has: page.getByRole("heading", { name: "主要资料", exact: true }) }).click();
+  await page.getByRole("button", { name: "显示更多（4）" }).click();
+  await expect(cards).toHaveCount(7);
+  await expect(cards.first().getByRole("heading", { level: 3 })).toHaveText("resource-1.example.com");
+  await expect(cards.nth(1).getByText("我写的网页说明", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "撤销", exact: true })).toBeDisabled();
+  await page.getByRole("button", { name: "删除节点", exact: true }).click();
+  await expect(page.locator(".react-flow__node")).toHaveCount(1);
+  await page.getByRole("button", { name: "撤销", exact: true }).click();
+  await expect(page.locator(".react-flow__node")).toHaveCount(2);
+  expect(await readFixtureSnapshots(page)).toHaveLength(0);
+});

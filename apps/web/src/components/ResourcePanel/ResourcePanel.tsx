@@ -15,6 +15,9 @@ import type {
 import { useState } from "react";
 import { useStore } from "zustand";
 
+import { moveResource } from "../../stores/workspace-edits.js";
+import { EditNotice, NodeEditor, ResourceEditor, useGraphEdit } from "../Workspace/WorkspaceEditor.js";
+
 import { getMessages, type Messages } from "../../i18n/messages.js";
 import {
   graphStore,
@@ -140,12 +143,16 @@ export function selectVisibleResources(
 function SelectedResourcePanel({
   model,
   openResource,
+  editableGraphId,
 }: {
   model: SelectedPanelModel;
   openResource: BrowserUrlOpener;
+  editableGraphId?: string;
 }) {
   const [expanded, setExpanded] = useState(false);
   const messages = getMessages(model.language).resourcePanel;
+  const editorMessages = getMessages(model.language).editor;
+  const dragEdit = useGraphEdit(editableGraphId ?? null, model.language);
   const visibleResources = selectVisibleResources(model.resources, expanded);
   const hiddenResourceCount = model.resources.length - visibleResources.length;
 
@@ -166,7 +173,9 @@ function SelectedResourcePanel({
           </span>
         </div>
         <p>{messages.resourceCount(model.resources.length)}</p>
+        {editableGraphId === undefined ? null : <NodeEditor graphId={editableGraphId} nodeId={model.nodeId} language={model.language} />}
       </header>
+      <EditNotice problem={dragEdit.problem} language={model.language} />
 
       {model.outcomeNotice === null ? null : (
         <section
@@ -203,8 +212,27 @@ function SelectedResourcePanel({
                   className="resource-card"
                   role="listitem"
                   key={resource.id}
+                  draggable={editableGraphId !== undefined}
+                  title={editableGraphId === undefined ? undefined : editorMessages.dragResource}
+                  onDragStart={event => {
+                    if (editableGraphId === undefined) return;
+                    if (event.target instanceof Element && event.target.closest("input, textarea")) { event.preventDefault(); return; }
+                    event.dataTransfer.effectAllowed = "move";
+                    event.dataTransfer.setData("application/x-wayfinder-resource", resource.id);
+                  }}
+                  onDragOver={event => {
+                    if (editableGraphId !== undefined && event.dataTransfer.types.includes("application/x-wayfinder-resource")) event.preventDefault();
+                  }}
+                  onDrop={event => {
+                    if (editableGraphId === undefined) return;
+                    const sourceId = event.dataTransfer.getData("application/x-wayfinder-resource");
+                    if (!sourceId) return;
+                    event.preventDefault();
+                    dragEdit.commit(graph => moveResource(graph, model.nodeId, sourceId, resource.id));
+                  }}
                 >
                   <header className="resource-card__header">
+                    {editableGraphId === undefined ? null : <span className="resource-card__drag-handle" draggable aria-hidden="true">↕</span>}
                     <span className="resource-card__rank">#{resource.rank}</span>
                     <h3>{resource.title}</h3>
                   </header>
@@ -216,12 +244,12 @@ function SelectedResourcePanel({
                     </div>
                     <div>
                       <dt>{messages.sourceType}</dt>
-                      <dd>{formatSourceType(resource.sourceType)}</dd>
+                      <dd>{"origin" in resource && resource.origin === "manual" ? editorMessages.manualSource : formatSourceType(resource.sourceType)}</dd>
                     </div>
                   </dl>
 
                   <section aria-labelledby={`${resource.id}-summary`}>
-                    <h4 id={`${resource.id}-summary`}>{messages.aiSummary}</h4>
+                    <h4 id={`${resource.id}-summary`}>{editableGraphId === undefined ? messages.aiSummary : editorMessages.resourceSummary}</h4>
                     <p>{resource.summary}</p>
                   </section>
 
@@ -247,6 +275,7 @@ function SelectedResourcePanel({
                       <p role="status">{messages.invalidUrl}</p>
                     ) : null}
                   </footer>
+                  {editableGraphId === undefined ? null : <ResourceEditor graphId={editableGraphId} nodeId={model.nodeId} resource={resource} language={model.language} />}
                 </article>
               );
             })}
@@ -270,9 +299,11 @@ function SelectedResourcePanel({
 export function ResourcePanelView({
   model,
   openResource = openBrowserTab,
+  editableGraphId,
 }: {
   model: ResourcePanelModel;
   openResource?: BrowserUrlOpener;
+  editableGraphId?: string;
 }) {
   if (model.kind === "unselected") {
     const messages = getMessages(model.language).resourcePanel;
@@ -293,14 +324,16 @@ export function ResourcePanelView({
       key={model.nodeId}
       model={model}
       openResource={openResource}
+      {...(editableGraphId === undefined ? {} : { editableGraphId })}
     />
   );
 }
 
 /** 容器组件只负责订阅当前选择，避免展示层直接依赖 Store 动作。 */
-export function ResourcePanel({ language, node }: {
+export function ResourcePanel({ language, node, editableGraphId }: {
   language: SearchLanguage;
   node?: GraphStoreNode | EditableNode | null;
+  editableGraphId?: string;
 }) {
   const runNode = useStore(graphStore, selectSelectedNode);
   const selectedNode = node === undefined ? runNode : node;
@@ -308,6 +341,7 @@ export function ResourcePanel({ language, node }: {
   return (
     <ResourcePanelView
       model={buildResourcePanelModel(selectedNode, language)}
+      {...(editableGraphId === undefined ? {} : { editableGraphId })}
     />
   );
 }

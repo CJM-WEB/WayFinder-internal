@@ -13,13 +13,14 @@ import type {
   AriaLabelConfig,
   NodeChange,
   NodeTypes,
+  ReactFlowInstance,
 } from "@xyflow/react";
 import type {
   EditableGraph,
   PresentationMode,
   SearchLanguage,
 } from "@wayfinder/contracts";
-import { useCallback, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import { useStore } from "zustand";
 
 import { graphStore } from "../../stores/graph-store.js";
@@ -60,6 +61,16 @@ export function GraphView({ presentationMode, language, graph, selectedNodeId: p
   const selectedNodeId = providedSelection === undefined ? runSelection : providedSelection;
   const selectNode = onSelectNode ?? selectRunNode;
   const messages = getMessages(language).graph;
+  const flowInstance = useRef<ReactFlowInstance<GraphFlowNode, GraphFlowEdge> | null>(null);
+  const previousNodeCount = useRef(nodes.length);
+  // 只在新增节点后调整视口以保证可见，不改写已有人工坐标。
+  useEffect(() => {
+    const addedNode = nodes.length > previousNodeCount.current;
+    previousNodeCount.current = nodes.length;
+    if (!addedNode || flowInstance.current === null) return;
+    const frame = requestAnimationFrame(() => { void flowInstance.current?.fitView({ padding: 0.2 }); });
+    return () => cancelAnimationFrame(frame);
+  }, [nodes.length]);
   const elements = useMemo(
     () => buildGraphFlowElements(nodes, edges, language, graph?.positions),
     [nodes, edges, language, graph?.positions],
@@ -125,6 +136,7 @@ export function GraphView({ presentationMode, language, graph, selectedNodeId: p
         nodes={flowNodes}
         edges={elements.edges}
         nodeTypes={NODE_TYPES}
+        onInit={instance => { flowInstance.current = instance; }}
         onNodesChange={handleNodesChange}
         onNodeClick={(_event, node) => selectNode(node.id)}
         // React Flow 的键盘选择不触发 onNodeClick，必须从 selection 事件同步 Store。

@@ -5,6 +5,7 @@ import type { EditableGraph, SearchLanguage } from "@wayfinder/contracts";
 
 import { startStreamingSearch } from "./api/search.js";
 import { startWorkspaceSearch } from "./api/workspace-search.js";
+import { WorkspaceToolbar } from "./components/Workspace/WorkspaceEditor.js";
 import { WorkspaceSidebar } from "./components/Workspace/WorkspaceSidebar.js";
 import { selectCurrentGraph, workspaceStore } from "./stores/workspace-store.js";
 import { workspacePersistenceStore } from "./stores/workspace-persistence.js";
@@ -142,6 +143,7 @@ export function App({ h1Evaluation, workspaceEnabled = false }: AppProps = {}) {
         onLanguageChange={setSelectedLanguage}
       />
       </fieldset>
+      {useWorkspace ? <WorkspaceToolbar language={renderLanguage} disabled={showsRun || persistence.status === "loading" || persistence.error === "load"} /> : null}
 
       {isH1Evaluation ? (
         <section className="h1-evaluation" aria-labelledby="h1-evaluation-title">
@@ -205,7 +207,7 @@ export function App({ h1Evaluation, workspaceEnabled = false }: AppProps = {}) {
               })}
             />
           )}
-          <ResourcePanel key={`panel-${useWorkspace ? currentDocument?.id ?? "empty" : "run"}`} language={renderLanguage} {...(savedGraph === undefined ? {} : { node: selectedNode })} />
+          <ResourcePanel key={`panel-${useWorkspace ? currentDocument?.id ?? "empty" : "run"}`} language={renderLanguage} {...(savedGraph === undefined ? {} : { node: selectedNode, ...(currentDocument === null ? {} : { editableGraphId: currentDocument.id }) })} />
         </div>
       </section>
       </div>

@@ -1073,3 +1073,24 @@ export const EditableGraphSchema = z.strictObject({
   }
 });
 export type EditableGraph = z.infer<typeof EditableGraphSchema>;
+
+/**
+ * URL 规范化为搜索与编辑边界共享，避免浏览器复制另一套生产去重规则。
+ * 只删除已确认的精确小写追踪参数与页内片段；其他路径、查询参数保留其页面语义。
+ * 保留在协议入口，兼容直接读取本文件的原生 Node.js Schema 生成器。
+ */
+export function canonicalizeHttpUrl(input: string): URL | null {
+  let url: URL;
+  try {
+    url = new URL(input);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+  for (const parameter of ["utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content", "gclid"]) {
+    url.searchParams.delete(parameter);
+  }
+  url.hash = "";
+  url.searchParams.sort();
+  return url;
+}

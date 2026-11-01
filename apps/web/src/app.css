@@ -1073,3 +1073,34 @@ input {
   .workspace-records { display: flex; flex-wrap: wrap; gap: 12px; }
   .workspace-records li { width: min(220px, 100%); }
 }
+
+/* 编辑使用原生表单；保存才写入撤销快照，资源卡片保留既有信息层级。 */
+.workspace-edit-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 12px;
+  padding: 12px 16px;
+  margin: 0 0 16px;
+  border: 1px solid #d4e0d7;
+  border-radius: 16px;
+  background: #fff;
+}
+.workspace-edit-toolbar form { display: flex; align-items: end; gap: 10px; flex: 1; }
+.workspace-edit-field { display: grid; gap: 5px; margin: 8px 0; font-size: 0.78rem; color: #385647; }
+.workspace-edit-field input, .workspace-edit-field textarea {
+  width: 100%; min-width: 0; padding: 8px 10px; border: 1px solid #b9cbbf; border-radius: 8px; font: inherit;
+}
+.workspace-edit-field textarea { resize: vertical; }
+.workspace-edit-toolbar .workspace-edit-field { flex: 1; margin: 0; }
+.workspace-edit-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.workspace-edit-toolbar button, .workspace-node-editor button, .workspace-resource-editor button, .workspace-edit-error button {
+  padding: 7px 9px; margin: 3px 3px 3px 0; border: 1px solid #b9cbbf; border-radius: 8px; color: #244d37; background: #f4f8f4; font: inherit; cursor: pointer;
+}
+.workspace-edit-toolbar button:disabled, .workspace-node-editor button:disabled, .workspace-resource-editor button:disabled { opacity: 0.5; cursor: default; }
+.workspace-node-editor { margin-top: 12px; padding-top: 8px; border-top: 1px solid #d7e2da; font-size: 0.78rem; }
+.workspace-resource-editor { padding-top: 8px; font-size: 0.76rem; }
+.workspace-edit-error { color: #a33c31; font-size: 0.78rem; }
+.resource-card[draggable="true"] { cursor: grab; }
+.resource-card input, .resource-card textarea { cursor: text; }
+.resource-card__drag-handle { cursor: grab; font-size: 1.2rem; color: #61786c; }

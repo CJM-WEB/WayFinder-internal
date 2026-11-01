@@ -35,6 +35,15 @@ export type Messages = Readonly<{
     saveFailure: string;
     retry: string;
   }>;
+  editor: Readonly<{
+    toolbar: string; newNodeTitle: string; addNode: string; editNode: string; deleteNode: string;
+    nodeTitle: string; nodeDescription: string; saveNode: string; cancel: string;
+    addResource: string; resourceUrl: string; resourceTitle: string; resourceSummary: string;
+    whySelected: string; editResource: string; saveResource: string; deleteResource: string;
+    moveUp: string; moveDown: string; dragResource: string; undo: string; redo: string;
+    manualSource: string; manualGraphTitle: string; duplicateUrl: (nodeTitle: string) => string;
+    locateDuplicate: string; invalidUrl: string; editFailure: string;
+  }>;
   app: Readonly<{
     slogan: string;
     summaryAria: string;
@@ -114,6 +123,15 @@ export const MESSAGES: Record<SearchLanguage, Messages> = {
       emptyRecords: "搜索后会在此保存记录。", loading: "正在读取本地记录…", saving: "正在保存…",
       saved: "已保存到本浏览器", loadFailure: "无法读取本地记录，请重试；暂未覆盖已有数据。",
       saveFailure: "本次更改未能保存，请重试。", retry: "重试保存或读取",
+    },
+    editor: {
+      toolbar: "图编辑", newNodeTitle: "新节点标题", addNode: "新建节点", editNode: "编辑节点", deleteNode: "删除节点",
+      nodeTitle: "节点标题", nodeDescription: "节点说明", saveNode: "保存节点", cancel: "取消编辑",
+      addResource: "添加资源", resourceUrl: "资源 URL", resourceTitle: "资源标题", resourceSummary: "网页说明",
+      whySelected: "选用理由", editResource: "编辑资源", saveResource: "保存资源", deleteResource: "删除资源",
+      moveUp: "上移资源", moveDown: "下移资源", dragResource: "可上下拖拽调整资源顺序", undo: "撤销", redo: "重做",
+      manualSource: "用户添加", manualGraphTitle: "未命名搜索图", duplicateUrl: title => `此 URL 已存在于「${title}」节点中。`,
+      locateDuplicate: "定位已有资源所在节点", invalidUrl: "请输入有效的完整 HTTP(S) 地址。", editFailure: "无法保存此次编辑，请检查输入。",
     },
     app: {
       slogan: "Graph 即搜索结果页",
@@ -241,6 +259,15 @@ export const MESSAGES: Record<SearchLanguage, Messages> = {
       emptyRecords: "Your searches will be saved here.", loading: "Loading local records…", saving: "Saving…",
       saved: "Saved in this browser", loadFailure: "Unable to load local records. Retry to continue; existing data has not been overwritten.",
       saveFailure: "Your latest changes could not be saved. Please retry.", retry: "Retry saving or loading",
+    },
+    editor: {
+      toolbar: "Graph editing", newNodeTitle: "New node title", addNode: "Add node", editNode: "Edit node", deleteNode: "Delete node",
+      nodeTitle: "Node title", nodeDescription: "Node description", saveNode: "Save node", cancel: "Cancel editing",
+      addResource: "Add resource", resourceUrl: "Resource URL", resourceTitle: "Resource title", resourceSummary: "Page description",
+      whySelected: "Selection reason", editResource: "Edit resource", saveResource: "Save resource", deleteResource: "Delete resource",
+      moveUp: "Move resource up", moveDown: "Move resource down", dragResource: "Drag to reorder resources", undo: "Undo", redo: "Redo",
+      manualSource: "Added by you", manualGraphTitle: "Untitled search graph", duplicateUrl: title => `This URL already exists in the “${title}” node.`,
+      locateDuplicate: "Go to the existing resource's node", invalidUrl: "Enter a valid, complete HTTP(S) address.", editFailure: "Unable to save this edit. Check the input.",
     },
     app: {
       slogan: "The Graph is the search results page",
