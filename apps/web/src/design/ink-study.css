@@ -342,14 +342,45 @@ a:focus-visible, button:focus-visible, .ink-study__contact:focus-visible {
 }
 .ink-study__history-panel:focus { outline: none; }
 .ink-study__history-header { display: flex; align-items: center; justify-content: space-between; gap: 20px; margin-bottom: 24px; }
+.ink-study__history-header > div { display: flex; align-items: center; gap: 12px; }
 .ink-study__history-header h2 { margin: 0; font-size: 18px; font-weight: 500; letter-spacing: 0.12em; }
-.ink-study__history-header > span { color: #62625d; font-size: 11px; }
+.ink-study__history-header span { color: #62625d; font-size: 11px; }
+.ink-study__history-header > button { flex: none; gap: 7px; }
+.ink-study__history-header svg, .ink-study__history-actions svg {
+  flex: none; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round;
+}
 .ink-study__history-empty { margin: 36px 0; color: #62625d; font-size: 12px; line-height: 1.6; }
-.ink-study__history-list { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; }
-.ink-study__history-list li { padding: 18px 20px; border: 1px solid #ffffff80; border-radius: 18px; background: #ffffff45; overflow-wrap: anywhere; }
-.ink-study__history-list h3 { margin: 0; font-size: 14px; font-weight: 500; line-height: 1.5; }
-.ink-study__history-list p { margin: 6px 0 0; font-size: 12px; line-height: 1.5; color: #595955; }
-.ink-study__history-list li > div { display: flex; justify-content: space-between; gap: 20px; margin-top: 12px; color: #62625d; font-size: 10px; }
+.ink-study__history-list { display: grid; gap: 12px; margin: 0; padding: 3px 5px; list-style: none; }
+/* 纵向通过真实内边距扩张推动后续条目，横向仅轻微伸展；命中区域始终覆盖原位置。 */
+.ink-study__history-record {
+  padding: 17px 20px;
+  border: 1px solid #ffffff80;
+  border-radius: 20px;
+  background: #ffffff45;
+  transform: scaleX(1);
+  transition: padding 360ms var(--ink-slide-ease), transform 360ms var(--ink-slide-ease),
+    background-color 360ms var(--ink-slide-ease), box-shadow 360ms var(--ink-slide-ease);
+}
+.ink-study__history-record:is(:hover, :focus-within) {
+  padding-block: 23px;
+  transform: scaleX(1.012);
+  background: #ffffff70;
+  box-shadow: 0 6px 18px #11111108;
+}
+.ink-study__history-record form { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin: 0; }
+.ink-study__history-list h3 {
+  flex: 1; min-width: 0; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 14px; font-weight: 500; line-height: 1.5;
+}
+.ink-study__history-actions { display: flex; flex: none; align-items: center; gap: 8px; }
+.ink-study__history-actions button { gap: 6px; }
+.ink-study__history-title-input {
+  flex: 1; min-width: 0; width: 100%; padding: 6px 10px;
+  border: 1px solid #aaa; border-radius: 14px; outline-offset: 3px;
+  background: #ffffffa6; color: #111; font: inherit; font-size: 14px;
+}
+.ink-study__history-panel button:disabled { opacity: 0.45; cursor: default; }
+.ink-study__history-storage-status { margin: 20px 5px 0; color: #62625d; font-size: 10px; }
 .ink-study__language { top: var(--ink-corner-top); right: var(--ink-corner-inset); }
 .ink-study__chevron {
   display: block;
@@ -440,6 +471,11 @@ a:focus-visible, button:focus-visible, .ink-study__contact:focus-visible {
   }
   .ink-study__stage[data-layer="explore"] .ink-study__search { left: 7%; width: 86%; }
   .ink-study__history-drawer { left: 7%; width: 86%; }
+  .ink-study__history-header { flex-wrap: wrap; gap: 12px; }
+  .ink-study__history-record { padding-inline: 14px; }
+  .ink-study__history-record form { flex-wrap: wrap; gap: 12px; }
+  .ink-study__history-list h3, .ink-study__history-title-input { flex-basis: 100%; }
+  .ink-study__history-actions { margin-left: auto; }
 }
 @media (pointer: coarse) {
   .ink-study__stage { --ink-pill-height: 44px; }
@@ -451,5 +487,6 @@ a:focus-visible, button:focus-visible, .ink-study__contact:focus-visible {
   .ink-study__pill, .ink-study__intro, .ink-study__back, .ink-study__chevron, .ink-study__contact-email,
   .ink-study__wordmark, .ink-study__tagline, .ink-study__search, .ink-study__search-input,
   .ink-study__search-submit, .ink-study__engine, .ink-study__search-layer, .ink-study__history-drawer,
-  .ink-study__history-toggle, .ink-study__history-toggle svg, .ink-study__history-toggle span { transition: none; }
+  .ink-study__history-toggle, .ink-study__history-toggle svg, .ink-study__history-toggle span,
+  .ink-study__history-record { transition: none; }
 }

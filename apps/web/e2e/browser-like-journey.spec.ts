@@ -608,7 +608,7 @@ test("左箭头原路返回并保留跨语言的输入和引擎选择", async ({
   expect(await readFixtureSnapshots(page)).toHaveLength(0);
 });
 
-test("历史按钮底边悬浮稳定展开，真实只读历史进出与外部焦点恢复正确", async ({ page }) => {
+test("历史按钮底边悬浮稳定展开，真实历史进出与外部焦点恢复正确", async ({ page }) => {
   const events = createJourneyEvents();
   await installBrowserFixture(page, events);
   await page.goto("/ink-study.html");
@@ -639,7 +639,8 @@ test("历史按钮底边悬浮稳定展开，真实只读历史进出与外部�
   await expect.poll(() => toggle.locator("svg").evaluate(element =>
     new DOMMatrix(getComputedStyle(element).transform).a)).toBeLessThan(-0.99);
   await expect(panel.getByRole("heading", { name: "只读历史记录样例", exact: true })).toBeVisible();
-  await expect(panel.getByRole("button")).toHaveCount(0);
+  await expect(panel.getByRole("button", { name: "新建搜索图", exact: true })).toBeVisible();
+  await expect(panel.getByRole("listitem").getByRole("button")).toHaveCount(2);
   await expect.poll(async () => {
     const layer = await page.locator(".ink-study__search-layer").boundingBox();
     return layer !== null && layer.y + layer.height <= stageBounds.y;
@@ -661,6 +662,151 @@ test("历史按钮底边悬浮稳定展开，真实只读历史进出与外部�
     return bounds === null ? Infinity : Math.abs(bounds.y - stageBounds.y);
   }).toBeLessThan(1);
   expect(await readFixtureSnapshots(page)).toHaveLength(1);
+});
+
+test("历史信息条重命名保留原查询，悬浮推动邻行，删除与刷新复用本地记录", async ({ page }, testInfo) => {
+  const events = createJourneyEvents();
+  await installBrowserFixture(page, events);
+  await page.goto("/ink-study.html");
+  await page.getByRole("button", { name: "开始探索", exact: true }).click();
+  const input = page.getByRole("searchbox", { name: "搜索任意主题", exact: true });
+  await expect(input).toBeFocused();
+  await input.fill(FIRST_QUERY);
+  await input.press("Enter");
+  await expect.poll(async () => (await readFixtureSnapshots(page)).length).toBe(1);
+  const toggle = page.getByRole("button", { name: "搜索历史", exact: true });
+  const panel = page.getByRole("region", { name: "搜索历史", exact: true });
+  await toggle.click();
+  const firstRow = panel.getByRole("listitem").filter({ has: page.getByRole("heading", { name: FIRST_QUERY, exact: true }) });
+  await firstRow.getByRole("button", { name: `重命名：${FIRST_QUERY}`, exact: true }).click();
+  const name = panel.getByRole("textbox", { name: "记录名称", exact: true });
+  await expect(name).toBeFocused();
+  await name.fill("   ");
+  await expect(panel.getByRole("button", { name: "保存名称", exact: true })).toBeDisabled();
+  await name.press("Escape");
+  await expect(panel).toBeVisible();
+  await expect(firstRow.getByRole("button", { name: `重命名：${FIRST_QUERY}`, exact: true })).toBeFocused();
+  await firstRow.getByRole("button", { name: `重命名：${FIRST_QUERY}`, exact: true }).click();
+  await name.fill("Python 灵感地图");
+  await name.press("Enter");
+  const renamedRow = panel.getByRole("listitem").filter({ has: page.getByRole("heading", { name: "Python 灵感地图", exact: true }) });
+  await expect(renamedRow.getByRole("button", { name: "重命名：Python 灵感地图", exact: true })).toBeFocused();
+  // 在途结果继续交付到同一记录，不能覆盖人工名称，也不能因改名再发请求。
+  await emitFixtureEvents(page, 0, events.map((_, index) => index));
+  await page.evaluate(() => window.__WAYFINDER_E2E__.close(0));
+  await expect(panel.getByRole("status")).toHaveText("已保存到本浏览器");
+  await expect(renamedRow).toBeVisible();
+  expect((await readFixtureSnapshots(page))[0]?.query).toBe(FIRST_QUERY);
+  await panel.getByRole("button", { name: "新建搜索图", exact: true }).click();
+  await expect(input).toBeFocused();
+  await expect(input).toHaveValue("");
+  expect(await readFixtureSnapshots(page)).toHaveLength(1);
+  await input.fill(SECOND_QUERY);
+  await input.press("Enter");
+  await expect.poll(async () => (await readFixtureSnapshots(page)).length).toBe(2);
+  await emitFixtureEvents(page, 1, events.map((_, index) => index));
+  await page.evaluate(() => window.__WAYFINDER_E2E__.close(1));
+  await toggle.click();
+  await expect(panel).toBeFocused();
+  const rows = panel.getByRole("listitem");
+  await expect(rows).toHaveCount(2);
+  await page.mouse.move(0, 0);
+  const before = await renamedRow.boundingBox();
+  // 面板可能仍在上滑，邻行位移应在同一布局坐标系比较，不能混入抽屉的屏幕位移。
+  const nextTopBefore = await rows.nth(1).evaluate(element => (element as HTMLElement).offsetTop);
+  if (before === null) throw new Error("历史信息条未出现");
+  await renamedRow.hover({ position: { x: before.width / 2, y: 2 } });
+  await expect.poll(async () => (await renamedRow.boundingBox())?.height ?? 0).toBeGreaterThan(before.height + 8);
+  await expect.poll(() => rows.nth(1).evaluate(element => (element as HTMLElement).offsetTop)).toBeGreaterThan(nextTopBefore + 8);
+  expect(await renamedRow.evaluate(element => element.matches(":hover"))).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath("ink-history-records.png"), animations: "disabled" });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect.poll(() => panel.evaluate(element => element.scrollWidth - element.clientWidth)).toBe(0);
+  await expect(renamedRow.getByRole("button", { name: "重命名：Python 灵感地图", exact: true })).toBeVisible();
+  await renamedRow.getByRole("button", { name: "删除记录：Python 灵感地图", exact: true }).click();
+  await expect(rows).toHaveCount(1);
+  await expect(panel).toBeFocused();
+  await expect(panel.getByRole("status")).toHaveText("已保存到本浏览器");
+  expect(await readFixtureSnapshots(page)).toHaveLength(2);
+  await page.reload();
+  await page.getByRole("button", { name: "开始探索", exact: true }).click();
+  await expect(input).toBeFocused();
+  await toggle.click();
+  await expect(rows).toHaveCount(1);
+  await expect(rows.getByRole("heading", { name: SECOND_QUERY, exact: true })).toBeVisible();
+  expect(await readFixtureSnapshots(page)).toHaveLength(0);
+});
+
+test("历史新建取消本页在途搜索，保留旧记录与引擎，下一次提交才创建新图", async ({ page }) => {
+  await installBrowserFixture(page, createJourneyEvents());
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.goto("/ink-study.html");
+  await page.getByRole("button", { name: "开始探索", exact: true }).click();
+  const input = page.getByRole("searchbox", { name: "搜索任意主题", exact: true });
+  await page.getByRole("button", { name: "搜索引擎：百度", exact: true }).click();
+  await page.getByRole("button", { name: "Google", exact: true }).click();
+  await input.fill("尚未完成的图");
+  await input.press("Enter");
+  await expect.poll(async () => (await readFixtureSnapshots(page)).length).toBe(1);
+  const toggle = page.getByRole("button", { name: "搜索历史", exact: true });
+  const panel = page.getByRole("region", { name: "搜索历史", exact: true });
+  await toggle.click();
+  await panel.getByRole("button", { name: "新建搜索图", exact: true }).click();
+  await expect(input).toBeFocused();
+  await expect(input).toHaveValue("");
+  await expect(page.getByRole("button", { name: "搜索引擎：Google", exact: true })).toBeVisible();
+  await expect.poll(async () => (await readFixtureSnapshots(page))[0]?.aborted).toBe(true);
+  await toggle.click();
+  await expect(panel.getByRole("listitem")).toHaveCount(1);
+  await expect(panel.getByRole("heading", { name: "尚未完成的图", exact: true })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await input.fill("下一张独立的图");
+  await input.press("Enter");
+  await expect.poll(async () => (await readFixtureSnapshots(page)).length).toBe(2);
+  const runs = await readFixtureSnapshots(page);
+  expect(runs[1]?.runId).not.toBe(runs[0]?.runId);
+  expect(runs[1]?.engine).toBe("google");
+  await toggle.click();
+  await expect(panel.getByRole("listitem")).toHaveCount(2);
+});
+
+test("历史删除在途记录后，迟到完成不得复活记录或新发搜索", async ({ page }) => {
+  const events = createJourneyEvents();
+  await installBrowserFixture(page, events);
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.goto("/ink-study.html");
+  await page.getByRole("button", { name: "开始探索", exact: true }).click();
+  const input = page.getByRole("searchbox", { name: "搜索任意主题", exact: true });
+  await input.fill("将被删除的图");
+  await input.press("Enter");
+  await expect.poll(async () => (await readFixtureSnapshots(page)).length).toBe(1);
+  await page.getByRole("button", { name: "搜索历史", exact: true }).click();
+  const panel = page.getByRole("region", { name: "搜索历史", exact: true });
+  await panel.getByRole("button", { name: "删除记录：将被删除的图", exact: true }).click();
+  await expect(panel.getByRole("listitem")).toHaveCount(0);
+  await expect(panel).toBeFocused();
+  await emitFixtureEvents(page, 0, events.map((_, index) => index));
+  await page.evaluate(() => window.__WAYFINDER_E2E__.close(0));
+  await expect(panel.getByRole("status")).toHaveText("已保存到本浏览器");
+  await expect(panel.getByRole("listitem")).toHaveCount(0);
+  expect(await readFixtureSnapshots(page)).toHaveLength(1);
+});
+
+test("历史读取失败时禁用新建并保留原存储错误反馈", async ({ page }) => {
+  await installBrowserFixture(page, createJourneyEvents());
+  await page.addInitScript(() => {
+    Object.defineProperty(window, "indexedDB", { value: { open: () => { throw new Error("固定的存储读取失败"); } } });
+  });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.goto("/ink-study.html");
+  await page.getByRole("button", { name: "开始探索", exact: true }).click();
+  await page.getByRole("button", { name: "搜索历史", exact: true }).click();
+  const panel = page.getByRole("region", { name: "搜索历史", exact: true });
+  await expect(panel.getByRole("button", { name: "新建搜索图", exact: true })).toBeDisabled();
+  await expect(panel.getByRole("alert")).toContainText("无法读取本地记录");
+  await panel.getByRole("button", { name: "重试保存或读取", exact: true }).click();
+  await expect(panel.getByRole("alert")).toContainText("无法读取本地记录");
+  expect(await readFixtureSnapshots(page)).toHaveLength(0);
 });
 
 test("历史打开时返回首页会取消本页搜索但保留真实记录", async ({ page }) => {

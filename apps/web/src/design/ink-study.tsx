@@ -15,6 +15,7 @@ import { requestSafeUrlOpen } from "../lib/url.js";
 import { useStore } from "zustand";
 import type { StreamingSearch } from "../api/search.js";
 import { graphStore } from "../stores/graph-store.js";
+import { workspaceStore } from "../stores/workspace-store.js";
 import { initializeWorkspacePersistence, workspacePersistenceStore } from "../stores/workspace-persistence.js";
 import "./ink-study.css";
 
@@ -132,16 +133,30 @@ function InkStudy() {
     }
   }, [historyOpen, ready]);
 
-  const returnHome = (): void => {
+  /** 重置本页搜索意图：新建与返回首页共用取消门禁，不清空已保存图。 */
+  const resetSearch = (): void => {
     ++latestSubmission.current;
     ++latestSearchIntent.current;
     if (ownedRun.current !== null && graphStore.getState().activeRunId === ownedRun.current) searchCoordinator.current?.cancel();
+    ownedRun.current = null;
+    setFeedback(null);
+    setHasSearched(false);
+  };
+
+  const newSearch = (): void => {
+    if (!ready || storageBlocked) return;
+    resetSearch();
+    workspaceStore.getState().selectGraph(null);
+    if (searchInput.current !== null) searchInput.current.value = "";
+    closeHistory(true);
+  };
+
+  const returnHome = (): void => {
+    resetSearch();
     restoreHomeFocus.current = true;
     restoreSearchFocus.current = false;
     setHistoryOpen(false);
     setOpenControl(null);
-    setFeedback(null);
-    setHasSearched(false);
     setPhase("returning");
   };
 
@@ -313,7 +328,7 @@ function InkStudy() {
         </button>
 
         <InkSearchHistory open={historyOpen} available={ready} language={renderLanguage}
-          onOpen={openHistory} onClose={closeHistory} />
+          onOpen={openHistory} onClose={closeHistory} onNewSearch={newSearch} />
 
         {/* 披露面板使用普通按钮与自然 Tab 顺序，避免模拟系统下拉框或改变语言协议。 */}
         <div className="ink-study__language" ref={languageControl} data-ink-control
