@@ -14,6 +14,21 @@ const contractsEntry = fileURLToPath(
 
 export default defineConfig({
   plugins: [react()],
+  // 开发预览使用 .env.example 中约定的本地 API 端口；生产仍由原 Fastify 同源提供。
+  server: {
+    proxy: {
+      "/api": "http://127.0.0.1:3000",
+    },
+  },
+  // 独立视觉试验单独打包；原应用仍使用 index.html，不增加其启动依赖。
+  build: {
+    rolldownOptions: {
+      input: {
+        app: fileURLToPath(new globalThis.URL("./index.html", import.meta.url)),
+        inkStudy: fileURLToPath(new globalThis.URL("./ink-study.html", import.meta.url)),
+      },
+    },
+  },
   resolve: {
     alias: {
       "@wayfinder/contracts": contractsEntry,

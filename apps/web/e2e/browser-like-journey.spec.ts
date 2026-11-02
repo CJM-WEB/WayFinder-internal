@@ -375,6 +375,81 @@ const emitFixtureEvents = (
     },
   );
 
+test("墨迹页语言选择可进入搜索请求，已移除旧角落控件", async ({ page }) => {
+  await installBrowserFixture(page, createJourneyEvents());
+  await page.goto("/ink-study.html");
+
+  await expect(page.getByText("©26", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("浏览", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("移动指针，揭开灵感", { exact: true })).toHaveCount(0);
+  await expect(page.getByRole("navigation", { name: "画面导航" })).toHaveCount(0);
+  await expect(page.getByText("打造属于自己的互联网", { exact: true })).toBeVisible();
+
+  // 同一个公共语言值同时控制展示文案、入口参数和既有搜索请求，不调用真实 Provider。
+  await page.getByRole("button", { name: "语言", exact: true }).click();
+  await page.getByRole("button", { name: "English", exact: true }).click();
+  await expect(page.locator("html")).toHaveAttribute("lang", "en-US");
+  await expect(page.getByText("BUILD YOUR OWN INTERNET", { exact: true })).toBeVisible();
+  const explore = page.getByRole("link", { name: "Start exploring", exact: true });
+  await expect(explore).toHaveAttribute("href", "/?language=en-US");
+  await explore.click();
+
+  await expect(page.getByRole("combobox", { name: "Language", exact: true })).toHaveValue("en-US");
+  const queryInput = page.getByRole("searchbox", { name: "Search any topic" });
+  await queryInput.fill("TypeScript guides");
+  await queryInput.press("Enter");
+  await expect.poll(async () => (await readFixtureSnapshots(page))[0])
+    .toMatchObject({ query: "TypeScript guides", language: "en-US", engine: "google" });
+});
+
+test("墨迹页圆角语言面板可收起，联系胶囊悬浮展开并在离开后恢复", async ({ page }) => {
+  await page.goto("/ink-study.html");
+  const language = page.getByRole("button", { name: "语言", exact: true });
+  await language.click();
+  await expect(page.getByRole("button", { name: "简体中文", exact: true })).toHaveAttribute("aria-pressed", "true");
+  await page.keyboard.press("Tab");
+  await expect(page.getByRole("button", { name: "简体中文", exact: true })).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(language).toBeFocused();
+  await expect(language).toHaveAttribute("aria-expanded", "false");
+  await language.click();
+  await page.getByRole("heading", { name: "WAYFINDER", exact: true }).click({ force: true });
+  await expect(language).toHaveAttribute("aria-expanded", "false");
+
+  // 检查真实尺寸和颜色变化，避免只验证 DOM 已经包含邮箱而漏掉悬浮呈现。
+  const contact = page.getByRole("button", { name: "联系作者", exact: true });
+  const email = contact.getByText("cjmweb@outlook.com", { exact: true });
+  const closedWidth = (await contact.boundingBox())?.width ?? 0;
+  await expect(email).toHaveCSS("max-width", "0px");
+  await contact.hover();
+  await expect(contact).toHaveCSS("background-color", "rgb(255, 255, 255)");
+  await expect(email).toHaveCSS("opacity", "1");
+  await expect.poll(async () => (await contact.boundingBox())?.width ?? 0).toBeGreaterThan(closedWidth + 100);
+  await page.mouse.move(0, 0);
+  await expect(email).toHaveCSS("opacity", "0");
+  await expect.poll(async () => (await contact.boundingBox())?.width ?? 0).toBeCloseTo(closedWidth, 0);
+  await expect(contact).toHaveCSS("background-color", "rgb(17, 17, 17)");
+});
+
+test("联系作者点击复制真实邮箱，拒绝剪贴板权限时显示失败提示", async ({ page, context }) => {
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  await page.goto("/ink-study.html");
+  await page.getByRole("button", { name: "联系作者", exact: true }).click();
+  await expect(page.getByRole("status")).toHaveText("邮箱已复制");
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe("cjmweb@outlook.com");
+  await expect(page.getByRole("status")).toBeEmpty();
+
+  // 只替换拒绝路径，确认失败不会被误报为成功；真实成功路径使用上面的浏览器剪贴板。
+  await page.evaluate(() => {
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: async () => { throw new DOMException("拒绝测试", "NotAllowedError"); } },
+    });
+  });
+  await page.getByRole("button", { name: "联系作者", exact: true }).click();
+  await expect(page.getByRole("status")).toHaveText("复制失败，请手动复制邮箱");
+});
+
 test("English 选择器控制请求与页面语言，既有 Run 不随下一次选择混语", async ({
   page,
 }) => {

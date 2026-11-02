@@ -66,6 +66,21 @@ describe("App Presentation Mode", () => {
     expect(documentElement.lang).toBe("en-US");
   });
 
+  it("入口语言预选搜索语言且不自动创建 Run", () => {
+    const markup = renderToStaticMarkup(<App initialLanguage="en-US" />);
+    expect(markup).toContain("Search results");
+    expect(markup).toContain('<option value="en-US" selected="">');
+    expect(graphStore.getState().language).toBeNull();
+  });
+
+  it("入口语言不改写既有 Run 的展示语言", () => {
+    graphStore.getState().startRun({ runId: "run-entry", query: "原查询", language: "zh-CN" });
+    const markup = renderToStaticMarkup(<App initialLanguage="en-US" />);
+    expect(markup).toContain("搜索结果");
+    expect(markup).toContain('<option value="en-US" selected="">');
+    expect(graphStore.getState().language).toBe("zh-CN");
+  });
+
   it("分析到达前以 graph 空态呈现但不写回 Store", () => {
     const markup = renderToStaticMarkup(<App />);
 

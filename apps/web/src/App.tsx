@@ -38,6 +38,7 @@ const openDirectUrl = (url: string): boolean =>
 export type AppProps = Readonly<{
   h1Evaluation?: H1EvaluationRoute;
   workspaceEnabled?: boolean;
+  initialLanguage?: SearchLanguage;
 }>;
 
 /**
@@ -61,7 +62,7 @@ const EMPTY_GRAPH: Pick<EditableGraph, "nodes" | "edges" | "positions"> = {
   nodes: [], edges: [], positions: {},
 };
 
-export function App({ h1Evaluation, workspaceEnabled = false }: AppProps = {}) {
+export function App({ h1Evaluation, workspaceEnabled = false, initialLanguage }: AppProps = {}) {
   const runtime = useStore(graphStore, state => state);
   const currentDocument = useStore(workspaceStore, selectCurrentGraph);
   const preview = useStore(researchStore, state => state.preview);
@@ -77,7 +78,8 @@ export function App({ h1Evaluation, workspaceEnabled = false }: AppProps = {}) {
   const isSearching = useWorkspace ? showsRun : runtime.isSearching;
   const runLanguage = useWorkspace ? currentDocument?.language ?? null : runtime.language;
   const [selectedLanguage, setSelectedLanguage] =
-    useState<SearchLanguage>(runLanguage ?? "zh-CN");
+    // 入口语言仅预选下一次搜索；已有结果的展示语言仍由 resolveRenderLanguage 锁定。
+    useState<SearchLanguage>(initialLanguage ?? runLanguage ?? "zh-CN");
   const [emptyPageEngine, setEmptyPageEngine] = useState<SearchEngine | undefined>();
   // 空页偏好只属于尚未建立记录的下一次搜索；有图缺少偏好时必须回到语言默认，便于撤销。
   const selectedEngine = resolveSearchEngine(selectedLanguage, currentDocument === null ? emptyPageEngine : currentDocument.engine);

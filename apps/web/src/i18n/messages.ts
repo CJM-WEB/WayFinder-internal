@@ -19,6 +19,10 @@ import type {
 } from "@wayfinder/contracts";
 
 export type Messages = Readonly<{
+  inkStudy: Readonly<{
+    statement: string; tagline: string; explore: string; contact: string; stageAria: string; pageTitle: string;
+    emailCopied: string; emailCopyFailed: string;
+  }>;
   research: Readonly<{
     startGraph: string; startNode: string; preview: string; searching: string;
     failure: string; cancel: string; dismiss: string; append: string; replace: string;
@@ -130,6 +134,11 @@ export type Messages = Readonly<{
  */
 export const MESSAGES: Record<SearchLanguage, Messages> = {
   "zh-CN": {
+    inkStudy: {
+      statement: "让每个好奇，\n都有去处。", tagline: "打造属于自己的互联网", explore: "开始探索", contact: "联系作者",
+      emailCopied: "邮箱已复制", emailCopyFailed: "复制失败，请手动复制邮箱",
+      stageAria: "墨迹揭字交互试验", pageTitle: "WAYFINDER — 墨迹漫游",
+    },
     research: {
       startGraph: "重新搜索全图", startNode: "重新搜索此节点", preview: "重搜预览", searching: "正在重新搜索，当前图保持不变。",
       failure: "没有可应用的新结果，当前图保持不变。", cancel: "取消重搜", dismiss: "弃用新结果", append: "追加到此节点", replace: "应用替换",
@@ -280,6 +289,11 @@ export const MESSAGES: Record<SearchLanguage, Messages> = {
     },
   },
   "en-US": {
+    inkStudy: {
+      statement: "Every curiosity,\na place to go.", tagline: "BUILD YOUR OWN INTERNET", explore: "Start exploring", contact: "Contact author",
+      emailCopied: "Email copied", emailCopyFailed: "Could not copy. Please copy the email manually.",
+      stageAria: "Interactive ink reveal", pageTitle: "WAYFINDER — Ink in motion",
+    },
     research: {
       startGraph: "Search entire graph again", startNode: "Search this node again", preview: "Search preview", searching: "Searching again. Your current graph is unchanged.",
       failure: "No new results can be applied. Your current graph is unchanged.", cancel: "Cancel search", dismiss: "Discard new results", append: "Append to this node", replace: "Apply replacement",
