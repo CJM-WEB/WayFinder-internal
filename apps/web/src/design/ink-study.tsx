@@ -2,7 +2,8 @@
  * 页面职责：独立承载墨迹揭字视觉试验，复用项目现有 React 与 Vite。
  * 复用边界：新界面直接使用既有搜索协调器和状态层，不跳转旧展示页，不复制后端协议。
  */
-import { StrictMode, useCallback, useEffect, useLayoutEffect, useRef, useState, type FormEvent } from "react";
+import { lazy, StrictMode, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import type { XYPosition } from "@xyflow/react";
 import { createRoot } from "react-dom/client";
 import { resolveSearchEngine, SearchEngineSchema, type SearchEngine, type SearchLanguage } from "@wayfinder/contracts";
 
@@ -10,16 +11,21 @@ import { resolveEntryLanguage } from "../i18n/entry-language.js";
 import { getMessages } from "../i18n/messages.js";
 import { createInkReveal, type InkRevealController } from "./ink-reveal.js";
 import { InkSearchHistory } from "./ink-search-history.js";
+import type { InkScene } from "./ink-graph-motion.js";
 import { startOmniboxSubmission, type InvalidOmniboxInputReason } from "../components/Omnibox/Omnibox.js";
 import { requestSafeUrlOpen } from "../lib/url.js";
 import { useStore } from "zustand";
 import type { StreamingSearch } from "../api/search.js";
 import { graphStore } from "../stores/graph-store.js";
-import { workspaceStore } from "../stores/workspace-store.js";
+import { selectCurrentGraph, workspaceStore } from "../stores/workspace-store.js";
+import { moveNode } from "../stores/workspace-edits.js";
 import { initializeWorkspacePersistence, workspacePersistenceStore } from "../stores/workspace-persistence.js";
 import "./ink-study.css";
 
 const AUTHOR_EMAIL = "cjmweb@outlook.com";
+const InkGraph = lazy(() => import("./ink-graph.js"));
+type NodePositions = Readonly<Record<string, XYPosition>>;
+type DraftLayout = Readonly<{ runId: string; positions: NodePositions }>;
 
 function InkStudy() {
   const stage = useRef<HTMLElement>(null);
@@ -28,6 +34,9 @@ function InkStudy() {
   const ink = useRef<InkRevealController | null>(null);
   const searchShell = useRef<HTMLFormElement>(null);
   const searchInput = useRef<HTMLInputElement>(null);
+  const stopButton = useRef<HTMLButtonElement>(null);
+  const graphHost = useRef<HTMLDivElement>(null);
+  const loadingStartedAt = useRef(0);
   const exploreButton = useRef<HTMLButtonElement>(null);
   const restoreSearchFocus = useRef(false);
   const restoreHomeFocus = useRef(false);
@@ -40,9 +49,17 @@ function InkStudy() {
   const ownedRun = useRef<string | null>(null);
   const searchCoordinator = useRef<StreamingSearch | null>(null);
   const runtime = useStore(graphStore, state => state);
+  const currentDocument = useStore(workspaceStore, selectCurrentGraph);
+  const documents = useStore(workspaceStore, state => state.documents);
+  const selectedNodes = useStore(workspaceStore, state => state.selectedNodeIds);
+  const [draftLayouts, setDraftLayouts] = useState<Readonly<Record<string, DraftLayout>>>({});
+  const [animateRunId, setAnimateRunId] = useState<string | null>(null);
+  const [showEmptyRecord, setShowEmptyRecord] = useState(false);
+  const historySelectionIntent = useRef(0);
   const persistence = useStore(workspacePersistenceStore, state => state);
-  const [feedback, setFeedback] = useState<InvalidOmniboxInputReason | "input_failure" | "search_failure" | null>(null);
+  const [feedback, setFeedback] = useState<InvalidOmniboxInputReason | "input_failure" | "search_failure" | "graph_failure" | null>(null);
   const [hasSearched, setHasSearched] = useState(false);
+  const [pendingSearch, setPendingSearch] = useState(false);
   const [openControl, setOpenControl] = useState<"language" | "engine" | null>(null);
   const languageOpen = openControl === "language";
   const engineOpen = openControl === "engine";
@@ -55,34 +72,67 @@ function InkStudy() {
   const [language, setLanguage] = useState<SearchLanguage>(
     () => resolveEntryLanguage(window.location.search) ?? "zh-CN",
   );
-  const renderLanguage = hasSearched ? runtime.language ?? language : language;
+  // 界面语言即时切换；文档和请求的生成语言、已生成标题说明均保持原始内容。
+  const renderLanguage = language;
   const messages = getMessages(renderLanguage);
   const storageBlocked = persistence.status === "loading" || persistence.error === "load";
   const engine = resolveSearchEngine(language, engineOverride);
+  const isCurrentRun = currentDocument !== null && runtime.activeRunId !== null && currentDocument.lastRunId === runtime.activeRunId;
+  // 完成图从持久文档恢复；未完成/已取消的真实草图仍取原运行，不能把草图伪装成已完成文档。
+  const showsDraft = isCurrentRun && runtime.nodes.length > 0 && (runtime.isSearching || currentDocument.nodes.length === 0);
+  const displayedNodes = showsDraft ? runtime.nodes : currentDocument?.nodes ?? [];
+  const displayedEdges = showsDraft ? runtime.edges : currentDocument?.edges ?? [];
+  // 完成交接沿用原工作区选择规则：没有人工保存选择时保留本 Run 的节点，避免切源时来回清选。
+  const displayedSelection = currentDocument === null ? null : selectedNodes[currentDocument.id] !== undefined
+    ? selectedNodes[currentDocument.id] ?? null
+    : isCurrentRun ? runtime.selectedNodeId
+    : currentDocument.presentationMode === "compact"
+      ? currentDocument.nodes.find(node => node.status === "ready" || node.status === "partial")?.id ?? null : null;
+  const currentDraft = currentDocument === null ? undefined : draftLayouts[currentDocument.id];
+  const displayedPositions = useMemo(() => ({ ...currentDocument?.positions,
+    ...(currentDraft?.runId === currentDocument?.lastRunId ? currentDraft?.positions : {}),
+  }), [currentDocument?.positions, currentDocument?.lastRunId, currentDraft]);
+  // 首页只隐藏图层；选中身份不随展示层退出而丢失，新建才清空 currentId。
+  const searchState = !entered ? "input" : pendingSearch ? "loading"
+    : currentDocument !== null && (displayedNodes.length > 0 ||
+      (!(isCurrentRun && runtime.isSearching) && (showEmptyRecord || currentDocument.lastRunId === null))) ? "graph"
+    : isCurrentRun && runtime.isSearching ? "loading" : "input";
+  const acceptsInput = ready && searchState === "input";
   const feedbackMessage = feedback === null ? null
     : feedback === "query" ? messages.omnibox.invalidQuery
     : feedback === "invalid_url" ? messages.omnibox.invalidUrl
     : feedback === "unsupported_protocol" ? messages.omnibox.unsupportedProtocol
+    : feedback === "graph_failure" ? messages.inkStudy.graphLoadFailed
     : feedback === "search_failure" ? messages.inkStudy.searchFailed : messages.omnibox.inputFailure;
-  const searchMessage = feedbackMessage ?? (hasSearched && runtime.runError !== null
+  const searchMessage = feedbackMessage ?? (entered && isCurrentRun && runtime.runError !== null
     ? messages.inkStudy.searchFailed : null);
 
   const submitSearch = (event: FormEvent<HTMLFormElement>): void => {
     event.preventDefault();
-    if (!ready || historyOpen || storageBlocked) return;
+    if (!acceptsInput || historyOpen || storageBlocked) return;
     const submissionNumber = ++latestSubmission.current;
     try {
       // 只替换提交界面：协议校验、取消旧请求、流式事件和图记录保存均继续走既有实现。
       const submission = startOmniboxSubmission(searchInput.current?.value ?? "", async input => {
         // 仅真实搜索才加载既有协调器及其图布局依赖；后来的提交或卸载可撤销尚未发出的请求。
         const intent = ++latestSearchIntent.current;
-        const { startWorkspaceSearch } = await import("../api/workspace-search.js");
+        loadingStartedAt.current = performance.now();
+        setPendingSearch(true);
+        setHasSearched(false);
+        setShowEmptyRecord(false);
+        setOpenControl(null);
+        // 图模块同样在发请求前预加载；网络或 CSS 加载失败沿提交错误路径恢复输入，避免计划到达后整页空白。
+        const [{ startWorkspaceSearch }] = await Promise.all([
+          import("../api/workspace-search.js"), import("./ink-graph.js"),
+        ]);
         // 非法输入或 Direct 只改变反馈，不能取消之前已经确认的有效搜索意图。
         if (latestSearchIntent.current !== intent) return;
         searchCoordinator.current = startWorkspaceSearch;
+        setPendingSearch(false);
         setHasSearched(true);
         const completion = startWorkspaceSearch(input);
         ownedRun.current = graphStore.getState().activeRunId;
+        setAnimateRunId(ownedRun.current);
         return completion;
       }, url => requestSafeUrlOpen(url, (safeUrl, target, features) => window.open(safeUrl, target, features)), language, engine);
       if (submission.kind === "invalid") { setFeedback(submission.reason); return; }
@@ -91,7 +141,10 @@ function InkStudy() {
       if (submission.kind === "ai_search") {
         if (searchInput.current !== null) searchInput.current.value = submission.query;
         void submission.completion.catch(() => {
-          if (latestSubmission.current === submissionNumber) setFeedback("search_failure");
+          if (latestSubmission.current === submissionNumber) {
+            setPendingSearch(false);
+            setFeedback("search_failure");
+          }
         });
       }
     } catch {
@@ -99,10 +152,59 @@ function InkStudy() {
     }
   };
 
+  const setInkScene = useCallback((scene: InkScene): void => { ink.current?.setScene(scene); }, []);
+
+  /** 运行中只能暂存位置；完成文档已含真实节点后，再以同一 graphId/runId 承接坐标。 */
+  useEffect(() => {
+    const remaining: Record<string, DraftLayout> = {};
+    let changed = false;
+    for (const [graphId, draft] of Object.entries(draftLayouts)) {
+      const document = workspaceStore.getState().documents.find(item => item.id === graphId);
+      if (document === undefined || document.lastRunId !== draft.runId) { changed = true; continue; }
+      if (document.nodes.length === 0) { remaining[graphId] = draft; continue; }
+      let next = document;
+      for (const [nodeId, position] of Object.entries(draft.positions)) {
+        if (document.nodes.some(node => node.id === nodeId)) next = moveNode(next, nodeId, position);
+      }
+      workspaceStore.getState().replaceGraph(next);
+      changed = true;
+    }
+    if (changed) setDraftLayouts(remaining);
+  }, [documents, draftLayouts]);
+
+  const moveDisplayedNode = useCallback((nodeId: string, position: XYPosition): void => {
+    if (currentDocument === null) return;
+    const state = workspaceStore.getState();
+    const document = state.documents.find(item => item.id === currentDocument.id);
+    if (document === undefined) return;
+    if (document.nodes.some(node => node.id === nodeId)) state.replaceGraph(moveNode(document, nodeId, position));
+    else if (document.lastRunId !== null && document.lastRunId === runtime.activeRunId && runtime.nodes.some(node => node.id === nodeId)) {
+      const runId = document.lastRunId;
+      setDraftLayouts(previous => {
+        const layout = previous[document.id];
+        const positions = layout?.runId === runId ? layout.positions : {};
+        if (positions[nodeId]?.x === position.x && positions[nodeId]?.y === position.y) return previous;
+        return { ...previous, [document.id]: { runId, positions: { ...positions, [nodeId]: position } } };
+      });
+    }
+  }, [currentDocument?.id, runtime.activeRunId, runtime.nodes]);
+
+  useEffect(() => {
+    if (searchState === "input") setInkScene({ kind: "pointer" });
+    if (searchState === "loading") setInkScene({ kind: "loading", startedAt: loadingStartedAt.current });
+    // graph 的屏幕坐标由已挂载的原 GraphView 提供，按需模块就绪前保持加载墨迹。
+    if (historyOpen) return;
+    const active = document.activeElement;
+    if (active !== document.body && !searchShell.current?.contains(active) && !engineControl.current?.contains(active)) return;
+    if (searchState === "loading") stopButton.current?.focus({ preventScroll: true });
+    else if (searchState === "graph") graphHost.current?.focus({ preventScroll: true });
+    else if (ready) searchInput.current?.focus({ preventScroll: true });
+  }, [searchState, setInkScene]);
+
   useEffect(() => {
     // 焦点在变形完成后进入输入框；减弱动态时也要主动重绘文字的新位置。
     ink.current?.refreshTextPosition();
-    if (ready) searchInput.current?.focus({ preventScroll: true });
+    if (ready && searchState === "input") searchInput.current?.focus({ preventScroll: true });
     if (phase === "intro" && restoreHomeFocus.current) {
       restoreHomeFocus.current = false;
       exploreButton.current?.focus({ preventScroll: true });
@@ -129,9 +231,11 @@ function InkStudy() {
   useEffect(() => {
     if (!historyOpen && ready && restoreSearchFocus.current) {
       restoreSearchFocus.current = false;
-      searchInput.current?.focus({ preventScroll: true });
+      if (searchState === "input") searchInput.current?.focus({ preventScroll: true });
+      else if (searchState === "loading") stopButton.current?.focus({ preventScroll: true });
+      else stage.current?.querySelector<HTMLButtonElement>(".ink-study__history-toggle")?.focus({ preventScroll: true });
     }
-  }, [historyOpen, ready]);
+  }, [historyOpen, ready, searchState]);
 
   /** 重置本页搜索意图：新建与返回首页共用取消门禁，不清空已保存图。 */
   const resetSearch = (): void => {
@@ -139,13 +243,25 @@ function InkStudy() {
     ++latestSearchIntent.current;
     if (ownedRun.current !== null && graphStore.getState().activeRunId === ownedRun.current) searchCoordinator.current?.cancel();
     ownedRun.current = null;
+    setPendingSearch(false);
     setFeedback(null);
     setHasSearched(false);
+    setAnimateRunId(null);
+  };
+
+  const stopSearch = (): void => {
+    resetSearch();
+    ++historySelectionIntent.current;
+    setShowEmptyRecord(false);
+    restoreSearchFocus.current = true;
   };
 
   const newSearch = (): void => {
     if (!ready || storageBlocked) return;
     resetSearch();
+    ++historySelectionIntent.current;
+    setShowEmptyRecord(false);
+    setDraftLayouts({});
     workspaceStore.getState().selectGraph(null);
     if (searchInput.current !== null) searchInput.current.value = "";
     closeHistory(true);
@@ -153,11 +269,44 @@ function InkStudy() {
 
   const returnHome = (): void => {
     resetSearch();
+    ++historySelectionIntent.current;
     restoreHomeFocus.current = true;
     restoreSearchFocus.current = false;
     setHistoryOpen(false);
     setOpenControl(null);
     setPhase("returning");
+  };
+
+  const restoreHistory = async (graphId: string): Promise<void> => {
+    if (storageBlocked) return;
+    const intent = ++historySelectionIntent.current;
+    try {
+      // 冷启动也先加载显示模块；失败时保留原图与原记录，不让 lazy 抛到整页。
+      await import("./ink-graph.js");
+      if (historySelectionIntent.current !== intent) return;
+      const document = workspaceStore.getState().documents.find(item => item.id === graphId);
+      if (document === undefined) return;
+      // 已在查看同一图时只合上历史，不重置入场时钟或提前揭示尚在生长的节点。
+      if (workspaceStore.getState().currentId === graphId && !pendingSearch && searchState !== "input") {
+        setFeedback(null);
+        closeHistory(true);
+        return;
+      }
+      // 选择历史撤销尚未发出的新查询；已经运行的旧图仍可在后台完成自己的保存。
+      ++latestSubmission.current;
+      ++latestSearchIntent.current;
+      setPendingSearch(false);
+      workspaceStore.getState().selectGraph(graphId);
+      setShowEmptyRecord(true);
+      setAnimateRunId(null);
+      setHasSearched(false);
+      setFeedback(null);
+      closeHistory(true);
+    } catch {
+      if (historySelectionIntent.current !== intent) return;
+      setFeedback("graph_failure");
+      closeHistory(true);
+    }
   };
 
   useEffect(() => {
@@ -170,8 +319,14 @@ function InkStudy() {
     return () => motion.removeEventListener("change", finishWithoutMotion);
   }, [phase]);
 
-  const beginExploring = (): void => {
+  const beginExploring = async (): Promise<void> => {
     if (phase !== "intro") return;
+    const intent = historySelectionIntent.current;
+    if (currentDocument !== null) {
+      try { await import("./ink-graph.js"); }
+      catch { setFeedback("graph_failure"); return; }
+    }
+    if (intent !== historySelectionIntent.current) return;
     const shell = searchShell.current;
     if (shell === null) return;
     // 将自适应文案宽度冻结为当前像素宽，再过渡到百分比宽度，避免 auto 无法平滑插值。
@@ -221,6 +376,7 @@ function InkStudy() {
       ink.current = null;
       ++latestSubmission.current;
       ++latestSearchIntent.current;
+      ++historySelectionIntent.current;
       // 只取消本页发起且仍拥有的请求，沿用协调器的 AbortSignal 和迟到事件门禁。
       if (ownedRun.current !== null && graphStore.getState().activeRunId === ownedRun.current) searchCoordinator.current?.cancel();
     };
@@ -235,7 +391,7 @@ function InkStudy() {
   return (
     <main className="ink-study">
       <section className="ink-study__stage" id="ink-stage" ref={stage}
-        data-layer={entered ? "explore" : "intro"} data-search-ready={ready} data-history-open={historyOpen}
+        data-layer={entered ? "explore" : "intro"} data-search-ready={ready} data-history-open={historyOpen} data-search-state={searchState}
         aria-label={messages.inkStudy.stageAria}>
         <h1 className="ink-study__wordmark" ref={heading}>WAYFINDER</h1>
         <canvas className="ink-study__canvas" ref={canvas} aria-hidden="true" />
@@ -260,24 +416,29 @@ function InkStudy() {
           <div className="ink-study__search-input-shell">
             <button type="button" className="ink-study__pill ink-study__explore" ref={exploreButton}
               inert={phase !== "intro"} aria-hidden={phase !== "intro"}
-              onClick={beginExploring}>
+              onClick={() => { void beginExploring(); }}>
               {messages.inkStudy.explore} <span aria-hidden="true">↗</span>
             </button>
             <input type="search" className="ink-study__search-input" ref={searchInput}
-              inert={!ready} aria-hidden={!ready} aria-label={messages.omnibox.queryLabel}
+              inert={!acceptsInput} aria-hidden={!acceptsInput} aria-label={messages.omnibox.queryLabel}
               aria-describedby={searchMessage === null ? undefined : "ink-search-feedback"}
               onInput={() => setFeedback(null)}
               placeholder={messages.omnibox.queryLabel} />
           </div>
-          <button type="submit" className="ink-study__pill ink-study__search-submit" disabled={!ready || storageBlocked}
-            aria-hidden={!ready} aria-label={messages.omnibox.searchButton}>
+          <button type="submit" className="ink-study__pill ink-study__search-submit" disabled={!acceptsInput || storageBlocked}
+            inert={!acceptsInput} aria-hidden={!acceptsInput} aria-label={messages.omnibox.searchButton}>
             <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true">
               <path d="M4 12h15m-6-6 6 6-6 6" />
             </svg>
           </button>
+          <button type="button" className="ink-study__pill ink-study__search-stop" ref={stopButton}
+            inert={searchState !== "loading"} aria-hidden={searchState !== "loading"}
+            aria-label={messages.workspace.cancel} onClick={stopSearch}>
+            <svg width="24" height="24" viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="4" /></svg>
+          </button>
         </form>
 
-        <div className="ink-study__engine" ref={engineControl} data-ink-control inert={!ready} aria-hidden={!ready}
+        <div className="ink-study__engine" ref={engineControl} data-ink-control inert={!acceptsInput} aria-hidden={!acceptsInput}
           onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) setOpenControl(null); }}
           onKeyDown={event => {
             if (event.key !== "Escape") return;
@@ -303,14 +464,10 @@ function InkStudy() {
               <span>{messages.searchEngine.labels[option]}</span><span aria-hidden="true">{engine === option ? "✓" : ""}</span>
             </button>)}
           </div> : null}
-          {hasSearched ? <div className="ink-study__run-status">
-            <span role="status">{runtime.isSearching ? messages.app.searchState.searching : `${messages.app.nodeCount} ${runtime.nodes.length}`}</span>
-            {runtime.isSearching ? <button type="button" className="ink-study__pill"
-              onClick={() => {
-                ++latestSubmission.current;
-                ++latestSearchIntent.current;
-                searchCoordinator.current?.cancel();
-              }}>{messages.workspace.cancel}</button> : null}
+        </div>
+        <div className="ink-study__search-status" data-ink-control>
+          {entered && (hasSearched || searchState === "graph" || (isCurrentRun && runtime.isSearching)) ? <div className="ink-study__run-status">
+            <span role="status">{isCurrentRun && runtime.isSearching ? messages.app.searchState.searching : `${messages.app.nodeCount} ${displayedNodes.length}`}</span>
           </div> : null}
           {searchMessage === null ? null : <p className="ink-study__search-feedback" id="ink-search-feedback" role="alert">{searchMessage}</p>}
           {persistence.error === null ? null : <div className="ink-study__storage-error" role="alert">
@@ -320,6 +477,18 @@ function InkStudy() {
         </div>
         </div>
 
+        {searchState === "graph" && currentDocument !== null ? <div className="ink-study__graph" ref={graphHost} tabIndex={-1}
+          inert={historyOpen} aria-hidden={historyOpen} data-ink-control>
+          <Suspense fallback={null}>
+            <InkGraph key={currentDocument.id} nodes={displayedNodes} edges={displayedEdges} positions={displayedPositions}
+              presentationMode={showsDraft ? runtime.presentationMode ?? currentDocument.presentationMode : currentDocument.presentationMode}
+              language={renderLanguage} onScene={setInkScene} onMoveNode={moveDisplayedNode}
+              selectedNodeId={displayedSelection}
+              onSelectNode={showsDraft ? graphStore.getState().selectNode : workspaceStore.getState().selectNode}
+              animate={isCurrentRun && animateRunId === runtime.activeRunId} />
+          </Suspense>
+        </div> : null}
+
         <button type="button" className="ink-study__pill ink-study__back" onClick={returnHome}
           inert={!entered} aria-hidden={!entered} aria-label={messages.inkStudy.backHome}>
           <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">
@@ -328,7 +497,7 @@ function InkStudy() {
         </button>
 
         <InkSearchHistory open={historyOpen} available={ready} language={renderLanguage}
-          onOpen={openHistory} onClose={closeHistory} onNewSearch={newSearch} />
+          onOpen={openHistory} onClose={closeHistory} onNewSearch={newSearch} onSelectGraph={restoreHistory} />
 
         {/* 披露面板使用普通按钮与自然 Tab 顺序，避免模拟系统下拉框或改变语言协议。 */}
         <div className="ink-study__language" ref={languageControl} data-ink-control

@@ -17,7 +17,7 @@ import type {
   XYPosition,
 } from "@xyflow/react";
 import type {
-  EditableGraph,
+  GraphEdge,
   PresentationMode,
   SearchLanguage,
 } from "@wayfinder/contracts";
@@ -29,10 +29,12 @@ import { EditNotice, useGraphEdit } from "../Workspace/WorkspaceEditor.js";
 import { graphStore } from "../../stores/graph-store.js";
 import { getMessages } from "../../i18n/messages.js";
 import { GraphNode } from "./GraphNode.js";
+import { InkGraphNode } from "../../design/ink-graph-node.js";
 import {
   buildGraphFlowElements,
   type GraphFlowEdge,
   type GraphFlowNode,
+  type GraphDisplayNode,
 } from "./graph-layout.js";
 import {
   applySelectedNodeId,
@@ -44,19 +46,28 @@ import {
 const NODE_TYPES: NodeTypes = {
   wayfinder: GraphNode,
 };
+const INK_NODE_TYPES: NodeTypes = { wayfinder: InkGraphNode };
 
 export type GraphViewProps = Readonly<{
   presentationMode: PresentationMode;
   language: SearchLanguage;
-  graph?: Pick<EditableGraph, "nodes" | "edges" | "positions">;
+  graph?: Readonly<{ nodes: readonly GraphDisplayNode[]; edges: readonly GraphEdge[]; positions: Readonly<Record<string, XYPosition>> }>;
   selectedNodeId?: string | null;
   onSelectNode?: (nodeId: string | null) => void;
   editableGraphId?: string;
   flowId?: string;
+  /** 墨迹只替换节点皮肤和揭示时机，布局、选择、平移与缩放继续复用同一个画布。 */
+  appearance?: "default" | "ink";
+  visibleNodeIds?: ReadonlySet<string>;
+  visibleEdgeIds?: ReadonlySet<string>;
+  revealSettled?: boolean;
+  /** 运行草图尚未进入编辑文档时，位置由调用方承接；已保存图继续复用原编辑入口。 */
+  onMoveNode?: (nodeId: string, position: XYPosition) => void;
 }>;
 
 /** 两种展示模式共用同一 Product Graph；Compact 只改变视图密度，不改写 Node 或 Edge。 */
-export function GraphView({ presentationMode, language, graph, selectedNodeId: providedSelection, onSelectNode, editableGraphId, flowId }: GraphViewProps) {
+export function GraphView({ presentationMode, language, graph, selectedNodeId: providedSelection, onSelectNode, editableGraphId, flowId,
+  appearance = "default", visibleNodeIds, visibleEdgeIds, revealSettled, onMoveNode }: GraphViewProps) {
   const runNodes = useStore(graphStore, state => state.nodes);
   const runEdges = useStore(graphStore, state => state.edges);
   const runSelection = useStore(graphStore, state => state.selectedNodeId);
@@ -99,11 +110,22 @@ export function GraphView({ presentationMode, language, graph, selectedNodeId: p
    * 否则 graph.plan 与增量状态会先绘制一帧旧 Graph。选择也只由业务 ID 派生。
    */
   const flowNodes = useMemo(
-    () => applySelectedNodeId(elements.nodes, selectedNodeId).map(node =>
-      dragPosition?.nodeId === node.id ? { ...node, position: dragPosition.position } : node,
+    () => applySelectedNodeId(elements.nodes, selectedNodeId).map((node): GraphFlowNode =>
+      ({ ...node,
+        ...(dragPosition?.nodeId === node.id ? { position: dragPosition.position } : {}),
+        // 隐藏内容仍占据布局，供墨迹读取目的地；揭示前不能被鼠标或键盘提前选中。
+        ...(visibleNodeIds === undefined ? {} : {
+          focusable: visibleNodeIds.has(node.id), selectable: visibleNodeIds.has(node.id),
+          style: { ...node.style, visibility: visibleNodeIds.has(node.id) ? "visible" : "hidden" },
+          className: `${node.className ?? ""} ${visibleNodeIds.has(node.id) ? "ink-graph-node--visible" : "ink-graph-node--hidden"}`,
+          domAttributes: { "aria-hidden": !visibleNodeIds.has(node.id), inert: !visibleNodeIds.has(node.id) },
+        }),
+      }),
     ),
-    [elements.nodes, selectedNodeId, dragPosition],
+    [elements.nodes, selectedNodeId, dragPosition, visibleNodeIds],
   );
+  const flowEdges = useMemo(() => visibleEdgeIds === undefined ? elements.edges
+    : elements.edges.map(edge => ({ ...edge, hidden: !visibleEdgeIds.has(edge.id) })), [elements.edges, visibleEdgeIds]);
 
   const handleSelectionChange = useCallback(
     ({ nodes: selectedNodes }: { nodes: GraphFlowNode[] }) => {
@@ -120,7 +142,7 @@ export function GraphView({ presentationMode, language, graph, selectedNodeId: p
        * 键盘 Enter / Space 只产生 select change，不触发 onNodeClick；这里仅提取选择，
        * 测量不进入业务 Store；拖动仅保存临时位置，结束时才提交一次撤销快照。
        */
-      if (editableGraphId !== undefined) {
+      if (editableGraphId !== undefined || onMoveNode !== undefined) {
         for (const change of changes) {
           if (change.type !== "position" || change.position === undefined) continue;
           const position = change.position;
@@ -130,7 +152,8 @@ export function GraphView({ presentationMode, language, graph, selectedNodeId: p
               ? previous : { nodeId: change.id, position });
           } else if (change.dragging === false) {
             // 方向键移动没有 DragStop；明确结束的位移必须同样保存，指针重复结算由同值检查去重。
-            edit.commit(graph => moveNode(graph, change.id, position));
+            if (onMoveNode !== undefined) onMoveNode(change.id, position);
+            else edit.commit(graph => moveNode(graph, change.id, position));
             setDragPosition(null);
           }
         }
@@ -143,7 +166,7 @@ export function GraphView({ presentationMode, language, graph, selectedNodeId: p
         selectNode(nextSelectedNodeId);
       }
     },
-    [flowNodes, selectNode, editableGraphId],
+    [flowNodes, selectNode, editableGraphId, onMoveNode],
   );
 
   if (elements.nodes.length === 0) {
@@ -152,21 +175,23 @@ export function GraphView({ presentationMode, language, graph, selectedNodeId: p
 
   return (
     <div
-      className={`graph-canvas graph-canvas--${presentationMode}`}
+      className={`graph-canvas graph-canvas--${presentationMode}${appearance === "ink" ? " graph-canvas--ink" : ""}`}
       data-presentation-mode={presentationMode}
+      data-reveal-settled={revealSettled}
       aria-label={messages.canvasAria[presentationMode]}
     >
       <ReactFlow<GraphFlowNode, GraphFlowEdge>
         {...(flowId === undefined ? {} : { id: flowId })}
         nodes={flowNodes}
-        edges={elements.edges}
-        nodeTypes={NODE_TYPES}
+        edges={flowEdges}
+        nodeTypes={appearance === "ink" ? INK_NODE_TYPES : NODE_TYPES}
         onInit={instance => { flowInstance.current = instance; }}
         onNodesChange={handleNodesChange}
         onNodeClick={(_event, node) => selectNode(node.id)}
         onNodeDragStop={(_event, node) => {
-          if (editableGraphId === undefined) return;
-          edit.commit(graph => moveNode(graph, node.id, node.position));
+          if (onMoveNode !== undefined) onMoveNode(node.id, node.position);
+          else if (editableGraphId !== undefined) edit.commit(graph => moveNode(graph, node.id, node.position));
+          else return;
           setDragPosition(null);
         }}
         onConnect={connection => {
@@ -184,9 +209,9 @@ export function GraphView({ presentationMode, language, graph, selectedNodeId: p
         onSelectionChange={handleSelectionChange}
         fitView
         fitViewOptions={{ padding: 0.2 }}
-        minZoom={0.35}
+        minZoom={appearance === "ink" ? 0.12 : 0.35}
         maxZoom={1.8}
-        nodesDraggable={editableGraphId !== undefined}
+        nodesDraggable={editableGraphId !== undefined || onMoveNode !== undefined}
         nodesConnectable={editableGraphId !== undefined}
         // 删除统一走显式入口与确定性函数；禁止画布内部先删后与工作区漂移。
         deleteKeyCode={null}
@@ -197,7 +222,7 @@ export function GraphView({ presentationMode, language, graph, selectedNodeId: p
         zoomOnScroll
         ariaLabelConfig={ariaLabels}
       >
-        <Background variant={BackgroundVariant.Dots} gap={20} size={1.2} />
+        {appearance === "ink" ? null : <Background variant={BackgroundVariant.Dots} gap={20} size={1.2} />}
         <Controls aria-label={messages.controlsAria} showInteractive={false} />
       </ReactFlow>
       <div className="graph-edit-notice"><EditNotice problem={edit.problem} language={language} /></div>

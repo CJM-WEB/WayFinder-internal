@@ -32,6 +32,7 @@ export type GraphDisplayNode = GraphStoreNode | EditableNode;
 
 export type GraphNodeData = {
   title: string;
+  description?: string;
   nodeType: NodeType;
   status: StreamNodeStatus | EditableNode["status"];
   resourceCount: number;
@@ -277,6 +278,7 @@ export const buildGraphFlowElements = (
       className: `graph-node graph-node--${node.nodeType} graph-node--${node.status}`,
       data: {
         title: node.title,
+        description: node.description,
         nodeType: node.nodeType,
         status: node.status,
         resourceCount: "resources" in node ? node.resources.length : 0,

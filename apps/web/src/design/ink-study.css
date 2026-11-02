@@ -108,7 +108,7 @@ a:focus-visible, button:focus-visible, .ink-study__contact:focus-visible {
   font-size: 10px;
   font-weight: 700;
   cursor: pointer;
-  transition: color 160ms ease, background-color 160ms ease;
+  transition: color 160ms var(--ink-slide-ease), background-color 160ms var(--ink-slide-ease);
 }
 .ink-study__pill:hover { background: #f3f3f1; color: #111; }
 /* 变形主体一直是同一个黑色胶囊；宽度到位后才打开右侧间隙并显示输入内容。 */
@@ -147,7 +147,7 @@ a:focus-visible, button:focus-visible, .ink-study__contact:focus-visible {
   min-height: 0;
   border: 0;
   white-space: nowrap;
-  transition: opacity 180ms var(--ink-slide-ease), color 160ms ease, background-color 160ms ease;
+  transition: opacity 180ms var(--ink-slide-ease), color 160ms var(--ink-slide-ease), background-color 160ms var(--ink-slide-ease);
 }
 .ink-study__search-input {
   position: absolute;
@@ -220,7 +220,7 @@ a:focus-visible, button:focus-visible, .ink-study__contact:focus-visible {
   pointer-events: none;
   white-space: nowrap;
   text-align: center;
-  transition: transform 520ms var(--ink-slide-ease) 160ms, opacity 520ms var(--ink-slide-ease) 160ms;
+  transition: top 680ms var(--ink-slide-ease), transform 520ms var(--ink-slide-ease) 160ms, opacity 520ms var(--ink-slide-ease) 160ms;
 }
 .ink-study__stage[data-search-ready="true"] .ink-study__engine {
   transform: translate(-50%, 0) scaleX(1);
@@ -309,7 +309,7 @@ a:focus-visible, button:focus-visible, .ink-study__contact:focus-visible {
   transform: translateX(-50%);
   opacity: 0;
   transition: width 420ms var(--ink-slide-ease),
-    opacity 180ms var(--ink-slide-ease), color 160ms ease, background-color 160ms ease;
+    opacity 180ms var(--ink-slide-ease), color 160ms var(--ink-slide-ease), background-color 160ms var(--ink-slide-ease);
 }
 .ink-study__stage[data-search-ready="true"] .ink-study__history-toggle { opacity: 1; }
 .ink-study__history-toggle svg {
@@ -372,6 +372,12 @@ a:focus-visible, button:focus-visible, .ink-study__contact:focus-visible {
   flex: 1; min-width: 0; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   font-size: 14px; font-weight: 500; line-height: 1.5;
 }
+.ink-study__history-title {
+  display: block; width: 100%; padding: 8px 0; border: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  background: transparent; color: inherit; text-align: left; font: inherit; cursor: pointer;
+}
+.ink-study__history-title[aria-current="true"] { font-weight: 600; }
 .ink-study__history-actions { display: flex; flex: none; align-items: center; gap: 8px; }
 .ink-study__history-actions button { gap: 6px; }
 .ink-study__history-title-input {
@@ -381,6 +387,116 @@ a:focus-visible, button:focus-visible, .ink-study__contact:focus-visible {
 }
 .ink-study__history-panel button:disabled { opacity: 0.45; cursor: default; }
 .ink-study__history-storage-status { margin: 20px 5px 0; color: #62625d; font-size: 10px; }
+
+/* 搜索融合：原胶囊收拢到中央，提交与引擎并入，停止图标最后浮现；真实计划到达后整体缩隐。 */
+.ink-study__search {
+  opacity: 1;
+  transform: scale(1);
+  transition: top 680ms var(--ink-slide-ease), left 680ms var(--ink-slide-ease),
+    width 680ms var(--ink-slide-ease), height 680ms var(--ink-slide-ease),
+    transform 520ms var(--ink-slide-ease), opacity 520ms var(--ink-slide-ease);
+}
+.ink-study__search-input-shell { transition: border-radius 680ms var(--ink-slide-ease); }
+.ink-study__search-stop {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  opacity: 0;
+  pointer-events: none;
+  transform: scale(0.7);
+  transition: opacity 420ms var(--ink-slide-ease), transform 420ms var(--ink-slide-ease);
+}
+.ink-study__search-stop svg { display: block; fill: currentColor; }
+.ink-study__stage:is([data-search-state="loading"], [data-search-state="graph"]) .ink-study__search {
+  top: calc(50% - var(--ink-search-height) / 2);
+  left: calc(50% - var(--ink-search-height) / 2);
+  width: var(--ink-search-height);
+  height: var(--ink-search-height);
+}
+.ink-study__stage:is([data-search-state="loading"], [data-search-state="graph"]) .ink-study__search-input-shell { border-radius: 50%; }
+.ink-study__stage:is([data-search-state="loading"], [data-search-state="graph"]) .ink-study__search-input { opacity: 0; }
+.ink-study__stage:is([data-search-state="loading"], [data-search-state="graph"]) .ink-study__search-submit {
+  width: 0; margin-left: 0; opacity: 0;
+}
+.ink-study__stage:is([data-search-state="loading"], [data-search-state="graph"]) .ink-study__engine {
+  top: calc(50% - var(--ink-pill-height) / 2);
+  transform: translate(-50%, 0) scale(0.25);
+  opacity: 0;
+  pointer-events: none;
+  transition: top 680ms var(--ink-slide-ease), transform 680ms var(--ink-slide-ease), opacity 680ms var(--ink-slide-ease);
+}
+.ink-study__stage[data-search-state="loading"] .ink-study__search-stop {
+  opacity: 1; transform: scale(1); pointer-events: auto; transition-delay: 260ms;
+}
+.ink-study__stage[data-search-state="graph"] .ink-study__search { transform: scale(0); opacity: 0; pointer-events: none; }
+.ink-study__search-status {
+  position: absolute;
+  bottom: 72px;
+  left: 50%;
+  width: max-content;
+  max-width: min(80vw, 420px);
+  transform: translateX(-50%);
+  text-align: center;
+  pointer-events: auto;
+}
+.ink-study__search-status .ink-study__run-status { margin: 0; font-size: 10px; }
+.ink-study__search-status .ink-study__search-feedback { margin: 8px auto 0; }
+.ink-study__search-status .ink-study__storage-error { margin: 8px auto 0; }
+
+/* 墨迹图仍是原 React Flow：完整图先布局，GPU 根据固定节点盒读取同一屏幕坐标。 */
+.ink-study__graph { position: absolute; z-index: 2; inset: 0; outline: none; }
+.ink-study__graph .graph-canvas--ink { position: relative; width: 100%; height: 100%; background: transparent; }
+.graph-canvas--ink .react-flow {
+  --xy-background-color: transparent;
+  --xy-edge-stroke: #77776f;
+  --xy-edge-stroke-width: 1.2;
+  --xy-edge-label-background-color: #f3f3f1;
+  --xy-edge-label-color: #62625d;
+}
+.graph-canvas--ink .react-flow__node { width: 240px; height: 112px; border: 0; background: transparent; box-shadow: none; }
+.graph-canvas--ink .ink-graph-node--hidden { visibility: hidden; pointer-events: none; }
+.ink-graph-node { width: 240px; height: 112px; color: #fff; text-align: left; }
+.ink-graph-node .react-flow__handle { opacity: 0; pointer-events: none; }
+.ink-graph-node__content {
+  height: 100%;
+  padding: 8px 16px;
+  border-radius: 30px;
+  opacity: 0;
+  transform: scale(0.85);
+  text-shadow: 0 1px 5px #0007;
+  transition: opacity 560ms var(--ink-slide-ease), transform 560ms var(--ink-slide-ease), outline-color 560ms var(--ink-slide-ease);
+}
+.ink-graph-node--visible .ink-graph-node__content { opacity: 1; transform: scale(1); }
+.ink-graph-node__eyebrow { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 9px; letter-spacing: 0.05em; }
+.ink-graph-node h3, .ink-graph-node p { display: -webkit-box; -webkit-box-orient: vertical; overflow: hidden; }
+.ink-graph-node h3 { -webkit-line-clamp: 2; margin: 5px 0 0; font-size: 15px; font-weight: 600; line-height: 1.12; }
+.ink-graph-node p { -webkit-line-clamp: 2; margin: 4px 0 0; font-size: 10px; line-height: 1.25; opacity: 0.88; }
+.ink-graph-node__detail { display: block; margin-top: 3px; font-size: 9px; line-height: 1.2; opacity: 0.85; }
+.graph-canvas--ink .react-flow__node:is(.selected, :focus-visible) .ink-graph-node__content {
+  outline: 1px solid #ffffffb3; outline-offset: 6px;
+}
+.ink-study__stage:not([data-ink-renderer="active"]) .ink-graph-node__content {
+  background: linear-gradient(135deg, #332a79, #923359 70%, #a9502c);
+  box-shadow: 0 12px 24px #11111115;
+}
+.graph-canvas--ink .react-flow__edge { animation: ink-edge-in 560ms var(--ink-slide-ease) both; }
+/* 此图曾减弱动态并已全显时，恢复系统偏好也不能重启已挂载边的透明度动画。 */
+.graph-canvas--ink[data-reveal-settled="true"] .react-flow__edge { animation: none; }
+.graph-canvas--ink .graph-edge--related .react-flow__edge-path { stroke-dasharray: 4 6; stroke: #a0a097; }
+.graph-canvas--ink .react-flow__edge-text { font-size: 9px; }
+.graph-canvas--ink .react-flow__edge-textbg { fill: #f3f3f1; fill-opacity: 0.85; }
+.graph-canvas--ink .react-flow__controls { overflow: hidden; display: flex; border-radius: 24px; box-shadow: none; }
+.graph-canvas--ink .react-flow__controls-button { width: 28px; height: 28px; padding: 8px; border: 0; background: #111; color: #fff; fill: #fff; transition: background-color 180ms var(--ink-slide-ease); }
+.graph-canvas--ink .react-flow__controls-button:hover { background: #555; }
+.graph-canvas--ink .graph-edit-notice:empty { display: none; }
+@keyframes ink-edge-in { from { opacity: 0; } to { opacity: 1; } }
 .ink-study__language { top: var(--ink-corner-top); right: var(--ink-corner-inset); }
 .ink-study__chevron {
   display: block;
@@ -391,7 +507,7 @@ a:focus-visible, button:focus-visible, .ink-study__contact:focus-visible {
   stroke-width: 1.4;
   stroke-linecap: round;
   stroke-linejoin: round;
-  transition: transform 180ms ease;
+  transition: transform 180ms var(--ink-slide-ease);
 }
 .ink-study__language [aria-expanded="true"], .ink-study__engine [aria-expanded="true"] { background: #fff; color: #111; }
 .ink-study__language [aria-expanded="true"] .ink-study__chevron,
@@ -433,8 +549,8 @@ a:focus-visible, button:focus-visible, .ink-study__contact:focus-visible {
   overflow: hidden;
   opacity: 0;
   white-space: nowrap;
-  transition: max-width 420ms cubic-bezier(0.22, 1, 0.36, 1),
-    margin-left 420ms cubic-bezier(0.22, 1, 0.36, 1), opacity 220ms ease;
+  transition: max-width 420ms var(--ink-slide-ease),
+    margin-left 420ms var(--ink-slide-ease), opacity 220ms var(--ink-slide-ease);
 }
 .ink-study__contact:is(:hover, :focus-visible) { background: #fff; color: #111; }
 .ink-study__contact:is(:hover, :focus-visible) .ink-study__contact-email {
@@ -469,7 +585,7 @@ a:focus-visible, button:focus-visible, .ink-study__contact:focus-visible {
     min-height: calc(100svh - 18px);
     border-radius: 22px;
   }
-  .ink-study__stage[data-layer="explore"] .ink-study__search { left: 7%; width: 86%; }
+  .ink-study__stage[data-layer="explore"][data-search-state="input"] .ink-study__search { left: 7%; width: 86%; }
   .ink-study__history-drawer { left: 7%; width: 86%; }
   .ink-study__history-header { flex-wrap: wrap; gap: 12px; }
   .ink-study__history-record { padding-inline: 14px; }
@@ -488,5 +604,7 @@ a:focus-visible, button:focus-visible, .ink-study__contact:focus-visible {
   .ink-study__wordmark, .ink-study__tagline, .ink-study__search, .ink-study__search-input,
   .ink-study__search-submit, .ink-study__engine, .ink-study__search-layer, .ink-study__history-drawer,
   .ink-study__history-toggle, .ink-study__history-toggle svg, .ink-study__history-toggle span,
-  .ink-study__history-record { transition: none; }
+  .ink-study__history-record, .ink-study__search-stop, .ink-study__search-input-shell,
+  .ink-graph-node__content, .graph-canvas--ink .react-flow__controls-button { transition: none; }
+  .graph-canvas--ink .react-flow__edge { animation: none; }
 }

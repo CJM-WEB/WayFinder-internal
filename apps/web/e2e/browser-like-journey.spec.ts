@@ -9,7 +9,9 @@
  * - 非 `/api/search` 的 JavaScript fetch 一律拒绝，Resource Open 只记录安全打开意图。
  */
 import {
+  EditableGraphSchema,
   StreamEventSchema,
+  type EditableGraph,
   type Resource,
   type SearchLanguage,
   type SearchEngine,
@@ -128,6 +130,81 @@ function createJourneyEvents(): readonly StreamEvent[] {
       });
     }
     return event;
+  });
+}
+
+/**
+ * 墨迹生长夹具：故意打乱节点数组，再增加一条真实相关边形成汇合。
+ * 这样浏览器必须按业务连线传播，而不能碰巧按数组顺序依次展示或只保留生成树的边。
+ */
+function createInkMotionEvents(): readonly StreamEvent[] {
+  const events = createJourneyEvents();
+  const extraEdge = {
+    id: "edge-introduction-libraries-e2e",
+    source: READY_NODE_ID,
+    target: "python-third-party-libraries",
+    type: "related_to" as const,
+  };
+  const reorder = <T extends { id: string }>(nodes: readonly T[]): readonly T[] => {
+    const order = [READY_NODE_ID, "python-basics", "python-third-party-libraries", "python-installation"];
+    return order.flatMap(id => nodes.filter(node => node.id === id));
+  };
+  return events.map(event => {
+    if (event.type === "graph.plan") return StreamEventSchema.parse({
+      ...event, data: { ...event.data, nodes: reorder(event.data.nodes), edges: [...event.data.edges, extraEdge] },
+    });
+    if (event.type === "complete") return StreamEventSchema.parse({
+      ...event, data: { ...event.data, result: { ...event.data.result, graph: {
+        nodes: reorder(event.data.result.graph.nodes), edges: [...event.data.result.graph.edges, extraEdge],
+      } } },
+    });
+    return event;
+  });
+}
+
+/** 只读取实际可见 DOM，不把渲染器的内部时间表当作测试答案。 */
+const visibleInkNodeIds = (page: Page): Promise<readonly string[]> =>
+  page.locator("[data-ink-node]:visible").evaluateAll(elements =>
+    elements.map(element => element.getAttribute("data-ink-node") ?? "").sort());
+
+const visibleInkEdgeIds = (page: Page): Promise<readonly string[]> =>
+  page.locator(".react-flow__edge").evaluateAll(elements => elements.filter(element => {
+    const style = getComputedStyle(element);
+    return style.visibility !== "hidden" && style.display !== "none" && Number(style.opacity) > 0.5;
+  }).map(element => element.getAttribute("data-id") ?? "").sort());
+
+/**
+ * GPU 验证只统计有色颜料，排除黑字和浅色背景；采样在下一次绘制之后执行，避免读取已清空缓冲。
+ * 不可用的 WebGL 返回 null，独立的降级用例继续验证所有真实节点与状态可读。
+ */
+async function inkPigmentCenter(page: Page): Promise<Readonly<{ count: number; x: number; y: number }> | null> {
+  return page.locator(".ink-study__canvas").evaluate(async element => {
+    const source = element as HTMLCanvasElement;
+    if (getComputedStyle(source).visibility !== "visible") return null;
+    await new Promise<void>(resolve => {
+      let frames = 0;
+      const afterFrame = (): void => { if (++frames >= 30) resolve(); else requestAnimationFrame(afterFrame); };
+      requestAnimationFrame(afterFrame);
+    });
+    return new Promise<Readonly<{ count: number; x: number; y: number }> | null>(resolve => requestAnimationFrame(() => {
+      const copy = document.createElement("canvas");
+      copy.width = source.width;
+      copy.height = source.height;
+      const context = copy.getContext("2d");
+      if (context === null) { resolve(null); return; }
+      context.drawImage(source, 0, 0);
+      const pixels = context.getImageData(0, 0, copy.width, copy.height).data;
+      let count = 0, sumX = 0, sumY = 0;
+      for (let y = 0; y < copy.height; y += 4) for (let x = 0; x < copy.width; x += 4) {
+        const offset = (y * copy.width + x) * 4;
+        const red = pixels[offset] ?? 0, green = pixels[offset + 1] ?? 0, blue = pixels[offset + 2] ?? 0;
+        if (Math.max(red, green, blue) - Math.min(red, green, blue) < 35) continue;
+        count++;
+        sumX += x;
+        sumY += y;
+      }
+      resolve({ count, x: count === 0 ? 0 : sumX / count / copy.width, y: count === 0 ? 0 : sumY / count / copy.height });
+    }));
   });
 }
 
@@ -375,9 +452,134 @@ const emitFixtureEvents = (
     },
   );
 
+type StoredWorkspace = Readonly<{ documents: readonly EditableGraph[]; currentId: string | null }>;
+type NodePosition = Readonly<{ x: number; y: number }>;
+
+/**
+ * 只通过真实 IndexedDB 边界读取持久结果；用公共 Schema 验证，绝不注入或替换 Workspace Store。
+ * 测试上下文拥有独立浏览器存储，因此不会读写人员正在使用的历史记录。
+ */
+async function readStoredWorkspace(page: Page): Promise<StoredWorkspace | null> {
+  const snapshot: unknown = await page.evaluate(async () => {
+    const database = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open("wayfinder-workspace", 1);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    try {
+      return await new Promise<unknown>((resolve, reject) => {
+        const transaction = database.transaction("workspace", "readonly");
+        const request = transaction.objectStore("workspace").get("current");
+        transaction.oncomplete = () => resolve(request.result ?? null);
+        transaction.onerror = () => reject(transaction.error);
+        transaction.onabort = () => reject(transaction.error);
+      });
+    } finally { database.close(); }
+  });
+  if (snapshot === null) return null;
+  if (typeof snapshot !== "object" || !("documents" in snapshot) || !("currentId" in snapshot)
+    || !(snapshot.currentId === null || typeof snapshot.currentId === "string")) {
+    throw new Error("浏览器持久快照格式不合法");
+  }
+  return { documents: EditableGraphSchema.array().parse(snapshot.documents), currentId: snapshot.currentId };
+}
+
+/** 仅为超出 AI 初稿数量的手动历史场景预置合法文档，恢复仍完全走应用的真实加载与渲染。 */
+async function seedStoredWorkspace(page: Page, document: EditableGraph): Promise<void> {
+  const validated = EditableGraphSchema.parse(document);
+  await page.evaluate(async graph => {
+    const database = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open("wayfinder-workspace", 1);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const transaction = database.transaction("workspace", "readwrite");
+        transaction.objectStore("workspace").put({ documents: [graph], currentId: graph.id }, "current");
+        transaction.oncomplete = () => resolve();
+        transaction.onerror = () => reject(transaction.error);
+        transaction.onabort = () => reject(transaction.error);
+      });
+    } finally { database.close(); }
+  }, validated);
+}
+
+/** 读取 React Flow 的世界坐标；屏幕缩放不属于持久位置，不把截图像素误当成保存值。 */
+const readInkPosition = (page: Page, nodeId = READY_NODE_ID): Promise<NodePosition> =>
+  page.locator(`.react-flow__node[data-id="${nodeId}"]`).evaluate(element => {
+    const transform = new DOMMatrix(getComputedStyle(element).transform);
+    return { x: transform.m41, y: transform.m42 };
+  });
+
+/** 使用原生指针拖动标题，触发真实 DragStop 和持久化，不直接设置坐标。 */
+async function dragInkNode(page: Page, dx: number, dy: number, nodeId = READY_NODE_ID): Promise<NodePosition> {
+  const node = page.locator(`[data-ink-node="${nodeId}"]`);
+  const before = await readInkPosition(page, nodeId);
+  const bounds = await node.getByRole("heading").boundingBox();
+  if (bounds === null) throw new Error("墨迹节点拖动起点不可见");
+  const x = bounds.x + bounds.width / 2, y = bounds.y + bounds.height / 2;
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  await page.mouse.move(x + dx, y + dy, { steps: 12 });
+  await page.mouse.up();
+  await expect.poll(() => readInkPosition(page, nodeId)).not.toEqual(before);
+  return readInkPosition(page, nodeId);
+}
+
+/** 精确比较同一节点的持久坐标，不以完整 Transform 字符串偶然相等替代业务位置验证。 */
+async function expectInkPosition(page: Page, expected: NodePosition, nodeId = READY_NODE_ID): Promise<void> {
+  await expect.poll(async () => {
+    const actual = await readInkPosition(page, nodeId);
+    return Math.max(Math.abs(actual.x - expected.x), Math.abs(actual.y - expected.y));
+  }).toBeLessThan(0.02);
+}
+
+async function expectSavedInkPosition(page: Page, graphId: string, expected: NodePosition, nodeId = READY_NODE_ID): Promise<void> {
+  await expect.poll(async () => {
+    const actual = (await readStoredWorkspace(page))?.documents.find(document => document.id === graphId)?.positions[nodeId];
+    return actual === undefined ? Infinity : Math.max(Math.abs(actual.x - expected.x), Math.abs(actual.y - expected.y));
+  }).toBeLessThan(0.02);
+}
+
+/**
+ * 从浏览器合成截图逐节点采样颜料；减弱动态时 WebGL 不连续重绘，直接读已交换缓冲会错误得到透明像素。
+ * 截图包含真正显示的 GPU 输出，避免九个可读 DOM 掩盖第九个墨团被固定批次上限截断的问题。
+ */
+async function inkPigmentPerNode(page: Page): Promise<readonly Readonly<{ id: string; count: number }>[]> {
+  const screenshot = (await page.screenshot()).toString("base64");
+  return page.evaluate(async encoded => {
+      const bytes = Uint8Array.from(atob(encoded), character => character.charCodeAt(0));
+      const image = await createImageBitmap(new Blob([bytes], { type: "image/png" }));
+      const copy = document.createElement("canvas");
+      copy.width = image.width; copy.height = image.height;
+      const context = copy.getContext("2d");
+      if (context === null) { image.close(); return []; }
+      context.drawImage(image, 0, 0);
+      image.close();
+      const pixels = context.getImageData(0, 0, copy.width, copy.height).data;
+      return [...document.querySelectorAll<HTMLElement>("[data-ink-node]")].map(node => {
+        const bounds = node.getBoundingClientRect();
+        const scaleX = copy.width / innerWidth, scaleY = copy.height / innerHeight;
+        const left = Math.max(0, Math.floor(bounds.x * scaleX));
+        const top = Math.max(0, Math.floor(bounds.y * scaleY));
+        const right = Math.min(copy.width, Math.ceil(bounds.right * scaleX));
+        const bottom = Math.min(copy.height, Math.ceil(bounds.bottom * scaleY));
+        let count = 0;
+        for (let y = top; y < bottom; y += 3) for (let x = left; x < right; x += 3) {
+          const offset = (y * copy.width + x) * 4;
+          const red = pixels[offset] ?? 0, green = pixels[offset + 1] ?? 0, blue = pixels[offset + 2] ?? 0;
+          if (Math.max(red, green, blue) - Math.min(red, green, blue) >= 35) count++;
+        }
+        return { id: node.dataset.inkNode ?? "", count };
+      });
+  }, screenshot);
+}
+
 test("新搜索页直接携带语言请求后端且不跳转旧展示页", async ({ page }) => {
   const events = createJourneyEvents();
   await installBrowserFixture(page, events);
+  await page.emulateMedia({ reducedMotion: "reduce" });
   await page.goto("/ink-study.html");
 
   await expect(page.getByText("©26", { exact: true })).toHaveCount(0);
@@ -454,6 +656,7 @@ test("开始胶囊连续伸展为搜索框并分裂按钮，品牌下移且角�
 
 test("页面中线引擎胶囊影响真实请求，语言默认与独立覆盖仍遵循原规则", async ({ page }) => {
   await installBrowserFixture(page, createJourneyEvents());
+  await page.emulateMedia({ reducedMotion: "reduce" });
   await page.goto("/ink-study.html");
   await page.getByRole("button", { name: "开始探索", exact: true }).click();
   const engine = page.locator(".ink-study__engine");
@@ -475,13 +678,19 @@ test("页面中线引擎胶囊影响真实请求，语言默认与独立覆盖�
 
   await page.getByRole("button", { name: "语言", exact: true }).click();
   await page.getByRole("button", { name: "English", exact: true }).click();
-  await expect(engine.getByRole("button", { name: "搜索引擎：Google", exact: true })).toBeVisible();
-  // 当前 Run 的展示语言仍锁定中文；下一次显式选择可覆盖 English 的默认 Google。
-  await expect(page.locator("html")).toHaveAttribute("lang", "zh-CN");
-  await engine.getByRole("button", { name: "搜索引擎：Google", exact: true }).click();
-  await engine.getByRole("button", { name: "百度", exact: true }).click();
-  await input.fill("English Baidu");
-  await input.press("Enter");
+  // 界面即时使用 English，但已发请求仍保留中文生成语言；取消后再改变下一次请求的引擎。
+  await expect(page.locator("html")).toHaveAttribute("lang", "en-US");
+  expect((await readFixtureSnapshots(page))[0]?.language).toBe("zh-CN");
+  await expect(engine).toHaveAttribute("inert", "");
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect.poll(async () => (await readFixtureSnapshots(page))[0])
+    .toMatchObject({ aborted: true, cancelled: true });
+  await expect(page.locator("html")).toHaveAttribute("lang", "en-US");
+  await engine.getByRole("button", { name: "Search engine：Google", exact: true }).click();
+  await engine.getByRole("button", { name: "Baidu", exact: true }).click();
+  const nextInput = page.getByRole("searchbox", { name: "Search any topic", exact: true });
+  await nextInput.fill("English Baidu");
+  await nextInput.press("Enter");
   await expect.poll(async () => (await readFixtureSnapshots(page))[1])
     .toMatchObject({ language: "en-US", engine: "baidu", query: "English Baidu" });
   await expect.poll(async () => (await readFixtureSnapshots(page))[0]?.aborted).toBe(true);
@@ -501,12 +710,15 @@ test("新搜索入口沿用 Direct 与拒绝规则，不因改版额外请求后
   await input.fill("javascript:alert(1)");
   await input.press("Enter");
   await expect(page.getByRole("alert")).toBeVisible();
+  await expect(page.locator(".ink-study__stage")).toHaveAttribute("data-search-state", "input");
+  await expect(page.getByRole("button", { name: "取消", exact: true })).toHaveCount(0);
   expect(await readFixtureSnapshots(page)).toHaveLength(0);
   await input.fill("https://example.com/docs");
   await input.press("Enter");
   expect(await page.evaluate(() => window.__WAYFINDER_E2E__.openCalls()))
     .toEqual([["https://example.com/docs", "_blank", "noopener,noreferrer"]]);
   expect(await readFixtureSnapshots(page)).toHaveLength(0);
+  await expect(page.locator(".ink-study__stage")).toHaveAttribute("data-search-state", "input");
   await expect(page).toHaveURL(/\/ink-study\.html$/);
 });
 
@@ -539,7 +751,7 @@ test("后端运行失败明确反馈且不覆盖状态文字，重试和取消�
   await expect(alert).toHaveCount(0);
 });
 
-test("冷加载期间的无效输入和 Direct 不会丢弃已确认的合法搜索", async ({ page }) => {
+test("冷加载期间取消会撤销合法搜索意图，恢复后无效输入和 Direct 仍零请求", async ({ page }) => {
   await installBrowserFixture(page, createJourneyEvents());
   await page.emulateMedia({ reducedMotion: "reduce" });
   let releaseModule = (): void => {};
@@ -557,6 +769,10 @@ test("冷加载期间的无效输入和 Direct 不会丢弃已确认的合法搜
     await input.fill("应保留的合法查询");
     await input.press("Enter");
     await expect.poll(() => moduleRequested).toBe(true);
+    await expect(page.locator(".ink-study__stage")).toHaveAttribute("data-search-state", "loading");
+    // 输入已退出交互顺序；取消尚未导入完毕的意图，不能为下一次操作偷偷创建旧 Run。
+    await page.getByRole("button", { name: "取消", exact: true }).click();
+    await expect(input).toBeFocused();
     await input.fill("javascript:alert(1)");
     await input.press("Enter");
     await expect(page.getByRole("alert")).toBeVisible();
@@ -564,8 +780,10 @@ test("冷加载期间的无效输入和 Direct 不会丢弃已确认的合法搜
     await input.press("Enter");
     expect(await readFixtureSnapshots(page)).toHaveLength(0);
     releaseModule();
+    await input.fill("取消后的新查询");
+    await input.press("Enter");
     await expect.poll(async () => (await readFixtureSnapshots(page))[0])
-      .toMatchObject({ query: "应保留的合法查询", language: "zh-CN", engine: "baidu" });
+      .toMatchObject({ query: "取消后的新查询", language: "zh-CN", engine: "baidu" });
     expect(await readFixtureSnapshots(page)).toHaveLength(1);
     await page.getByRole("button", { name: "取消", exact: true }).click();
     await expect.poll(async () => (await readFixtureSnapshots(page))[0]?.aborted).toBe(true);
@@ -640,7 +858,7 @@ test("历史按钮底边悬浮稳定展开，真实历史进出与外部焦点�
     new DOMMatrix(getComputedStyle(element).transform).a)).toBeLessThan(-0.99);
   await expect(panel.getByRole("heading", { name: "只读历史记录样例", exact: true })).toBeVisible();
   await expect(panel.getByRole("button", { name: "新建搜索图", exact: true })).toBeVisible();
-  await expect(panel.getByRole("listitem").getByRole("button")).toHaveCount(2);
+  await expect(panel.getByRole("listitem").getByRole("button")).toHaveCount(3);
   await expect.poll(async () => {
     const layer = await page.locator(".ink-study__search-layer").boundingBox();
     return layer !== null && layer.y + layer.height <= stageBounds.y;
@@ -655,8 +873,9 @@ test("历史按钮底边悬浮稳定展开，真实历史进出与外部焦点�
   await toggle.click();
   await expect(panel).toBeFocused();
   await page.keyboard.press("Escape");
-  await expect(input).toBeFocused();
-  await expect(input).toHaveValue("只读历史记录样例");
+  await expect(toggle).toBeFocused();
+  await expect(page.locator(".ink-study__search-input")).toHaveValue("只读历史记录样例");
+  await expect(page.locator(".ink-study__stage")).toHaveAttribute("data-search-state", "graph");
   await expect.poll(async () => {
     const bounds = await page.locator(".ink-study__search-layer").boundingBox();
     return bounds === null ? Infinity : Math.abs(bounds.y - stageBounds.y);
@@ -730,7 +949,8 @@ test("历史信息条重命名保留原查询，悬浮推动邻行，删除与�
   expect(await readFixtureSnapshots(page)).toHaveLength(2);
   await page.reload();
   await page.getByRole("button", { name: "开始探索", exact: true }).click();
-  await expect(input).toBeFocused();
+  await expect(page.locator(".ink-study__stage")).toHaveAttribute("data-search-state", "graph");
+  await expect(page.locator("[data-ink-node]:visible")).toHaveCount(4);
   await toggle.click();
   await expect(rows).toHaveCount(1);
   await expect(rows.getByRole("heading", { name: SECOND_QUERY, exact: true })).toBeVisible();
@@ -938,6 +1158,549 @@ test("联系作者点击复制真实邮箱，拒绝剪贴板权限时显示失�
   });
   await page.getByRole("button", { name: "联系作者", exact: true }).click();
   await expect(page.getByRole("status")).toHaveText("复制失败，请手动复制邮箱");
+});
+
+/** 有效请求才进入融合态；同一三个控件保留 DOM 身份，并以真实取消恢复交互。 */
+test("有效搜索将三组件融合为中心停止圆，墨迹保持中心且取消中止真实运行", async ({ page }, testInfo) => {
+  await installBrowserFixture(page, createJourneyEvents());
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await page.goto("/ink-study.html");
+  await page.getByRole("button", { name: "开始探索", exact: true }).click();
+  const input = page.getByRole("searchbox", { name: "搜索任意主题", exact: true });
+  await expect(input).toBeFocused();
+  const shell = page.locator(".ink-study__search");
+  const engine = page.locator(".ink-study__engine");
+  const submit = page.locator(".ink-study__search-submit");
+  const handles = await Promise.all([shell.elementHandle(), engine.elementHandle(), submit.elementHandle()]);
+  const canvas = await page.locator(".ink-study__canvas").elementHandle();
+  await input.fill("验证中心墨迹与取消");
+  await input.press("Enter");
+  const stage = page.locator(".ink-study__stage");
+  const stop = page.getByRole("button", { name: "取消", exact: true });
+  await expect(stage).toHaveAttribute("data-search-state", "loading");
+  await expect.poll(async () => (await readFixtureSnapshots(page)).length).toBe(1);
+  await expect(stop).toHaveClass(/ink-study__search-stop/);
+  for (const element of [page.locator(".ink-study__search-input"), engine, submit]) {
+    await expect(element).toHaveAttribute("inert", "");
+    await expect(element).toHaveAttribute("aria-hidden", "true");
+  }
+  for (const handle of handles) expect(await handle?.evaluate(element => element.isConnected)).toBe(true);
+  expect(await canvas?.evaluate(element => element.isConnected)).toBe(true);
+  await expect.poll(async () => {
+    const [bounds, host] = await Promise.all([stop.boundingBox(), stage.boundingBox()]);
+    if (bounds === null || host === null) return Infinity;
+    return Math.max(Math.abs(bounds.width - bounds.height),
+      Math.abs(bounds.x + bounds.width / 2 - host.x - host.width / 2),
+      Math.abs(bounds.y + bounds.height / 2 - host.y - host.height / 2));
+  }).toBeLessThan(2);
+  await expect(stop.locator("rect")).toHaveCSS("fill", "rgb(255, 255, 255)");
+  expect(Number(await stop.locator("rect").getAttribute("rx"))).toBeGreaterThan(0);
+  await page.screenshot({ path: testInfo.outputPath("ink-loading-center.png"), animations: "disabled" });
+
+  // 将真实指针移到相反角落；可用的 GPU 画面仍应把有色颜料保持在中央区域。
+  const host = await stage.boundingBox();
+  if (host === null) throw new Error("缺少墨迹画布边界");
+  const pigmentSamples: Array<Readonly<{ pointer: Readonly<{ x: number; y: number }>; pigment: Awaited<ReturnType<typeof inkPigmentCenter>> }>> = [];
+  for (const point of [{ x: 0.08, y: 0.8 }, { x: 0.9, y: 0.15 }]) {
+    await page.mouse.move(host.x + host.width * point.x, host.y + host.height * point.y);
+    const pigment = await inkPigmentCenter(page);
+    pigmentSamples.push({ pointer: point, pigment });
+    if (pigment !== null) {
+      expect(pigment.count).toBeGreaterThan(25);
+      expect(Math.abs(pigment.x - 0.5)).toBeLessThan(0.22);
+      expect(Math.abs(pigment.y - 0.5)).toBeLessThan(0.22);
+    }
+  }
+  await testInfo.attach("ink-loading-pigment-center", { body: JSON.stringify(pigmentSamples), contentType: "application/json" });
+  await stop.click();
+  await expect.poll(async () => (await readFixtureSnapshots(page))[0])
+    .toMatchObject({ aborted: true, cancelled: true });
+  await expect(stage).toHaveAttribute("data-search-state", "input");
+  await expect(input).toBeFocused();
+  await expect(input).toHaveValue("验证中心墨迹与取消");
+  await expect(page.getByRole("button", { name: "搜索", exact: true })).toBeEnabled();
+  await expect(page.getByRole("button", { name: "搜索引擎：百度", exact: true })).toBeVisible();
+  await expect(page.locator("[data-ink-node]")).toHaveCount(0);
+});
+
+/** 用分支、汇合与乱序节点验证传播；状态和 complete 不得让既有节点重播或丢失正式边。 */
+test("真实graph.plan在complete前按连线波次成形，状态不断流且正式边全部保留", async ({ page }, testInfo) => {
+  const events = createInkMotionEvents();
+  const planIndex = events.findIndex(event => event.type === "graph.plan");
+  const analysisIndex = events.findIndex(event => event.type === "query.analysis");
+  const plan = events[planIndex];
+  const firstStatus = events.findIndex(event => event.type === "node.status" && event.nodeId === READY_NODE_ID);
+  const firstReady = events.findIndex(event => event.type === "node.ready" && event.nodeId === READY_NODE_ID);
+  const complete = events.findIndex(event => event.type === "complete");
+  if (plan?.type !== "graph.plan" || analysisIndex < 0 || firstStatus < 0 || firstReady < 0 || complete < 0) {
+    throw new Error("墨迹图夹具缺少必要事件");
+  }
+  await installBrowserFixture(page, events);
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await page.goto("/ink-study.html");
+  await page.getByRole("button", { name: "开始探索", exact: true }).click();
+  const input = page.getByRole("searchbox", { name: "搜索任意主题", exact: true });
+  await expect(input).toBeFocused();
+  await page.clock.install({ time: new Date(FIXTURE_TIME) });
+  await page.clock.pauseAt(new Date(FIXTURE_TIME + 1000));
+  await input.fill(FIRST_QUERY);
+  await input.press("Enter");
+  await expect.poll(async () => (await readFixtureSnapshots(page)).length).toBe(1);
+  await emitFixtureEvents(page, 0, [analysisIndex, planIndex]);
+  await expect(page.locator(".ink-study__stage")).toHaveAttribute("data-search-state", "graph");
+  await expect(page.getByRole("button", { name: "取消", exact: true })).toHaveCount(0);
+  await expect(page.locator(".ink-study__search-input")).toHaveAttribute("inert", "");
+  await expect(page.locator("[data-ink-node]")).toHaveCount(4);
+  expect(await visibleInkNodeIds(page)).toEqual([]);
+  // 时间表使用一次性定时器；跳跃到判定点保留每个事件，省去无关的 GPU 中间帧开销。
+  await page.clock.fastForward(1100);
+  await expect.poll(() => visibleInkNodeIds(page)).toEqual([READY_NODE_ID]);
+  expect(await visibleInkEdgeIds(page)).toEqual([]);
+  // 在冻结时钟下重新选择当前图，只关闭历史；不能重新播放或提前揭示下一波节点。
+  await page.getByRole("button", { name: "搜索历史", exact: true }).click();
+  const currentHistory = page.getByRole("region", { name: "搜索历史", exact: true });
+  await expect(currentHistory).toBeFocused();
+  await currentHistory.getByRole("button", { name: FIRST_QUERY, exact: true }).press("Enter");
+  await expect(currentHistory).toHaveCount(0);
+  expect(await visibleInkNodeIds(page)).toEqual([READY_NODE_ID]);
+  expect(await visibleInkEdgeIds(page)).toEqual([]);
+  expect(await readFixtureSnapshots(page)).toHaveLength(1);
+  const first = page.locator(`[data-ink-node="${READY_NODE_ID}"]`);
+  const firstHandle = await first.elementHandle();
+  const firstBounds = await first.boundingBox();
+  const planned = plan.data.nodes.find(node => node.id === READY_NODE_ID);
+  if (planned === undefined || firstBounds === null) throw new Error("首个业务节点不可读取");
+  await expect(first.getByRole("heading", { name: planned.title, exact: true })).toBeVisible();
+  await expect(first.locator("p")).toHaveText(planned.description);
+  await expect(first.getByText("主路径", { exact: true })).toBeVisible();
+  await expect(first).toHaveAttribute("data-node-status", "planned");
+  expect(await first.evaluate(element => ({ width: (element as HTMLElement).offsetWidth, height: (element as HTMLElement).offsetHeight })))
+    .toEqual({ width: 240, height: 112 });
+  // 人审图在首个墨团成形后采集，避免截图提前结束 CSS 过渡而误示尚未长成的 GPU 背景。
+  await page.clock.fastForward(600);
+  await page.screenshot({ path: testInfo.outputPath("ink-graph-first-wave.png"), animations: "disabled" });
+
+  await emitFixtureEvents(page, 0, [firstStatus]);
+  await expect(first).toHaveAttribute("data-node-status", "searching");
+  await emitFixtureEvents(page, 0, [firstReady]);
+  await expect(first).toHaveAttribute("data-node-status", "ready");
+  await expect(first.getByText("4 条可用资源", { exact: true })).toBeVisible();
+  expect(await firstHandle?.evaluate(element => element.isConnected)).toBe(true);
+  expect(await first.boundingBox()).toEqual(firstBounds);
+  const nextWave = [READY_NODE_ID, "python-installation", "python-third-party-libraries"].sort();
+  await page.clock.fastForward(800);
+  await expect.poll(() => visibleInkNodeIds(page)).toEqual(nextWave);
+  await expect(page.locator('[data-ink-node="python-basics"]')).toHaveCSS("visibility", "hidden");
+  expect(await visibleInkEdgeIds(page)).toEqual([]);
+  await page.clock.fastForward(350);
+  await expect.poll(() => visibleInkEdgeIds(page)).toEqual([
+    "edge-introduction-installation", "edge-introduction-libraries-e2e",
+  ]);
+
+  await emitFixtureEvents(page, 0, events.flatMap((_event, index) =>
+    [analysisIndex, planIndex, firstStatus, firstReady, complete].includes(index) ? [] : [index]));
+  const expectedIds = plan.data.nodes.map(node => node.id).sort();
+  await page.clock.fastForward(4000);
+  await expect.poll(() => visibleInkNodeIds(page), { timeout: 10_000 }).toEqual(expectedIds);
+  await expect.poll(() => visibleInkEdgeIds(page), { timeout: 10_000 }).toEqual(plan.data.edges.map(edge => edge.id).sort());
+  await expect(page.locator(".graph-edge--recommended")).toHaveCount(2);
+  await expect(page.locator(".graph-edge--related")).toHaveCount(2);
+  await expect(page.locator('[data-ink-node="python-installation"]')).toHaveAttribute("data-node-status", "partial");
+  await expect(page.locator('[data-ink-node="python-third-party-libraries"]')).toHaveAttribute("data-node-status", "failed");
+  expect((await readFixtureSnapshots(page))[0]?.aborted).toBe(false);
+  await page.screenshot({ path: testInfo.outputPath("ink-graph-all-real-edges.png"), animations: "disabled" });
+
+  await emitFixtureEvents(page, 0, [complete]);
+  await page.evaluate(() => window.__WAYFINDER_E2E__.close(0));
+  await expect(page.locator(".ink-study__run-status").getByRole("status")).toContainText("4");
+  expect(await visibleInkNodeIds(page)).toEqual(expectedIds);
+  expect(await firstHandle?.evaluate(element => element.isConnected)).toBe(true);
+  expect(await first.boundingBox()).toEqual(firstBounds);
+});
+
+/** 冻结页面时间后只推进四帧布局，确保减弱动态不是等完正常动画才“最终通过”。 */
+test("减弱动态在真实计划到达后立即显示全部节点和边而不等待生长计时器", async ({ page }, testInfo) => {
+  const events = createInkMotionEvents();
+  const plan = events.find(event => event.type === "graph.plan");
+  if (plan?.type !== "graph.plan") throw new Error("缺少图计划");
+  await installBrowserFixture(page, events);
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.goto("/ink-study.html");
+  await page.getByRole("button", { name: "开始探索", exact: true }).click();
+  const input = page.getByRole("searchbox", { name: "搜索任意主题", exact: true });
+  await expect(input).toBeFocused();
+  await page.clock.install({ time: new Date(FIXTURE_TIME) });
+  await page.clock.pauseAt(new Date(FIXTURE_TIME + 1000));
+  await input.fill("减弱动态的完整图");
+  await input.press("Enter");
+  await expect.poll(async () => (await readFixtureSnapshots(page)).length).toBe(1);
+  await emitFixtureEvents(page, 0, events.flatMap((event, index) =>
+    event.type === "query.analysis" || event.type === "graph.plan" ? [index] : []));
+  await expect(page.locator("[data-ink-node]")).toHaveCount(plan.data.nodes.length);
+  await page.clock.runFor(64);
+  expect(await visibleInkNodeIds(page)).toEqual(plan.data.nodes.map(node => node.id).sort());
+  expect(await visibleInkEdgeIds(page)).toEqual(plan.data.edges.map(edge => edge.id).sort());
+  await expect(page.locator(".ink-study__stage")).toHaveAttribute("data-search-state", "graph");
+  // 同一 Run 已经揭示的实体保持单调；恢复动态偏好只恢复表面运动，不重藏已完成的图。
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await page.clock.runFor(64);
+  expect(await visibleInkNodeIds(page)).toEqual(plan.data.nodes.map(node => node.id).sort());
+  expect(await visibleInkEdgeIds(page)).toEqual(plan.data.edges.map(edge => edge.id).sort());
+  await page.screenshot({ path: testInfo.outputPath("ink-graph-reduced-motion.png"), animations: "disabled" });
+});
+
+/** WebGL 拒绝只影响绘制能力，不能隐藏真实节点、状态、说明或连线。 */
+test("WebGL不可用时真实图仍以可读DOM降级呈现", async ({ page }, testInfo) => {
+  const events = createInkMotionEvents();
+  await installBrowserFixture(page, events);
+  await page.addInitScript(() => {
+    const original = HTMLCanvasElement.prototype.getContext;
+    Object.defineProperty(HTMLCanvasElement.prototype, "getContext", {
+      configurable: true,
+      value: function (this: HTMLCanvasElement, kind: string, ...options: unknown[]): RenderingContext | null {
+        if (kind.includes("webgl")) return null;
+        return Reflect.apply(original, this, [kind, ...options]) as RenderingContext | null;
+      },
+    });
+  });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.goto("/ink-study.html");
+  await page.getByRole("button", { name: "开始探索", exact: true }).click();
+  const input = page.getByRole("searchbox", { name: "搜索任意主题", exact: true });
+  await input.fill("无 GPU 的图结果");
+  await input.press("Enter");
+  await expect.poll(async () => (await readFixtureSnapshots(page)).length).toBe(1);
+  await emitFixtureEvents(page, 0, events.map((_event, index) => index));
+  await page.evaluate(() => window.__WAYFINDER_E2E__.close(0));
+  await expect.poll(() => visibleInkNodeIds(page)).toHaveLength(4);
+  await expect.poll(() => visibleInkEdgeIds(page)).toHaveLength(4);
+  const first = page.locator(`[data-ink-node="${READY_NODE_ID}"]`);
+  await expect(first.getByRole("heading", { name: "Python 简介", exact: true })).toBeVisible();
+  await expect(first.locator("p")).toHaveText("了解 Python 的定位、核心特性与常见使用场景。");
+  await expect(first).toHaveAttribute("data-node-status", "ready");
+  await expect(page.locator('[data-ink-node="python-installation"]')).toHaveAttribute("data-node-status", "partial");
+  await expect(page.locator('[data-ink-node="python-third-party-libraries"]')).toHaveAttribute("data-node-status", "failed");
+  // 直接核对降级渐变的最弱对比，防止 DOM 存在但白字落在浅底上仍无法阅读。
+  const contrast = await first.locator(".ink-graph-node__content").evaluate(element => {
+    const style = getComputedStyle(element);
+    const parse = (value: string): readonly number[] => [...value.matchAll(/[\d.]+/g)].map(match => Number(match[0])).slice(0, 3);
+    const luminance = (rgb: readonly number[]): number => rgb.reduce((sum, channel, index) => {
+      const normalized = channel / 255;
+      const linear = normalized <= 0.04045 ? normalized / 12.92 : ((normalized + 0.055) / 1.055) ** 2.4;
+      return sum + linear * ([0.2126, 0.7152, 0.0722][index] ?? 0);
+    }, 0);
+    const foreground = luminance(parse(style.color));
+    const stops = [...style.backgroundImage.matchAll(/rgba?\([^)]+\)/g)].map(match => luminance(parse(match[0])));
+    if (stops.length === 0) return 0;
+    return Math.min(...stops.map(background => (Math.max(foreground, background) + 0.05) / (Math.min(foreground, background) + 0.05)));
+  });
+  expect(contrast).toBeGreaterThanOrEqual(4.5);
+  await page.screenshot({ path: testInfo.outputPath("ink-graph-webgl-fallback.png"), animations: "disabled" });
+});
+
+/** 图呈现模块与协调器一起预加载；任一模块失败都不能发送请求后留下空白结果阶段。 */
+test("图模块加载失败明确恢复输入且不发API请求", async ({ page }) => {
+  await installBrowserFixture(page, createJourneyEvents());
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  let requested = false;
+  await page.route(/\/src\/design\/ink-graph\.(?:tsx|js)(?:\?.*)?$/, async route => {
+    requested = true;
+    await route.abort("failed");
+  });
+  await page.goto("/ink-study.html");
+  const canvas = await page.locator(".ink-study__canvas").elementHandle();
+  expect(requested).toBe(false);
+  await page.getByRole("button", { name: "开始探索", exact: true }).click();
+  const input = page.getByRole("searchbox", { name: "搜索任意主题", exact: true });
+  await input.fill("图模块不可用固定样例");
+  await input.press("Enter");
+  await expect.poll(() => requested).toBe(true);
+  await expect(page.getByRole("alert")).toHaveText("本次搜索未完成，请重试。");
+  await expect(page.locator(".ink-study__stage")).toHaveAttribute("data-search-state", "input");
+  await expect(input).toBeFocused();
+  await expect(input).toHaveValue("图模块不可用固定样例");
+  await expect(page.getByRole("button", { name: "搜索", exact: true })).toBeEnabled();
+  await expect(page.getByRole("button", { name: "取消", exact: true })).toHaveCount(0);
+  await expect(page.locator("[data-ink-node]")).toHaveCount(0);
+  expect(await readFixtureSnapshots(page)).toHaveLength(0);
+  expect(await canvas?.evaluate(element => element.isConnected)).toBe(true);
+});
+
+/** 返回保留所选草图；显式新建才清理旧图和计时器，迟到事件不得进入新记录。 */
+test("返回恢复所选草图而新建清理旧图及计时器，新运行忽略旧complete", async ({ page }) => {
+  const events = createInkMotionEvents();
+  const planIndexes = events.flatMap((event, index) => event.type === "query.analysis" || event.type === "graph.plan" ? [index] : []);
+  const complete = events.findIndex(event => event.type === "complete");
+  await installBrowserFixture(page, events);
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.goto("/ink-study.html");
+  await page.getByRole("button", { name: "开始探索", exact: true }).click();
+  const input = page.getByRole("searchbox", { name: "搜索任意主题", exact: true });
+  await expect(input).toBeFocused();
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await page.clock.install({ time: new Date(FIXTURE_TIME) });
+  await page.clock.pauseAt(new Date(FIXTURE_TIME + 1000));
+  await input.fill("旧图的延迟节点");
+  await input.press("Enter");
+  await expect.poll(async () => (await readFixtureSnapshots(page)).length).toBe(1);
+  await emitFixtureEvents(page, 0, planIndexes);
+  await expect(page.locator("[data-ink-node]")).toHaveCount(4);
+  await page.clock.fastForward(1200);
+  expect(await visibleInkNodeIds(page)).toEqual([READY_NODE_ID]);
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.getByRole("button", { name: "返回首页", exact: true }).click();
+  const start = page.getByRole("button", { name: "开始探索", exact: true });
+  await expect(start).toBeFocused();
+  await expect(page.locator("[data-ink-node]")).toHaveCount(0);
+  await expect.poll(async () => (await readFixtureSnapshots(page))[0]).toMatchObject({ aborted: true, cancelled: true });
+
+  await start.click();
+  await expect(page.locator(".ink-study__stage")).toHaveAttribute("data-search-state", "graph");
+  await expect.poll(() => visibleInkNodeIds(page)).toHaveLength(4);
+  expect(await readFixtureSnapshots(page)).toHaveLength(1);
+  await page.getByRole("button", { name: "搜索历史", exact: true }).click();
+  await page.getByRole("region", { name: "搜索历史", exact: true })
+    .getByRole("button", { name: "新建搜索图", exact: true }).click();
+  await expect(input).toBeFocused();
+  await input.fill("新运行拥有的新图");
+  await input.press("Enter");
+  await expect.poll(async () => (await readFixtureSnapshots(page)).length).toBe(2);
+  await page.clock.fastForward(10_000);
+  await expect(page.locator(".ink-study__stage")).toHaveAttribute("data-search-state", "loading");
+  await expect(page.locator("[data-ink-node]")).toHaveCount(0);
+  await emitFixtureEvents(page, 1, [complete], 0);
+  await expect(page.locator("[data-ink-node]")).toHaveCount(0);
+  await emitFixtureEvents(page, 1, planIndexes);
+  await expect.poll(() => visibleInkNodeIds(page)).toHaveLength(4);
+  await page.getByRole("button", { name: "搜索历史", exact: true }).click();
+  await page.getByRole("region", { name: "搜索历史", exact: true })
+    .getByRole("button", { name: "新建搜索图", exact: true }).click();
+  await expect(input).toBeFocused();
+  await expect(input).toHaveValue("");
+  await page.clock.fastForward(10_000);
+  await expect(page.locator(".ink-study__stage")).toHaveAttribute("data-search-state", "input");
+  await expect(page.locator("[data-ink-node]")).toHaveCount(0);
+  await expect(page.locator(".react-flow__edge")).toHaveCount(0);
+  await expect.poll(async () => (await readFixtureSnapshots(page))[1]).toMatchObject({ aborted: true, cancelled: true });
+});
+
+/** 历史恢复必须选择实际文档；同业务节点 ID 出现在两张图中，也不能串用它们的坐标。 */
+test("历史标题恢复两张真实图且独立保存拖动位置，切图不重搜", async ({ page }, testInfo) => {
+  const events = createJourneyEvents();
+  await installBrowserFixture(page, events);
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.goto("/ink-study.html");
+  await page.getByRole("button", { name: "开始探索", exact: true }).click();
+  const input = page.getByRole("searchbox", { name: "搜索任意主题", exact: true });
+  await input.fill("保存图甲");
+  await input.press("Enter");
+  await expect.poll(async () => (await readFixtureSnapshots(page)).length).toBe(1);
+  await emitFixtureEvents(page, 0, events.map((_, index) => index));
+  await page.evaluate(() => window.__WAYFINDER_E2E__.close(0));
+  await expect(page.locator("[data-ink-node]:visible")).toHaveCount(4);
+  await expect.poll(async () => (await readStoredWorkspace(page))?.documents.length).toBe(1);
+  const firstGraph = (await readStoredWorkspace(page))?.documents.find(document => document.query === "保存图甲");
+  if (firstGraph === undefined) throw new Error("首张搜索图未持久保存");
+  const firstPosition = await dragInkNode(page, 70, 35);
+  await expectSavedInkPosition(page, firstGraph.id, firstPosition);
+  const toggle = page.getByRole("button", { name: "搜索历史", exact: true });
+  const panel = page.getByRole("region", { name: "搜索历史", exact: true });
+  await toggle.click();
+  await panel.getByRole("button", { name: "新建搜索图", exact: true }).click();
+  await input.fill("保存图乙");
+  await input.press("Enter");
+  await expect.poll(async () => (await readFixtureSnapshots(page)).length).toBe(2);
+  await emitFixtureEvents(page, 1, events.map((_, index) => index));
+  await page.evaluate(() => window.__WAYFINDER_E2E__.close(1));
+  await expect(page.locator("[data-ink-node]:visible")).toHaveCount(4);
+  await expect.poll(async () => (await readStoredWorkspace(page))?.documents.length).toBe(2);
+  const secondGraph = (await readStoredWorkspace(page))?.documents.find(document => document.query === "保存图乙");
+  if (secondGraph === undefined) throw new Error("第二张搜索图未持久保存");
+  const secondPosition = await dragInkNode(page, -45, 65);
+  await expectSavedInkPosition(page, secondGraph.id, secondPosition);
+
+  for (const [document, position] of [[firstGraph, firstPosition], [secondGraph, secondPosition], [firstGraph, firstPosition]] as const) {
+    await toggle.click();
+    await panel.getByRole("button", { name: document.title, exact: true }).click();
+    await expect(panel).toHaveCount(0);
+    await expect(page.locator(".ink-study__stage")).toHaveAttribute("data-search-state", "graph");
+    await expect(page.locator("[data-ink-node]:visible")).toHaveCount(4);
+    await expectInkPosition(page, position);
+    await expect.poll(async () => (await readStoredWorkspace(page))?.currentId).toBe(document.id);
+    expect(await readFixtureSnapshots(page)).toHaveLength(2);
+  }
+  await expectSavedInkPosition(page, secondGraph.id, secondPosition);
+  await page.screenshot({ path: testInfo.outputPath("ink-history-restored-layout.png"), animations: "disabled" });
+});
+
+/** 草图位置必须在 complete 时交给同一文档，再经过首页与 IndexedDB 恢复仍保持。 */
+test("运行中独立拖动的节点在完成后承接，返回重入及刷新保留坐标", async ({ page }, testInfo) => {
+  const events = createInkMotionEvents();
+  const complete = events.findIndex(event => event.type === "complete");
+  await installBrowserFixture(page, events);
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.goto("/ink-study.html");
+  await page.getByRole("button", { name: "开始探索", exact: true }).click();
+  const input = page.getByRole("searchbox", { name: "搜索任意主题", exact: true });
+  await input.fill("运行中移动后保存");
+  await input.press("Enter");
+  await expect.poll(async () => (await readFixtureSnapshots(page)).length).toBe(1);
+  await emitFixtureEvents(page, 0, events.flatMap((_, index) => index < complete ? [index] : []));
+  await expect(page.locator("[data-ink-node]:visible")).toHaveCount(4);
+  const otherPosition = await readInkPosition(page, "python-installation");
+  const moved = await dragInkNode(page, 85, 40);
+  await expectInkPosition(page, otherPosition, "python-installation");
+  await emitFixtureEvents(page, 0, [complete]);
+  await page.evaluate(() => window.__WAYFINDER_E2E__.close(0));
+  await expectInkPosition(page, moved);
+  await expect.poll(async () => (await readStoredWorkspace(page))?.documents[0]?.nodes.length).toBe(4);
+  const graph = (await readStoredWorkspace(page))?.documents[0];
+  if (graph === undefined) throw new Error("运行完成文档未保存");
+  await expectSavedInkPosition(page, graph.id, moved);
+  await page.getByRole("button", { name: "返回首页", exact: true }).click();
+  await expect(page.locator("[data-ink-node]")).toHaveCount(0);
+  await page.getByRole("button", { name: "开始探索", exact: true }).click();
+  await expect(page.locator(".ink-study__stage")).toHaveAttribute("data-search-state", "graph");
+  await expectInkPosition(page, moved);
+  expect(await readFixtureSnapshots(page)).toHaveLength(1);
+  await page.reload();
+  await expect(page.getByRole("button", { name: "开始探索", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "开始探索", exact: true }).click();
+  await expect(page.locator("[data-ink-node]:visible")).toHaveCount(4);
+  await expectInkPosition(page, moved);
+  await expectInkPosition(page, otherPosition, "python-installation");
+  expect((await readStoredWorkspace(page))?.currentId).toBe(graph.id);
+  expect(await readFixtureSnapshots(page)).toHaveLength(0);
+  await page.screenshot({ path: testInfo.outputPath("ink-runtime-drag-refresh.png"), animations: "disabled" });
+});
+
+/** 完整页面就是图的裁切边界；节点接近左边缘时，文字与墨团不得被旧的内缩图框提前裁掉。 */
+test("图画布覆盖完整stage且边缘节点保持可读语义与实际命中", async ({ page }, testInfo) => {
+  const events = createJourneyEvents();
+  await installBrowserFixture(page, events);
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.goto("/ink-study.html");
+  await page.getByRole("button", { name: "开始探索", exact: true }).click();
+  const input = page.getByRole("searchbox", { name: "搜索任意主题", exact: true });
+  await input.fill("页面边缘文本");
+  await input.press("Enter");
+  await expect.poll(async () => (await readFixtureSnapshots(page)).length).toBe(1);
+  await emitFixtureEvents(page, 0, events.map((_, index) => index));
+  await page.evaluate(() => window.__WAYFINDER_E2E__.close(0));
+  await expect(page.locator("[data-ink-node]:visible")).toHaveCount(4);
+  const stage = await page.locator(".ink-study__stage").boundingBox();
+  const viewport = await page.locator(".ink-study__graph").boundingBox();
+  const node = page.locator(`[data-ink-node="${READY_NODE_ID}"]`);
+  const before = await node.boundingBox();
+  if (stage === null || viewport === null || before === null) throw new Error("缺少完整图画布或节点");
+  for (const key of ["x", "y", "width", "height"] as const) expect(Math.abs(stage[key] - viewport[key])).toBeLessThan(1);
+  await dragInkNode(page, stage.x - 24 - before.x, stage.y + stage.height * 0.55 - before.y);
+  await expect(page.locator(".ink-study__stage")).toHaveAttribute("data-search-state", "graph");
+  const heading = node.getByRole("heading", { name: "Python 简介", exact: true });
+  await expect(heading).toBeVisible();
+  await expect(node.locator("p")).toHaveText("了解 Python 的定位、核心特性与常见使用场景。");
+  await expect.poll(() => heading.evaluate(element => {
+    const bounds = element.getBoundingClientRect();
+    const stageBounds = document.querySelector(".ink-study__stage")?.getBoundingClientRect();
+    if (stageBounds === undefined) return false;
+    const x = Math.max(stageBounds.left + 6, bounds.left + 2);
+    const target = document.elementFromPoint(x, bounds.y + bounds.height / 2);
+    return x < bounds.right && target?.closest("[data-ink-node]")?.getAttribute("data-ink-node") === "python-introduction";
+  })).toBe(true);
+  await expect(page.locator(".ink-study__stage")).toHaveAttribute("data-ink-renderer", "active");
+  await expect.poll(async () => (await inkPigmentPerNode(page)).find(item => item.id === READY_NODE_ID)?.count ?? 0).toBeGreaterThan(20);
+  await page.screenshot({ path: testInfo.outputPath("ink-real-page-edge.png"), animations: "disabled" });
+});
+
+/** UI 本地化和已生成内容的语言分开验证，不能靠重搜或改写历史文档来获得英文控件。 */
+test("新页语言即时更新状态连线控件和历史，原始内容及请求语言不变", async ({ page }, testInfo) => {
+  const events = createInkMotionEvents();
+  await installBrowserFixture(page, events);
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.goto("/ink-study.html");
+  await page.getByRole("button", { name: "开始探索", exact: true }).click();
+  const input = page.getByRole("searchbox", { name: "搜索任意主题", exact: true });
+  await input.fill("保留中文结果");
+  await input.press("Enter");
+  await expect.poll(async () => (await readFixtureSnapshots(page)).length).toBe(1);
+  await emitFixtureEvents(page, 0, events.map((_, index) => index));
+  await page.evaluate(() => window.__WAYFINDER_E2E__.close(0));
+  await expect(page.locator("[data-ink-node]:visible")).toHaveCount(4);
+  await expect.poll(async () => (await readStoredWorkspace(page))?.documents[0]?.nodes.length).toBe(4);
+  const original = (await readStoredWorkspace(page))?.documents[0];
+  if (original === undefined) throw new Error("缺少原始中文文档");
+  await page.getByRole("button", { name: "语言", exact: true }).click();
+  await page.getByRole("button", { name: "English", exact: true }).click();
+  await expect(page.locator("html")).toHaveAttribute("lang", "en-US");
+  const readyNode = page.locator(`[data-ink-node="${READY_NODE_ID}"]`);
+  await expect(readyNode.getByText("Ready", { exact: true })).toBeVisible();
+  await expect(readyNode.getByText("Main path", { exact: true })).toBeVisible();
+  await expect(page.locator('[data-ink-node="python-installation"]').getByText("Partially complete", { exact: true })).toBeVisible();
+  await expect(page.locator('[data-ink-node="python-third-party-libraries"]').getByText("Failed", { exact: true })).toBeVisible();
+  await expect(page.locator(".react-flow__edge-text").getByText("Recommended next", { exact: true })).toHaveCount(2);
+  await expect(page.locator(".react-flow__edge-text").getByText("Related", { exact: true })).toHaveCount(2);
+  await expect(page.getByRole("button", { name: "Zoom in", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Fit all nodes", exact: true })).toBeVisible();
+  for (const source of original.nodes) {
+    const node = page.locator(`[data-ink-node="${source.id}"]`);
+    await expect(node.getByRole("heading")).toHaveText(source.title);
+    await expect(node.locator("p")).toHaveText(source.description);
+  }
+  await page.getByRole("button", { name: "Search history", exact: true }).click();
+  const history = page.getByRole("region", { name: "Search history", exact: true });
+  await expect(history.getByRole("status")).toHaveText("Saved in this browser");
+  await expect(history.getByRole("button", { name: original.title, exact: true })).toBeVisible();
+  await expect(history.getByRole("button", { name: `Rename：${original.title}`, exact: true })).toBeVisible();
+  expect((await readStoredWorkspace(page))?.documents.find(document => document.id === original.id)).toEqual(original);
+  expect((await readFixtureSnapshots(page))[0]).toMatchObject({ language: "zh-CN", engine: "baidu" });
+  expect(await readFixtureSnapshots(page)).toHaveLength(1);
+  await page.screenshot({ path: testInfo.outputPath("ink-immediate-english-history.png"), animations: "disabled" });
+  await history.getByRole("button", { name: "New search graph", exact: true }).click();
+  const nextInput = page.getByRole("searchbox", { name: "Search any topic", exact: true });
+  await expect(nextInput).toBeFocused();
+  await expect(nextInput).toHaveValue("");
+  await nextInput.fill("Next English graph");
+  await nextInput.press("Enter");
+  await expect.poll(async () => (await readFixtureSnapshots(page))[1]).toMatchObject({ language: "en-US", engine: "google" });
+  expect((await readStoredWorkspace(page))?.documents.find(document => document.id === original.id)?.language).toBe("zh-CN");
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+});
+
+/** 手动文档不受 AI 八节点限制；真实读取九节点历史后，逐个证明 DOM 和 GPU 墨团均完整。 */
+test("九节点手动历史通过原生存储恢复且每个节点都有墨团", async ({ page }, testInfo) => {
+  const nodes = Array.from({ length: 9 }, (_, index) => ({
+    id: `manual-ink-${index + 1}`, title: `手动节点 ${index + 1}`, description: `人工保存的第 ${index + 1} 个节点说明。`,
+    nodeType: "primary", layer: 0, status: "empty", resources: [], warnings: [],
+  }));
+  const document = EditableGraphSchema.parse({
+    version: "workspace.v1", id: "ink-history-nine", title: "九节点人工历史图", query: "", language: "zh-CN",
+    presentationMode: "graph", analysis: null, createdAt: new Date(FIXTURE_TIME).toISOString(),
+    updatedAt: new Date(FIXTURE_TIME).toISOString(), lastRunId: null, nodes, edges: [],
+    positions: Object.fromEntries(nodes.map((node, index) => [node.id, { x: 32 + index % 3 * 340, y: 32 + Math.floor(index / 3) * 220 }])),
+  });
+  await installBrowserFixture(page, createJourneyEvents());
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.goto("/ink-study.html");
+  await page.getByRole("button", { name: "开始探索", exact: true }).click();
+  await page.getByRole("button", { name: "搜索历史", exact: true }).click();
+  await expect(page.getByRole("region", { name: "搜索历史", exact: true }).getByRole("status")).toHaveText("已保存到本浏览器");
+  await seedStoredWorkspace(page, document);
+  await page.reload();
+  await page.getByRole("button", { name: "开始探索", exact: true }).click();
+  await expect(page.locator(".ink-study__stage")).toHaveAttribute("data-search-state", "graph");
+  await expect(page.locator("[data-ink-node]:visible")).toHaveCount(9);
+  for (const node of nodes) {
+    await expect(page.locator(`[data-ink-node="${node.id}"]`).getByRole("heading", { name: node.title, exact: true })).toBeVisible();
+    await expectInkPosition(page, document.positions[node.id] ?? { x: NaN, y: NaN }, node.id);
+  }
+  await expect(page.locator(".ink-study__stage")).toHaveAttribute("data-ink-renderer", "active");
+  await expect.poll(async () => Math.min(...(await inkPigmentPerNode(page)).map(item => item.count))).toBeGreaterThan(20);
+  const pigments = await inkPigmentPerNode(page);
+  expect(pigments).toHaveLength(9);
+  await testInfo.attach("nine-node-gpu-pigment", { body: JSON.stringify(pigments, null, 2), contentType: "application/json" });
+  expect((await readStoredWorkspace(page))?.currentId).toBe(document.id);
+  expect(await readFixtureSnapshots(page)).toHaveLength(0);
+  await page.screenshot({ path: testInfo.outputPath("ink-nine-node-history.png"), animations: "disabled" });
 });
 
 test("English 选择器控制请求与页面语言，既有 Run 不随下一次选择混语", async ({

@@ -1,6 +1,6 @@
 /**
  * 模块职责：以新抽屉呈现和管理已有本地搜索图，复用原工作区与持久化操作。
- * 范围边界：本轮不接记录点击与撤销入口；重命名、删除不搜索，也不复制保存逻辑。
+ * 范围边界：选图、重命名、删除均复用工作区，不搜索、不复制保存逻辑；撤销入口另行呈现。
  * 交互边界：外点与焦点移出只收起；Esc 和触发按钮关闭时才请求恢复搜索焦点。
  */
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
@@ -17,11 +17,13 @@ type Props = Readonly<{
   onOpen: () => void;
   onClose: (restoreFocus: boolean) => void;
   onNewSearch: () => void;
+  onSelectGraph: (graphId: string) => Promise<void>;
 }>;
 
 /** 每条记录只维护名称草稿；保存与删除仍走已有操作，存储读取失败时禁用写入。 */
-function HistoryRecord({ id, title, language, disabled, onDelete }: {
+function HistoryRecord({ id, title, language, disabled, onDelete, onSelect, selected }: {
   id: string; title: string; language: SearchLanguage; disabled: boolean; onDelete: () => void;
+  onSelect: () => void; selected: boolean;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(title);
@@ -52,7 +54,8 @@ function HistoryRecord({ id, title, language, disabled, onDelete }: {
         onKeyDown={event => {
           // 先退出名称编辑，再由下一次 Esc 收起面板，避免同时丢失草稿与上下文。
           if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); finishEditing(); }
-        }} /> : <h3 title={title}>{title}</h3>}
+        }} /> : <h3 title={title}><button type="button" className="ink-study__history-title" disabled={disabled}
+          aria-current={selected ? "true" : undefined} onClick={onSelect}>{title}</button></h3>}
       <div className="ink-study__history-actions">
         <button type="button" className="ink-study__pill" ref={renameButton}
           aria-label={editing ? messages.saveTitle : `${messages.rename}：${title}`}
@@ -74,10 +77,11 @@ function HistoryRecord({ id, title, language, disabled, onDelete }: {
   </li>;
 }
 
-export function InkSearchHistory({ open, available, language, onOpen, onClose, onNewSearch }: Props) {
+export function InkSearchHistory({ open, available, language, onOpen, onClose, onNewSearch, onSelectGraph }: Props) {
   const panel = useRef<HTMLElement>(null);
   const toggle = useRef<HTMLButtonElement>(null);
   const documents = useStore(workspaceStore, state => state.documents);
+  const currentId = useStore(workspaceStore, state => state.currentId);
   const persistence = useStore(workspacePersistenceStore, state => state);
   const messages = getMessages(language);
   const disabled = persistence.status === "loading" || persistence.error === "load";
@@ -129,7 +133,8 @@ export function InkSearchHistory({ open, available, language, onOpen, onClose, o
         {documents.length === 0 ? <p className="ink-study__history-empty">{messages.workspace.emptyRecords}</p> : null}
         <ul className="ink-study__history-list">
           {documents.map(document => <HistoryRecord key={document.id} id={document.id} title={document.title}
-            language={language} disabled={disabled} onDelete={() => {
+            language={language} disabled={disabled} selected={document.id === currentId}
+            onSelect={() => { void onSelectGraph(document.id); }} onDelete={() => {
               workspaceStore.getState().deleteGraph(document.id);
               // 删除按钮即将卸载，将焦点留在面板，避免键盘用户落到隐藏搜索层。
               panel.current?.focus({ preventScroll: true });
