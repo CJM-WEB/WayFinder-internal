@@ -94,6 +94,7 @@ describe("MemoryCachedSearchProvider", () => {
       { ...BASE_REQUEST, capability: "code" },
       { ...BASE_REQUEST, freshnessSensitive: true },
       { ...BASE_REQUEST, language: "en-US" },
+      { ...BASE_REQUEST, engine: "google" },
       {
         kind: "broad_discovery",
         query: BASE_REQUEST.query,
@@ -120,6 +121,16 @@ describe("MemoryCachedSearchProvider", () => {
     });
     expect(searchKey).toMatch(/^search-v1:[a-f0-9]{64}$/u);
     expect(searchKey).not.toContain("sensitive");
+  });
+
+  it("省略引擎与显式默认引擎共用缓存，覆盖引擎与默认隔离", () => {
+    for (const language of ["zh-CN", "en-US"] as const) {
+      const request = { ...BASE_REQUEST, language };
+      const engine = language === "zh-CN" ? "baidu" : "google";
+      const other = language === "zh-CN" ? "google" : "baidu";
+      expect(createSearchCacheKey("provider", request)).toBe(createSearchCacheKey("provider", { ...request, engine }));
+      expect(createSearchCacheKey("provider", request)).not.toBe(createSearchCacheKey("provider", { ...request, engine: other }));
+    }
   });
 
   it("Search TTL 从写入开始且命中不续期，边界时重新委托 Provider", async () => {

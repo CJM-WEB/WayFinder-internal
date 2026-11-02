@@ -1030,3 +1030,102 @@ input {
     border-left: 0;
   }
 }
+
+/* 本地记录沿用现有浅绿卡片风格；窄屏时改为上方列表，避免压缩图和资源面板。 */
+.app-shell--workspace {
+  width: min(1480px, calc(100% - 32px));
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  align-items: start;
+  gap: 20px;
+}
+.workspace-main { min-width: 0; }
+.workspace-search-controls { min-width: 0; margin: 0; padding: 0; border: 0; }
+.workspace-sidebar {
+  padding: 16px;
+  border: 1px solid #d4e0d7;
+  border-radius: 20px;
+  background: #fff;
+  overflow-wrap: anywhere;
+}
+.workspace-sidebar h2 { margin: 0 0 16px; font-size: 1rem; }
+.workspace-sidebar button {
+  padding: 8px 10px;
+  border: 1px solid #b9cbbf;
+  border-radius: 10px;
+  color: #244d37;
+  background: #f4f8f4;
+  cursor: pointer;
+}
+.workspace-sidebar button:disabled { opacity: 0.5; cursor: default; }
+.workspace-records { list-style: none; margin: 16px 0; padding: 0; }
+.workspace-records li { margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px solid #e3ebe6; }
+.workspace-record__select { width: 100%; text-align: left; overflow-wrap: anywhere; }
+.workspace-record__select[aria-pressed="true"] { border-color: #46745a; background: #e0eee4; font-weight: 700; }
+.workspace-record__actions { display: flex; gap: 6px; margin-top: 6px; }
+.workspace-record__actions button { font-size: 0.72rem; }
+.workspace-records input { width: 100%; margin: 8px 0; padding: 7px; }
+.workspace-sidebar p { font-size: 0.78rem; color: #61786c; }
+.workspace-storage-error p { color: #a33c31; }
+.graph-node--empty, .graph-node--edited { border-color: #8ca79a; }
+@media (max-width: 900px) {
+  .app-shell--workspace { grid-template-columns: minmax(0, 1fr); }
+  .workspace-records { display: flex; flex-wrap: wrap; gap: 12px; }
+  .workspace-records li { width: min(220px, 100%); }
+}
+
+/* 编辑使用原生表单；保存才写入撤销快照，资源卡片保留既有信息层级。 */
+.workspace-edit-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 12px;
+  padding: 12px 16px;
+  margin: 0 0 16px;
+  border: 1px solid #d4e0d7;
+  border-radius: 16px;
+  background: #fff;
+}
+.workspace-edit-toolbar form { display: flex; align-items: end; gap: 10px; flex: 1; }
+.workspace-edit-field { display: grid; gap: 5px; margin: 8px 0; font-size: 0.78rem; color: #385647; }
+.workspace-edit-field input, .workspace-edit-field textarea {
+  width: 100%; min-width: 0; padding: 8px 10px; border: 1px solid #b9cbbf; border-radius: 8px; font: inherit;
+}
+.workspace-edit-field textarea { resize: vertical; }
+.workspace-edit-toolbar .workspace-edit-field { flex: 1; margin: 0; }
+.workspace-edit-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.workspace-edit-toolbar button, .workspace-node-editor button, .workspace-resource-editor button, .workspace-edit-error button {
+  padding: 7px 9px; margin: 3px 3px 3px 0; border: 1px solid #b9cbbf; border-radius: 8px; color: #244d37; background: #f4f8f4; font: inherit; cursor: pointer;
+}
+.workspace-edit-toolbar button:disabled, .workspace-node-editor button:disabled, .workspace-resource-editor button:disabled { opacity: 0.5; cursor: default; }
+.workspace-node-editor { margin-top: 12px; padding-top: 8px; border-top: 1px solid #d7e2da; font-size: 0.78rem; }
+.workspace-resource-editor { padding-top: 8px; font-size: 0.76rem; }
+.workspace-edit-error { color: #a33c31; font-size: 0.78rem; }
+.resource-card[draggable="true"] { cursor: grab; }
+.resource-card input, .resource-card textarea { cursor: text; }
+.resource-card__drag-handle { cursor: grab; font-size: 1.2rem; color: #61786c; }
+
+/* 连线表单与画布共享规则；拖动只临时绘制，完成后写入一次可撤销位置。 */
+.workspace-edge-editor { margin-bottom: 16px; padding: 12px 16px; border: 1px solid #d4e0d7; border-radius: 16px; background: #fff; font-size: 0.8rem; }
+.workspace-edge-editor summary { color: #385647; font-weight: 700; cursor: pointer; }
+.workspace-edge-editor fieldset { margin: 8px 0 0; padding: 0; border: 0; }
+.workspace-edge-editor form { display: flex; flex-wrap: wrap; align-items: end; gap: 10px; }
+.workspace-edge-editor select { max-width: 100%; padding: 7px 9px; border: 1px solid #b9cbbf; border-radius: 8px; background: #fff; font: inherit; }
+.workspace-edge-editor button { margin: 8px 0; padding: 7px 9px; border: 1px solid #b9cbbf; border-radius: 8px; color: #244d37; background: #f4f8f4; cursor: pointer; }
+.graph-canvas { position: relative; }
+.graph-edit-notice { position: absolute; left: 12px; top: 12px; z-index: 5; max-width: calc(100% - 24px); }
+.graph-edit-notice:has([role="alert"]) { padding: 6px 10px; border: 1px solid #dfb0a9; border-radius: 10px; background: #fff8f5; }
+.graph-node__handle.connectable { width: 10px; height: 10px; cursor: crosshair; }
+/* 引擎下拉与现有语言选择使用相同样式；节点偏好不会覆盖资源的实际来源展示。 */
+.workspace-node-editor select { max-width: 100%; padding: 7px 9px; border: 1px solid #b9cbbf; border-radius: 8px; background: #fff; font: inherit; }
+@media (max-width: 1100px) { .omnibox__controls { flex-wrap: wrap; } }
+/* 预览与工作图分开展示，操作按钮先于结果；实际图和资源继续复用现有组件。 */
+.workspace-research-preview { margin-bottom: 18px; padding: 16px; border: 1px solid #8cab99; border-radius: 18px; background: #f8fcf9; }
+.workspace-research-preview h2 { margin-top: 0; font-size: 1rem; }
+.workspace-research-preview > button, .workspace-research-preview .workspace-edit-actions > button {
+  padding: 8px 10px; border: 1px solid #b9cbbf; border-radius: 8px; color: #244d37; background: #fff; cursor: pointer;
+}
+.workspace-preview-content { margin-top: 14px; }
+.workspace-preview-content--graph { display: grid; grid-template-columns: minmax(0, 1fr) 330px; gap: 12px; }
+@media (max-width: 1100px) { .workspace-preview-content--graph { grid-template-columns: minmax(0, 1fr); } }
+.workspace-edit-toolbar .workspace-research-topic-hint { flex-basis: 100%; margin: 0; color: #61786c; font-size: 0.78rem; }

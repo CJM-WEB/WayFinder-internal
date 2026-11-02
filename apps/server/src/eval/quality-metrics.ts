@@ -15,6 +15,8 @@ import {
   GraphPlanSchema,
   MAX_RETAINED_RESOURCES_PER_NODE,
   ResultGraphSchema,
+  resolveSearchEngine,
+  SearchEngineSchema,
   SearchLanguageSchema,
   calculateSearchPlanMaxResults,
   type GraphPlan,
@@ -32,6 +34,7 @@ export const QUALITY_METRICS_VERSION = "quality-metrics.v4" as const;
 export const QualityEvalPlannedRequestConfigSchema = z.strictObject({
   providerId: z.literal("serpapi_bing"),
   language: SearchLanguageSchema,
+  engine: SearchEngineSchema.optional(),
 });
 
 export type QualityEvalPlannedRequestConfig = Readonly<
@@ -124,6 +127,7 @@ export function measureQualityEvalPlannedRequestDuplication(
         "general",
         plan.analysis.freshnessSensitive,
         parsedConfig.language,
+        resolveSearchEngine(parsedConfig.language, parsedConfig.engine),
       ]);
       const nodeOccurrences =
         nodeOccurrencesByIdentity.get(identity) ?? new Map<string, number>();

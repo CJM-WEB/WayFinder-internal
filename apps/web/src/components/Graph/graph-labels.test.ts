@@ -74,3 +74,8 @@ describe("Graph Node 状态展示模型", () => {
     );
   });
 });
+
+it("人工空节点与编辑态有独立非加载文案", () => {
+  expect(buildNodeStatusPresentation("empty", 0)).toMatchObject({ label: "空节点", isLoading: false });
+  expect(buildNodeStatusPresentation("edited", 12)).toMatchObject({ label: "已编辑", detail: "12 条资源 · 已编辑", isLoading: false });
+});

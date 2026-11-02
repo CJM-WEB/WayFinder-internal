@@ -13,14 +13,19 @@ import type {
   AriaLabelConfig,
   NodeChange,
   NodeTypes,
+  ReactFlowInstance,
+  XYPosition,
 } from "@xyflow/react";
 import type {
+  EditableGraph,
   PresentationMode,
   SearchLanguage,
 } from "@wayfinder/contracts";
-import { useCallback, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "zustand";
 
+import { addEdge, moveNode, InvalidGraphConnectionError } from "../../stores/workspace-edits.js";
+import { EditNotice, useGraphEdit } from "../Workspace/WorkspaceEditor.js";
 import { graphStore } from "../../stores/graph-store.js";
 import { getMessages } from "../../i18n/messages.js";
 import { GraphNode } from "./GraphNode.js";
@@ -43,18 +48,39 @@ const NODE_TYPES: NodeTypes = {
 export type GraphViewProps = Readonly<{
   presentationMode: PresentationMode;
   language: SearchLanguage;
+  graph?: Pick<EditableGraph, "nodes" | "edges" | "positions">;
+  selectedNodeId?: string | null;
+  onSelectNode?: (nodeId: string | null) => void;
+  editableGraphId?: string;
+  flowId?: string;
 }>;
 
 /** 两种展示模式共用同一 Product Graph；Compact 只改变视图密度，不改写 Node 或 Edge。 */
-export function GraphView({ presentationMode, language }: GraphViewProps) {
-  const nodes = useStore(graphStore, state => state.nodes);
-  const edges = useStore(graphStore, state => state.edges);
-  const selectedNodeId = useStore(graphStore, state => state.selectedNodeId);
-  const selectNode = useStore(graphStore, state => state.selectNode);
+export function GraphView({ presentationMode, language, graph, selectedNodeId: providedSelection, onSelectNode, editableGraphId, flowId }: GraphViewProps) {
+  const runNodes = useStore(graphStore, state => state.nodes);
+  const runEdges = useStore(graphStore, state => state.edges);
+  const runSelection = useStore(graphStore, state => state.selectedNodeId);
+  const selectRunNode = useStore(graphStore, state => state.selectNode);
+  const nodes = graph?.nodes ?? runNodes;
+  const edges = graph?.edges ?? runEdges;
+  const selectedNodeId = providedSelection === undefined ? runSelection : providedSelection;
+  const selectNode = onSelectNode ?? selectRunNode;
   const messages = getMessages(language).graph;
+  const edit = useGraphEdit(editableGraphId ?? null, language);
+  const [dragPosition, setDragPosition] = useState<{ nodeId: string; position: XYPosition } | null>(null);
+  const flowInstance = useRef<ReactFlowInstance<GraphFlowNode, GraphFlowEdge> | null>(null);
+  const previousNodeCount = useRef(nodes.length);
+  // 只在新增节点后调整视口以保证可见，不改写已有人工坐标。
+  useEffect(() => {
+    const addedNode = nodes.length > previousNodeCount.current;
+    previousNodeCount.current = nodes.length;
+    if (!addedNode || flowInstance.current === null) return;
+    const frame = requestAnimationFrame(() => { void flowInstance.current?.fitView({ padding: 0.2 }); });
+    return () => cancelAnimationFrame(frame);
+  }, [nodes.length]);
   const elements = useMemo(
-    () => buildGraphFlowElements(nodes, edges, language),
-    [nodes, edges, language],
+    () => buildGraphFlowElements(nodes, edges, language, graph?.positions),
+    [nodes, edges, language, graph?.positions],
   );
   /** React Flow 的内部可访问性文案也必须与页面唯一展示语言一致。 */
   const ariaLabels = useMemo<Partial<AriaLabelConfig>>(
@@ -73,8 +99,10 @@ export function GraphView({ presentationMode, language }: GraphViewProps) {
    * 否则 graph.plan 与增量状态会先绘制一帧旧 Graph。选择也只由业务 ID 派生。
    */
   const flowNodes = useMemo(
-    () => applySelectedNodeId(elements.nodes, selectedNodeId),
-    [elements.nodes, selectedNodeId],
+    () => applySelectedNodeId(elements.nodes, selectedNodeId).map(node =>
+      dragPosition?.nodeId === node.id ? { ...node, position: dragPosition.position } : node,
+    ),
+    [elements.nodes, selectedNodeId, dragPosition],
   );
 
   const handleSelectionChange = useCallback(
@@ -90,8 +118,23 @@ export function GraphView({ presentationMode, language }: GraphViewProps) {
     (changes: NodeChange<GraphFlowNode>[]) => {
       /**
        * 键盘 Enter / Space 只产生 select change，不触发 onNodeClick；这里仅提取选择，
-       * 测量与位置等 React Flow 内部变化不进入业务 Store。
+       * 测量不进入业务 Store；拖动仅保存临时位置，结束时才提交一次撤销快照。
        */
+      if (editableGraphId !== undefined) {
+        for (const change of changes) {
+          if (change.type !== "position" || change.position === undefined) continue;
+          const position = change.position;
+          if (change.dragging === true) {
+            setDragPosition(previous => previous?.nodeId === change.id &&
+              previous.position.x === position.x && previous.position.y === position.y
+              ? previous : { nodeId: change.id, position });
+          } else if (change.dragging === false) {
+            // 方向键移动没有 DragStop；明确结束的位移必须同样保存，指针重复结算由同值检查去重。
+            edit.commit(graph => moveNode(graph, change.id, position));
+            setDragPosition(null);
+          }
+        }
+      }
       const nextSelectedNodeId = resolveSelectedNodeIdFromChanges(
         flowNodes,
         changes,
@@ -100,7 +143,7 @@ export function GraphView({ presentationMode, language }: GraphViewProps) {
         selectNode(nextSelectedNodeId);
       }
     },
-    [flowNodes, selectNode],
+    [flowNodes, selectNode, editableGraphId],
   );
 
   if (elements.nodes.length === 0) {
@@ -114,19 +157,41 @@ export function GraphView({ presentationMode, language }: GraphViewProps) {
       aria-label={messages.canvasAria[presentationMode]}
     >
       <ReactFlow<GraphFlowNode, GraphFlowEdge>
+        {...(flowId === undefined ? {} : { id: flowId })}
         nodes={flowNodes}
         edges={elements.edges}
         nodeTypes={NODE_TYPES}
+        onInit={instance => { flowInstance.current = instance; }}
         onNodesChange={handleNodesChange}
         onNodeClick={(_event, node) => selectNode(node.id)}
+        onNodeDragStop={(_event, node) => {
+          if (editableGraphId === undefined) return;
+          edit.commit(graph => moveNode(graph, node.id, node.position));
+          setDragPosition(null);
+        }}
+        onConnect={connection => {
+          if (editableGraphId === undefined) return;
+          const type = connection.sourceHandle === "main-source" && connection.targetHandle === "main-target"
+            ? "recommended_next"
+            : connection.sourceHandle === "related-source" && connection.targetHandle === "related-target"
+              ? "related_to" : null;
+          edit.commit(graph => {
+            if (type === null) throw new InvalidGraphConnectionError();
+            return addEdge(graph, connection.source, connection.target, type);
+          });
+        }}
         // React Flow 的键盘选择不触发 onNodeClick，必须从 selection 事件同步 Store。
         onSelectionChange={handleSelectionChange}
         fitView
         fitViewOptions={{ padding: 0.2 }}
         minZoom={0.35}
         maxZoom={1.8}
-        nodesDraggable={false}
-        nodesConnectable={false}
+        nodesDraggable={editableGraphId !== undefined}
+        nodesConnectable={editableGraphId !== undefined}
+        // 删除统一走显式入口与确定性函数；禁止画布内部先删后与工作区漂移。
+        deleteKeyCode={null}
+        multiSelectionKeyCode={null}
+        selectionKeyCode={null}
         elementsSelectable
         panOnDrag
         zoomOnScroll
@@ -135,6 +200,7 @@ export function GraphView({ presentationMode, language }: GraphViewProps) {
         <Background variant={BackgroundVariant.Dots} gap={20} size={1.2} />
         <Controls aria-label={messages.controlsAria} showInteractive={false} />
       </ReactFlow>
+      <div className="graph-edit-notice"><EditNotice problem={edit.problem} language={language} /></div>
     </div>
   );
 }

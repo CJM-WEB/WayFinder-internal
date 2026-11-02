@@ -4,6 +4,7 @@
  * Record 约束确保 Contract 新增枚举值时编译立即失败，避免界面静默显示原始协议值。
  */
 import type {
+  EditableNode,
   NodeType,
   SearchLanguage,
   StreamNodeStatus,
@@ -26,7 +27,9 @@ type NodeStatusVisual = Readonly<{
  * 六种公共状态的最小视觉模型。
  * 只有真正执行中的 searching / filtering 标记为加载；planned 是等待态，三个结果态均已结束。
  */
-const NODE_STATUS_VISUALS: Record<StreamNodeStatus, NodeStatusVisual> = {
+const NODE_STATUS_VISUALS: Record<StreamNodeStatus | EditableNode["status"], NodeStatusVisual> = {
+  empty: { marker: "○", isLoading: false },
+  edited: { marker: "✎", isLoading: false },
   planned: {
     marker: "○",
     isLoading: false,
@@ -62,7 +65,7 @@ export type NodeStatusPresentation = Readonly<{
 
 /** Graph Node 只消费已收敛的展示模型，不在组件里重新判断状态机。 */
 export const buildNodeStatusPresentation = (
-  status: StreamNodeStatus,
+  status: StreamNodeStatus | EditableNode["status"],
   resourceCount: number,
   language: SearchLanguage = "zh-CN",
 ): NodeStatusPresentation => {

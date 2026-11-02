@@ -15,6 +15,7 @@ import {
   type ProviderSearchRequest,
   type QueryAnalysis,
   type SearchLanguage,
+  type SearchEngine,
 } from "@wayfinder/contracts";
 
 import type { SearchProvider } from "./provider.js";
@@ -34,6 +35,7 @@ export type DiscoverBroadEvidenceInput = Readonly<{
   /** Orchestrator 创建的统一 Run Signal；本函数不创建或延长其生命周期。 */
   signal: AbortSignal;
   language: SearchLanguage;
+  engine?: SearchEngine;
 }>;
 
 /** 零 Evidence 的脱敏内部错误；Orchestrator 据此失败关闭为 SEARCH_PROVIDER_FAILED。 */
@@ -59,6 +61,7 @@ function createBroadSearchRequest(
   analysis: EvidenceAssistedAnalysis,
   query: string,
   language: SearchLanguage,
+  engine?: SearchEngine,
 ): ProviderSearchRequest {
   return {
     kind: "broad_discovery",
@@ -67,6 +70,7 @@ function createBroadSearchRequest(
     capability: "general",
     freshnessSensitive: analysis.freshnessSensitive,
     language,
+    ...(engine === undefined ? {} : { engine }),
   };
 }
 
@@ -77,6 +81,7 @@ function createBroadSearchRequest(
 function projectEvidence(hit: NormalizedSearchHit): CandidateSearchHit {
   return {
     provider: hit.provider,
+    ...(hit.engine === undefined ? {} : { engine: hit.engine }),
     query: hit.query,
     title: hit.title,
     url: hit.url,
@@ -104,7 +109,7 @@ export async function discoverBroadEvidence(
   const settled = await Promise.allSettled(
     analysis.broadSearchQueries.map(async query =>
       input.provider.search(
-        createBroadSearchRequest(analysis, query, input.language),
+        createBroadSearchRequest(analysis, query, input.language, input.engine),
         input.signal,
       ),
     ),

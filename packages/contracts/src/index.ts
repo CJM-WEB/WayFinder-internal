@@ -16,17 +16,20 @@ import { z } from "zod";
 export const SearchLanguageSchema = z.enum(["zh-CN", "en-US"]);
 export type SearchLanguage = z.infer<typeof SearchLanguageSchema>;
 
-/**
- * SearchRequest（搜索请求）描述一次 Run（运行）的入口身份、有效查询和已校验语言。
- * Query（查询）先 trim，再按 Unicode code point（码点）校验长度。
- * runId 只要求非空并保留原值；严格对象使未知字段明确失败，防止未声明参数被误认为已生效。
- */
-export const SearchRequestSchema = z.strictObject({
-  runId: z.string().min(1),
-  query: z.string().trim().min(1).max(2000),
-  language: SearchLanguageSchema,
-});
-export type SearchRequest = z.infer<typeof SearchRequestSchema>;
+/** 搜索引擎是用户的检索选择，不改变已选语言或地区语境。 */
+export const SearchEngineSchema = z.enum(["baidu", "google"]);
+export type SearchEngine = z.infer<typeof SearchEngineSchema>;
+
+/** 只在执行边界解析缺省引擎，保留旧请求与历史资源中“字段缺失”的真实含义。 */
+export function resolveSearchEngine(
+  language: SearchLanguage,
+  engine?: SearchEngine,
+): SearchEngine {
+  const validatedLanguage = SearchLanguageSchema.parse(language);
+  return engine === undefined
+    ? validatedLanguage === "zh-CN" ? "baidu" : "google"
+    : SearchEngineSchema.parse(engine);
+}
 
 /** Query（查询）分析阶段使用的稳定分类。 */
 export const IntentSchema = z.enum([
@@ -82,6 +85,34 @@ export const QueryAnalysisSchema = z.discriminatedUnion("strategy", [
 ]);
 export type QueryAnalysis = z.infer<typeof QueryAnalysisSchema>;
 
+/**
+ * 节点重搜只接收当前目标与已有分析，不传整张人工图、资源或连线。
+ * null 明确表示旧记录或手动图没有真实分析，由已有 Planner 在本次 Run 内生成。
+ */
+export const NodeSearchContextSchema = z.strictObject({
+  node: z.strictObject({
+    id: z.string().min(1),
+    title: z.string().trim().min(1),
+    description: z.string(),
+  }),
+  analysis: QueryAnalysisSchema.nullable(),
+});
+export type NodeSearchContext = z.infer<typeof NodeSearchContextSchema>;
+
+/**
+ * SearchRequest（搜索请求）描述一次 Run（运行）的入口身份、有效查询和已校验语言。
+ * 可选 nodeSearch 只改变本次检索范围；普通请求与旧 Fixture 保持原有形状。
+ * 严格对象拒绝未声明字段，所有输入均须在外部调用和流式响应开始前校验。
+ */
+export const SearchRequestSchema = z.strictObject({
+  runId: z.string().min(1),
+  query: z.string().trim().min(1).max(2000),
+  language: SearchLanguageSchema,
+  engine: SearchEngineSchema.optional(),
+  nodeSearch: NodeSearchContextSchema.optional(),
+});
+export type SearchRequest = z.infer<typeof SearchRequestSchema>;
+
 /** Graph（图）结构词表由计划图与最终结果图共同使用。 */
 export const NodeTypeSchema = z.enum([
   "primary",
@@ -123,6 +154,7 @@ type ProviderSearchRequestCommon = {
   capability: SearchCapability;
   freshnessSensitive: boolean;
   language: SearchLanguage;
+  engine?: SearchEngine;
 };
 
 /**
@@ -145,6 +177,7 @@ export type ProviderSearchRequest =
  */
 export type NormalizedSearchHit = {
   provider: string;
+  engine?: SearchEngine;
   query: string;
   title: string;
   url: string;
@@ -173,6 +206,7 @@ export type ExtractedPage = {
 export type CandidateSearchHit = Pick<
   NormalizedSearchHit,
   | "provider"
+  | "engine"
   | "query"
   | "title"
   | "url"
@@ -307,6 +341,7 @@ export const ResourceSchema = z.strictObject({
     .record(z.string(), z.number().min(0).max(1))
     .optional(),
   searchProvider: z.string().min(1),
+  engine: SearchEngineSchema.optional(),
   publishedAt: z.iso.datetime({ offset: true }).nullable().optional(),
 });
 export type Resource = z.infer<typeof ResourceSchema>;
@@ -951,3 +986,150 @@ export const StreamEventSchema = z.discriminatedUnion("type", [
   RunFailedStreamEventPayloadSchema.extend(streamEventEnvelopeShape),
 ]);
 export type StreamEvent = z.infer<typeof StreamEventSchema>;
+
+/**
+ * 编辑资源复用真实网页字段，但累计序位不受单次搜索容量限制。
+ * 手动资源与搜索资源通过 origin（来源类型）区分，手动分支不接受伪造的搜索来源。
+ */
+const editableResourceBaseSchema = ResourceSchema.omit({ searchProvider: true, engine: true }).extend({
+  summary: z.string(),
+  whySelected: z.string(),
+  rank: z.number().int().min(1),
+});
+export const EditableResourceSchema = z.discriminatedUnion("origin", [
+  editableResourceBaseSchema.extend({ origin: z.literal("manual") }),
+  editableResourceBaseSchema.extend({
+    origin: z.literal("search"),
+    searchProvider: ResourceSchema.shape.searchProvider,
+    engine: SearchEngineSchema.optional(),
+  }),
+]);
+export type EditableResource = z.infer<typeof EditableResourceSchema>;
+
+/** empty / edited 表示人工编辑状态，绝不借用 failed 表达用户主动删空。 */
+export const EditableNodeStatusSchema = z.enum([
+  "empty", "edited", ...ResultNodeStatusSchema.options,
+]);
+export const EditableNodeSchema = GraphNodeCoreSchema.extend({
+  description: z.string(),
+  searchPlan: SearchPlanSchema.optional(),
+  engine: SearchEngineSchema.optional(),
+  status: EditableNodeStatusSchema,
+  resources: z.array(EditableResourceSchema),
+  warnings: z.array(NodeWarningCodeSchema),
+  error: AppErrorSchema.optional(),
+});
+export type EditableNode = z.infer<typeof EditableNodeSchema>;
+
+/** 布局只保存有限坐标；键必须引用实际节点，由编辑图根级规则统一核对。 */
+const editablePositionSchema = z.strictObject({
+  x: z.number().finite(),
+  y: z.number().finite(),
+});
+
+/**
+ * 编辑图是浏览器保存的工作文档，不是一次 Run 的权威结果。
+ * 数量不受 AI 初稿上限约束；引用、URL 唯一与推荐线无环仍由确定性代码保证。
+ */
+export const EditableGraphSchema = z.strictObject({
+  version: z.literal("workspace.v1"),
+  id: z.string().min(1),
+  title: z.string().min(1),
+  query: z.string().max(2000),
+  language: SearchLanguageSchema,
+  presentationMode: PresentationModeSchema,
+  engine: SearchEngineSchema.optional(),
+  createdAt: z.iso.datetime({ offset: true }),
+  analysis: QueryAnalysisSchema.nullable().optional(),
+  updatedAt: z.iso.datetime({ offset: true }),
+  lastRunId: z.string().min(1).nullable(),
+  nodes: z.array(EditableNodeSchema),
+  edges: z.array(GraphEdgeSchema),
+  positions: z.record(z.string(), editablePositionSchema),
+}).superRefine((graph, context) => {
+  const reject = (path: (string | number)[], message: string): void => {
+    context.addIssue({ code: "custom", path, message });
+  };
+  const nodeIds = new Set(graph.nodes.map(node => node.id));
+  for (const index of duplicateValueIndexes(graph.nodes.map(node => node.id))) {
+    reject(["nodes", index, "id"], "节点标识必须唯一");
+  }
+  for (const index of duplicateValueIndexes(graph.edges.map(edge => edge.id))) {
+    reject(["edges", index, "id"], "连线标识必须唯一");
+  }
+
+  const urls = new Set<string>();
+  graph.nodes.forEach((node, nodeIndex) => {
+    for (const index of duplicateValueIndexes(node.resources.map(resource => resource.id))) {
+      reject(["nodes", nodeIndex, "resources", index, "id"], "节点内资源标识必须唯一");
+    }
+    node.resources.forEach((resource, resourceIndex) => {
+      if (urls.has(resource.canonicalUrl)) {
+        reject(["nodes", nodeIndex, "resources", resourceIndex, "canonicalUrl"], "资源 URL 必须全图唯一");
+      }
+      urls.add(resource.canonicalUrl);
+      if (resource.rank !== resourceIndex + 1) {
+        reject(["nodes", nodeIndex, "resources", resourceIndex, "rank"], "资源序位必须与展示顺序连续一致");
+      }
+    });
+    // 人工编辑清除过时的搜索结论；搜索终态继续保持原有成功、局部成功与失败语义。
+    const hasResources = node.resources.length > 0;
+    const hasWarnings = node.warnings.length > 0;
+    const validOutcome = node.status === "edited"
+      ? !hasWarnings && node.error === undefined
+      : node.status === "empty"
+        ? !hasResources && !hasWarnings && node.error === undefined
+        : node.status === "failed"
+          ? !hasResources && !hasWarnings && node.error !== undefined
+          : hasResources && node.error === undefined && (node.status === "partial" ? hasWarnings : !hasWarnings);
+    if (!validOutcome) reject(["nodes", nodeIndex, "status"], "节点状态与资源、警告或错误不一致");
+  });
+
+  const adjacency = new Map(graph.nodes.map(node => [node.id, [] as string[]]));
+  const indegrees = new Map(graph.nodes.map(node => [node.id, 0]));
+  graph.edges.forEach((edge, index) => {
+    if (!nodeIds.has(edge.source) || !nodeIds.has(edge.target)) {
+      reject(["edges", index], "连线端点必须引用已有节点");
+      return;
+    }
+    if (edge.type === "recommended_next") {
+      adjacency.get(edge.source)?.push(edge.target);
+      indegrees.set(edge.target, (indegrees.get(edge.target) ?? 0) + 1);
+    }
+  });
+  // Kahn 拓扑检查只观察推荐顺序；相关线允许成环，也不要求人工图连通。
+  const queue = [...indegrees].filter(([, count]) => count === 0).map(([id]) => id);
+  for (let index = 0; index < queue.length; index += 1) {
+    for (const target of adjacency.get(queue[index] ?? "") ?? []) {
+      const count = (indegrees.get(target) ?? 0) - 1;
+      indegrees.set(target, count);
+      if (count === 0) queue.push(target);
+    }
+  }
+  if (queue.length !== nodeIds.size) reject(["edges"], "推荐下一步连线不能成环");
+  for (const id of Object.keys(graph.positions)) {
+    if (!nodeIds.has(id)) reject(["positions", id], "位置必须引用已有节点");
+  }
+});
+export type EditableGraph = z.infer<typeof EditableGraphSchema>;
+
+/**
+ * URL 规范化为搜索与编辑边界共享，避免浏览器复制另一套生产去重规则。
+ * 只删除已确认的精确小写追踪参数与页内片段；其他路径、查询参数保留其页面语义。
+ * 保留在协议入口，兼容直接读取本文件的原生 Node.js Schema 生成器。
+ */
+export function canonicalizeHttpUrl(input: string): URL | null {
+  let url: URL;
+  try {
+    url = new URL(input);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+  for (const parameter of ["utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content", "gclid"]) {
+    url.searchParams.delete(parameter);
+  }
+  url.hash = "";
+  url.searchParams.sort();
+  return url;
+}

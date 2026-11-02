@@ -9,6 +9,8 @@
 import { type FormEvent, useRef, useState } from "react";
 import {
   SearchLanguageSchema,
+  SearchEngineSchema,
+  type SearchEngine,
   SearchRequestSchema,
   type SearchLanguage,
   type SearchRequest,
@@ -18,7 +20,7 @@ import { getMessages } from "../../i18n/messages.js";
 import { resolveSafeHttpUrl } from "../../lib/url.js";
 
 export type StartOmniboxSearch = (
-  input: Pick<SearchRequest, "query" | "language">,
+  input: Pick<SearchRequest, "query" | "language" | "engine">,
 ) => Promise<void>;
 export type OpenOmniboxUrl = (url: string) => boolean;
 
@@ -94,6 +96,7 @@ export function startOmniboxSubmission(
   startSearch: StartOmniboxSearch,
   openDirectUrl: OpenOmniboxUrl,
   language: SearchLanguage = "zh-CN",
+  engine?: SearchEngine,
 ): OmniboxSubmission {
   const input = rawInput.trim();
 
@@ -124,7 +127,7 @@ export function startOmniboxSubmission(
   return {
     kind: "ai_search",
     query: parsedQuery.data,
-    completion: startSearch({ query: parsedQuery.data, language }),
+    completion: startSearch({ query: parsedQuery.data, language, ...(engine === undefined ? {} : { engine: SearchEngineSchema.parse(engine) }) }),
   };
 }
 
@@ -136,6 +139,8 @@ export type OmniboxProps = Readonly<{
   /** 当前页面唯一展示语言；已有 Run 时可能与下一次搜索语言不同。 */
   renderLanguage: SearchLanguage;
   onLanguageChange: (language: SearchLanguage) => void;
+  engine?: SearchEngine;
+  onEngineChange?: (engine: SearchEngine) => void;
 }>;
 
 type OmniboxFeedback =
@@ -153,11 +158,14 @@ export function Omnibox({
   language,
   renderLanguage,
   onLanguageChange,
+  engine,
+  onEngineChange,
 }: OmniboxProps) {
   const [input, setInput] = useState("");
   const [feedback, setFeedback] = useState<OmniboxFeedback | null>(null);
   const latestSubmission = useRef(0);
   const messages = getMessages(renderLanguage).omnibox;
+  const engineMessages = getMessages(renderLanguage).searchEngine;
 
   /** Feedback 只保存稳定原因，切换语言时由当前文案表重新呈现，避免残留混语。 */
   const feedbackMessage =
@@ -186,6 +194,7 @@ export function Omnibox({
         startSearch,
         openDirectUrl,
         language,
+        engine,
       );
     } catch {
       setFeedback("input_failure");
@@ -254,6 +263,13 @@ export function Omnibox({
             <option value="en-US">{messages.languageOptions["en-US"]}</option>
           </select>
         </div>
+        {onEngineChange === undefined ? null : <div className="omnibox__language">
+          <label htmlFor="wayfinder-engine">{engineMessages.label}</label>
+          <select id="wayfinder-engine" name="engine" value={engine} onChange={event => onEngineChange(SearchEngineSchema.parse(event.currentTarget.value))}>
+            <option value="baidu">{engineMessages.labels.baidu}</option>
+            <option value="google">{engineMessages.labels.google}</option>
+          </select>
+        </div>}
         <button type="submit">{messages.searchButton}</button>
       </div>
       <p
@@ -263,6 +279,7 @@ export function Omnibox({
       >
         {feedbackMessage ?? messages.hint}
       </p>
+      {engine === "baidu" ? <p className="omnibox__hint" role="note">{engineMessages.baiduRegionNotice}</p> : null}
     </form>
   );
 }

@@ -351,3 +351,26 @@ describe("Query 取消协调器", () => {
     });
   });
 });
+
+it("完成回调只交付当前运行真正接纳的结果，忽略旧身份和重复终态", async () => {
+  const store = createGraphStore();
+  const onStart = vi.fn();
+  const onComplete = vi.fn();
+  const search = createStartStreamingSearch({
+    store,
+    createRunId: () => "当前运行",
+    onStart,
+    onComplete,
+    fetchImplementation: async () => response,
+    readStreamImplementation: async options => {
+      options.onEvent(eventForRun(eventOfType("complete"), "过期运行"));
+      expect(onComplete).not.toHaveBeenCalled();
+      options.onEvent(eventForRun(eventOfType("complete"), "当前运行"));
+      options.onEvent(eventForRun(eventOfType("complete"), "当前运行"));
+    },
+  });
+  await search({ query: "Python", language: "zh-CN" });
+  expect(onStart).toHaveBeenCalledExactlyOnceWith({ runId: "当前运行", query: "Python", language: "zh-CN" });
+  expect(onComplete).toHaveBeenCalledTimes(1);
+  expect(onComplete.mock.calls[0]?.[0]).toMatchObject({ runId: "当前运行" });
+});

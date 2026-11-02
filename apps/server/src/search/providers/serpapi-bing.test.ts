@@ -110,6 +110,7 @@ describe("SerpApiBingSearchProvider.search 请求与规范化", () => {
     expect(hits).toEqual([
       {
         provider: "serpapi_bing",
+        engine: "baidu",
         query: SEARCH_REQUEST.query,
         title: "抖音 - 记录美好生活",
         url: "https://WWW.DOUYIN.COM/",
@@ -179,6 +180,7 @@ describe("SerpApiBingSearchProvider.search 请求与规范化", () => {
   it.each([
     ["缺失 language", { ...SEARCH_REQUEST, language: undefined }],
     ["未支持 language", { ...SEARCH_REQUEST, language: "en" }],
+    ["未支持 engine", { ...SEARCH_REQUEST, engine: "bing" }],
   ])("%s 在网络调用前失败", async (_name, rawRequest) => {
     const fetchImplementation = vi.fn<typeof fetch>();
     const provider = createProvider(fetchImplementation);
@@ -196,6 +198,23 @@ describe("SerpApiBingSearchProvider.search 请求与规范化", () => {
       }),
     );
     expect(fetchImplementation).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { language: "zh-CN", engine: "baidu", expected: { ct: "2" } },
+    { language: "en-US", engine: "baidu", expected: { ct: "1" } },
+    { language: "zh-CN", engine: "google", expected: { hl: "zh-cn", gl: "cn", google_domain: "google.com", safe: "active" } },
+    { language: "en-US", engine: "google", expected: { hl: "en", gl: "us", google_domain: "google.com", safe: "active" } },
+  ] as const)("$language / $engine 只发送实际引擎参数并保留来源", async ({ language, engine, expected }) => {
+    const fetchImplementation = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse(successEnvelope([organicResult()])));
+    const results = await createProvider(fetchImplementation).search({ ...SEARCH_REQUEST, language, engine }, createRunSignal());
+    const [input] = fetchImplementation.mock.calls[0] ?? [];
+    expect(Object.fromEntries(new URL(String(input)).searchParams)).toEqual({
+      q: SEARCH_REQUEST.query, engine, ...expected,
+      device: "desktop", output: "json", api_key: "test-serpapi-key",
+    });
+    expect(results[0]?.engine).toBe(engine);
+    expect(fetchImplementation).toHaveBeenCalledTimes(1);
   });
 
   it("单项非法时只丢弃自身，并按原始数组位置保留 Provider Rank", async () => {

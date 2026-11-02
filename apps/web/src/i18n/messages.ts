@@ -8,15 +8,55 @@
  */
 import type {
   AppErrorCode,
+  EditableNode,
   GraphEdge,
   NodeType,
   NodeWarningCode,
   PresentationMode,
   SearchLanguage,
+  SearchEngine,
   StreamNodeStatus,
 } from "@wayfinder/contracts";
 
 export type Messages = Readonly<{
+  research: Readonly<{
+    startGraph: string; startNode: string; preview: string; searching: string;
+    failure: string; cancel: string; dismiss: string; append: string; replace: string;
+    fullHint: string; nodeHint: string; queryLabel: string; topicLabel: string; topicHint: string; invalidInput: string; missingTarget: string;
+  }>;
+  searchEngine: Readonly<{
+    label: string; nodeLabel: string; sourceLabel: string; unknownSource: string;
+    labels: Readonly<Record<SearchEngine, string>>; baiduRegionNotice: string;
+  }>;
+  workspace: Readonly<{
+    records: string;
+    newSearch: string;
+    rename: string;
+    delete: string;
+    saveTitle: string;
+    cancel: string;
+    titleLabel: string;
+    restoreDeleted: string;
+    emptyRecords: string;
+    loading: string;
+    saving: string;
+    saved: string;
+    loadFailure: string;
+    saveFailure: string;
+    retry: string;
+  }>;
+  editor: Readonly<{
+    toolbar: string; newNodeTitle: string; addNode: string; editNode: string; deleteNode: string;
+    nodeTitle: string; nodeDescription: string; saveNode: string; cancel: string;
+    addResource: string; resourceUrl: string; resourceTitle: string; resourceSummary: string;
+    whySelected: string; editResource: string; saveResource: string; deleteResource: string;
+    moveUp: string; moveDown: string; dragResource: string; undo: string; redo: string;
+    manualSource: string; manualGraphTitle: string; duplicateUrl: (nodeTitle: string) => string;
+    locateDuplicate: string; invalidUrl: string; editFailure: string;
+    connections: (count: number) => string; selectConnection: string; newConnection: string;
+    sourceNode: string; targetNode: string; relationType: string; addConnection: string;
+    saveConnection: string; deleteConnection: string; invalidConnection: string; graphInstructions: string;
+  }>;
   app: Readonly<{
     slogan: string;
     summaryAria: string;
@@ -46,9 +86,9 @@ export type Messages = Readonly<{
     empty: string;
     canvasAria: Readonly<Record<PresentationMode, string>>;
     nodeTypeLabels: Readonly<Record<NodeType, string>>;
-    statusLabels: Readonly<Record<StreamNodeStatus, string>>;
+    statusLabels: Readonly<Record<StreamNodeStatus | EditableNode["status"], string>>;
     statusDetails: Readonly<
-      Record<StreamNodeStatus, (resourceCount: number) => string>
+      Record<StreamNodeStatus | EditableNode["status"], (resourceCount: number) => string>
     >;
     edgeLabels: Readonly<Record<GraphEdge["type"], string>>;
     edgeAria: Readonly<Record<GraphEdge["type"], string>>;
@@ -76,6 +116,7 @@ export type Messages = Readonly<{
     chooseNode: string;
     chooseNodeHint: string;
     processing: string;
+    emptyNode: string;
     partialTitle: string;
     failedTitle: string;
     warningMessages: Readonly<Record<NodeWarningCode, string>>;
@@ -89,6 +130,36 @@ export type Messages = Readonly<{
  */
 export const MESSAGES: Record<SearchLanguage, Messages> = {
   "zh-CN": {
+    research: {
+      startGraph: "重新搜索全图", startNode: "重新搜索此节点", preview: "重搜预览", searching: "正在重新搜索，当前图保持不变。",
+      failure: "没有可应用的新结果，当前图保持不变。", cancel: "取消重搜", dismiss: "弃用新结果", append: "追加到此节点", replace: "应用替换",
+      fullHint: "全图只能整体替换；应用后可撤销恢复旧图。", nodeHint: "追加保留旧资源；替换覆盖此节点的全部旧资源，包括人工编辑。", queryLabel: "本次查询", topicLabel: "搜索主题", topicHint: "此图暂无原始查询，请先填写全图搜索主题。", invalidInput: "搜索主题须为 1 至 2000 个字符，节点标题不能为空。", missingTarget: "搜索图或目标节点已不存在，请重新选择。",
+    },
+    searchEngine: {
+      label: "搜索引擎", nodeLabel: "节点搜索引擎", sourceLabel: "实际搜索引擎", unknownSource: "未记录",
+      labels: { baidu: "百度", google: "Google" }, baiduRegionNotice: "百度不保证地区定位。",
+    },
+    workspace: {
+      records: "搜索图记录", newSearch: "新建搜索", rename: "重命名", delete: "删除记录",
+      saveTitle: "保存名称", cancel: "取消", titleLabel: "记录名称", restoreDeleted: "撤销删除记录",
+      emptyRecords: "搜索后会在此保存记录。", loading: "正在读取本地记录…", saving: "正在保存…",
+      saved: "已保存到本浏览器", loadFailure: "无法读取本地记录，请重试；暂未覆盖已有数据。",
+      saveFailure: "本次更改未能保存，请重试。", retry: "重试保存或读取",
+    },
+    editor: {
+      toolbar: "图编辑", newNodeTitle: "新节点标题", addNode: "新建节点", editNode: "编辑节点", deleteNode: "删除节点",
+      nodeTitle: "节点标题", nodeDescription: "节点说明", saveNode: "保存节点", cancel: "取消编辑",
+      addResource: "添加资源", resourceUrl: "资源 URL", resourceTitle: "资源标题", resourceSummary: "网页说明",
+      whySelected: "选用理由", editResource: "编辑资源", saveResource: "保存资源", deleteResource: "删除资源",
+      moveUp: "上移资源", moveDown: "下移资源", dragResource: "可上下拖拽调整资源顺序", undo: "撤销", redo: "重做",
+      manualSource: "用户添加", manualGraphTitle: "未命名搜索图", duplicateUrl: title => `此 URL 已存在于「${title}」节点中。`,
+      connections: count => `节点关系（${count}）`, selectConnection: "选择连线", newConnection: "新增连线",
+      sourceNode: "起点节点", targetNode: "终点节点", relationType: "关系类型", addConnection: "添加连线",
+      saveConnection: "保存连线", deleteConnection: "删除连线",
+      invalidConnection: "连线无效：请连接现有节点的同类端口；推荐下一步不能形成环。",
+      graphInstructions: "拖动节点调整位置；上下端口连接推荐顺序，左右端口连接相关主题。",
+      locateDuplicate: "定位已有资源所在节点", invalidUrl: "请输入有效的完整 HTTP(S) 地址。", editFailure: "无法保存此次编辑，请检查输入。",
+    },
     app: {
       slogan: "Graph 即搜索结果页",
       summaryAria: "搜索摘要",
@@ -136,6 +207,8 @@ export const MESSAGES: Record<SearchLanguage, Messages> = {
         disambiguation: "消歧分支",
       },
       statusLabels: {
+        empty: "空节点",
+        edited: "已编辑",
         planned: "等待检索",
         searching: "检索中",
         filtering: "筛选中",
@@ -144,6 +217,8 @@ export const MESSAGES: Record<SearchLanguage, Messages> = {
         failed: "失败",
       },
       statusDetails: {
+        empty: () => "可以添加资源",
+        edited: count => `${count} 条资源 · 已编辑`,
         planned: () => "等待开始",
         searching: () => "正在检索网页",
         filtering: () => "正在筛选结果",
@@ -183,6 +258,7 @@ export const MESSAGES: Record<SearchLanguage, Messages> = {
       chooseNode: "选择一个节点",
       chooseNodeHint: "你可以自由查看任意节点，不必沿箭头顺序浏览。",
       processing: "该节点仍在处理，资源准备完成后将在此显示。",
+      emptyNode: "该节点尚无资源，可以添加链接或重新搜索。",
       partialTitle: "结果部分降级",
       failedTitle: "节点处理失败",
       warningMessages: {
@@ -204,6 +280,36 @@ export const MESSAGES: Record<SearchLanguage, Messages> = {
     },
   },
   "en-US": {
+    research: {
+      startGraph: "Search entire graph again", startNode: "Search this node again", preview: "Search preview", searching: "Searching again. Your current graph is unchanged.",
+      failure: "No new results can be applied. Your current graph is unchanged.", cancel: "Cancel search", dismiss: "Discard new results", append: "Append to this node", replace: "Apply replacement",
+      fullHint: "The entire graph will be replaced. Undo restores the previous graph.", nodeHint: "Append keeps existing resources. Replacement overwrites all resources in this node, including your edits.", queryLabel: "Search query", topicLabel: "Search topic", topicHint: "This graph has no original query. Enter a topic before searching the entire graph.", invalidInput: "Enter a search topic between 1 and 2,000 characters and a non-empty node title.", missingTarget: "The graph or target node is no longer available. Select it again.",
+    },
+    searchEngine: {
+      label: "Search engine", nodeLabel: "Node search engine", sourceLabel: "Actual search engine", unknownSource: "Not recorded",
+      labels: { baidu: "Baidu", google: "Google" }, baiduRegionNotice: "Baidu does not guarantee regional targeting.",
+    },
+    workspace: {
+      records: "Search graphs", newSearch: "New search", rename: "Rename", delete: "Delete record",
+      saveTitle: "Save name", cancel: "Cancel", titleLabel: "Record name", restoreDeleted: "Undo record deletion",
+      emptyRecords: "Your searches will be saved here.", loading: "Loading local records…", saving: "Saving…",
+      saved: "Saved in this browser", loadFailure: "Unable to load local records. Retry to continue; existing data has not been overwritten.",
+      saveFailure: "Your latest changes could not be saved. Please retry.", retry: "Retry saving or loading",
+    },
+    editor: {
+      toolbar: "Graph editing", newNodeTitle: "New node title", addNode: "Add node", editNode: "Edit node", deleteNode: "Delete node",
+      nodeTitle: "Node title", nodeDescription: "Node description", saveNode: "Save node", cancel: "Cancel editing",
+      addResource: "Add resource", resourceUrl: "Resource URL", resourceTitle: "Resource title", resourceSummary: "Page description",
+      whySelected: "Selection reason", editResource: "Edit resource", saveResource: "Save resource", deleteResource: "Delete resource",
+      moveUp: "Move resource up", moveDown: "Move resource down", dragResource: "Drag to reorder resources", undo: "Undo", redo: "Redo",
+      manualSource: "Added by you", manualGraphTitle: "Untitled search graph", duplicateUrl: title => `This URL already exists in the “${title}” node.`,
+      connections: count => `Node connections (${count})`, selectConnection: "Select connection", newConnection: "New connection",
+      sourceNode: "Source node", targetNode: "Target node", relationType: "Relation type", addConnection: "Add connection",
+      saveConnection: "Save connection", deleteConnection: "Delete connection",
+      invalidConnection: "Invalid connection. Use matching ports on existing nodes; recommended-next connections cannot form a cycle.",
+      graphInstructions: "Drag nodes to move them. Top/bottom ports define recommended order; side ports connect related topics.",
+      locateDuplicate: "Go to the existing resource's node", invalidUrl: "Enter a valid, complete HTTP(S) address.", editFailure: "Unable to save this edit. Check the input.",
+    },
     app: {
       slogan: "The Graph is the search results page",
       summaryAria: "Search summary",
@@ -251,6 +357,8 @@ export const MESSAGES: Record<SearchLanguage, Messages> = {
         disambiguation: "Disambiguation",
       },
       statusLabels: {
+        empty: "Empty",
+        edited: "Edited",
         planned: "Waiting",
         searching: "Searching",
         filtering: "Filtering",
@@ -259,6 +367,8 @@ export const MESSAGES: Record<SearchLanguage, Messages> = {
         failed: "Failed",
       },
       statusDetails: {
+        empty: () => "Add resources to this node",
+        edited: count => `${count} resources · Edited`,
         planned: () => "Waiting to start",
         searching: () => "Searching the web",
         filtering: () => "Filtering results",
@@ -301,6 +411,7 @@ export const MESSAGES: Record<SearchLanguage, Messages> = {
       chooseNode: "Select a node",
       chooseNodeHint: "You can view any node without following the arrows in order.",
       processing: "This node is still processing. Resources will appear here when ready.",
+      emptyNode: "This node has no resources yet. Add a link or search again.",
       partialTitle: "Results partially degraded",
       failedTitle: "Node processing failed",
       warningMessages: {

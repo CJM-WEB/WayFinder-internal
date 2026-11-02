@@ -25,6 +25,7 @@ const expectedFileNames = [
   "stream-event.schema.json",
   "result-graph.schema.json",
   "h2-evaluation-artifact.schema.json",
+  "editable-graph.schema.json",
 ] as const;
 
 const temporaryDirectories: string[] = [];

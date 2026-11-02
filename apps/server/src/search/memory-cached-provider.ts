@@ -14,6 +14,7 @@ import type {
   NormalizedSearchHit,
   ProviderSearchRequest,
 } from "@wayfinder/contracts";
+import { resolveSearchEngine } from "@wayfinder/contracts";
 import { LRUCache } from "lru-cache";
 
 import { observeCurrentRun } from "../observability/run-log-context.js";
@@ -56,6 +57,7 @@ export function createSearchCacheKey(
     request.capability,
     request.freshnessSensitive,
     request.language,
+    resolveSearchEngine(request.language, request.engine),
   ]);
 }
 

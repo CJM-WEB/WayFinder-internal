@@ -10,7 +10,7 @@ import { getMessages } from "../../i18n/messages.js";
 import type { GraphFlowNode } from "./graph-layout.js";
 import { buildNodeStatusPresentation } from "./graph-labels.js";
 
-export function GraphNode({ data }: NodeProps<GraphFlowNode>) {
+export function GraphNode({ data, isConnectable }: NodeProps<GraphFlowNode>) {
   const presentation = buildNodeStatusPresentation(
     data.status,
     data.resourceCount,
@@ -26,12 +26,16 @@ export function GraphNode({ data }: NodeProps<GraphFlowNode>) {
     >
       {/* 主层级边固定从下方流向上方；侧边 Handle 专门承载 related_to。 */}
       <Handle
+        isConnectable={isConnectable}
+        title={messages.edgeLabels.recommended_next}
         id="main-target"
         type="target"
         position={Position.Top}
         className="graph-node__handle"
       />
       <Handle
+        isConnectable={isConnectable}
+        title={messages.edgeLabels.related_to}
         id="related-target"
         type="target"
         position={Position.Left}
@@ -51,12 +55,16 @@ export function GraphNode({ data }: NodeProps<GraphFlowNode>) {
       <p>{presentation.detail}</p>
 
       <Handle
+        isConnectable={isConnectable}
+        title={messages.edgeLabels.related_to}
         id="related-source"
         type="source"
         position={Position.Right}
         className="graph-node__handle"
       />
       <Handle
+        isConnectable={isConnectable}
+        title={messages.edgeLabels.recommended_next}
         id="main-source"
         type="source"
         position={Position.Bottom}

@@ -13,6 +13,7 @@ import type {
   ProviderSearchRequest,
   SearchCapability,
 } from "@wayfinder/contracts";
+import { resolveSearchEngine } from "@wayfinder/contracts";
 import { z } from "zod";
 
 import { RUN_DEADLINE_MS } from "../../config.js";
@@ -143,7 +144,7 @@ export class SerpApiBingSearchProvider implements SearchProvider {
     assertSearchRequest(request);
 
     const rawResponse = await this.getJson(
-      createSearchUrl(request.query, request.language, this.apiKey),
+      createSearchUrl(request.query, request.language, this.apiKey, request.engine),
       signal,
     );
     const parsedEnvelope = SerpApiBingEnvelopeSchema.safeParse(rawResponse);
@@ -303,10 +304,14 @@ function assertSearchRequest(request: ProviderSearchRequest): void {
     // 这是最后一道 Adapter 边界：非法语言必须在网络调用前失败。
     throw new SerpApiBingProviderError("SerpAPI Bing Search language 不受支持");
   }
+  if (request.engine !== undefined && request.engine !== "baidu" && request.engine !== "google") {
+    throw new SerpApiBingProviderError("SerpAPI Search engine 不受支持");
+  }
 }
 
 /**
- * 按已验证语言选择唯一 Engine，并只写入该 Engine 的私有参数。分支必须互斥，
+ * 语言只决定默认 Engine；显式选择覆盖默认，但保留应用语言和地区语境。
+ * 只写入实际 Engine 的私有参数。分支必须互斥，
  * 避免 Baidu 接收 Google 参数或 Google 接收 Baidu 参数后产生不可审计的隐式行为。
  * maxResults 仍是本地接纳上限，不映射为分页、filters 或 no_cache 参数。
  */
@@ -314,22 +319,22 @@ function createSearchUrl(
   query: string,
   language: ProviderSearchRequest["language"],
   apiKey: string,
+  selectedEngine?: ProviderSearchRequest["engine"],
 ): URL {
   const url = new URL(SERPAPI_BING_SEARCH_URL);
   url.searchParams.set("q", query);
 
-  if (language === "zh-CN") {
+  const engine = resolveSearchEngine(language, selectedEngine);
+  if (engine === "baidu") {
     url.searchParams.set("engine", "baidu");
-    url.searchParams.set("ct", "2");
-  } else if (language === "en-US") {
+    // Baidu 只公开语言限制，ct=1 不表示美国或英文定位；界面明确其原生能力限制。
+    url.searchParams.set("ct", language === "zh-CN" ? "2" : "1");
+  } else {
     url.searchParams.set("engine", "google");
-    url.searchParams.set("hl", "en");
-    url.searchParams.set("gl", "us");
+    url.searchParams.set("hl", language === "zh-CN" ? "zh-cn" : "en");
+    url.searchParams.set("gl", language === "zh-CN" ? "cn" : "us");
     url.searchParams.set("google_domain", "google.com");
     url.searchParams.set("safe", "active");
-  } else {
-    // assertSearchRequest 已先执行；此分支防止未来内部重构绕过最后一道门禁。
-    throw new SerpApiBingProviderError("SerpAPI Bing Search language 不受支持");
   }
 
   url.searchParams.set("device", "desktop");
@@ -362,6 +367,7 @@ function normalizeOrganicResults(
     const result = parsedResult.data;
     hits.push({
       provider: providerId,
+      engine: resolveSearchEngine(request.language, request.engine),
       query: request.query,
       title: result.title,
       url: result.link,
