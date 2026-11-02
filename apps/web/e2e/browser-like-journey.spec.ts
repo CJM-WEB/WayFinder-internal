@@ -375,8 +375,9 @@ const emitFixtureEvents = (
     },
   );
 
-test("墨迹页语言选择可进入搜索请求，已移除旧角落控件", async ({ page }) => {
-  await installBrowserFixture(page, createJourneyEvents());
+test("新搜索页直接携带语言请求后端且不跳转旧展示页", async ({ page }) => {
+  const events = createJourneyEvents();
+  await installBrowserFixture(page, events);
   await page.goto("/ink-study.html");
 
   await expect(page.getByText("©26", { exact: true })).toHaveCount(0);
@@ -385,21 +386,364 @@ test("墨迹页语言选择可进入搜索请求，已移除旧角落控件", as
   await expect(page.getByRole("navigation", { name: "画面导航" })).toHaveCount(0);
   await expect(page.getByText("打造属于自己的互联网", { exact: true })).toBeVisible();
 
-  // 同一个公共语言值同时控制展示文案、入口参数和既有搜索请求，不调用真实 Provider。
+  // 新入口持续保留原画布，仅在实际提交时复用搜索协调器，不跳转旧页面。
   await page.getByRole("button", { name: "语言", exact: true }).click();
   await page.getByRole("button", { name: "English", exact: true }).click();
   await expect(page.locator("html")).toHaveAttribute("lang", "en-US");
   await expect(page.getByText("BUILD YOUR OWN INTERNET", { exact: true })).toBeVisible();
-  const explore = page.getByRole("link", { name: "Start exploring", exact: true });
-  await expect(explore).toHaveAttribute("href", "/?language=en-US");
-  await explore.click();
+  const canvas = await page.locator(".ink-study__canvas").elementHandle();
+  await page.getByRole("button", { name: "Start exploring", exact: true }).click();
+  await expect(page.locator(".ink-study__stage")).toHaveAttribute("data-layer", "explore");
+  await expect(page.getByRole("searchbox", { name: "Search any topic", exact: true })).toBeFocused();
+  await expect(page.getByRole("button", { name: "Start exploring", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Language", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Contact author", exact: true })).toBeVisible();
+  expect(await canvas?.evaluate(element => element.isConnected)).toBe(true);
+  await expect(page).toHaveURL(/\/ink-study\.html$/);
 
-  await expect(page.getByRole("combobox", { name: "Language", exact: true })).toHaveValue("en-US");
   const queryInput = page.getByRole("searchbox", { name: "Search any topic" });
   await queryInput.fill("TypeScript guides");
   await queryInput.press("Enter");
   await expect.poll(async () => (await readFixtureSnapshots(page))[0])
     .toMatchObject({ query: "TypeScript guides", language: "en-US", engine: "google" });
+  await expect(page).toHaveURL(/\/ink-study\.html$/);
+  await expect.poll(async () => (await readFixtureSnapshots(page)).length).toBe(1);
+  await emitFixtureEvents(page, 0, events.map((_, index) => index));
+  await page.evaluate(() => window.__WAYFINDER_E2E__.close(0));
+  await expect(page.getByRole("button", { name: "Cancel", exact: true })).toHaveCount(0);
+  await page.reload();
+  expect(await readFixtureSnapshots(page)).toHaveLength(0);
+});
+
+test("开始胶囊连续伸展为搜索框并分裂按钮，品牌下移且角落控件不移动", async ({ page }) => {
+  await page.goto("/ink-study.html");
+  const shell = page.locator(".ink-study__search");
+  const originalShell = await shell.elementHandle();
+  const initialShell = await shell.boundingBox();
+  const language = page.getByRole("button", { name: "语言", exact: true });
+  const contact = page.getByRole("button", { name: "联系作者", exact: true });
+  const initialLanguage = await language.boundingBox();
+  const initialContact = await contact.boundingBox();
+  await page.getByRole("button", { name: "开始探索", exact: true }).click();
+  const input = page.getByRole("searchbox", { name: "搜索任意主题", exact: true });
+  await expect(input).toBeFocused();
+  await input.fill("输入状态预览");
+  await expect(input).toHaveValue("输入状态预览");
+  const submit = page.getByRole("button", { name: "搜索", exact: true });
+  await expect(submit).toBeEnabled();
+  await expect(submit).toHaveText("");
+  await expect.poll(async () => {
+    const bounds = await submit.boundingBox();
+    return bounds === null ? Infinity : Math.abs(bounds.width - bounds.height);
+  }).toBeLessThan(1);
+  expect(await originalShell?.evaluate(element => element.isConnected)).toBe(true);
+  expect((await shell.boundingBox())?.width ?? 0).toBeGreaterThan((initialShell?.width ?? 0) * 3);
+  expect(await language.boundingBox()).toEqual(initialLanguage);
+  expect(await contact.boundingBox()).toEqual(initialContact);
+  await expect.poll(async () => {
+    const inputBox = await input.boundingBox();
+    const submitBox = await page.locator(".ink-study__search-submit").boundingBox();
+    return submitBox !== null && inputBox !== null ? submitBox.x - inputBox.x - inputBox.width : 0;
+  }).toBeGreaterThan(8);
+  await expect.poll(async () => {
+    const title = await page.locator(".ink-study__wordmark").boundingBox();
+    const stage = await page.locator(".ink-study__stage").boundingBox();
+    return title !== null && stage !== null && title.y >= stage.y + stage.height;
+  }).toBe(true);
+});
+
+test("页面中线引擎胶囊影响真实请求，语言默认与独立覆盖仍遵循原规则", async ({ page }) => {
+  await installBrowserFixture(page, createJourneyEvents());
+  await page.goto("/ink-study.html");
+  await page.getByRole("button", { name: "开始探索", exact: true }).click();
+  const engine = page.locator(".ink-study__engine");
+  const input = page.getByRole("searchbox", { name: "搜索任意主题", exact: true });
+  await expect(input).toBeFocused();
+  await expect.poll(async () => {
+    const engineBounds = await engine.boundingBox();
+    const stage = await page.locator(".ink-study__stage").boundingBox();
+    return engineBounds === null || stage === null ? Infinity
+      : Math.abs(engineBounds.x + engineBounds.width / 2 - stage.x - stage.width / 2);
+  }).toBeLessThan(1);
+  await engine.getByRole("button", { name: "搜索引擎：百度", exact: true }).click();
+  await engine.getByRole("button", { name: "Google", exact: true }).click();
+  expect(await readFixtureSnapshots(page)).toHaveLength(0);
+  await input.fill("中文 Google");
+  await page.getByRole("button", { name: "搜索", exact: true }).click();
+  await expect.poll(async () => (await readFixtureSnapshots(page))[0])
+    .toMatchObject({ language: "zh-CN", engine: "google", query: "中文 Google" });
+
+  await page.getByRole("button", { name: "语言", exact: true }).click();
+  await page.getByRole("button", { name: "English", exact: true }).click();
+  await expect(engine.getByRole("button", { name: "搜索引擎：Google", exact: true })).toBeVisible();
+  // 当前 Run 的展示语言仍锁定中文；下一次显式选择可覆盖 English 的默认 Google。
+  await expect(page.locator("html")).toHaveAttribute("lang", "zh-CN");
+  await engine.getByRole("button", { name: "搜索引擎：Google", exact: true }).click();
+  await engine.getByRole("button", { name: "百度", exact: true }).click();
+  await input.fill("English Baidu");
+  await input.press("Enter");
+  await expect.poll(async () => (await readFixtureSnapshots(page))[1])
+    .toMatchObject({ language: "en-US", engine: "baidu", query: "English Baidu" });
+  await expect.poll(async () => (await readFixtureSnapshots(page))[0]?.aborted).toBe(true);
+  await expect(page.locator("html")).toHaveAttribute("lang", "en-US");
+  await page.evaluate(() => window.__WAYFINDER_E2E__.fail(1));
+  await expect(page.getByRole("alert")).toBeVisible();
+  expect(await readFixtureSnapshots(page)).toHaveLength(2);
+});
+
+test("新搜索入口沿用 Direct 与拒绝规则，不因改版额外请求后端", async ({ page }) => {
+  await installBrowserFixture(page, createJourneyEvents());
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.goto("/ink-study.html");
+  await page.getByRole("button", { name: "开始探索", exact: true }).click();
+  const input = page.getByRole("searchbox", { name: "搜索任意主题", exact: true });
+  await expect(input).toBeFocused();
+  await input.fill("javascript:alert(1)");
+  await input.press("Enter");
+  await expect(page.getByRole("alert")).toBeVisible();
+  expect(await readFixtureSnapshots(page)).toHaveLength(0);
+  await input.fill("https://example.com/docs");
+  await input.press("Enter");
+  expect(await page.evaluate(() => window.__WAYFINDER_E2E__.openCalls()))
+    .toEqual([["https://example.com/docs", "_blank", "noopener,noreferrer"]]);
+  expect(await readFixtureSnapshots(page)).toHaveLength(0);
+  await expect(page).toHaveURL(/\/ink-study\.html$/);
+});
+
+test("后端运行失败明确反馈且不覆盖状态文字，重试和取消继续走原协调器", async ({ page }) => {
+  const failure = StreamEventSchema.parse({
+    type: "run.failed", runId: "failure-template", sequence: 1, protocolVersion: "0.1",
+    timestamp: new Date(FIXTURE_TIME).toISOString(), error: { code: "PLANNER_FAILED", retryable: true },
+  });
+  await installBrowserFixture(page, [failure]);
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.goto("/ink-study.html");
+  await page.getByRole("button", { name: "开始探索", exact: true }).click();
+  const input = page.getByRole("searchbox", { name: "搜索任意主题", exact: true });
+  await input.fill("计划失败固定样例");
+  await input.press("Enter");
+  await expect.poll(async () => (await readFixtureSnapshots(page)).length).toBe(1);
+  await emitFixtureEvents(page, 0, [0]);
+  await page.evaluate(() => window.__WAYFINDER_E2E__.close(0));
+  const alert = page.getByRole("alert");
+  await expect(alert).toHaveText("本次搜索未完成，请重试。");
+  const statusBounds = await page.locator(".ink-study__run-status").boundingBox();
+  const errorBounds = await alert.boundingBox();
+  expect(errorBounds?.y ?? 0).toBeGreaterThan((statusBounds?.y ?? 0) + (statusBounds?.height ?? 0));
+  await input.fill("重新尝试");
+  await input.press("Enter");
+  await expect.poll(async () => (await readFixtureSnapshots(page)).length).toBe(2);
+  await expect(alert).toHaveCount(0);
+  await page.getByRole("button", { name: "取消", exact: true }).click();
+  await expect.poll(async () => (await readFixtureSnapshots(page))[1]?.aborted).toBe(true);
+  await expect(alert).toHaveCount(0);
+});
+
+test("冷加载期间的无效输入和 Direct 不会丢弃已确认的合法搜索", async ({ page }) => {
+  await installBrowserFixture(page, createJourneyEvents());
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  let releaseModule = (): void => {};
+  let moduleRequested = false;
+  const moduleGate = new Promise<void>(resolve => { releaseModule = resolve; });
+  await page.route(/\/src\/api\/workspace-search\.(?:js|ts)/, async route => {
+    moduleRequested = true;
+    await moduleGate;
+    await route.continue();
+  });
+  try {
+    await page.goto("/ink-study.html");
+    await page.getByRole("button", { name: "开始探索", exact: true }).click();
+    const input = page.getByRole("searchbox", { name: "搜索任意主题", exact: true });
+    await input.fill("应保留的合法查询");
+    await input.press("Enter");
+    await expect.poll(() => moduleRequested).toBe(true);
+    await input.fill("javascript:alert(1)");
+    await input.press("Enter");
+    await expect(page.getByRole("alert")).toBeVisible();
+    await input.fill("https://example.com/docs");
+    await input.press("Enter");
+    expect(await readFixtureSnapshots(page)).toHaveLength(0);
+    releaseModule();
+    await expect.poll(async () => (await readFixtureSnapshots(page))[0])
+      .toMatchObject({ query: "应保留的合法查询", language: "zh-CN", engine: "baidu" });
+    expect(await readFixtureSnapshots(page)).toHaveLength(1);
+    await page.getByRole("button", { name: "取消", exact: true }).click();
+    await expect.poll(async () => (await readFixtureSnapshots(page))[0]?.aborted).toBe(true);
+  } finally {
+    releaseModule();
+  }
+});
+
+test("左箭头原路返回并保留跨语言的输入和引擎选择", async ({ page }) => {
+  await installBrowserFixture(page, createJourneyEvents());
+  await page.goto("/ink-study.html");
+  const canvas = await page.locator(".ink-study__canvas").elementHandle();
+  await page.getByRole("button", { name: "开始探索", exact: true }).click();
+  const input = page.getByRole("searchbox", { name: "搜索任意主题", exact: true });
+  await expect(input).toBeFocused();
+  await input.fill("保留我的输入");
+  await page.getByRole("button", { name: "语言", exact: true }).click();
+  await page.getByRole("button", { name: "English", exact: true }).click();
+  await page.getByRole("button", { name: "Search engine：Google", exact: true }).click();
+  await page.getByRole("button", { name: "Baidu", exact: true }).click();
+  await page.setViewportSize({ width: 1360, height: 760 });
+  await page.getByRole("button", { name: "Back to home", exact: true }).click();
+  const start = page.getByRole("button", { name: "Start exploring", exact: true });
+  await expect(start).toBeFocused();
+  await expect(page.getByRole("button", { name: "Search history", exact: true })).toHaveCount(0);
+  await expect.poll(async () => {
+    const shell = await page.locator(".ink-study__search").boundingBox();
+    const button = await start.boundingBox();
+    return shell === null || button === null ? Infinity : Math.abs(shell.width - button.width - 2);
+  }).toBeLessThan(1);
+  await expect.poll(async () => {
+    const title = await page.locator(".ink-study__wordmark").boundingBox();
+    const stage = await page.locator(".ink-study__stage").boundingBox();
+    return title === null || stage === null ? Infinity : Math.abs(title.y + title.height / 2 - stage.y - stage.height / 2);
+  }).toBeLessThan(1);
+  expect(await canvas?.evaluate(element => element.isConnected)).toBe(true);
+  await start.click();
+  await expect(page.getByRole("searchbox", { name: "Search any topic", exact: true })).toHaveValue("保留我的输入");
+  await expect(page.getByRole("button", { name: "Search engine：Baidu", exact: true })).toBeVisible();
+  expect(await readFixtureSnapshots(page)).toHaveLength(0);
+});
+
+test("历史按钮底边悬浮稳定展开，真实只读历史进出与外部焦点恢复正确", async ({ page }) => {
+  const events = createJourneyEvents();
+  await installBrowserFixture(page, events);
+  await page.goto("/ink-study.html");
+  await page.getByRole("button", { name: "开始探索", exact: true }).click();
+  const input = page.getByRole("searchbox", { name: "搜索任意主题", exact: true });
+  await expect(input).toBeFocused();
+  await input.fill("只读历史记录样例");
+  await input.press("Enter");
+  await expect.poll(async () => (await readFixtureSnapshots(page)).length).toBe(1);
+  await emitFixtureEvents(page, 0, events.map((_, index) => index));
+  await page.evaluate(() => window.__WAYFINDER_E2E__.close(0));
+  await expect(page.getByRole("button", { name: "取消", exact: true })).toHaveCount(0);
+  const stage = page.locator(".ink-study__stage");
+  const stageBounds = await stage.boundingBox();
+  if (stageBounds === null) throw new Error("缺少展示画布");
+  const toggle = page.getByRole("button", { name: "搜索历史", exact: true });
+  await page.mouse.move(stageBounds.x + stageBounds.width / 2, stageBounds.y + stageBounds.height - 2);
+  await expect(toggle.locator("span")).toHaveCSS("opacity", "1");
+  await expect(toggle).toHaveCSS("width", "114px");
+  expect(await toggle.evaluate(element => element.matches(":hover"))).toBe(true);
+  await page.mouse.move(0, 0);
+  await expect(toggle.locator("span")).toHaveCSS("opacity", "0");
+  await toggle.click();
+  const panel = page.getByRole("region", { name: "搜索历史", exact: true });
+  await expect(panel).toBeFocused();
+  const panelColor = await panel.evaluate(element => getComputedStyle(element).backgroundColor);
+  await expect(toggle).toHaveCSS("background-color", panelColor);
+  await expect.poll(() => toggle.locator("svg").evaluate(element =>
+    new DOMMatrix(getComputedStyle(element).transform).a)).toBeLessThan(-0.99);
+  await expect(panel.getByRole("heading", { name: "只读历史记录样例", exact: true })).toBeVisible();
+  await expect(panel.getByRole("button")).toHaveCount(0);
+  await expect.poll(async () => {
+    const layer = await page.locator(".ink-study__search-layer").boundingBox();
+    return layer !== null && layer.y + layer.height <= stageBounds.y;
+  }).toBe(true);
+  expect(await stage.evaluate(element => element.scrollTop)).toBe(0);
+  const language = page.getByRole("button", { name: "语言", exact: true });
+  await language.click();
+  await expect(panel).toHaveCount(0);
+  await expect(language).toBeFocused();
+  await expect(language).toHaveAttribute("aria-expanded", "true");
+  await page.keyboard.press("Escape");
+  await toggle.click();
+  await expect(panel).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(input).toBeFocused();
+  await expect(input).toHaveValue("只读历史记录样例");
+  await expect.poll(async () => {
+    const bounds = await page.locator(".ink-study__search-layer").boundingBox();
+    return bounds === null ? Infinity : Math.abs(bounds.y - stageBounds.y);
+  }).toBeLessThan(1);
+  expect(await readFixtureSnapshots(page)).toHaveLength(1);
+});
+
+test("历史打开时返回首页会取消本页搜索但保留真实记录", async ({ page }) => {
+  await installBrowserFixture(page, createJourneyEvents());
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.goto("/ink-study.html");
+  await page.getByRole("button", { name: "开始探索", exact: true }).click();
+  const input = page.getByRole("searchbox", { name: "搜索任意主题", exact: true });
+  await input.fill("保留未完成记录");
+  await input.press("Enter");
+  await expect.poll(async () => (await readFixtureSnapshots(page)).length).toBe(1);
+  await page.getByRole("button", { name: "搜索历史", exact: true }).click();
+  await expect(page.getByRole("region", { name: "搜索历史", exact: true })).toBeFocused();
+  await page.getByRole("button", { name: "返回首页", exact: true }).click();
+  const start = page.getByRole("button", { name: "开始探索", exact: true });
+  await expect(start).toBeFocused();
+  await expect.poll(async () => (await readFixtureSnapshots(page))[0]?.aborted).toBe(true);
+  await start.click();
+  await expect(input).toHaveValue("保留未完成记录");
+  await page.getByRole("button", { name: "搜索历史", exact: true }).click();
+  await expect(page.getByRole("region", { name: "搜索历史", exact: true })
+    .getByRole("heading", { name: "保留未完成记录", exact: true })).toBeVisible();
+  expect(await readFixtureSnapshots(page)).toHaveLength(1);
+});
+
+test("减弱动态时胶囊直接完成变形并聚焦输入框", async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  for (const viewport of [{ width: 390, height: 844 }, { width: 1920, height: 400 }]) {
+    await page.setViewportSize(viewport);
+    await page.goto("/ink-study.html");
+    await page.getByRole("button", { name: "开始探索", exact: true }).click();
+    await expect(page.getByRole("searchbox", { name: "搜索任意主题", exact: true })).toBeFocused();
+    await expect(page.locator(".ink-study__stage")).toHaveAttribute("data-search-ready", "true");
+    const title = await page.locator(".ink-study__wordmark").boundingBox();
+    const stage = await page.locator(".ink-study__stage").boundingBox();
+    expect(title?.y ?? 0).toBeGreaterThan((stage?.y ?? 0) + (stage?.height ?? 0));
+  }
+});
+
+test("第二层的滑出与滑入均先加速后减速", async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await page.goto("/ink-study.html");
+
+  // 点击前安装监听，在动画创建时立即暂停并采样，慢机器也不会错过短暂的离场动画。
+  await page.evaluate(() => {
+    for (const selector of [".ink-study__intro", ".ink-study__back"]) {
+      const element = document.querySelector<HTMLElement>(selector);
+      if (element === null) throw new Error("没有找到过渡元素");
+      const capture = (event: TransitionEvent): void => {
+        if (event.target !== element || event.propertyName !== "transform") return;
+        element.removeEventListener("transitionrun", capture);
+        const animation = element.getAnimations().find(candidate =>
+          candidate instanceof CSSTransition && candidate.transitionProperty === "transform");
+        const timing = animation?.effect?.getTiming();
+        if (animation === undefined || timing === undefined || typeof timing.duration !== "number") {
+          element.dataset.motionSamples = "没有找到可采样的位移动画";
+          return;
+        }
+        animation.pause();
+        const duration = timing.duration;
+        const delay = timing.delay ?? 0;
+        const leftAt = (fraction: number): number => {
+          animation.currentTime = delay + duration * fraction;
+          return element.getBoundingClientRect().left;
+        };
+        const start = leftAt(0);
+        const end = leftAt(1);
+        element.dataset.motionSamples = JSON.stringify(
+          [0.25, 0.5, 0.75].map(fraction => (leftAt(fraction) - start) / (end - start)),
+        );
+      };
+      element.addEventListener("transitionrun", capture);
+    }
+  });
+  await page.getByRole("button", { name: "开始探索", exact: true }).click();
+  for (const selector of [".ink-study__intro", ".ink-study__back"]) {
+    const element = page.locator(selector);
+    await expect(element).toHaveAttribute("data-motion-samples", /^\[/);
+    const [quarter, middle, threeQuarters] = JSON.parse(await element.getAttribute("data-motion-samples") ?? "[]") as number[];
+    expect(quarter).toBeLessThan(0.25);
+    expect(middle).toBeCloseTo(0.5, 1);
+    expect(threeQuarters).toBeGreaterThan(0.75);
+  }
 });
 
 test("墨迹页圆角语言面板可收起，联系胶囊悬浮展开并在离开后恢复", async ({ page }) => {

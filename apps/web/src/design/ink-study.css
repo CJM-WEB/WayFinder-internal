@@ -23,10 +23,18 @@ a:focus-visible, button:focus-visible, .ink-study__contact:focus-visible {
 .ink-study { min-height: 100svh; padding: 14px; }
 .ink-study__stage {
   --ink-wordmark-size: clamp(40px, 14.2vw, 380px);
+  --ink-slide-ease: cubic-bezier(0.6, 0, 0.4, 1);
+  --ink-brand-shift: 0px;
+  --ink-corner-top: 25px;
+  --ink-corner-inset: 25px;
+  --ink-pill-height: 26px;
+  --ink-search-height: clamp(48px, 8.5svh, 72px);
+  --ink-history-duration: 940ms;
+  --ink-history-glass: #c8c8c280;
   position: relative;
   isolation: isolate;
   min-height: calc(100svh - 28px);
-  overflow: hidden;
+  overflow: clip;
   border-radius: 28px;
   background: #f3f3f1;
 }
@@ -36,7 +44,7 @@ a:focus-visible, button:focus-visible, .ink-study__contact:focus-visible {
   left: 0;
   width: 100%;
   margin: 0;
-  transform: translateY(-50%);
+  transform: translateY(calc(-50% + var(--ink-brand-shift)));
   color: #080808;
   font-family: "Arial Black", "Helvetica Neue", Arial, sans-serif;
   font-weight: 900;
@@ -47,6 +55,7 @@ a:focus-visible, button:focus-visible, .ink-study__contact:focus-visible {
   white-space: nowrap;
   user-select: none;
   pointer-events: none;
+  transition: transform 720ms var(--ink-slide-ease);
 }
 .ink-study__canvas {
   position: absolute;
@@ -65,7 +74,7 @@ a:focus-visible, button:focus-visible, .ink-study__contact:focus-visible {
   top: calc(50% + var(--ink-wordmark-size) / 2 + 18px);
   left: 50%;
   margin: 0;
-  transform: translateX(-50%);
+  transform: translate(-50%, var(--ink-brand-shift));
   color: #595955;
   font-size: clamp(9px, 0.82vw, 12px);
   font-weight: 400;
@@ -73,18 +82,24 @@ a:focus-visible, button:focus-visible, .ink-study__contact:focus-visible {
   line-height: 1.5;
   white-space: nowrap;
   pointer-events: none;
+  transition: transform 720ms var(--ink-slide-ease);
 }
 
 /* 交互层：角落入口共用胶囊外观，绘图层不会遮挡操作与展开内容。 */
-.ink-study__intro, .ink-study__language, .ink-study__contact-area { position: absolute; z-index: 2; }
-.ink-study__intro { top: 25px; left: 25px; }
+.ink-study__intro, .ink-study__back, .ink-study__language, .ink-study__contact-area { position: absolute; z-index: 2; }
+.ink-study__back, .ink-study__language, .ink-study__contact-area { z-index: 5; }
+.ink-study__intro {
+  top: var(--ink-corner-top);
+  left: var(--ink-corner-inset);
+  transition: transform 520ms var(--ink-slide-ease) 360ms, opacity 520ms var(--ink-slide-ease) 360ms;
+}
 .ink-study__intro p { margin: 0; }
 .ink-study__statement { font-size: 12px; line-height: 1.4; white-space: pre-line; }
 .ink-study__pill {
   display: inline-flex;
   align-items: center;
   gap: 18px;
-  min-height: 26px;
+  min-height: var(--ink-pill-height);
   padding: 0 12px;
   border: 1px solid #111;
   border-radius: 30px;
@@ -96,8 +111,246 @@ a:focus-visible, button:focus-visible, .ink-study__contact:focus-visible {
   transition: color 160ms ease, background-color 160ms ease;
 }
 .ink-study__pill:hover { background: #f3f3f1; color: #111; }
-.ink-study__explore { margin-top: 14px; }
-.ink-study__language { top: 25px; right: 25px; }
+/* 变形主体一直是同一个黑色胶囊；宽度到位后才打开右侧间隙并显示输入内容。 */
+.ink-study__search-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+  transition: transform var(--ink-history-duration) var(--ink-slide-ease);
+}
+.ink-study__stage[data-history-open="true"] .ink-study__search-layer { transform: translateY(-100svh); }
+.ink-study__search {
+  position: absolute;
+  z-index: 3;
+  display: flex;
+  top: calc(var(--ink-corner-top) + 48px);
+  left: var(--ink-corner-inset);
+  width: var(--ink-entry-width, max-content);
+  height: var(--ink-pill-height);
+  margin: 0;
+  pointer-events: auto;
+  transition: top 600ms var(--ink-slide-ease), left 600ms var(--ink-slide-ease),
+    width 600ms var(--ink-slide-ease), height 600ms var(--ink-slide-ease);
+}
+.ink-study__search-input-shell {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid #111;
+  border-radius: 32px;
+  background: #111;
+}
+.ink-study__explore {
+  height: 100%;
+  min-height: 0;
+  border: 0;
+  white-space: nowrap;
+  transition: opacity 180ms var(--ink-slide-ease), color 160ms ease, background-color 160ms ease;
+}
+.ink-study__search-input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  padding: 0 clamp(16px, 2.2vw, 30px);
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: #fff;
+  font: inherit;
+  font-size: clamp(12px, 1.1vw, 16px);
+  opacity: 0;
+  transition: opacity 420ms var(--ink-slide-ease);
+}
+.ink-study__search-input::placeholder { color: #b6b6b0; }
+.ink-study__search-input-shell:focus-within { outline: 2px solid #999993; outline-offset: 4px; }
+.ink-study__search-submit {
+  flex: none;
+  justify-content: center;
+  width: 0;
+  height: 100%;
+  min-height: 0;
+  margin-left: 0;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  border-radius: 50%;
+  font-size: clamp(12px, 1.1vw, 16px);
+  white-space: nowrap;
+  opacity: 0;
+  transition: width 420ms var(--ink-slide-ease), margin-left 420ms var(--ink-slide-ease),
+    opacity 420ms var(--ink-slide-ease);
+}
+.ink-study__search-submit svg { display: block; flex: none; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.ink-study__search-submit:disabled { cursor: default; }
+.ink-study__search-feedback {
+  max-width: min(80vw, 360px);
+  margin: 14px 0 0;
+  color: #805249;
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: center;
+  white-space: normal;
+}
+/* 位移包含半个标题字号，超宽矮窗中仍让整行文字越过底部边界。 */
+.ink-study__stage[data-layer="explore"] { --ink-brand-shift: calc(50svh + var(--ink-wordmark-size) / 2 + 32px); }
+.ink-study__stage[data-layer="explore"] .ink-study__search {
+  top: 44%;
+  left: 13%;
+  width: 74%;
+  height: var(--ink-search-height);
+}
+.ink-study__stage[data-layer="explore"] .ink-study__explore { opacity: 0; pointer-events: none; }
+.ink-study__stage[data-search-ready="true"] .ink-study__search-input { opacity: 1; }
+.ink-study__stage[data-search-ready="true"] .ink-study__search-submit {
+  width: var(--ink-search-height);
+  margin-left: clamp(10px, 1.6vw, 20px);
+  opacity: 1;
+}
+/* 引擎入口从输入框下方中央分离，位移继续使用同一 S 曲线；弹层复用语言菜单外观。 */
+.ink-study__engine {
+  position: absolute;
+  z-index: 2;
+  top: calc(44% + var(--ink-search-height) + 18px);
+  left: 50%;
+  transform: translate(-50%, calc(-100% - 18px)) scaleX(0.65);
+  opacity: 0;
+  pointer-events: none;
+  white-space: nowrap;
+  text-align: center;
+  transition: transform 520ms var(--ink-slide-ease) 160ms, opacity 520ms var(--ink-slide-ease) 160ms;
+}
+.ink-study__stage[data-search-ready="true"] .ink-study__engine {
+  transform: translate(-50%, 0) scaleX(1);
+  opacity: 1;
+  pointer-events: auto;
+}
+.ink-study__engine .ink-study__engine-options {
+  z-index: 1;
+  top: calc(var(--ink-pill-height) + 9px);
+  left: 50%;
+  right: auto;
+  transform: translateX(-50%);
+  text-align: left;
+}
+.ink-study__run-status, .ink-study__storage-error {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 12px;
+  margin-top: 14px;
+  color: #595955;
+  font-size: 11px;
+}
+.ink-study__storage-error { max-width: min(80vw, 360px); white-space: normal; }
+/* 两段位移共用先加速后减速的 S 曲线；入场稍晚起步，在文案离开后接替同一锚点。 */
+.ink-study__back {
+  top: var(--ink-corner-top);
+  left: var(--ink-corner-inset);
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  min-height: 40px;
+  padding: 0;
+  border-radius: 50%;
+  transform: translateX(calc(-100% - 40px));
+  opacity: 0;
+  pointer-events: none;
+  transition: transform 640ms var(--ink-slide-ease), opacity 640ms var(--ink-slide-ease);
+}
+.ink-study__back svg { display: block; fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
+.ink-study__stage[data-layer="explore"] .ink-study__intro {
+  transform: translateX(calc(-100% - 40px));
+  opacity: 0;
+  transition-delay: 0s;
+}
+.ink-study__stage[data-layer="explore"] .ink-study__back {
+  transform: translateX(0);
+  opacity: 1;
+  pointer-events: auto;
+  transition-delay: 240ms;
+}
+
+/* 抽屉与输入组并行使用同一 S 时间线；关闭时触发器留在底边，内容移出并失去焦点能力。 */
+.ink-study__history-drawer {
+  position: absolute;
+  z-index: 4;
+  top: 100%;
+  left: 14.7%;
+  width: 70.6%;
+  height: 90.5%;
+  visibility: hidden;
+  pointer-events: none;
+  transition: top var(--ink-history-duration) var(--ink-slide-ease), visibility 0s var(--ink-history-duration);
+}
+.ink-study__stage[data-search-ready="true"] .ink-study__history-drawer {
+  visibility: visible;
+  pointer-events: auto;
+  transition-delay: 0s;
+}
+.ink-study__stage[data-history-open="true"] .ink-study__history-drawer { top: 9.5%; }
+.ink-study__history-toggle {
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  justify-content: center;
+  width: 40px;
+  height: 34px;
+  min-height: 34px;
+  padding: 0;
+  border: 1px solid #ffffffa6;
+  border-bottom: 0;
+  border-radius: 18px 18px 0 0;
+  background: var(--ink-history-glass);
+  color: #111;
+  backdrop-filter: blur(14px);
+  transform: translateX(-50%);
+  opacity: 0;
+  transition: width 420ms var(--ink-slide-ease),
+    opacity 180ms var(--ink-slide-ease), color 160ms ease, background-color 160ms ease;
+}
+.ink-study__stage[data-search-ready="true"] .ink-study__history-toggle { opacity: 1; }
+.ink-study__history-toggle svg {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition: opacity 180ms var(--ink-slide-ease);
+}
+.ink-study__history-toggle[aria-expanded="true"] svg { transform: translate(-50%, -50%) rotate(180deg); }
+.ink-study__history-toggle span { opacity: 0; white-space: nowrap; transition: opacity 240ms var(--ink-slide-ease); }
+.ink-study__history-toggle:is(:hover, :focus-visible) { width: 114px; background: var(--ink-history-glass); color: #111; }
+.ink-study__history-toggle:is(:hover, :focus-visible) svg { opacity: 0; }
+.ink-study__history-toggle:is(:hover, :focus-visible) span { opacity: 1; }
+.ink-study__history-panel {
+  height: 100%;
+  padding: clamp(22px, 3.6vw, 44px) clamp(18px, 3.2vw, 40px) 80px;
+  overflow: auto;
+  border: 1px solid #ffffffa6;
+  border-top: 0;
+  border-radius: 28px 28px 0 0;
+  background: var(--ink-history-glass);
+  box-shadow: 0 12px 42px #1111110c;
+  backdrop-filter: blur(14px);
+}
+.ink-study__history-panel:focus { outline: none; }
+.ink-study__history-header { display: flex; align-items: center; justify-content: space-between; gap: 20px; margin-bottom: 24px; }
+.ink-study__history-header h2 { margin: 0; font-size: 18px; font-weight: 500; letter-spacing: 0.12em; }
+.ink-study__history-header > span { color: #62625d; font-size: 11px; }
+.ink-study__history-empty { margin: 36px 0; color: #62625d; font-size: 12px; line-height: 1.6; }
+.ink-study__history-list { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; }
+.ink-study__history-list li { padding: 18px 20px; border: 1px solid #ffffff80; border-radius: 18px; background: #ffffff45; overflow-wrap: anywhere; }
+.ink-study__history-list h3 { margin: 0; font-size: 14px; font-weight: 500; line-height: 1.5; }
+.ink-study__history-list p { margin: 6px 0 0; font-size: 12px; line-height: 1.5; color: #595955; }
+.ink-study__history-list li > div { display: flex; justify-content: space-between; gap: 20px; margin-top: 12px; color: #62625d; font-size: 10px; }
+.ink-study__language { top: var(--ink-corner-top); right: var(--ink-corner-inset); }
 .ink-study__chevron {
   display: block;
   flex: none;
@@ -109,8 +362,9 @@ a:focus-visible, button:focus-visible, .ink-study__contact:focus-visible {
   stroke-linejoin: round;
   transition: transform 180ms ease;
 }
-.ink-study__language [aria-expanded="true"] { background: #fff; color: #111; }
-.ink-study__language [aria-expanded="true"] .ink-study__chevron { transform: translateY(-0.5px) rotate(180deg); }
+.ink-study__language [aria-expanded="true"], .ink-study__engine [aria-expanded="true"] { background: #fff; color: #111; }
+.ink-study__language [aria-expanded="true"] .ink-study__chevron,
+.ink-study__engine [aria-expanded="true"] .ink-study__chevron { transform: translateY(-0.5px) rotate(180deg); }
 .ink-study__language-options {
   position: absolute;
   top: calc(100% + 9px);
@@ -140,7 +394,7 @@ a:focus-visible, button:focus-visible, .ink-study__contact:focus-visible {
 .ink-study__language-options button[aria-pressed="true"] { background: #111; color: #fff; }
 
 /* 联系胶囊向左伸长，右侧锚点固定；邮箱在收起时不占宽，聚焦与悬浮使用相同状态。 */
-.ink-study__contact-area { right: 25px; bottom: 25px; }
+.ink-study__contact-area { right: var(--ink-corner-inset); bottom: var(--ink-corner-top); }
 .ink-study__contact { gap: 0; }
 .ink-study__contact-email {
   max-width: 0;
@@ -177,16 +431,25 @@ a:focus-visible, button:focus-visible, .ink-study__contact:focus-visible {
 /* 触屏与减弱动态：角落控件不与主字重叠，实际图形暂停由渲染器同步处理。 */
 @media (max-width: 600px) {
   .ink-study { padding: 9px; }
-  .ink-study__stage { min-height: calc(100svh - 18px); border-radius: 22px; }
-  .ink-study__intro { top: 22px; left: 19px; }
-  .ink-study__language { top: 22px; right: 19px; }
-  .ink-study__contact-area { right: 19px; bottom: 22px; }
-  .ink-study__pill { min-height: 34px; }
+  .ink-study__stage {
+    --ink-corner-top: 22px;
+    --ink-corner-inset: 19px;
+    --ink-pill-height: 34px;
+    min-height: calc(100svh - 18px);
+    border-radius: 22px;
+  }
+  .ink-study__stage[data-layer="explore"] .ink-study__search { left: 7%; width: 86%; }
+  .ink-study__history-drawer { left: 7%; width: 86%; }
 }
 @media (pointer: coarse) {
-  .ink-study__pill { min-height: 44px; }
+  .ink-study__stage { --ink-pill-height: 44px; }
   .ink-study__language-options button { min-height: 44px; }
+  .ink-study__back { width: 44px; height: 44px; }
+  .ink-study__history-toggle { height: 44px; min-height: 44px; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .ink-study__pill, .ink-study__chevron, .ink-study__contact-email { transition: none; }
+  .ink-study__pill, .ink-study__intro, .ink-study__back, .ink-study__chevron, .ink-study__contact-email,
+  .ink-study__wordmark, .ink-study__tagline, .ink-study__search, .ink-study__search-input,
+  .ink-study__search-submit, .ink-study__engine, .ink-study__search-layer, .ink-study__history-drawer,
+  .ink-study__history-toggle, .ink-study__history-toggle svg, .ink-study__history-toggle span { transition: none; }
 }

@@ -60,6 +60,29 @@ const createAnalysisEvent = (runId: string, sequence: number) =>
   });
 
 describe("Graph store", () => {
+  it("明确保存 Run 失败，旧事件不能污染下一次运行，重置会清除错误", () => {
+    const store = createGraphStore();
+    const failure = StreamEventSchema.parse({
+      type: "run.failed", runId: "failed-run", sequence: 1, protocolVersion: "0.1",
+      timestamp: "2026-10-22T00:00:00.000Z", error: { code: "PLANNER_FAILED", retryable: true },
+    });
+    store.getState().startRun({ runId: "failed-run", query: "查询", language: "zh-CN" });
+    store.getState().setGraph(graphPlan);
+    store.getState().applyStreamEvent(failure);
+    expect(store.getState().runError).toEqual({ code: "PLANNER_FAILED", retryable: true });
+    expect(store.getState().isSearching).toBe(false);
+    expect(store.getState().nodes).toEqual(graphPlan.nodes);
+
+    store.getState().startRun({ runId: "new-run", query: "新查询", language: "zh-CN" });
+    store.getState().applyStreamEvent({ ...failure, sequence: 2 });
+    expect(store.getState().runError).toBeNull();
+    expect(store.getState().isSearching).toBe(true);
+    store.getState().applyStreamEvent({ ...failure, runId: "new-run" });
+    expect(store.getState().runError).not.toBeNull();
+    store.getState().reset();
+    expect(store.getState().runError).toBeNull();
+  });
+
   it("提供空闲且未选中节点的初始状态", () => {
     const state = createGraphStore().getState();
 

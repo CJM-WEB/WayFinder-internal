@@ -7,6 +7,7 @@
  * - 所有 StreamEvent 必须经过同一个原子 Reducer，旧 Run、乱序事件和终态后事件均静默丢弃。
  */
 import type {
+  AppError,
   GraphEdge,
   GraphNodeCore,
   GraphPlan,
@@ -43,6 +44,8 @@ type GraphStoreData = {
   /** 首次 Compact 自动选择或用户实际改变选择后关闭，防止后续终态夺回控制权。 */
   hasResolvedInitialCompactSelection: boolean;
   isSearching: boolean;
+  /** 只保留公共安全错误；运行失败与正常 EOF、取消仍是不同语义。 */
+  runError: AppError | null;
   lastSequence: StreamEvent["sequence"];
 };
 
@@ -145,6 +148,7 @@ const createInitialGraphState = (): GraphStoreData => ({
   selectedNodeId: null,
   hasResolvedInitialCompactSelection: false,
   isSearching: false,
+  runError: null,
   lastSequence: 0,
 });
 
@@ -294,8 +298,8 @@ export const createGraphStore = () =>
           }
 
           case "run.failed":
-            // Run 级失败保留已收到的 Graph；错误展示由上层界面负责。
-            return { ...sequencePatch, isSearching: false };
+            // Run 级失败保留已收到的 Graph 和规范化错误，不能被界面误当成零结果成功。
+            return { ...sequencePatch, isSearching: false, runError: event.error };
         }
 
         return assertNeverStreamEvent(event);

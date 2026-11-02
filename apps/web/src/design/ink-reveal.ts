@@ -6,6 +6,7 @@
  */
 
 export type InkRevealController = Readonly<{
+  refreshTextPosition: () => void;
   destroy: () => void;
 }>;
 
@@ -29,6 +30,7 @@ uniform float uTime;
 uniform vec4 uPoints[14];
 uniform sampler2D uLetters;
 uniform vec4 uTextPointer;
+uniform float uHeadingShift;
 
 // 三维连续噪声用于颜料内部的凹凸与色层，不把外轮廓简化成规则椭圆。
 float hash(vec3 p) {
@@ -88,7 +90,7 @@ void main() {
   vec2 textWave = vec2(sin(textDelta.y*30.0+uTime*5.2)*0.45,
                        sin(textDelta.x*36.0-uTime*6.0));
   vec2 textOffset = textWave*textFalloff*uTextPointer.z*uTextPointer.w;
-  vec2 textUv = vec2(vUv.x,1.0-vUv.y) + textOffset*vec2(uResolution.y/uResolution.x,1.0);
+  vec2 textUv = vec2(vUv.x,1.0-vUv.y-uHeadingShift) + textOffset*vec2(uResolution.y/uResolution.x,1.0);
   float letters = texture(uLetters,textUv).a;
   vec3 base = mix(background,vec3(0.018),letters);
   vec2 warp = vec2(noise3(vec3(p*6.0,uTime*0.14)),noise3(vec3(p*6.0+17.0,uTime*0.12)))-0.5;
@@ -228,6 +230,7 @@ export function createInkReveal(
   const timeUniform = gl.getUniformLocation(resources.program,"uTime");
   const pointsUniform = gl.getUniformLocation(resources.program,"uPoints[0]");
   const textPointerUniform = gl.getUniformLocation(resources.program,"uTextPointer");
+  const headingShiftUniform = gl.getUniformLocation(resources.program,"uHeadingShift");
   const mask = document.createElement("canvas");
   const maskContext = mask.getContext("2d");
   if (maskContext === null) { release(); return null; }
@@ -242,6 +245,7 @@ export function createInkReveal(
   let lastPointer = -10;
   let width = 1;
   let height = 1;
+  let maskHeadingTop = 0;
   let activePointer: TrailPoint | null = null;
   let textStrength = 0;
   const textPointer: TrailPoint = { x: 0.5, y: 0.5 };
@@ -268,6 +272,9 @@ export function createInkReveal(
     gl.uniform1f(timeUniform,elapsed);
     gl.uniform4fv(pointsUniform,values);
     gl.uniform4f(textPointerUniform,textPointer.x*aspect,textPointer.y,textStrength,3.2/height);
+    // 只平移文字采样，不移动或重建墨迹画布；CSS 位移时也保持黑字与反相白字同步。
+    const headingTop = heading.getBoundingClientRect().top-host.getBoundingClientRect().top;
+    gl.uniform1f(headingShiftUniform,(headingTop-maskHeadingTop)/height);
     gl.drawArrays(gl.TRIANGLES,0,6);
   };
 
@@ -278,6 +285,8 @@ export function createInkReveal(
     const textBounds = heading.getBoundingClientRect();
     width = Math.max(1,bounds.width);
     height = Math.max(1,bounds.height);
+    // 遮罩固定画在未平移的首页基线；搜索层离屏时 resize 也不能把字形画出纹理之外。
+    maskHeadingTop = heading.offsetTop-textBounds.height/2;
     const density = Math.min(window.devicePixelRatio || 1,1.75,Math.sqrt(MAX_PIXELS/(width*height)));
     canvas.width = Math.max(1,Math.round(width*density));
     canvas.height = Math.max(1,Math.round(height*density));
@@ -300,7 +309,7 @@ export function createInkReveal(
     const ascent = fontMetrics.fontBoundingBoxAscent || fontSize*0.8;
     const descent = fontMetrics.fontBoundingBoxDescent || fontSize*0.2;
     let x = textBounds.left-bounds.left+(textBounds.width-textWidth)/2;
-    const y = textBounds.top-bounds.top+(textBounds.height-ascent-descent)/2+ascent;
+    const y = maskHeadingTop+(textBounds.height-ascent-descent)/2+ascent;
     letters.forEach((letter,index) => {
       maskContext.fillText(letter,x,y);
       x += (metrics[index]?.width ?? 0)+spacing;
@@ -364,7 +373,10 @@ export function createInkReveal(
   };
   const onLeave = (): void => { activePointer = null; };
   const onVisibility = (): void => { if (document.hidden) stop(); else schedule(); };
-  const onMotion = (): void => { paused = motion.matches; if (paused) stop(); else schedule(); };
+  const onMotion = (): void => {
+    paused = motion.matches;
+    if (paused) { stop(); draw(); } else schedule();
+  };
   const onContextLost = (event: Event): void => {
     // 保留 DOM 标题作为失败路径；不主动调用 loseContext，以免严格模式二次初始化失败。
     event.preventDefault();
@@ -386,6 +398,7 @@ export function createInkReveal(
   schedule();
 
   return {
+    refreshTextPosition: draw,
     destroy() {
       if (disposed) return;
       disposed = true;

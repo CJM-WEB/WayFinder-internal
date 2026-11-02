@@ -22,6 +22,8 @@ export type Messages = Readonly<{
   inkStudy: Readonly<{
     statement: string; tagline: string; explore: string; contact: string; stageAria: string; pageTitle: string;
     emailCopied: string; emailCopyFailed: string;
+    searchFailed: string;
+    backHome: string; searchHistory: string;
   }>;
   research: Readonly<{
     startGraph: string; startNode: string; preview: string; searching: string;
@@ -137,6 +139,8 @@ export const MESSAGES: Record<SearchLanguage, Messages> = {
     inkStudy: {
       statement: "让每个好奇，\n都有去处。", tagline: "打造属于自己的互联网", explore: "开始探索", contact: "联系作者",
       emailCopied: "邮箱已复制", emailCopyFailed: "复制失败，请手动复制邮箱",
+      searchFailed: "本次搜索未完成，请重试。",
+      backHome: "返回首页", searchHistory: "搜索历史",
       stageAria: "墨迹揭字交互试验", pageTitle: "WAYFINDER — 墨迹漫游",
     },
     research: {
@@ -292,6 +296,8 @@ export const MESSAGES: Record<SearchLanguage, Messages> = {
     inkStudy: {
       statement: "Every curiosity,\na place to go.", tagline: "BUILD YOUR OWN INTERNET", explore: "Start exploring", contact: "Contact author",
       emailCopied: "Email copied", emailCopyFailed: "Could not copy. Please copy the email manually.",
+      searchFailed: "The search could not be completed. Please try again.",
+      backHome: "Back to home", searchHistory: "Search history",
       stageAria: "Interactive ink reveal", pageTitle: "WAYFINDER — Ink in motion",
     },
     research: {
