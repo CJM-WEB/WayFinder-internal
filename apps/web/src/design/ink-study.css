@@ -111,7 +111,7 @@ a:focus-visible, button:focus-visible, .ink-study__contact:focus-visible {
   transition: color 160ms var(--ink-slide-ease), background-color 160ms var(--ink-slide-ease);
 }
 .ink-study__pill:hover { background: #f3f3f1; color: #111; }
-/* 变形主体一直是同一个黑色胶囊；宽度到位后才打开右侧间隙并显示输入内容。 */
+/* 变形主体一直是同一个黑色胶囊；像素圆角按短边封顶，宽度收缩时不会变成椭圆。 */
 .ink-study__search-layer {
   position: absolute;
   inset: 0;
@@ -131,7 +131,8 @@ a:focus-visible, button:focus-visible, .ink-study__contact:focus-visible {
   margin: 0;
   pointer-events: auto;
   transition: top 600ms var(--ink-slide-ease), left 600ms var(--ink-slide-ease),
-    width 600ms var(--ink-slide-ease), height 600ms var(--ink-slide-ease);
+    width 600ms var(--ink-slide-ease), height 600ms var(--ink-slide-ease),
+    transform 420ms var(--ink-slide-ease), opacity 420ms var(--ink-slide-ease);
 }
 .ink-study__search-input-shell {
   position: relative;
@@ -139,7 +140,7 @@ a:focus-visible, button:focus-visible, .ink-study__contact:focus-visible {
   min-width: 0;
   overflow: hidden;
   border: 1px solid #111;
-  border-radius: 32px;
+  border-radius: 999px;
   background: #111;
 }
 .ink-study__explore {
@@ -176,7 +177,7 @@ a:focus-visible, button:focus-visible, .ink-study__contact:focus-visible {
   padding: 0;
   overflow: hidden;
   border: 0;
-  border-radius: 50%;
+  border-radius: 999px;
   font-size: clamp(12px, 1.1vw, 16px);
   white-space: nowrap;
   opacity: 0;
@@ -407,7 +408,7 @@ a:focus-visible, button:focus-visible, .ink-study__contact:focus-visible {
   min-height: 0;
   padding: 0;
   border: 0;
-  border-radius: 50%;
+  border-radius: 999px;
   opacity: 0;
   pointer-events: none;
   transform: scale(0.7);
@@ -420,7 +421,6 @@ a:focus-visible, button:focus-visible, .ink-study__contact:focus-visible {
   width: var(--ink-search-height);
   height: var(--ink-search-height);
 }
-.ink-study__stage:is([data-search-state="loading"], [data-search-state="graph"]) .ink-study__search-input-shell { border-radius: 50%; }
 .ink-study__stage:is([data-search-state="loading"], [data-search-state="graph"]) .ink-study__search-input { opacity: 0; }
 .ink-study__stage:is([data-search-state="loading"], [data-search-state="graph"]) .ink-study__search-submit {
   width: 0; margin-left: 0; opacity: 0;
@@ -451,8 +451,14 @@ a:focus-visible, button:focus-visible, .ink-study__contact:focus-visible {
 .ink-study__search-status .ink-study__storage-error { margin: 8px auto 0; }
 
 /* 墨迹图仍是原 React Flow：完整图先布局，GPU 根据固定节点盒读取同一屏幕坐标。 */
-.ink-study__graph { position: absolute; z-index: 2; inset: 0; outline: none; }
+.ink-study__graph {
+  position: absolute; z-index: 2; inset: 0; outline: none;
+  opacity: 1;
+  transition: opacity 260ms var(--ink-slide-ease);
+}
+.ink-study__graph[data-returning="true"] { opacity: 0; pointer-events: none; }
 .ink-study__graph .graph-canvas--ink { position: relative; width: 100%; height: 100%; background: transparent; }
+/* 画布始终连续绘制；只在真实布局/墨团搬动期间管理文字、正式边与控件的显隐。 */
 .graph-canvas--ink .react-flow {
   --xy-background-color: transparent;
   --xy-edge-stroke: #77776f;
@@ -470,10 +476,26 @@ a:focus-visible, button:focus-visible, .ink-study__contact:focus-visible {
   border-radius: 30px;
   opacity: 0;
   transform: scale(0.85);
+  translate: var(--ink-transfer-x, 0px) var(--ink-transfer-y, 0px);
+  scale: var(--ink-transfer-scale, 1);
   text-shadow: 0 1px 5px #0007;
   transition: opacity 560ms var(--ink-slide-ease), transform 560ms var(--ink-slide-ease), outline-color 560ms var(--ink-slide-ease);
 }
 .ink-graph-node--visible .ink-graph-node__content { opacity: 1; transform: scale(1); }
+.graph-canvas--ink:is([data-ink-content-state="measuring"], [data-ink-content-state="moving"]) .ink-graph-node__content { opacity: 0; }
+.graph-canvas--ink[data-ink-content-state="moving"] .react-flow__node[data-ink-label-source="true"] .ink-graph-node__content {
+  opacity: var(--ink-transfer-opacity, 1);
+  transform: scale(1);
+  transition-duration: 120ms, 120ms, 120ms;
+}
+.ink-study__graph[data-resuming="true"] .graph-canvas--ink[data-ink-content-state="ready"] .ink-graph-node__content {
+  transition-duration: 220ms, 220ms, 220ms;
+}
+.graph-canvas--ink .react-flow__edge, .graph-canvas--ink .react-flow__controls { transition: opacity 220ms var(--ink-slide-ease); }
+.graph-canvas--ink:is([data-ink-content-state="measuring"], [data-ink-content-state="moving"]) :is(.react-flow__edge, .react-flow__controls) {
+  opacity: 0;
+  pointer-events: none;
+}
 .ink-graph-node__eyebrow { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 9px; letter-spacing: 0.05em; }
 .ink-graph-node h3, .ink-graph-node p { display: -webkit-box; -webkit-box-orient: vertical; overflow: hidden; }
 .ink-graph-node h3 { -webkit-line-clamp: 2; margin: 5px 0 0; font-size: 15px; font-weight: 600; line-height: 1.12; }
@@ -605,6 +627,8 @@ a:focus-visible, button:focus-visible, .ink-study__contact:focus-visible {
   .ink-study__search-submit, .ink-study__engine, .ink-study__search-layer, .ink-study__history-drawer,
   .ink-study__history-toggle, .ink-study__history-toggle svg, .ink-study__history-toggle span,
   .ink-study__history-record, .ink-study__search-stop, .ink-study__search-input-shell,
-  .ink-graph-node__content, .graph-canvas--ink .react-flow__controls-button { transition: none; }
+  .ink-study__graph, .ink-graph-node__content, .graph-canvas--ink .react-flow__controls-button { transition: none; }
+  .ink-study__graph[data-resuming="true"] .graph-canvas--ink .ink-graph-node__content,
+  .graph-canvas--ink .react-flow__edge, .graph-canvas--ink .react-flow__controls { transition: none; }
   .graph-canvas--ink .react-flow__edge { animation: none; }
 }

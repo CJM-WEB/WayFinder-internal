@@ -9,6 +9,7 @@ export const INK_SEED_ARRIVAL = 980;
 export const INK_NODE_FORM = 560;
 export const INK_BRANCH_TRAVEL = 860;
 export const INK_BRANCH_DETACH = 360;
+export const INK_SCENE_TRANSITION = 860;
 
 export type InkBirth = Readonly<{ id: string; bornAt: number; seed: boolean }>;
 export type InkBranch = Readonly<{
@@ -17,7 +18,8 @@ export type InkBranch = Readonly<{
 export type InkGraphMotion = Readonly<{ nodes: readonly InkBirth[]; branches: readonly InkBranch[] }>;
 export type InkScene = Readonly<{ kind: "pointer" }>
   | Readonly<{ kind: "loading"; startedAt: number }>
-  | Readonly<{ kind: "graph"; startedAt: number } & InkGraphMotion>;
+  // 恢复只分裂已有墨团，不重播旧搜索的传播时间表或改变真实图状态。
+  | Readonly<{ kind: "graph"; startedAt: number; resume?: boolean; graphId?: string } & InkGraphMotion>;
 
 /** 与 CSS 的 cubic-bezier(0.6, 0, 0.4, 1) 共用 S 曲线，GPU 飞行与 DOM 过渡同速。 */
 export function inkEase(value: number): number {

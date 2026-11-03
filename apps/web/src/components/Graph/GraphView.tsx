@@ -8,6 +8,8 @@ import {
   BackgroundVariant,
   Controls,
   ReactFlow,
+  useNodesInitialized,
+  useReactFlow,
 } from "@xyflow/react";
 import type {
   AriaLabelConfig,
@@ -35,6 +37,7 @@ import {
   type GraphFlowEdge,
   type GraphFlowNode,
   type GraphDisplayNode,
+  type GraphNodeData,
 } from "./graph-layout.js";
 import {
   applySelectedNodeId,
@@ -47,6 +50,21 @@ const NODE_TYPES: NodeTypes = {
   wayfinder: GraphNode,
 };
 const INK_NODE_TYPES: NodeTypes = { wayfinder: InkGraphNode };
+
+/** 先等真实节点测量与首屏视口落定，再让墨迹读取终点，避免换图起飞后又跳位置。 */
+function GraphViewportReady({ onReady }: Readonly<{ onReady: () => void }>) {
+  const initialized = useNodesInitialized();
+  const { fitView, viewportInitialized } = useReactFlow();
+  useEffect(() => {
+    if (!initialized || !viewportInitialized) return;
+    let cancelled = false, frame = 0;
+    void fitView({ padding: 0.2 }).then(() => {
+      if (!cancelled) frame = requestAnimationFrame(onReady);
+    });
+    return () => { cancelled = true; cancelAnimationFrame(frame); };
+  }, [initialized, viewportInitialized, fitView, onReady]);
+  return null;
+}
 
 export type GraphViewProps = Readonly<{
   presentationMode: PresentationMode;
@@ -61,13 +79,20 @@ export type GraphViewProps = Readonly<{
   visibleNodeIds?: ReadonlySet<string>;
   visibleEdgeIds?: ReadonlySet<string>;
   revealSettled?: boolean;
+  /** 纯视觉恢复期间继续测量布局，暂时阻止透明节点与控件被操作；默认不影响原画布。 */
+  interactionReady?: boolean;
+  /** 换图只覆盖暂时显示的旧字，不改节点身份、真实结果或编辑数据。 */
+  labelSnapshots?: Readonly<Record<string, GraphNodeData>>;
+  inkContentState?: "measuring" | "moving" | "ready";
+  onLayoutReady?: () => void;
   /** 运行草图尚未进入编辑文档时，位置由调用方承接；已保存图继续复用原编辑入口。 */
   onMoveNode?: (nodeId: string, position: XYPosition) => void;
 }>;
 
 /** 两种展示模式共用同一 Product Graph；Compact 只改变视图密度，不改写 Node 或 Edge。 */
 export function GraphView({ presentationMode, language, graph, selectedNodeId: providedSelection, onSelectNode, editableGraphId, flowId,
-  appearance = "default", visibleNodeIds, visibleEdgeIds, revealSettled, onMoveNode }: GraphViewProps) {
+  appearance = "default", visibleNodeIds, visibleEdgeIds, revealSettled, interactionReady = true,
+  labelSnapshots, inkContentState = "ready", onLayoutReady, onMoveNode }: GraphViewProps) {
   const runNodes = useStore(graphStore, state => state.nodes);
   const runEdges = useStore(graphStore, state => state.edges);
   const runSelection = useStore(graphStore, state => state.selectedNodeId);
@@ -112,17 +137,21 @@ export function GraphView({ presentationMode, language, graph, selectedNodeId: p
   const flowNodes = useMemo(
     () => applySelectedNodeId(elements.nodes, selectedNodeId).map((node): GraphFlowNode =>
       ({ ...node,
+        data: labelSnapshots?.[node.id] === undefined ? node.data : { ...node.data, ...labelSnapshots[node.id], language },
         ...(dragPosition?.nodeId === node.id ? { position: dragPosition.position } : {}),
         // 隐藏内容仍占据布局，供墨迹读取目的地；揭示前不能被鼠标或键盘提前选中。
         ...(visibleNodeIds === undefined ? {} : {
           focusable: visibleNodeIds.has(node.id), selectable: visibleNodeIds.has(node.id),
           style: { ...node.style, visibility: visibleNodeIds.has(node.id) ? "visible" : "hidden" },
           className: `${node.className ?? ""} ${visibleNodeIds.has(node.id) ? "ink-graph-node--visible" : "ink-graph-node--hidden"}`,
-          domAttributes: { "aria-hidden": !visibleNodeIds.has(node.id), inert: !visibleNodeIds.has(node.id) },
         }),
+        domAttributes: { ...node.domAttributes,
+          ...(visibleNodeIds === undefined ? {} : { "aria-hidden": !visibleNodeIds.has(node.id), inert: !visibleNodeIds.has(node.id) }),
+          ...(labelSnapshots?.[node.id] === undefined ? {} : { "data-ink-label-source": "true" }),
+        },
       }),
     ),
-    [elements.nodes, selectedNodeId, dragPosition, visibleNodeIds],
+    [elements.nodes, selectedNodeId, dragPosition, visibleNodeIds, labelSnapshots, language],
   );
   const flowEdges = useMemo(() => visibleEdgeIds === undefined ? elements.edges
     : elements.edges.map(edge => ({ ...edge, hidden: !visibleEdgeIds.has(edge.id) })), [elements.edges, visibleEdgeIds]);
@@ -178,6 +207,9 @@ export function GraphView({ presentationMode, language, graph, selectedNodeId: p
       className={`graph-canvas graph-canvas--${presentationMode}${appearance === "ink" ? " graph-canvas--ink" : ""}`}
       data-presentation-mode={presentationMode}
       data-reveal-settled={revealSettled}
+      data-ink-content-state={appearance === "ink" ? inkContentState : undefined}
+      inert={!interactionReady}
+      aria-hidden={!interactionReady}
       aria-label={messages.canvasAria[presentationMode]}
     >
       <ReactFlow<GraphFlowNode, GraphFlowEdge>
@@ -207,7 +239,7 @@ export function GraphView({ presentationMode, language, graph, selectedNodeId: p
         }}
         // React Flow 的键盘选择不触发 onNodeClick，必须从 selection 事件同步 Store。
         onSelectionChange={handleSelectionChange}
-        fitView
+        fitView={onLayoutReady === undefined}
         fitViewOptions={{ padding: 0.2 }}
         minZoom={appearance === "ink" ? 0.12 : 0.35}
         maxZoom={1.8}
@@ -224,6 +256,7 @@ export function GraphView({ presentationMode, language, graph, selectedNodeId: p
       >
         {appearance === "ink" ? null : <Background variant={BackgroundVariant.Dots} gap={20} size={1.2} />}
         <Controls aria-label={messages.controlsAria} showInteractive={false} />
+        {onLayoutReady === undefined ? null : <GraphViewportReady onReady={onLayoutReady} />}
       </ReactFlow>
       <div className="graph-edit-notice"><EditNotice problem={edit.problem} language={language} /></div>
     </div>

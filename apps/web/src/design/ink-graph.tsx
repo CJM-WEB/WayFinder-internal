@@ -3,15 +3,16 @@
  * 生命周期：每个 Run 独立挂载，取消或换图时清理计时器；节点状态更新不会重播入场。
  * 无障碍：减少动态时立即展示全图；揭示前的内容不会提前进入交互顺序。
  */
-import { useEffect, useLayoutEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from "react";
 import type { GraphEdge, PresentationMode, SearchLanguage } from "@wayfinder/contracts";
 import type { XYPosition } from "@xyflow/react";
-import type { GraphDisplayNode } from "../components/Graph/graph-layout.js";
+import type { GraphDisplayNode, GraphNodeData } from "../components/Graph/graph-layout.js";
 import { GraphView } from "../components/Graph/GraphView.js";
 import { INK_NODE_FORM, planInkGraph, type InkScene } from "./ink-graph-motion.js";
 import "@xyflow/react/dist/style.css";
 
 type Props = Readonly<{
+  graphId: string;
   nodes: readonly GraphDisplayNode[]; edges: readonly GraphEdge[];
   language: SearchLanguage; presentationMode: PresentationMode;
   onScene: (scene: InkScene) => void;
@@ -20,9 +21,14 @@ type Props = Readonly<{
   selectedNodeId: string | null;
   onSelectNode: (nodeId: string | null) => void;
   animate: boolean;
+  /** 回程保留不可交互的 DOM 供文字淡出，墨迹场景已交回首页融合。 */
+  active?: boolean;
+  transferMoving?: boolean;
+  labelSnapshots?: Readonly<Record<string, GraphNodeData>>;
 }>;
 
-export default function InkGraph({ nodes, edges, language, presentationMode, onScene, positions, onMoveNode, selectedNodeId, onSelectNode, animate }: Props) {
+export default function InkGraph({ graphId, nodes, edges, language, presentationMode, onScene, positions, onMoveNode, selectedNodeId, onSelectNode, animate, active = true,
+  transferMoving = false, labelSnapshots = {} }: Props) {
   // 只按结构重新播种，ready/partial/failed 与资源数量更新始终直接呈现。
   const signature = JSON.stringify([nodes.map(node => [node.id, node.nodeType]), edges]);
   const timeline = useMemo(() => {
@@ -34,13 +40,19 @@ export default function InkGraph({ nodes, edges, language, presentationMode, onS
   const [visibleNodes, setVisibleNodes] = useState<ReadonlySet<string>>(() => new Set());
   const [visibleEdges, setVisibleEdges] = useState<ReadonlySet<string>>(() => new Set());
   const [revealSettled, setRevealSettled] = useState(() => !animate || window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+  const [layoutReady, setLayoutReady] = useState(false);
+  const onLayoutReady = useCallback(() => { setLayoutReady(true); }, []);
 
   useLayoutEffect(() => {
-    onScene({ kind: "graph", ...timeline });
-    return () => onScene({ kind: "pointer" });
-  }, [timeline, onScene]);
+    if (!active || (!layoutReady && timeline.nodes.length > 0)) return;
+    // 真实空记录没有可分裂的节点；让旧颜料聚回自由墨迹，不能为视效捏造节点或关闭画布。
+    onScene(timeline.nodes.length === 0 ? { kind: "pointer" } : { kind: "graph", ...timeline, graphId, resume: !animate });
+    // 真正离开图层由页面所有者切场景；旧组件卸载不再插入一次 pointer 干扰 A→B。
+  }, [timeline, onScene, animate, active, layoutReady, graphId]);
 
   useEffect(() => {
+    // 退场冻结已揭示集合，不能因为回溯时钟而突然显示尚未出生的节点和正式边。
+    if (!active) return;
     const motion = window.matchMedia("(prefers-reduced-motion: reduce)");
     let timers: number[] = [];
     const clear = (): void => { timers.forEach(timer => window.clearTimeout(timer)); timers = []; };
@@ -64,9 +76,11 @@ export default function InkGraph({ nodes, edges, language, presentationMode, onS
     schedule();
     motion.addEventListener("change", schedule);
     return () => { clear(); motion.removeEventListener("change", schedule); };
-  }, [timeline]);
+  }, [timeline, active]);
 
   return <GraphView appearance="ink" presentationMode={presentationMode} language={language} graph={{ nodes, edges, positions }}
     onMoveNode={onMoveNode} selectedNodeId={selectedNodeId} onSelectNode={onSelectNode}
-    visibleNodeIds={visibleNodes} visibleEdgeIds={visibleEdges} revealSettled={revealSettled} />;
+    visibleNodeIds={visibleNodes} visibleEdgeIds={visibleEdges} revealSettled={revealSettled}
+    interactionReady={active && layoutReady && !transferMoving} labelSnapshots={labelSnapshots}
+    inkContentState={!layoutReady ? "measuring" : transferMoving ? "moving" : "ready"} onLayoutReady={onLayoutReady} />;
 }

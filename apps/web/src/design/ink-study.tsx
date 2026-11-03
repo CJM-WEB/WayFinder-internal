@@ -9,7 +9,7 @@ import { resolveSearchEngine, SearchEngineSchema, type SearchEngine, type Search
 
 import { resolveEntryLanguage } from "../i18n/entry-language.js";
 import { getMessages } from "../i18n/messages.js";
-import { createInkReveal, type InkRevealController } from "./ink-reveal.js";
+import { createInkReveal, type InkRevealController, type InkTransferEvent } from "./ink-reveal.js";
 import { InkSearchHistory } from "./ink-search-history.js";
 import type { InkScene } from "./ink-graph-motion.js";
 import { startOmniboxSubmission, type InvalidOmniboxInputReason } from "../components/Omnibox/Omnibox.js";
@@ -17,6 +17,8 @@ import { requestSafeUrlOpen } from "../lib/url.js";
 import { useStore } from "zustand";
 import type { StreamingSearch } from "../api/search.js";
 import { graphStore } from "../stores/graph-store.js";
+import { buildGraphNodeData } from "../components/Graph/graph-labels.js";
+import type { GraphNodeData } from "../components/Graph/graph-layout.js";
 import { selectCurrentGraph, workspaceStore } from "../stores/workspace-store.js";
 import { moveNode } from "../stores/workspace-edits.js";
 import { initializeWorkspacePersistence, workspacePersistenceStore } from "../stores/workspace-persistence.js";
@@ -26,6 +28,14 @@ const AUTHOR_EMAIL = "cjmweb@outlook.com";
 const InkGraph = lazy(() => import("./ink-graph.js"));
 type NodePositions = Readonly<Record<string, XYPosition>>;
 type DraftLayout = Readonly<{ runId: string; positions: NodePositions }>;
+type LabelTransfer = Readonly<{
+  graphId: string; generation: number; moving: boolean;
+  labels: Readonly<Record<string, GraphNodeData>>;
+}>;
+const EMPTY_LABELS: Readonly<Record<string, GraphNodeData>> = {};
+// 空图也保持依赖身份稳定，打开控件不能触发一次无意义的场景刷新。
+const EMPTY_NODES = [] as const;
+const EMPTY_EDGES = [] as const;
 
 function InkStudy() {
   const stage = useRef<HTMLElement>(null);
@@ -53,6 +63,12 @@ function InkStudy() {
   const documents = useStore(workspaceStore, state => state.documents);
   const selectedNodes = useStore(workspaceStore, state => state.selectedNodeIds);
   const [draftLayouts, setDraftLayouts] = useState<Readonly<Record<string, DraftLayout>>>({});
+  const [labelTransfer, setLabelTransfer] = useState<LabelTransfer | null>(null);
+  const labelTransferRef = useRef<LabelTransfer | null>(null);
+  const visualScene = useRef<InkScene>({ kind: "pointer" });
+  const awaitingTransfer = useRef(false);
+  const paintedLabels = useRef<Readonly<Record<string, GraphNodeData>>>(EMPTY_LABELS);
+  const targetLabels = useRef<Readonly<Record<string, GraphNodeData>>>(EMPTY_LABELS);
   const [animateRunId, setAnimateRunId] = useState<string | null>(null);
   const [showEmptyRecord, setShowEmptyRecord] = useState(false);
   const historySelectionIntent = useRef(0);
@@ -80,8 +96,9 @@ function InkStudy() {
   const isCurrentRun = currentDocument !== null && runtime.activeRunId !== null && currentDocument.lastRunId === runtime.activeRunId;
   // 完成图从持久文档恢复；未完成/已取消的真实草图仍取原运行，不能把草图伪装成已完成文档。
   const showsDraft = isCurrentRun && runtime.nodes.length > 0 && (runtime.isSearching || currentDocument.nodes.length === 0);
-  const displayedNodes = showsDraft ? runtime.nodes : currentDocument?.nodes ?? [];
-  const displayedEdges = showsDraft ? runtime.edges : currentDocument?.edges ?? [];
+  const displayedNodes = showsDraft ? runtime.nodes : currentDocument?.nodes ?? EMPTY_NODES;
+  const displayedEdges = showsDraft ? runtime.edges : currentDocument?.edges ?? EMPTY_EDGES;
+  const nodeLabels = useMemo(() => Object.fromEntries(displayedNodes.map(node => [node.id, buildGraphNodeData(node, renderLanguage)])), [displayedNodes, renderLanguage]);
   // 完成交接沿用原工作区选择规则：没有人工保存选择时保留本 Run 的节点，避免切源时来回清选。
   const displayedSelection = currentDocument === null ? null : selectedNodes[currentDocument.id] !== undefined
     ? selectedNodes[currentDocument.id] ?? null
@@ -152,7 +169,65 @@ function InkStudy() {
     }
   };
 
-  const setInkScene = useCallback((scene: InkScene): void => { ink.current?.setScene(scene); }, []);
+  /** 呈现事务独立于工作区：真实图立即选中，旧字按GPU同一配对跟随，到位后才换目标文案。 */
+  const onTransfer = useCallback((event: InkTransferEvent): void => {
+    const current = visualScene.current;
+    if (current.kind !== "graph" || current.graphId === undefined || current.graphId !== event.graphId) return;
+    if (event.kind === "start") {
+      const labels: Record<string, GraphNodeData> = {};
+      for (const pair of event.pairs) {
+        const source = paintedLabels.current[pair.sourceId];
+        if (source !== undefined) labels[pair.targetId] = source;
+      }
+      const next = { graphId: current.graphId, generation: event.generation, moving: true, labels };
+      labelTransferRef.current = next;
+      awaitingTransfer.current = false;
+      // 快速A→B→C的源是B位置上仍在显示的A文字，而不是尚未出现的B目标文案。
+      paintedLabels.current = labels;
+      setLabelTransfer(next);
+    } else {
+      const previous = labelTransferRef.current;
+      if (previous?.graphId !== event.graphId || previous.generation !== event.generation) return;
+      const next = { ...previous, moving: false, labels: EMPTY_LABELS };
+      labelTransferRef.current = next;
+      paintedLabels.current = targetLabels.current;
+      awaitingTransfer.current = false;
+      setLabelTransfer(next);
+    }
+  }, []);
+
+  const setInkScene = useCallback((scene: InkScene): void => {
+    const previous = visualScene.current;
+    const changed = scene.kind !== previous.kind || (scene.kind === "graph" && previous.kind === "graph" &&
+      (scene.graphId !== previous.graphId || scene.startedAt !== previous.startedAt || scene.nodes !== previous.nodes || scene.branches !== previous.branches));
+    visualScene.current = scene;
+    targetLabels.current = nodeLabels;
+    if (scene.kind !== "graph") {
+      awaitingTransfer.current = false;
+      paintedLabels.current = EMPTY_LABELS;
+      // 回程仍用最后一帧旧字淡出；旧complete已被scene所有权挡住，不会中途替换成目标字。
+    } else if (changed && scene.resume && ink.current !== null && scene.graphId !== undefined) {
+      awaitingTransfer.current = true;
+      const next = { graphId: scene.graphId, generation: -1, moving: true, labels: EMPTY_LABELS };
+      labelTransferRef.current = next;
+      setLabelTransfer(next);
+    } else if (changed && (!scene.resume || ink.current === null)) {
+      awaitingTransfer.current = false;
+      paintedLabels.current = nodeLabels;
+      labelTransferRef.current = null;
+      setLabelTransfer(null);
+    }
+    ink.current?.setScene(scene);
+  }, [nodeLabels]);
+
+  useLayoutEffect(() => {
+    targetLabels.current = nodeLabels;
+    if (currentDocument === null || visualScene.current.kind !== "graph" || visualScene.current.graphId !== currentDocument.id || awaitingTransfer.current) return;
+    const transfer = labelTransfer?.graphId === currentDocument.id ? labelTransfer : null;
+    // 尚未到位的新分裂节点没有可见旧字；快切也不能把它隐藏的目标字当成下一轮源快照。
+    const labels = transfer?.moving ? transfer.labels : nodeLabels;
+    paintedLabels.current = Object.fromEntries(Object.entries(labels).map(([id, data]) => [id, { ...data, language: renderLanguage }]));
+  }, [nodeLabels, labelTransfer, currentDocument?.id, renderLanguage]);
 
   /** 运行中只能暂存位置；完成文档已含真实节点后，再以同一 graphId/runId 承接坐标。 */
   useEffect(() => {
@@ -193,13 +268,17 @@ function InkStudy() {
     if (searchState === "input") setInkScene({ kind: "pointer" });
     if (searchState === "loading") setInkScene({ kind: "loading", startedAt: loadingStartedAt.current });
     // graph 的屏幕坐标由已挂载的原 GraphView 提供，按需模块就绪前保持加载墨迹。
+  }, [searchState, setInkScene]);
+
+  useEffect(() => {
+    // 焦点只响应搜索阶段变化；文案/资源同步不能抢走菜单或用户正在操作的控件焦点。
     if (historyOpen) return;
     const active = document.activeElement;
     if (active !== document.body && !searchShell.current?.contains(active) && !engineControl.current?.contains(active)) return;
     if (searchState === "loading") stopButton.current?.focus({ preventScroll: true });
     else if (searchState === "graph") graphHost.current?.focus({ preventScroll: true });
     else if (ready) searchInput.current?.focus({ preventScroll: true });
-  }, [searchState, setInkScene]);
+  }, [searchState]);
 
   useEffect(() => {
     // 焦点在变形完成后进入输入框；减弱动态时也要主动重绘文字的新位置。
@@ -367,7 +446,7 @@ function InkStudy() {
 
   useEffect(() => {
     if (canvas.current === null || stage.current === null || heading.current === null) return;
-    const effect = createInkReveal(canvas.current, stage.current, heading.current);
+    const effect = createInkReveal(canvas.current, stage.current, heading.current, onTransfer);
     ink.current = effect;
 
     // WebGL 不可用时仍保留标题与探索入口；系统减弱动态偏好由渲染器处理。
@@ -380,7 +459,7 @@ function InkStudy() {
       // 只取消本页发起且仍拥有的请求，沿用协调器的 AbortSignal 和迟到事件门禁。
       if (ownedRun.current !== null && graphStore.getState().activeRunId === ownedRun.current) searchCoordinator.current?.cancel();
     };
-  }, []);
+  }, [onTransfer]);
 
   useEffect(() => {
     // 展示页语言与进入搜索的初值共用同一受校验值，不增加后端语言设置接口。
@@ -477,15 +556,20 @@ function InkStudy() {
         </div>
         </div>
 
-        {searchState === "graph" && currentDocument !== null ? <div className="ink-study__graph" ref={graphHost} tabIndex={-1}
-          inert={historyOpen} aria-hidden={historyOpen} data-ink-control>
+        {/* 回程只短暂保留文字层淡出；真实选中图与坐标不因墨迹融合而重置。 */}
+        {(searchState === "graph" || (phase === "returning" && displayedNodes.length > 0)) && currentDocument !== null ? <div className="ink-study__graph" ref={graphHost} tabIndex={-1}
+          inert={historyOpen || searchState !== "graph"} aria-hidden={historyOpen || searchState !== "graph"}
+          data-returning={phase === "returning"} data-resuming={!(isCurrentRun && animateRunId === runtime.activeRunId)}
+          data-ink-graph-id={currentDocument.id} data-ink-control>
           <Suspense fallback={null}>
-            <InkGraph key={currentDocument.id} nodes={displayedNodes} edges={displayedEdges} positions={displayedPositions}
+            <InkGraph key={currentDocument.id} graphId={currentDocument.id} nodes={displayedNodes} edges={displayedEdges} positions={displayedPositions}
               presentationMode={showsDraft ? runtime.presentationMode ?? currentDocument.presentationMode : currentDocument.presentationMode}
               language={renderLanguage} onScene={setInkScene} onMoveNode={moveDisplayedNode}
               selectedNodeId={displayedSelection}
               onSelectNode={showsDraft ? graphStore.getState().selectNode : workspaceStore.getState().selectNode}
-              animate={isCurrentRun && animateRunId === runtime.activeRunId} />
+              animate={isCurrentRun && animateRunId === runtime.activeRunId} active={searchState === "graph"}
+              transferMoving={labelTransfer?.graphId === currentDocument.id && labelTransfer.moving}
+              labelSnapshots={labelTransfer?.graphId === currentDocument.id ? labelTransfer.labels : EMPTY_LABELS} />
           </Suspense>
         </div> : null}
 

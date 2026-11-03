@@ -17,7 +17,8 @@ import {
   type SearchEngine,
   type StreamEvent,
 } from "@wayfinder/contracts";
-import { expect, test, type Page } from "@playwright/test";
+import { copyFile, writeFile } from "node:fs/promises";
+import { expect, test, type CDPSession, type Page, type TestInfo } from "@playwright/test";
 
 import { createPythonMockStream } from "../src/testing/python-mock-stream.js";
 
@@ -485,9 +486,9 @@ async function readStoredWorkspace(page: Page): Promise<StoredWorkspace | null> 
 }
 
 /** 仅为超出 AI 初稿数量的手动历史场景预置合法文档，恢复仍完全走应用的真实加载与渲染。 */
-async function seedStoredWorkspace(page: Page, document: EditableGraph): Promise<void> {
-  const validated = EditableGraphSchema.parse(document);
-  await page.evaluate(async graph => {
+async function seedStoredWorkspace(page: Page, documents: readonly EditableGraph[]): Promise<void> {
+  const validated = EditableGraphSchema.array().parse(documents);
+  await page.evaluate(async graphs => {
     const database = await new Promise<IDBDatabase>((resolve, reject) => {
       const request = indexedDB.open("wayfinder-workspace", 1);
       request.onsuccess = () => resolve(request.result);
@@ -496,7 +497,7 @@ async function seedStoredWorkspace(page: Page, document: EditableGraph): Promise
     try {
       await new Promise<void>((resolve, reject) => {
         const transaction = database.transaction("workspace", "readwrite");
-        transaction.objectStore("workspace").put({ documents: [graph], currentId: graph.id }, "current");
+        transaction.objectStore("workspace").put({ documents: graphs, currentId: graphs[0]?.id ?? null }, "current");
         transaction.oncomplete = () => resolve();
         transaction.onerror = () => reject(transaction.error);
         transaction.onabort = () => reject(transaction.error);
@@ -575,6 +576,816 @@ async function inkPigmentPerNode(page: Page): Promise<readonly Readonly<{ id: st
       });
   }, screenshot);
 }
+
+type InkRaster = Readonly<{
+  mask: readonly number[]; count: number; smallIslands: number;
+  bodies: readonly Readonly<{ count: number; x: number; y: number }>[];
+}>;
+
+/**
+ * 动效证据读取浏览器实际合成帧，不读取 Shader 参数或伪造动画状态。
+ * 缩略颜料掩码排除黑白文字；独立小色块用于检查加载彩滴，帧差只证明画面仍在运动。
+ */
+async function captureInkRaster(page: Page, path: string, session?: CDPSession): Promise<InkRaster> {
+  let screenshot: string;
+  if (session === undefined) screenshot = (await page.screenshot({ path })).toString("base64");
+  else {
+    // 加载控件已稳定、字体已等待且无可见光标；直接保存同一视口的原生 PNG，不重复附加 action 快照。
+    screenshot = (await session.send("Page.captureScreenshot", { format: "png", fromSurface: true, captureBeyondViewport: false })).data;
+    await writeFile(path, Buffer.from(screenshot, "base64"));
+  }
+  return page.evaluate(async encoded => {
+    const bytes = Uint8Array.from(atob(encoded), character => character.charCodeAt(0));
+    const image = await createImageBitmap(new Blob([bytes], { type: "image/png" }));
+    const copy = document.createElement("canvas");
+    copy.width = 320; copy.height = 180;
+    const context = copy.getContext("2d");
+    if (context === null) { image.close(); throw new Error("无法分析 GPU 合成截图"); }
+    context.drawImage(image, 0, 0, copy.width, copy.height);
+    image.close();
+    const pixels = context.getImageData(0, 0, copy.width, copy.height).data;
+    const mask: number[] = [];
+    for (let index = 0; index < copy.width * copy.height; index++) {
+      const red = pixels[index * 4] ?? 0, green = pixels[index * 4 + 1] ?? 0, blue = pixels[index * 4 + 2] ?? 0;
+      if (Math.max(red, green, blue) - Math.min(red, green, blue) >= 35) mask.push(index);
+    }
+    const remaining = new Set(mask);
+    let smallIslands = 0;
+    const bodies: Array<{ count: number; x: number; y: number }> = [];
+    while (remaining.size > 0) {
+      const first = remaining.values().next().value;
+      if (first === undefined) break;
+      const queue = [first]; remaining.delete(first);
+      for (let index = 0; index < queue.length; index++) {
+        const point = queue[index];
+        if (point === undefined) continue;
+        for (const next of [point - copy.width, point + copy.width,
+          ...(point % copy.width > 0 ? [point - 1] : []), ...(point % copy.width < copy.width - 1 ? [point + 1] : [])]) {
+          if (!remaining.delete(next)) continue;
+          queue.push(next);
+        }
+      }
+      if (queue.length >= 3 && queue.length <= 60) smallIslands++;
+      if (queue.length >= 80) bodies.push({ count: queue.length,
+        x: queue.reduce((sum, point) => sum + point % copy.width, 0) / queue.length / copy.width,
+        y: queue.reduce((sum, point) => sum + Math.floor(point / copy.width), 0) / queue.length / copy.height });
+    }
+    return { mask, count: mask.length, smallIslands, bodies };
+  }, screenshot);
+}
+
+/** 掩码差异不固定颜色或逐像素快照，保留液体表面自然变化的自由度。 */
+function changedInkPixels(before: InkRaster, after: InkRaster): number {
+  const first = new Set(before.mask), second = new Set(after.mask);
+  return before.mask.filter(pixel => !second.has(pixel)).length + after.mask.filter(pixel => !first.has(pixel)).length;
+}
+
+/** 不同业务 ID、数量和布局的人工历史图，恢复仍走公共 Schema 与真实 IndexedDB。 */
+function createWaterDocuments(): readonly EditableGraph[] {
+  return [
+    { id: "water-a", title: "水流历史甲", points: [[40, 40], [40, 280], [430, 280]] },
+    { id: "water-b", title: "水流历史乙", points: [[420, 50], [80, 330]] },
+    { id: "water-c", title: "水流历史丙", points: [[30, 70], [380, 70], [30, 340], [380, 340]] },
+  ].map(({ id, title, points }) => EditableGraphSchema.parse({
+    version: "workspace.v1", id, title, query: "", language: "zh-CN", presentationMode: "graph",
+    analysis: null, createdAt: new Date(FIXTURE_TIME).toISOString(), updatedAt: new Date(FIXTURE_TIME).toISOString(), lastRunId: null,
+    nodes: points.map((_, index) => ({ id: `${id}-${index}`, title: `${title}节点${index + 1}`,
+      description: `${title}的原始说明${index + 1}`, nodeType: "primary", layer: 0, status: "empty", resources: [], warnings: [] })),
+    edges: points.slice(1).map((_, index) => ({ id: `${id}-edge-${index}`, source: `${id}-${index}`, target: `${id}-${index + 1}`, type: "recommended_next" })),
+    positions: Object.fromEntries(points.map((point, index) => [`${id}-${index}`, { x: point[0], y: point[1] }])),
+  }));
+}
+
+/** 先在独立测试上下文准备历史，再以真实时间恢复首页；不安装或推进虚拟时钟。 */
+async function prepareWaterPage(page: Page, documents = createWaterDocuments()): Promise<readonly EditableGraph[]> {
+  await installBrowserFixture(page, createInkMotionEvents());
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.goto("/ink-study.html");
+  await page.getByRole("button", { name: "开始探索", exact: true }).click();
+  await page.getByRole("button", { name: "搜索历史", exact: true }).click();
+  await expect(page.getByRole("region", { name: "搜索历史", exact: true }).getByRole("status")).toHaveText("已保存到本浏览器");
+  await seedStoredWorkspace(page, documents);
+  await page.reload();
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await expect(page.locator(".ink-study__stage")).toHaveAttribute("data-ink-renderer", "active");
+  return documents;
+}
+
+type WaterDragSample = Readonly<{ at: number; rafAt: number; headingX: number; headingY: number; title: string; path: string; dragging: boolean }>;
+
+/** 可信 CDP 鼠标事件仍走真实浏览器输入，减少每个微小手势步骤重复采集 Playwright action 快照。 */
+async function nativeWaterPointer(page: Page) {
+  const session = await page.context().newCDPSession(page);
+  let x = 0, y = 0, pressed = false;
+  return {
+    move: async (nextX: number, nextY: number) => {
+      x = nextX; y = nextY;
+      await session.send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y, button: "none", buttons: pressed ? 1 : 0 });
+    },
+    down: async () => { pressed = true; await session.send("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", buttons: 1, clickCount: 1 }); },
+    up: async () => { pressed = false; await session.send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", buttons: 0, clickCount: 1 }); },
+    afterFrame: async (nodeId: string, edgeId: string): Promise<WaterDragSample> => {
+      // 输入后固定等待两个 RAF：先给 React Flow 提交，再读坐标；五步同样处理，不筛选失败帧。
+      const { result, exceptionDetails } = await session.send("Runtime.evaluate", {
+        expression: `new Promise((resolve, reject) => requestAnimationFrame(() => requestAnimationFrame(rafAt => {
+          const node = document.querySelector(${JSON.stringify(`[data-ink-node="${nodeId}"]`)});
+          const heading = node?.querySelector("h3"), bounds = heading?.getBoundingClientRect();
+          const edge = document.querySelector(${JSON.stringify(`.react-flow__edge[data-id="${edgeId}"] .react-flow__edge-path`)});
+          if (bounds === undefined || edge === null) { reject(new Error("原生拖动采样缺少真实标题或边")); return; }
+          resolve({ at: performance.now(), rafAt, headingX: bounds.x, headingY: bounds.y,
+            title: heading.textContent ?? "", path: edge.getAttribute("d") ?? "",
+            dragging: node.closest(".react-flow__node")?.classList.contains("dragging") ?? false });
+        })))`,
+        awaitPromise: true, returnByValue: true,
+      });
+      if (exceptionDetails !== undefined) throw new Error(`原生拖动采样失败：${exceptionDetails.text}`);
+      return result.value as WaterDragSample;
+    },
+    close: async () => {
+      // 仅关闭期间的协议拒绝允许忽略；上面的真实输入命令始终保留失败，不能吞掉手势错误。
+      if (pressed) await session.send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button: "left", buttons: 0, clickCount: 1 }).catch(() => undefined);
+      await session.detach().catch(() => undefined);
+    },
+  };
+}
+
+type WaterLabel = Readonly<{ id: string; title: string; description: string; x: number; y: number; headingX: number; headingY: number; opacity: number }>;
+type WaterInput = Readonly<{ at: number; x: number; y: number; buttons: number }>;
+type WaterDomFrame = Readonly<{ at: number; rafAt: number; state: string; labels: readonly WaterLabel[]; pointer: WaterInput | null; edges: readonly { id: string; path: string }[] }>;
+type WaterRegion = Readonly<{ id: string; x: number; y: number; width: number; height: number }>;
+type WaterBody = Readonly<{ count: number; x: number; y: number; bulkWidth: number; bulkHeight: number }>;
+type WaterPatchShape = Readonly<{ components: number; secondaryMass: number; fill: number }>;
+type WaterPixelFrame = Readonly<{ at: number; color: number; black: number; paper: number;
+  patches: readonly Readonly<{ id: string; pixels: string; shape: WaterPatchShape }>[]; bodies: readonly WaterBody[] }>;
+
+/**
+ * 所有原生帧都分析，但 JPEG 解码和像素归约移到独立 Worker 的 CPU 画布。
+ * 避免在持续运行的 1M WebGL 主线程逐帧 GPU readback，把观察本身变成 30 秒超时的原因。
+ */
+async function decodeWaterFrames(page: Page, encoded: readonly { at: number; data: string }[], regions: readonly WaterRegion[]): Promise<readonly WaterPixelFrame[]> {
+  return page.evaluate(async payload => {
+    const analyze = async ({ frames, boxes, width, height }: {
+      frames: readonly { at: number; data: string }[]; boxes: readonly WaterRegion[]; width: number; height: number;
+    }): Promise<WaterPixelFrame[]> => {
+      const result: WaterPixelFrame[] = [];
+      const copy = new OffscreenCanvas(160, 90);
+      const context = copy.getContext("2d", { willReadFrequently: true });
+      const patch = new OffscreenCanvas(96, 64);
+      const painter = patch.getContext("2d", { willReadFrequently: true });
+      if (context === null || painter === null) throw new Error("无法分析 compositor 原生帧");
+      for (const frame of frames) {
+        const bytes = Uint8Array.from(atob(frame.data), value => value.charCodeAt(0));
+        const image = await createImageBitmap(new Blob([bytes], { type: "image/jpeg" }));
+        context.drawImage(image, 0, 0, copy.width, copy.height);
+        const data = context.getImageData(0, 0, copy.width, copy.height).data;
+        const mask = new Set<number>();
+        let color = 0, black = 0, paper = 0, count = 0;
+        for (let y = 3; y < copy.height - 3; y++) for (let x = 3; x < copy.width - 3; x++) {
+          const offset = (y * copy.width + x) * 4;
+          const red = data[offset] ?? 0, green = data[offset + 1] ?? 0, blue = data[offset + 2] ?? 0;
+          const high = Math.max(red, green, blue), low = Math.min(red, green, blue);
+          count++;
+          if (high - low >= 35) { color++; mask.add(y * copy.width + x); }
+          if (high < 25) black++;
+          if (low > 225 && high - low < 20) paper++;
+        }
+        const bodies: WaterBody[] = [];
+        while (mask.size > 0) {
+          const first = mask.values().next().value;
+          if (first === undefined) break;
+          const queue = [first]; mask.delete(first);
+          const columns = new Uint16Array(copy.width), rows = new Uint16Array(copy.height);
+          let sumX = 0, sumY = 0;
+          for (let index = 0; index < queue.length; index++) {
+            const point = queue[index];
+            if (point === undefined) continue;
+            const x = point % copy.width, y = Math.floor(point / copy.width);
+            columns[x] = (columns[x] ?? 0) + 1; rows[y] = (rows[y] ?? 0) + 1; sumX += x; sumY += y;
+            for (const next of [point - copy.width, point + copy.width, ...(x > 0 ? [point - 1] : []), ...(x < copy.width - 1 ? [point + 1] : [])]) {
+              if (mask.delete(next)) queue.push(next);
+            }
+          }
+          if (queue.length < 60) continue;
+          const quantile = (histogram: Uint16Array, fraction: number): number => {
+            let total = 0;
+            for (let index = 0; index < histogram.length; index++) { total += histogram[index] ?? 0; if (total >= queue.length * fraction) return index; }
+            return histogram.length - 1;
+          };
+          // 中央 60% 颜料质量不包含低质量细尾尖；用于区分整体 body 形变与固定头后只拉一根细尾。
+          bodies.push({ count: queue.length, x: sumX / queue.length / copy.width, y: sumY / queue.length / copy.height,
+            bulkWidth: (quantile(columns, 0.8) - quantile(columns, 0.2) + 1) / copy.width,
+            bulkHeight: (quantile(rows, 0.8) - quantile(rows, 0.2) + 1) / copy.height });
+        }
+        const patches = boxes.map(box => {
+          painter.clearRect(0, 0, patch.width, patch.height);
+          painter.drawImage(image, box.x / width * image.width, box.y / height * image.height,
+            box.width / width * image.width, box.height / height * image.height, 0, 0, patch.width, patch.height);
+          const pixels = Array.from(painter.getImageData(0, 0, patch.width, patch.height).data);
+          const pigment = new Set<number>();
+          for (let index = 0; index < patch.width * patch.height; index++) {
+            const rgb = pixels.slice(index * 4, index * 4 + 3);
+            if (Math.max(...rgb) - Math.min(...rgb) >= 35) pigment.add(index);
+          }
+          // 从外侧填充背景，补平白字/材质内部小孔；只把真实外轮廓凹口和分离颜料当成形态变化。
+          const outside = new Set<number>(), queue: number[] = [];
+          for (let index = 0; index < patch.width * patch.height; index++) {
+            const x = index % patch.width, y = Math.floor(index / patch.width);
+            if ((x === 0 || y === 0 || x === patch.width - 1 || y === patch.height - 1) && !pigment.has(index)) { outside.add(index); queue.push(index); }
+          }
+          const neighbours = (point: number): number[] => [point - patch.width, point + patch.width,
+            ...(point % patch.width > 0 ? [point - 1] : []), ...(point % patch.width < patch.width - 1 ? [point + 1] : [])];
+          for (let index = 0; index < queue.length; index++) for (const next of neighbours(queue[index] ?? 0)) {
+            if (next < 0 || next >= patch.width * patch.height || pigment.has(next) || outside.has(next)) continue;
+            outside.add(next); queue.push(next);
+          }
+          const filled = new Set(Array.from({ length: patch.width * patch.height }, (_, index) => index).filter(index => !outside.has(index)));
+          const pieces: Array<{ count: number; fill: number }> = [];
+          while (filled.size > 0) {
+            const first = filled.values().next().value;
+            if (first === undefined) break;
+            const points = [first]; filled.delete(first);
+            let left = patch.width, right = 0, top = patch.height, bottom = 0;
+            for (let index = 0; index < points.length; index++) {
+              const point = points[index] ?? 0, x = point % patch.width, y = Math.floor(point / patch.width);
+              left = Math.min(left, x); right = Math.max(right, x); top = Math.min(top, y); bottom = Math.max(bottom, y);
+              for (const next of neighbours(point)) if (filled.delete(next)) points.push(next);
+            }
+            pieces.push({ count: points.length, fill: points.length / ((right - left + 1) * (bottom - top + 1)) });
+          }
+          pieces.sort((a, b) => b.count - a.count);
+          const main = pieces[0];
+          const significant = pieces.filter(piece => piece.count >= Math.max(4, (main?.count ?? 0) * 0.005));
+          const mass = significant.reduce((sum, piece) => sum + piece.count, 0);
+          // RGBA 以无损 Base64 返回，避免数百万单独 number 经 CDP 对象序列化挤占门禁预算。
+          return { id: box.id, pixels: btoa(String.fromCharCode(...pixels)), shape: { components: significant.length,
+            secondaryMass: mass === 0 ? 0 : 1 - (main?.count ?? 0) / mass, fill: main?.fill ?? 0 } };
+        });
+        image.close();
+        result.push({ at: frame.at, color: color / count, black: black / count, paper: paper / count, patches, bodies });
+      }
+      return result;
+    };
+    // Worker 只执行本文件固定的分析函数，不执行网页、Provider 或外部输入中的代码。
+    const source = `self.onmessage=async event=>{try{self.postMessage({pixels:await (${analyze.toString()})(event.data)});}catch(error){self.postMessage({error:String(error)});}};`;
+    const url = URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
+    const worker = new Worker(url);
+    try {
+      return await new Promise<WaterPixelFrame[]>((resolve, reject) => {
+        worker.onmessage = (event: MessageEvent<{ pixels?: WaterPixelFrame[]; error?: string }>) => {
+          if (event.data.error !== undefined) reject(new Error(event.data.error));
+          else if (event.data.pixels === undefined) reject(new Error("原生帧分析没有返回结果"));
+          else resolve(event.data.pixels);
+        };
+        worker.onerror = event => reject(new Error(event.message));
+        worker.postMessage({ frames: payload.encoded, boxes: payload.regions, width: innerWidth, height: innerHeight });
+      });
+    } finally { worker.terminate(); URL.revokeObjectURL(url); }
+  }, { encoded, regions });
+}
+
+/** 失败也要保存已收到的原生帧；兜底错误只附加证据，不覆盖原来的断言或超时失败。 */
+const pendingWaterEvidence = new Map<TestInfo, Set<() => Promise<unknown>>>();
+test.afterEach(async ({ page }, testInfo) => {
+  const pending = pendingWaterEvidence.get(testInfo);
+  if (pending === undefined) return;
+  const results = await Promise.allSettled([...pending].map(stop => stop()));
+  pendingWaterEvidence.delete(testInfo);
+  const errors = results.flatMap(result => result.status === "rejected" ? [String(result.reason)] : []);
+  if (errors.length === 0) return;
+  await testInfo.attach("water-evidence-teardown", { body: JSON.stringify({ pageClosed: page.isClosed(), errors }), contentType: "application/json" });
+  if (testInfo.status === "passed") throw new Error(`原生动效证据未完整保存：${errors.join("；")}`);
+});
+
+/**
+ * 连续证据来自原生 compositor（合成器）JPEG 与只读 DOM/事件观察，不读取或覆写 Shader 内部状态。
+ * 属性观察可以抓住“把相同 width 再写一次”造成的清屏；场景切换也不得替换画布或 WebGL context。
+ */
+async function observeWaterMotion(page: Page, testInfo: TestInfo, name: string, regions: readonly WaterRegion[] = []) {
+  const observer = await page.evaluateHandle(() => {
+    const canvas = document.querySelector<HTMLCanvasElement>(".ink-study__canvas");
+    if (canvas === null) throw new Error("缺少实际墨迹画布");
+    const context = canvas.getContext("webgl2");
+    if (context === null) throw new Error("真实时间视觉回归需要 WebGL renderer");
+    const initialSize = { width: canvas.width, height: canvas.height };
+    const frames: WaterDomFrame[] = [];
+    const clicks: Array<{ name: string; at: number }> = [];
+    const pointers: Array<{ id: string | null; at: number }> = [];
+    const inputEvents: Array<{ at: number; x: number; y: number; buttons: number }> = [];
+    const drags: Array<{ phase: "down" | "up"; id: string; at: number }> = [];
+    const writes: Array<{ name: string | null; at: number }> = [];
+    let lost = 0, restored = 0, frame = 0;
+    let hovered: string | null = null;
+    let dragged: string | null = null;
+    let currentInput: WaterInput | null = null;
+    const doc = canvas.ownerDocument;
+    const onLost = (): void => { lost++; };
+    const onRestored = (): void => { restored++; };
+    const onClick = (event: MouseEvent): void => {
+      const button = event.target instanceof Element ? event.target.closest(".ink-study__history-title") : null;
+      if (button !== null) clicks.push({ name: button.textContent ?? "", at: performance.now() });
+    };
+    const onPointer = (event: PointerEvent): void => {
+      currentInput = { at: performance.now(), x: event.clientX, y: event.clientY, buttons: event.buttons };
+      inputEvents.push(currentInput);
+      const node = event.target instanceof Element ? event.target.closest<HTMLElement>("[data-ink-node]") : null;
+      const id = node?.dataset.inkNode ?? null;
+      if (id !== hovered) { pointers.push({ id, at: performance.now() }); hovered = id; }
+    };
+    const onDown = (event: PointerEvent): void => {
+      const node = event.target instanceof Element ? event.target.closest<HTMLElement>("[data-ink-node]") : null;
+      dragged = node?.dataset.inkNode ?? null;
+      if (dragged !== null) drags.push({ phase: "down", id: dragged, at: performance.now() });
+    };
+    const onUp = (): void => {
+      if (dragged !== null) drags.push({ phase: "up", id: dragged, at: performance.now() });
+      dragged = null;
+    };
+    const mutations = new MutationObserver(records => records.forEach(record => writes.push({ name: record.attributeName, at: performance.now() })));
+    mutations.observe(canvas, { attributes: true, attributeFilter: ["width", "height"] });
+    canvas.addEventListener("webglcontextlost", onLost);
+    canvas.addEventListener("webglcontextrestored", onRestored);
+    doc.addEventListener("click", onClick, true);
+    doc.addEventListener("pointermove", onPointer, true);
+    doc.addEventListener("pointerdown", onDown, true);
+    doc.addEventListener("pointerup", onUp, true);
+    const sample = (rafAt: number): void => {
+      const graph = doc.querySelector(".graph-canvas--ink");
+      // RAF 参数是帧开始时间，可能早于当前输入；事件对齐必须使用真正读取 DOM 的时刻。
+      frames.push({ at: performance.now(), rafAt, state: graph?.getAttribute("data-ink-content-state") ?? "absent", pointer: currentInput,
+        edges: [...doc.querySelectorAll(".react-flow__edge")].map(edge => ({ id: edge.getAttribute("data-id") ?? "", path: edge.querySelector(".react-flow__edge-path")?.getAttribute("d") ?? "" })),
+        labels: [...doc.querySelectorAll<HTMLElement>("[data-ink-node]")].map(node => {
+        const content = node.querySelector<HTMLElement>(".ink-graph-node__content");
+        const bounds = content?.getBoundingClientRect();
+        const heading = content?.querySelector("h3"), headingBounds = heading?.getBoundingClientRect();
+        let opacity = 1;
+        for (let element: Element | null = content ?? null; element !== null; element = element.parentElement) {
+          const style = getComputedStyle(element);
+          if (style.visibility === "hidden" || style.display === "none") opacity = 0;
+          opacity *= Number(style.opacity);
+        }
+        return { id: node.dataset.inkNode ?? "", title: heading?.textContent ?? "", description: content?.querySelector("p")?.textContent ?? "",
+          x: bounds?.x ?? 0, y: bounds?.y ?? 0, headingX: headingBounds?.x ?? 0, headingY: headingBounds?.y ?? 0, opacity };
+      }) });
+      frame = requestAnimationFrame(sample);
+    };
+    frame = requestAnimationFrame(sample);
+    return { stop: () => {
+      cancelAnimationFrame(frame); mutations.disconnect();
+      canvas.removeEventListener("webglcontextlost", onLost);
+      canvas.removeEventListener("webglcontextrestored", onRestored);
+      doc.removeEventListener("click", onClick, true);
+      doc.removeEventListener("pointermove", onPointer, true);
+      doc.removeEventListener("pointerdown", onDown, true);
+      doc.removeEventListener("pointerup", onUp, true);
+      return { frames, clicks, pointers, inputEvents, drags, writes, lost, restored, initialSize, timeOrigin: performance.timeOrigin, size: { width: canvas.width, height: canvas.height },
+        sameCanvas: canvas.isConnected && doc.querySelector(".ink-study__canvas") === canvas,
+        sameContext: canvas.getContext("webgl2") === context && !context.isContextLost() };
+    } };
+  });
+  const session = await page.context().newCDPSession(page);
+  const images: Array<{ at: number; data: string }> = [];
+  const acknowledgmentErrors: string[] = [];
+  let recording = true;
+  session.on("Page.screencastFrame", event => {
+    if (!recording) return;
+    images.push({ at: event.metadata.timestamp ?? 0, data: event.data });
+    // 关闭期间可能收到最后一帧；仅记录仍在观察时的协议错误，避免未处理的异步拒绝污染后续用例。
+    void session.send("Page.screencastFrameAck", { sessionId: event.sessionId }).catch((error: unknown) => {
+      if (recording) acknowledgmentErrors.push(String(error));
+    });
+  });
+  const readDom = () => observer.evaluate(value => value.stop());
+  const save = async () => {
+    const errors: string[] = [];
+    let dom: Awaited<ReturnType<typeof readDom>> | undefined;
+    try {
+      await session.send("Page.stopScreencast");
+      recording = false;
+      dom = await readDom();
+    } catch (error: unknown) { errors.push(String(error)); }
+    finally {
+      recording = false;
+      // Node 已收到的图片先落盘；之后即使 Page/context 已关闭，最关键的黑屏帧也不会丢。
+      await Promise.all(images.map((image, index) => writeFile(testInfo.outputPath(`${name}-compositor-${String(index).padStart(3, "0")}.jpeg`), Buffer.from(image.data, "base64"))));
+      await session.detach().catch((error: unknown) => errors.push(String(error)));
+      await observer.dispose().catch((error: unknown) => errors.push(String(error)));
+      await writeFile(testInfo.outputPath(`${name}-raw-dom.json`), JSON.stringify({ ...(dom ?? {}), acknowledgmentErrors, errors, imageCount: images.length }, null, 2));
+    }
+    if (dom === undefined || errors.length > 0) throw new Error(`动效观察收尾失败：${errors.join("；")}`);
+    const pixels = await decodeWaterFrames(page, images, regions);
+    await writeFile(testInfo.outputPath(`${name}-evidence.json`), JSON.stringify({ ...dom, acknowledgmentErrors, pixels }, null, 2));
+    return { ...dom, acknowledgmentErrors, pixels };
+  };
+  let stopped: ReturnType<typeof save> | undefined;
+  const stop = (): ReturnType<typeof save> => {
+    stopped ??= save().finally(() => { pendingWaterEvidence.get(testInfo)?.delete(stop); });
+    return stopped;
+  };
+  const pending = pendingWaterEvidence.get(testInfo) ?? new Set<() => Promise<unknown>>();
+  pending.add(stop); pendingWaterEvidence.set(testInfo, pending);
+  await session.send("Page.startScreencast", { format: "jpeg", quality: 85, maxWidth: 640, maxHeight: 360, everyNthFrame: 1 });
+  return { frameCount: () => images.length, sampleLatest: (count = 2) => decodeWaterFrames(page, images.slice(-count), regions), stop };
+}
+
+type WaterEvidence = Awaited<ReturnType<Awaited<ReturnType<typeof observeWaterMotion>>["stop"]>>;
+
+function expectWaterContinuity(evidence: WaterEvidence): void {
+  expect(evidence.sameCanvas).toBe(true);
+  expect(evidence.sameContext).toBe(true);
+  expect(evidence.size).toEqual(evidence.initialSize);
+  expect(evidence.writes).toEqual([]);
+  expect(evidence.lost).toBe(0);
+  expect(evidence.restored).toBe(0);
+  expect(evidence.acknowledgmentErrors).toEqual([]);
+  expect(evidence.pixels.length).toBeGreaterThan(5);
+  for (const frame of evidence.pixels) {
+    expect(frame.color).toBeGreaterThan(0.003);
+    expect(frame.color).toBeLessThan(0.8);
+    expect(frame.black).toBeLessThan(0.8);
+    expect(frame.paper).toBeLessThan(0.9995);
+  }
+}
+
+async function selectWaterHistory(page: Page, title: string): Promise<void> {
+  const toggle = page.getByRole("button", { name: "搜索历史", exact: true });
+  if (await toggle.getAttribute("aria-expanded") !== "true") await toggle.press("Enter");
+  await page.getByRole("region", { name: "搜索历史", exact: true }).getByRole("button", { name: title, exact: true }).press("Enter");
+  // 只等本次选择意图提交并收起菜单；不能把下一次 open 错当作尚未收起菜单的 close。
+  await expect(toggle).toHaveAttribute("aria-expanded", "false");
+}
+
+/** 快切只省略工具快照；focus/菜单状态仍由真实 DOM 决定，激活始终使用可信原生 Enter。 */
+async function interruptWaterHistory(page: Page, first: string, last: string): Promise<void> {
+  const session = await page.context().newCDPSession(page);
+  const focus = async (title: string | null, open: boolean): Promise<void> => {
+    const locate = (name: string | null, expanded: boolean) => new Promise<boolean>((resolve, reject) => {
+      const deadline = performance.now() + 1000;
+      const check = (): void => {
+        const toggle = document.querySelector<HTMLButtonElement>(".ink-study__history-toggle");
+        const button = name === null ? toggle : [...document.querySelectorAll<HTMLButtonElement>(".ink-study__history-title")].find(element => element.textContent === name);
+        if (toggle?.getAttribute("aria-expanded") === String(expanded) && button !== undefined && button !== null && !button.disabled && button.closest("[inert]") === null) {
+          button.focus(); resolve(true); return;
+        }
+        if (performance.now() >= deadline) { reject(new Error("历史状态未提交，不能注入下一次选择")); return; }
+        requestAnimationFrame(check);
+      };
+      check();
+    });
+    const result = await session.send("Runtime.evaluate", { expression: `(${locate.toString()})(${JSON.stringify(title)},${open})`, awaitPromise: true, returnByValue: true });
+    if (result.exceptionDetails !== undefined || result.result.value !== true) throw new Error("原生历史键盘输入未能获得真实焦点");
+  };
+  const enter = async (): Promise<void> => {
+    // 同一 CDP 通道按发送顺序处理 down/up，成对发送避免逐 action 的截图等待。
+    const down = session.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, text: "\r", unmodifiedText: "\r" });
+    const up = session.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
+    await Promise.all([down, up]);
+  };
+  try {
+    await focus(null, false); await enter(); await focus(first, true); await enter();
+    await focus(null, false); await enter(); await focus(last, true); await enter();
+  } finally { await session.detach(); }
+}
+
+async function expectWaterReady(page: Page, target: EditableGraph): Promise<void> {
+  const node = target.nodes[0];
+  if (node === undefined) throw new Error("固定样例缺少目标节点");
+  await expect(page.locator(`[data-ink-node="${node.id}"]`)).toHaveCount(1);
+  await expect(page.locator(".graph-canvas--ink")).toHaveAttribute("data-ink-content-state", "ready");
+}
+
+/**
+ * 虚拟时钟只用于旧关键帧用例：先逐 RAF 完成布局测量，以 renderer 宣告 moving 的实际时刻为飞行原点。
+ * 上限 16 帧；没有 start 必须失败，不能任意加长末态等待掩盖一直 measuring 的交互锁。
+ */
+async function advanceInkTransferStart(page: Page, testInfo: TestInfo, name: string): Promise<void> {
+  const samples: Array<{ at: number; state: string | null; inert: boolean }> = [];
+  for (let index = 0; index < 16; index++) {
+    const sample = await page.locator(".graph-canvas--ink").evaluate(element => ({
+      at: performance.now(), state: element.getAttribute("data-ink-content-state"), inert: element.closest("[inert]") !== null,
+    }));
+    samples.push(sample);
+    if (sample.state === "moving") {
+      await writeFile(testInfo.outputPath(`${name}-transfer-origin.json`), JSON.stringify(samples, null, 2));
+      return;
+    }
+    expect(sample.state).toBe("measuring");
+    expect(sample.inert).toBe(true);
+    if (index === 0) {
+      expect((await captureInkRaster(page, testInfo.outputPath(`${name}-measuring.png`))).count).toBeGreaterThan(30);
+      await page.keyboard.press("Tab");
+      expect(await page.locator(".ink-study__graph").evaluate(element => element.contains(element.ownerDocument.activeElement))).toBe(false);
+    }
+    await page.clock.runFor(16);
+  }
+  await writeFile(testInfo.outputPath(`${name}-transfer-origin.json`), JSON.stringify(samples, null, 2));
+  throw new Error("16 个布局帧内未收到真实 transfer-start");
+}
+
+/** 历史和首页切换必须连续绘制；任何一次相同尺寸重写也会被属性观察捕获。 */
+test("真实时间首页与异ID历史切换连续绘制且不重置画布和上下文", async ({ page }, testInfo) => {
+  const documents = await prepareWaterPage(page);
+  const first = documents[0], second = documents[1];
+  if (first === undefined || second === undefined) throw new Error("缺少异 ID 历史固定样例");
+  const probe = await observeWaterMotion(page, testInfo, "water-scene-continuity");
+  await page.getByRole("button", { name: "开始探索", exact: true }).click();
+  await expectWaterReady(page, first);
+  await expect(page.locator("[data-ink-node]:visible")).toHaveCount(first.nodes.length);
+  await page.getByRole("button", { name: "返回首页", exact: true }).click();
+  await expect(page.getByRole("button", { name: "开始探索", exact: true })).toBeFocused();
+  await page.getByRole("button", { name: "开始探索", exact: true }).click();
+  await expectWaterReady(page, first);
+  await selectWaterHistory(page, second.title);
+  await expectWaterReady(page, second);
+  await expect(page.locator("[data-ink-node]:visible")).toHaveCount(second.nodes.length);
+  const evidence = await probe.stop();
+  expectWaterContinuity(evidence);
+  expect((await readStoredWorkspace(page))?.currentId).toBe(second.id);
+  expect(await readFixtureSnapshots(page)).toHaveLength(0);
+});
+
+/** 迁移过程保留源文案并沿屏幕路径移动，到位才换目标；快速反向选择不能让旧 generation 回写。 */
+test("真实时间异ID历史先搬源文字再换目标，快速连续切图仅保留最后一图", async ({ page }, testInfo) => {
+  const documents = await prepareWaterPage(page);
+  const first = documents[0], second = documents[1], third = documents[2];
+  if (first === undefined || second === undefined || third === undefined) throw new Error("缺少连续切换固定样例");
+  await page.getByRole("button", { name: "开始探索", exact: true }).click();
+  await expectWaterReady(page, first);
+  const probe = await observeWaterMotion(page, testInfo, "water-history-labels");
+  await selectWaterHistory(page, second.title);
+  await expectWaterReady(page, second);
+  const secondTargets = await page.locator("[data-ink-node]").evaluateAll(elements => elements.map(node => {
+    const content = node.querySelector(".ink-graph-node__content");
+    const bounds = content?.getBoundingClientRect();
+    return { id: node.getAttribute("data-ink-node"), x: bounds?.x ?? 0, y: bounds?.y ?? 0 };
+  }));
+  for (const node of second.nodes) {
+    await expect(page.locator(`[data-ink-node="${node.id}"] h3`)).toHaveText(node.title);
+    await expect(page.locator(`[data-ink-node="${node.id}"] p`)).toHaveText(node.description);
+  }
+  await selectWaterHistory(page, first.title);
+  await expectWaterReady(page, first);
+  // 键盘标题操作不等待抽屉 CSS 稳定，确实让两个选择意图在同一过渡内相继到达。
+  await interruptWaterHistory(page, second.title, third.title);
+  await expectWaterReady(page, third);
+  const evidence = await probe.stop();
+  expectWaterContinuity(evidence);
+  const firstSecondClick = evidence.clicks.find(click => click.name === second.title);
+  const returnClick = evidence.clicks.find(click => click.name === first.title);
+  const finalSecondClick = evidence.clicks.filter(click => click.name === second.title).at(-1);
+  const finalThirdClick = evidence.clicks.find(click => click.name === third.title);
+  if (firstSecondClick === undefined || returnClick === undefined || finalSecondClick === undefined || finalThirdClick === undefined) throw new Error("缺少真实标题点击时间线");
+  const moving = evidence.frames.filter(frame => frame.at >= firstSecondClick.at && frame.at < returnClick.at && frame.state === "moving");
+  const visibleMoving = moving.flatMap(frame => frame.labels.filter(label => label.opacity > 0.05));
+  expect(visibleMoving.length).toBeGreaterThan(0);
+  const sources = new Map(first.nodes.map(node => [node.title, node.description]));
+  const targetLabels = new Map(second.nodes.map(node => [node.title, node.description]));
+  for (const frame of evidence.frames.filter(frame => frame.at >= firstSecondClick.at && frame.at < returnClick.at)) {
+    for (const label of frame.labels.filter(label => label.opacity > 0.05 && targetLabels.has(label.title))) {
+      expect(frame.state).toBe("ready");
+      expect(label.description).toBe(targetLabels.get(label.title));
+    }
+  }
+  for (const frame of moving) {
+    const labels = frame.labels.filter(label => label.opacity > 0.05);
+    expect(new Set(labels.map(label => label.title)).size).toBe(labels.length);
+    for (const label of labels) expect(sources.get(label.title)).toBe(label.description);
+  }
+  const initial = evidence.frames.find(frame => frame.at < firstSecondClick.at && frame.state === "ready");
+  if (initial === undefined) throw new Error("缺少源图稳定帧");
+  expect(visibleMoving.some(label => {
+    const start = initial.labels.find(source => source.title === label.title);
+    const end = secondTargets.find(target => target.id === label.id);
+    return start !== undefined && end !== undefined && Math.hypot(label.x - start.x, label.y - start.y) > 8 && Math.hypot(label.x - end.x, label.y - end.y) > 8;
+  })).toBe(true);
+  expect(finalThirdClick.at - finalSecondClick.at).toBeLessThan(860);
+  expect(evidence.frames.filter(frame => frame.at >= finalThirdClick.at).flatMap(frame => frame.labels)
+    .filter(label => label.opacity > 0.05 && targetLabels.has(label.title))).toEqual([]);
+  expect(await visibleInkNodeIds(page)).toEqual(third.nodes.map(node => node.id).sort());
+  for (const node of third.nodes) await expect(page.locator(`[data-ink-node="${node.id}"] h3`)).toHaveText(node.title);
+  const saved = await readStoredWorkspace(page);
+  expect(saved?.currentId).toBe(third.id);
+  expect(saved?.documents).toEqual(documents);
+  expect(await readFixtureSnapshots(page)).toHaveLength(0);
+});
+
+/** 局部拨散以自身基线和远处节点作对照，不与独立拖动风险共用 30 秒测试预算。 */
+test("真实时间hover拨散当前节点颜料后自然聚回，不改变文字布局与存储", async ({ page }, testInfo) => {
+  const documents = await prepareWaterPage(page);
+  const document = documents[0], active = document?.nodes[0], control = document?.nodes[2];
+  if (document === undefined || active === undefined || control === undefined) throw new Error("缺少局部水波固定样例");
+  await page.getByRole("button", { name: "开始探索", exact: true }).click();
+  await expectWaterReady(page, document);
+  const before = await readStoredWorkspace(page);
+  const positions = await Promise.all(document.nodes.map(async node => ({ id: node.id, position: await readInkPosition(page, node.id) })));
+  const boxes = await Promise.all([active, control].map(async node => {
+    const bounds = await page.locator(`[data-ink-node="${node.id}"]`).boundingBox();
+    if (bounds === null) throw new Error("水波对照节点不可见");
+    return { id: node.id, x: bounds.x - 96, y: bounds.y - 96, width: bounds.width + 192, height: bounds.height + 192 };
+  }));
+  const hover = await observeWaterMotion(page, testInfo, "water-local-hover", boxes);
+  await expect.poll(hover.frameCount).toBeGreaterThanOrEqual(3);
+  const baselinePixels = await hover.sampleLatest(3);
+  const baselineShapes = baselinePixels.map(frame => frame.patches.find(patch => patch.id === active.id)?.shape).filter((shape): shape is WaterPatchShape => shape !== undefined);
+  if (baselineShapes.length === 0) throw new Error("缺少拨散前主体形态");
+  const baselineShape = { fill: baselineShapes.reduce((sum, shape) => sum + shape.fill, 0) / baselineShapes.length,
+    secondaryMass: Math.max(...baselineShapes.map(shape => shape.secondaryMass)), components: Math.max(...baselineShapes.map(shape => shape.components)) };
+  const topMaterial = (frame: WaterPixelFrame) => [...frame.bodies].filter(body => body.count >= 200).sort((a, b) => a.y - b.y)[0];
+  const baselineBodies = baselinePixels.map(topMaterial).filter((body): body is WaterBody => body !== undefined);
+  if (baselineBodies.length === 0) throw new Error("缺少拨散前材料位置");
+  const baselineMaterial = { x: baselineBodies.reduce((sum, body) => sum + body.x, 0) / baselineBodies.length,
+    y: baselineBodies.reduce((sum, body) => sum + body.y, 0) / baselineBodies.length,
+    width: baselineBodies.reduce((sum, body) => sum + body.bulkWidth, 0) / baselineBodies.length,
+    height: baselineBodies.reduce((sum, body) => sum + body.bulkHeight, 0) / baselineBodies.length };
+  const region = await page.locator(`[data-ink-node="${active.id}"]`).boundingBox();
+  if (region === null) throw new Error("缺少真实拨动区域");
+  // 材料按真实扫动注能：跨过节点内部的短曲线，而不是停在上面持续施加一枚 hover 波纹。
+  const pointer = await nativeWaterPointer(page);
+  try {
+    let previous = { x: region.x + region.width * 0.15, y: region.y + region.height * 0.45 };
+    await pointer.move(previous.x, previous.y);
+    for (const [x, y] of [[0.35, 0.25], [0.55, 0.7], [0.8, 0.4]] as const) {
+      const next = { x: region.x + region.width * x, y: region.y + region.height * y };
+      for (let step = 1; step <= 3; step++) await pointer.move(previous.x + (next.x - previous.x) * step / 3, previous.y + (next.y - previous.y) * step / 3);
+      previous = next;
+    }
+    const during = hover.frameCount();
+    await expect.poll(hover.frameCount).toBeGreaterThanOrEqual(during + 3);
+    await pointer.move(1180, 260);
+  } finally { await pointer.close(); }
+  const leaving = hover.frameCount();
+  await expect.poll(hover.frameCount).toBeGreaterThanOrEqual(leaving + 2);
+  let recoveredFrameAt = Number.POSITIVE_INFINITY;
+  const materialRecovered = (frame: WaterPixelFrame): boolean => {
+    const shape = frame.patches.find(patch => patch.id === active.id)?.shape, body = topMaterial(frame);
+    return shape !== undefined && body !== undefined && shape.fill >= baselineShape.fill - 0.06 && shape.secondaryMass < baselineShape.secondaryMass + 0.02 && shape.components <= baselineShape.components + 1
+      && Math.abs(body.x - baselineMaterial.x) < 0.025 && Math.abs(body.y - baselineMaterial.y) < 0.025
+      && Math.abs(body.bulkWidth / baselineMaterial.width - 1) < 0.18 && Math.abs(body.bulkHeight / baselineMaterial.height - 1) < 0.18;
+  };
+  // 以原生帧中的集中度/外轮廓回近自身基线判断聚回，最多 4 秒；不靠一段固定 sleep 假设材料已经恢复。
+  await expect.poll(async () => {
+    const frames = await hover.sampleLatest(3);
+    const ready = frames.length === 3 && frames.every(materialRecovered);
+    if (ready) recoveredFrameAt = frames[0]?.at ?? Number.POSITIVE_INFINITY;
+    return ready;
+  }, { timeout: 4000, intervals: [100, 200, 300] }).toBe(true);
+  const afterRecovery = hover.frameCount();
+  await expect.poll(hover.frameCount).toBeGreaterThanOrEqual(afterRecovery + 1);
+  const hoverEvidence = await hover.stop();
+  expectWaterContinuity(hoverEvidence);
+  const entered = hoverEvidence.pointers.find(pointer => pointer.id === active.id);
+  const exited = hoverEvidence.pointers.find(pointer => pointer.id === null && entered !== undefined && pointer.at > entered.at);
+  if (entered === undefined || exited === undefined) throw new Error("缺少实际悬停与离开事件");
+  const rates = hoverEvidence.pixels.slice(1).map((frame, index) => {
+    const previous = hoverEvidence.pixels[index];
+    if (previous === undefined) throw new Error("缺少局部帧前态");
+    const difference = (id: string): number => {
+      const encodedA = previous.patches.find(patch => patch.id === id)?.pixels;
+      const encodedB = frame.patches.find(patch => patch.id === id)?.pixels;
+      if (encodedA === undefined || encodedB === undefined) throw new Error("局部水波区域不完整");
+      const a = Buffer.from(encodedA, "base64"), b = Buffer.from(encodedB, "base64");
+      if (a.length !== b.length) throw new Error("局部水波区域尺寸不一致");
+      const delta = a.reduce((sum, value, offset) => sum + (offset % 4 === 3 ? 0 : Math.abs(value - (b[offset] ?? 0))), 0);
+      return delta / (a.length / 4 * 3 * 255) / Math.max(0.016, frame.at - previous.at);
+    };
+    return { at: frame.at * 1000 - hoverEvidence.timeOrigin, active: difference(active.id), control: difference(control.id) };
+  });
+  const baseline = rates.filter(frame => frame.at < entered.at);
+  const disturbed = rates.filter(frame => frame.at >= entered.at && frame.at < exited.at);
+  const recovered = rates.filter(frame => frame.at >= recoveredFrameAt * 1000 - hoverEvidence.timeOrigin);
+  expect(baseline.length).toBeGreaterThan(0);
+  expect(disturbed.length).toBeGreaterThan(0);
+  expect(recovered.length).toBeGreaterThan(0);
+  const peak = (frames: readonly { active: number; control: number }[], key: "active" | "control") => Math.max(...frames.map(frame => frame[key]));
+  const metrics = { baseline: { active: peak(baseline, "active"), control: peak(baseline, "control") },
+    disturbed: { active: peak(disturbed, "active"), control: peak(disturbed, "control") }, recovered: recovered.at(-1) };
+  await writeFile(testInfo.outputPath("water-hover-relative-metrics.json"), JSON.stringify({ metrics, rates, entered, exited }, null, 2));
+  expect(metrics.disturbed.active).toBeGreaterThan(metrics.baseline.active);
+  expect(metrics.disturbed.active - metrics.baseline.active).toBeGreaterThan(Math.max(0, metrics.disturbed.control - metrics.baseline.control));
+  expect(metrics.recovered?.active).toBeLessThan(metrics.disturbed.active);
+  const shapeFrames = hoverEvidence.pixels.map(frame => ({ at: frame.at * 1000 - hoverEvidence.timeOrigin,
+    active: frame.patches.find(patch => patch.id === active.id)?.shape, control: frame.patches.find(patch => patch.id === control.id)?.shape }));
+  const shapesDuring = shapeFrames.filter(frame => frame.at >= entered.at && frame.at < exited.at);
+  const lastShape = shapeFrames.at(-1)?.active;
+  const shapeRange = (frames: typeof shapeFrames, key: "active" | "control") => ({
+    fill: frames.reduce((sum, frame) => sum + (frame[key]?.fill ?? 0), 0) / frames.length,
+    minFill: Math.min(...frames.map(frame => frame[key]?.fill ?? 1)),
+    secondary: Math.max(...frames.map(frame => frame[key]?.secondaryMass ?? 0)),
+  });
+  const controlShapes = baselinePixels.map(frame => frame.patches.find(patch => patch.id === control.id)?.shape).filter((shape): shape is WaterPatchShape => shape !== undefined);
+  if (controlShapes.length === 0) throw new Error("缺少远节点形态基线");
+  const baseShape = { fill: baselineShape.fill, secondary: baselineShape.secondaryMass }, hoverShape = shapeRange(shapesDuring, "active");
+  const baseControl = { fill: controlShapes.reduce((sum, shape) => sum + shape.fill, 0) / controlShapes.length, secondary: Math.max(...controlShapes.map(shape => shape.secondaryMass)) }, hoverControl = shapeRange(shapesDuring, "control");
+  const split = hoverShape.secondary - baseShape.secondary;
+  const indentation = baseShape.fill - hoverShape.minFill;
+  const splitVisible = split > 0.02 && split > hoverControl.secondary - baseControl.secondary + 0.01;
+  const notchVisible = indentation > 0.05 && indentation > baseControl.fill - hoverControl.minFill + 0.03;
+  await writeFile(testInfo.outputPath("water-hover-shape-metrics.json"), JSON.stringify({ baseShape, baselineMaterial, hoverShape, baseControl, hoverControl, split, indentation, lastShape, shapeFrames }, null, 2));
+  // 外轮廓凹口或显著分离质量必须增加，才能称为“拨散”；材质颜色/纹理帧差本身不能满足此门禁。
+  expect(splitVisible || notchVisible).toBe(true);
+  expect(lastShape).toBeDefined();
+  if (splitVisible) expect(Math.abs((lastShape?.secondaryMass ?? 1) - baseShape.secondary)).toBeLessThan(split);
+  if (notchVisible) expect(baseShape.fill - (lastShape?.fill ?? 0)).toBeLessThan(indentation);
+  expect(hoverEvidence.pixels.slice(-3).every(materialRecovered)).toBe(true);
+  for (const node of positions) await expectInkPosition(page, node.position, node.id);
+  expect(await readStoredWorkspace(page)).toEqual(before);
+  expect(await readFixtureSnapshots(page)).toHaveLength(0);
+});
+
+/** 原生曲线拖动中，文字与正式边即时跟手，GPU 只负责连续尾迹，结束坐标仍由原持久化保存。 */
+test("真实时间曲线拖动文字连线跟手，首页流体尾迹连续收敛", async ({ page }, testInfo) => {
+  const documents = await prepareWaterPage(page);
+  const document = documents[0], active = document?.nodes[0];
+  if (document === undefined || active === undefined) throw new Error("缺少连续拖动固定样例");
+  await page.getByRole("button", { name: "开始探索", exact: true }).click();
+  await expectWaterReady(page, document);
+  const positions = await Promise.all(document.nodes.map(async node => ({ id: node.id, position: await readInkPosition(page, node.id) })));
+  const drag = await observeWaterMotion(page, testInfo, "water-continuous-drag");
+  await expect.poll(drag.frameCount).toBeGreaterThanOrEqual(3);
+  const topBody = (frame: WaterPixelFrame) => [...frame.bodies].filter(body => body.count >= 200).sort((a, b) => a.y - b.y)[0];
+  const initialBodies = (await drag.sampleLatest(3)).map(topBody).filter((body): body is WaterBody => body !== undefined);
+  if (initialBodies.length === 0) throw new Error("缺少拖动前主体形态");
+  const initialBulk = { width: initialBodies.reduce((sum, body) => sum + body.bulkWidth, 0) / initialBodies.length,
+    height: initialBodies.reduce((sum, body) => sum + body.bulkHeight, 0) / initialBodies.length,
+    x: initialBodies.reduce((sum, body) => sum + body.x, 0) / initialBodies.length,
+    y: initialBodies.reduce((sum, body) => sum + body.y, 0) / initialBodies.length };
+  const heading = page.locator(`[data-ink-node="${active.id}"] h3`);
+  const start = await heading.boundingBox();
+  if (start === null) throw new Error("缺少跟手文字");
+  const edge = page.locator(`.react-flow__edge[data-id="${document.id}-edge-0"] .react-flow__edge-path`);
+  const originalPath = await edge.getAttribute("d");
+  const x = start.x + start.width / 2, y = start.y + start.height / 2;
+  const pointer = await nativeWaterPointer(page);
+  const following: Array<WaterDragSample & Readonly<{ inputX: number; inputY: number }>> = [];
+  try {
+    await pointer.move(x, y); await pointer.down(); await pointer.move(x + 4, y);
+    const route = [[45, 20], [90, 70], [150, 95], [210, 55], [260, -10]] as const;
+    const gestureStarted = performance.now();
+    for (const [index, [dx, dy]] of route.entries()) {
+      // 保留真实 100ms 目标节奏；仅在可信输入后用原生 RAF 读坐标，不插入 Playwright 快照或截图。
+      const remaining = gestureStarted + (index + 1) * 100 - performance.now();
+      if (remaining > 0) await new Promise<void>(resolve => setTimeout(resolve, remaining));
+      await pointer.move(x + dx, y + dy);
+      following.push({ ...await pointer.afterFrame(active.id, `${document.id}-edge-0`), inputX: x + dx, inputY: y + dy });
+    }
+    await pointer.up();
+  } finally { await pointer.close(); }
+  const moved = await readInkPosition(page, active.id);
+  await expectSavedInkPosition(page, document.id, moved, active.id);
+  await expect.poll(async () => (await inkPigmentPerNode(page)).find(node => node.id === active.id)?.count ?? 0).toBeGreaterThan(20);
+  const finalHeading = await heading.boundingBox(), viewport = page.viewportSize();
+  if (finalHeading === null || viewport === null) throw new Error("松手后缺少真实节点位置");
+  const target = { x: initialBulk.x + (finalHeading.x - start.x) / viewport.width,
+    y: initialBulk.y + (finalHeading.y - start.y) / viewport.height };
+  await expect.poll(async () => {
+    const frame = (await drag.sampleLatest()).at(-1), body = frame === undefined ? undefined : topBody(frame);
+    return body !== undefined && Math.abs(body.bulkWidth / initialBulk.width - 1) < 0.18 && Math.abs(body.bulkHeight / initialBulk.height - 1) < 0.18
+      && Math.abs(body.x - target.x) < 0.025 && Math.abs(body.y - target.y) < 0.025;
+  }, { timeout: 4000, intervals: [100, 200, 300] }).toBe(true);
+  await expect.poll(async () => (await inkPigmentPerNode(page)).find(node => node.id === active.id)?.count ?? 0).toBeGreaterThan(20);
+  const evidence = await drag.stop();
+  expectWaterContinuity(evidence);
+  const down = evidence.drags.find(event => event.phase === "down" && event.id === active.id);
+  const up = evidence.drags.find(event => event.phase === "up" && event.id === active.id);
+  if (down === undefined || up === undefined) throw new Error("缺少真实拖动阶段");
+  // 五个输入各有提交后的只读样本，不用不同时间基准的 pointer/RAF 差值丢弃跟手失败帧。
+  await writeFile(testInfo.outputPath("water-drag-following-metrics.json"), JSON.stringify({ down, up, following }, null, 2));
+  expect(following).toHaveLength(5);
+  expect(following.length).toBeGreaterThan(1);
+  for (const frame of following) {
+    expect(frame.at).toBeGreaterThanOrEqual(down.at); expect(frame.at).toBeLessThan(up.at);
+    expect(frame.dragging).toBe(true);
+    expect(Math.abs(frame.headingX - start.x - frame.inputX + x)).toBeLessThan(7);
+    expect(Math.abs(frame.headingY - start.y - frame.inputY + y)).toBeLessThan(7);
+    expect(frame.title).toBe(active.title);
+    expect(frame.path).not.toBe(""); expect(frame.path).not.toBe(originalPath);
+  }
+  const middle = evidence.pixels.map((frame, index) => ({ at: frame.at * 1000 - evidence.timeOrigin, index }))
+    .filter(frame => frame.at >= down.at && frame.at <= up.at).sort((a, b) => Math.abs(a.at - (down.at + up.at) / 2) - Math.abs(b.at - (down.at + up.at) / 2))[0];
+  if (middle === undefined) throw new Error("缺少实际拖动中的合成帧");
+  await copyFile(testInfo.outputPath(`water-continuous-drag-compositor-${String(middle.index).padStart(3, "0")}.jpeg`), testInfo.outputPath("water-drag-continuous-tail.jpeg"));
+  const bodies = evidence.pixels.map(frame => ({ at: frame.at * 1000 - evidence.timeOrigin, body: topBody(frame) }));
+  const baselineBodies = bodies.filter(frame => frame.at < down.at && frame.body !== undefined);
+  const movingBodies = bodies.filter(frame => frame.at >= down.at && frame.at < up.at);
+  expect(baselineBodies.length).toBeGreaterThan(0);
+  expect(movingBodies.length).toBeGreaterThan(0);
+  const bulkWidth = baselineBodies.reduce((sum, frame) => sum + (frame.body?.bulkWidth ?? 0), 0) / baselineBodies.length;
+  const bulkHeight = baselineBodies.reduce((sum, frame) => sum + (frame.body?.bulkHeight ?? 0), 0) / baselineBodies.length;
+  const baselineCount = baselineBodies.reduce((sum, frame) => sum + (frame.body?.count ?? 0), 0) / baselineBodies.length;
+  const deformation = (body: WaterBody | undefined) => Math.max(Math.abs((body?.bulkWidth ?? 0) / bulkWidth - 1), Math.abs((body?.bulkHeight ?? 0) / bulkHeight - 1));
+  const peakDeformation = Math.max(...movingBodies.map(frame => deformation(frame.body)));
+  const last = bodies.at(-1)?.body;
+  const settledDeformation = deformation(last);
+  const bodyEvidence = bodies.map(frame => ({ ...frame, countRatio: (frame.body?.count ?? 0) / baselineCount }));
+  await writeFile(testInfo.outputPath("water-drag-bulk-metrics.json"), JSON.stringify({ down, up, bulkWidth, bulkHeight, baselineCount, peakDeformation, settledDeformation, bodies: bodyEvidence }, null, 2));
+  // 中央 60% 颜料的主体应有至少 15% 收缩或拉伸；细尾尖不能满足，主体消失也不能冒充形变。
+  expect(peakDeformation).toBeGreaterThan(0.15);
+  expect(settledDeformation).toBeLessThan(peakDeformation);
+  for (const frame of bodyEvidence.filter(frame => frame.at >= down.at)) {
+    expect(frame.body).toBeDefined(); expect(frame.countRatio).toBeGreaterThanOrEqual(0.5);
+  }
+  for (const node of positions.slice(1)) await expectInkPosition(page, node.position, node.id);
+  expect(await readFixtureSnapshots(page)).toHaveLength(0);
+});
 
 test("新搜索页直接携带语言请求后端且不跳转旧展示页", async ({ page }) => {
   const events = createJourneyEvents();
@@ -883,8 +1694,56 @@ test("历史按钮底边悬浮稳定展开，真实历史进出与外部焦点�
   expect(await readFixtureSnapshots(page)).toHaveLength(1);
 });
 
+/** 独立验证改名失败/取消分支；双图悬浮、删除和刷新仍由下一条真实连续旅程覆盖。 */
+test("历史重命名拒绝空白并支持Escape，在途完成保留人工标题与原查询", async ({ page }) => {
+  const events = createJourneyEvents();
+  await installBrowserFixture(page, events);
+  await page.goto("/ink-study.html");
+  await page.getByRole("button", { name: "开始探索", exact: true }).click();
+  const input = page.getByRole("searchbox", { name: "搜索任意主题", exact: true });
+  await expect(input).toBeFocused();
+  await input.fill(FIRST_QUERY);
+  await input.press("Enter");
+  await expect.poll(async () => (await readFixtureSnapshots(page)).length).toBe(1);
+  await page.getByRole("button", { name: "搜索历史", exact: true }).click();
+  const panel = page.getByRole("region", { name: "搜索历史", exact: true });
+  const rename = panel.getByRole("button", { name: `重命名：${FIRST_QUERY}`, exact: true });
+  await rename.click();
+  const name = panel.getByRole("textbox", { name: "记录名称", exact: true });
+  await expect(name).toBeFocused();
+  await name.fill("   ");
+  await expect(panel.getByRole("button", { name: "保存名称", exact: true })).toBeDisabled();
+  await name.press("Escape");
+  await expect(panel).toBeVisible();
+  await expect(rename).toBeFocused();
+  await rename.click();
+  await name.fill("Python 灵感地图");
+  await name.press("Enter");
+  const renamedRow = panel.getByRole("listitem").filter({ has: page.getByRole("heading", { name: "Python 灵感地图", exact: true }) });
+  await expect(renamedRow.getByRole("button", { name: "重命名：Python 灵感地图", exact: true })).toBeFocused();
+  await page.evaluate(indexes => {
+    window.__WAYFINDER_E2E__.emit(0, indexes);
+    window.__WAYFINDER_E2E__.close(0);
+  }, events.map((_, index) => index));
+  // 四个持久结果节点证明 complete 已真正消费，不能把改名那次“已保存”误当完成交付。
+  await expect.poll(async () => {
+    const document = (await readStoredWorkspace(page))?.documents[0];
+    return { title: document?.title, query: document?.query, nodes: document?.nodes.length };
+  }).toEqual({ title: "Python 灵感地图", query: FIRST_QUERY, nodes: 4 });
+  await expect(panel.getByRole("status")).toHaveText("已保存到本浏览器");
+  await expect(renamedRow).toBeVisible();
+  const requests = await readFixtureSnapshots(page);
+  expect(requests).toHaveLength(1);
+  expect(requests[0]?.query).toBe(FIRST_QUERY);
+});
+
 test("历史信息条重命名保留原查询，悬浮推动邻行，删除与刷新复用本地记录", async ({ page }, testInfo) => {
   const events = createJourneyEvents();
+  // 同一流仍先入队全部事件再关闭；合并浏览器往返，不改变 Reader 的真实消费顺序。
+  const finishRun = (run: number) => page.evaluate(({ run, indexes }) => {
+    window.__WAYFINDER_E2E__.emit(run, indexes);
+    window.__WAYFINDER_E2E__.close(run);
+  }, { run, indexes: events.map((_, index) => index) });
   await installBrowserFixture(page, events);
   await page.goto("/ink-study.html");
   await page.getByRole("button", { name: "开始探索", exact: true }).click();
@@ -900,19 +1759,12 @@ test("历史信息条重命名保留原查询，悬浮推动邻行，删除与�
   await firstRow.getByRole("button", { name: `重命名：${FIRST_QUERY}`, exact: true }).click();
   const name = panel.getByRole("textbox", { name: "记录名称", exact: true });
   await expect(name).toBeFocused();
-  await name.fill("   ");
-  await expect(panel.getByRole("button", { name: "保存名称", exact: true })).toBeDisabled();
-  await name.press("Escape");
-  await expect(panel).toBeVisible();
-  await expect(firstRow.getByRole("button", { name: `重命名：${FIRST_QUERY}`, exact: true })).toBeFocused();
-  await firstRow.getByRole("button", { name: `重命名：${FIRST_QUERY}`, exact: true }).click();
   await name.fill("Python 灵感地图");
   await name.press("Enter");
   const renamedRow = panel.getByRole("listitem").filter({ has: page.getByRole("heading", { name: "Python 灵感地图", exact: true }) });
   await expect(renamedRow.getByRole("button", { name: "重命名：Python 灵感地图", exact: true })).toBeFocused();
   // 在途结果继续交付到同一记录，不能覆盖人工名称，也不能因改名再发请求。
-  await emitFixtureEvents(page, 0, events.map((_, index) => index));
-  await page.evaluate(() => window.__WAYFINDER_E2E__.close(0));
+  await finishRun(0);
   await expect(panel.getByRole("status")).toHaveText("已保存到本浏览器");
   await expect(renamedRow).toBeVisible();
   expect((await readFixtureSnapshots(page))[0]?.query).toBe(FIRST_QUERY);
@@ -923,30 +1775,35 @@ test("历史信息条重命名保留原查询，悬浮推动邻行，删除与�
   await input.fill(SECOND_QUERY);
   await input.press("Enter");
   await expect.poll(async () => (await readFixtureSnapshots(page)).length).toBe(2);
-  await emitFixtureEvents(page, 1, events.map((_, index) => index));
-  await page.evaluate(() => window.__WAYFINDER_E2E__.close(1));
+  await finishRun(1);
   await toggle.click();
   await expect(panel).toBeFocused();
   const rows = panel.getByRole("listitem");
   await expect(rows).toHaveCount(2);
   await page.mouse.move(0, 0);
-  const before = await renamedRow.boundingBox();
   // 面板可能仍在上滑，邻行位移应在同一布局坐标系比较，不能混入抽屉的屏幕位移。
-  const nextTopBefore = await rows.nth(1).evaluate(element => (element as HTMLElement).offsetTop);
-  if (before === null) throw new Error("历史信息条未出现");
+  const before = await renamedRow.evaluate(element => {
+    const next = element.parentElement?.children[1], bounds = element.getBoundingClientRect();
+    if (!(next instanceof HTMLElement)) throw new Error("历史信息条缺少邻行");
+    return { width: bounds.width, height: bounds.height, nextTop: next.offsetTop };
+  });
   await renamedRow.hover({ position: { x: before.width / 2, y: 2 } });
-  await expect.poll(async () => (await renamedRow.boundingBox())?.height ?? 0).toBeGreaterThan(before.height + 8);
-  await expect.poll(() => rows.nth(1).evaluate(element => (element as HTMLElement).offsetTop)).toBeGreaterThan(nextTopBefore + 8);
-  expect(await renamedRow.evaluate(element => element.matches(":hover"))).toBe(true);
+  // 三个原条件必须在同一帧同时成立，不用连续三次自动快照拉长整个真实操作流程。
+  await expect.poll(() => renamedRow.evaluate((element, before) => {
+    const next = element.parentElement?.children[1];
+    return { expanded: element.getBoundingClientRect().height > before.height + 8,
+      pushed: next instanceof HTMLElement && next.offsetTop > before.nextTop + 8, hovered: element.matches(":hover") };
+  }, before)).toEqual({ expanded: true, pushed: true, hovered: true });
   await page.screenshot({ path: testInfo.outputPath("ink-history-records.png"), animations: "disabled" });
   await page.setViewportSize({ width: 390, height: 844 });
   await expect.poll(() => panel.evaluate(element => element.scrollWidth - element.clientWidth)).toBe(0);
   await expect(renamedRow.getByRole("button", { name: "重命名：Python 灵感地图", exact: true })).toBeVisible();
   await renamedRow.getByRole("button", { name: "删除记录：Python 灵感地图", exact: true }).click();
-  await expect(rows).toHaveCount(1);
-  await expect(panel).toBeFocused();
-  await expect(panel.getByRole("status")).toHaveText("已保存到本浏览器");
-  expect(await readFixtureSnapshots(page)).toHaveLength(2);
+  await expect.poll(() => panel.evaluate(element => {
+    const statuses = element.querySelectorAll('[role="status"]');
+    return { rows: element.querySelectorAll("li").length, focused: element === element.ownerDocument.activeElement,
+      statuses: statuses.length, status: statuses[0]?.textContent?.trim(), queries: window.__WAYFINDER_E2E__.snapshots().length };
+  })).toEqual({ rows: 1, focused: true, statuses: 1, status: "已保存到本浏览器", queries: 2 });
   await page.reload();
   await page.getByRole("button", { name: "开始探索", exact: true }).click();
   await expect(page.locator(".ink-study__stage")).toHaveAttribute("data-search-state", "graph");
@@ -1178,24 +2035,57 @@ test("有效搜索将三组件融合为中心停止圆，墨迹保持中心且�
   const stage = page.locator(".ink-study__stage");
   const stop = page.getByRole("button", { name: "取消", exact: true });
   await expect(stage).toHaveAttribute("data-search-state", "loading");
-  await expect.poll(async () => (await readFixtureSnapshots(page)).length).toBe(1);
-  await expect(stop).toHaveClass(/ink-study__search-stop/);
-  for (const element of [page.locator(".ink-study__search-input"), engine, submit]) {
-    await expect(element).toHaveAttribute("inert", "");
-    await expect(element).toHaveAttribute("aria-hidden", "true");
+  // 收束中仍为圆角胶囊；用实际逐帧几何防止宽输入框套百分比圆角后短暂变为椭圆。
+  const capsuleFrames = await page.locator(".ink-study__search-input-shell").evaluate(async element => {
+    const frames: Array<{ target: string; width: number; height: number; radius: string }> = [];
+    for (let index = 0; index < 6; index++) {
+      await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+      const stop = element.closest("form")?.querySelector(".ink-study__search-stop");
+      for (const target of [element, ...(stop === null || stop === undefined ? [] : [stop])]) {
+        const bounds = target.getBoundingClientRect();
+        frames.push({ target: target.className, width: bounds.width, height: bounds.height, radius: getComputedStyle(target).borderTopLeftRadius });
+      }
+    }
+    return frames;
+  });
+  await writeFile(testInfo.outputPath("ink-loading-capsule-geometry.json"), JSON.stringify(capsuleFrames, null, 2));
+  for (const frame of capsuleFrames) {
+    expect(frame.radius).toMatch(/^[\d.]+px$/);
+    expect(Number.parseFloat(frame.radius)).toBeGreaterThanOrEqual(Math.min(frame.width, frame.height) / 2);
   }
-  for (const handle of handles) expect(await handle?.evaluate(element => element.isConnected)).toBe(true);
-  expect(await canvas?.evaluate(element => element.isConnected)).toBe(true);
-  await expect.poll(async () => {
-    const [bounds, host] = await Promise.all([stop.boundingBox(), stage.boundingBox()]);
-    if (bounds === null || host === null) return Infinity;
-    return Math.max(Math.abs(bounds.width - bounds.height),
-      Math.abs(bounds.x + bounds.width / 2 - host.x - host.width / 2),
-      Math.abs(bounds.y + bounds.height / 2 - host.y - host.height / 2));
-  }).toBeLessThan(2);
-  await expect(stop.locator("rect")).toHaveCSS("fill", "rgb(255, 255, 255)");
-  expect(Number(await stop.locator("rect").getAttribute("rx"))).toBeGreaterThan(0);
+  await testInfo.attach("ink-loading-capsule-geometry", { body: JSON.stringify(capsuleFrames), contentType: "application/json" });
+  await expect.poll(async () => (await readFixtureSnapshots(page)).length).toBe(1);
+  // 同一阶段的只读事实一次取齐，保留所有逐项断言，避免十余次自动快照拖慢真实手势。
+  const loadingDom = await page.evaluate(({ handles, canvas }) => {
+    const stop = document.querySelector(".ink-study__search-stop");
+    const rect = stop?.querySelector("rect");
+    return { stopClass: stop?.className, connected: handles.map(element => element?.isConnected), canvasConnected: canvas?.isConnected,
+      controls: [".ink-study__search-input", ".ink-study__engine", ".ink-study__search-submit"].map(selector => {
+        const element = document.querySelector(selector);
+        return { inert: element?.getAttribute("inert"), hidden: element?.getAttribute("aria-hidden") };
+      }), fill: rect === undefined || rect === null ? null : getComputedStyle(rect).fill, radius: Number(rect?.getAttribute("rx")) };
+  }, { handles, canvas });
+  expect(loadingDom.stopClass).toMatch(/ink-study__search-stop/);
+  for (const control of loadingDom.controls) { expect(control.inert).toBe(""); expect(control.hidden).toBe("true"); }
+  for (const connected of loadingDom.connected) expect(connected).toBe(true);
+  expect(loadingDom.canvasConnected).toBe(true);
+  await expect.poll(() => stage.evaluate(element => {
+    const bounds = element.querySelector(".ink-study__search-stop")?.getBoundingClientRect(), host = element.getBoundingClientRect();
+    return bounds === undefined ? Infinity : Math.max(Math.abs(bounds.width - bounds.height),
+      Math.abs(bounds.x + bounds.width / 2 - host.x - host.width / 2), Math.abs(bounds.y + bounds.height / 2 - host.y - host.height / 2));
+  })).toBeLessThan(2);
+  expect(loadingDom.fill).toBe("rgb(255, 255, 255)");
+  expect(loadingDom.radius).toBeGreaterThan(0);
   await page.screenshot({ path: testInfo.outputPath("ink-loading-center.png"), animations: "disabled" });
+  const loadingFrames: InkRaster[] = [];
+  const captures = await page.context().newCDPSession(page);
+  try {
+    for (let index = 0; index < 3; index++) {
+      loadingFrames.push(await captureInkRaster(page, testInfo.outputPath(`ink-loading-fluid-${index}.png`), captures));
+    }
+  } finally { await captures.detach(); }
+  await writeFile(testInfo.outputPath("ink-loading-fluid-evidence.json"), JSON.stringify(loadingFrames.map(({ count, smallIslands, bodies }) => ({ count, smallIslands, bodies })), null, 2));
+  expect(loadingFrames.some(frame => frame.smallIslands > 0)).toBe(true);
 
   // 将真实指针移到相反角落；可用的 GPU 画面仍应把有色颜料保持在中央区域。
   const host = await stage.boundingBox();
@@ -1221,6 +2111,186 @@ test("有效搜索将三组件融合为中心停止圆，墨迹保持中心且�
   await expect(page.getByRole("button", { name: "搜索", exact: true })).toBeEnabled();
   await expect(page.getByRole("button", { name: "搜索引擎：百度", exact: true })).toBeVisible();
   await expect(page.locator("[data-ink-node]")).toHaveCount(0);
+});
+
+/**
+ * 已有图的聚合和恢复复用同一画布与真实文档；视觉退场不能清空选择、改写布局或重新请求。
+ * 时钟只控制抽样时刻，PNG 全部来自真实 WebGL 合成结果，不把静态截图加工成动效。
+ */
+test("已有图回首页聚合再分裂恢复，新建与快速逆转不丢原图坐标", async ({ page }, testInfo) => {
+  const events = createInkMotionEvents();
+  await installBrowserFixture(page, events);
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.goto("/ink-study.html");
+  await page.getByRole("button", { name: "开始探索", exact: true }).click();
+  const input = page.getByRole("searchbox", { name: "搜索任意主题", exact: true });
+  await input.fill("液体聚合恢复的真实图");
+  await input.press("Enter");
+  await expect.poll(async () => (await readFixtureSnapshots(page)).length).toBe(1);
+  await emitFixtureEvents(page, 0, events.map((_, index) => index));
+  await page.evaluate(() => window.__WAYFINDER_E2E__.close(0));
+  await expect(page.locator("[data-ink-node]:visible")).toHaveCount(4);
+  const moved = await dragInkNode(page, 65, -20);
+  await expect.poll(async () => (await readStoredWorkspace(page))?.documents[0]?.nodes.length).toBe(4);
+  const document = (await readStoredWorkspace(page))?.documents[0];
+  if (document === undefined) throw new Error("缺少待恢复的真实图");
+  await expectSavedInkPosition(page, document.id, moved);
+  const canvas = await page.locator(".ink-study__canvas").elementHandle();
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await page.clock.install({ time: new Date(FIXTURE_TIME) });
+  await page.clock.pauseAt(new Date(FIXTURE_TIME + 1000));
+  await page.getByRole("button", { name: "返回首页", exact: true }).click();
+  const frames: Array<{ phase: string; elapsed: number; count: number; bodies: InkRaster["bodies"] }> = [];
+  for (const [elapsed, advance] of [[0, 0], [160, 160], [480, 320], [1000, 520]] as const) {
+    if (advance > 0) await page.clock.fastForward(advance);
+    const frame = await captureInkRaster(page, testInfo.outputPath(`ink-home-merge-${elapsed}.png`));
+    expect(frame.count).toBeGreaterThan(30);
+    frames.push({ phase: "home", elapsed, count: frame.count, bodies: frame.bodies });
+  }
+  await writeFile(testInfo.outputPath("ink-fluid-transition-evidence.json"), JSON.stringify(frames, null, 2));
+  const initialBodies = frames[0]?.bodies.filter(body => body.count >= 300).length ?? 0;
+  const mergedBodies = frames[3]?.bodies.filter(body => body.count >= 300).length ?? 0;
+  expect(initialBodies).toBe(4);
+  expect(initialBodies).toBeGreaterThan(mergedBodies);
+  expect(mergedBodies).toBe(1);
+  const start = page.getByRole("button", { name: "开始探索", exact: true });
+  await expect(start).toBeFocused();
+  await expect(page.locator("[data-ink-node]")).toHaveCount(0);
+  expect((await readStoredWorkspace(page))?.currentId).toBe(document.id);
+  await start.click();
+  await advanceInkTransferStart(page, testInfo, "ink-first-restore");
+  for (const [elapsed, advance] of [[0, 0], [160, 160], [480, 320], [1000, 520]] as const) {
+    if (advance > 0) await page.clock.fastForward(advance);
+    const frame = await captureInkRaster(page, testInfo.outputPath(`ink-explore-split-${elapsed}.png`));
+    expect(frame.count).toBeGreaterThan(30);
+    frames.push({ phase: "restore", elapsed, count: frame.count, bodies: frame.bodies });
+    if (elapsed < 320) {
+      // 恢复的透明阶段不能留下可点击或可 Tab 到达的节点和缩放控件。
+      expect(await page.locator(`[data-ink-node="${READY_NODE_ID}"]`).evaluate(element => element.closest("[inert]") !== null)).toBe(true);
+      expect(await page.locator(".react-flow__controls-button").first().evaluate(element => element.closest("[inert]") !== null)).toBe(true);
+      await page.keyboard.press("Tab");
+      expect(await page.locator(".ink-study__graph").evaluate(element => element.contains(element.ownerDocument.activeElement))).toBe(false);
+    }
+  }
+  await writeFile(testInfo.outputPath("ink-fluid-transition-evidence.json"), JSON.stringify(frames, null, 2));
+  expect(frames[7]?.bodies.filter(body => body.count >= 300)).toHaveLength(4);
+  await expect(page.locator("[data-ink-node]:visible")).toHaveCount(4);
+  expect(await page.locator(`[data-ink-node="${READY_NODE_ID}"]`).evaluate(element => element.closest("[inert]") !== null)).toBe(false);
+  await expect.poll(() => visibleInkEdgeIds(page)).toHaveLength(4);
+  await expectInkPosition(page, moved);
+  await expect.poll(async () => Math.min(...(await inkPigmentPerNode(page)).map(node => node.count))).toBeGreaterThan(20);
+  await page.getByRole("button", { name: "搜索历史", exact: true }).click();
+  await page.getByRole("region", { name: "搜索历史", exact: true })
+    .getByRole("button", { name: "新建搜索图", exact: true }).press("Enter");
+  const newFrame = await captureInkRaster(page, testInfo.outputPath("ink-new-search-merge-start.png"));
+  expect(newFrame.count).toBeGreaterThan(30);
+  await page.clock.fastForward(1000);
+  const emptyFrame = await captureInkRaster(page, testInfo.outputPath("ink-new-search-merge-end.png"));
+  expect(emptyFrame.count).toBeGreaterThan(30);
+  await expect(page.locator(".ink-study__stage")).toHaveAttribute("data-search-state", "input");
+  await expect(input).toHaveValue("");
+  expect((await readStoredWorkspace(page))?.currentId).toBeNull();
+
+  // 历史恢复刚开始即返回，再次进入；以最终业务实体与位置验证快速逆转没有遗失节点。
+  await page.getByRole("button", { name: "搜索历史", exact: true }).click();
+  await page.getByRole("region", { name: "搜索历史", exact: true })
+    .getByRole("button", { name: document.title, exact: true }).press("Enter");
+  await advanceInkTransferStart(page, testInfo, "ink-reverse-start");
+  await page.clock.fastForward(160);
+  await page.getByRole("button", { name: "返回首页", exact: true }).click();
+  await page.clock.fastForward(1000);
+  await start.click();
+  await advanceInkTransferStart(page, testInfo, "ink-final-restore");
+  await page.clock.fastForward(1000);
+  await expect(page.locator("[data-ink-node]:visible")).toHaveCount(4);
+  await expect.poll(() => visibleInkEdgeIds(page)).toHaveLength(4);
+  await expectInkPosition(page, moved);
+  await expectSavedInkPosition(page, document.id, moved);
+  expect((await readStoredWorkspace(page))?.currentId).toBe(document.id);
+  expect(await readFixtureSnapshots(page)).toHaveLength(1);
+  expect(await canvas?.evaluate(element => element.isConnected)).toBe(true);
+  await expect(page.locator(".ink-study__stage")).toHaveAttribute("data-ink-renderer", "active");
+  await testInfo.attach("ink-fluid-transition-evidence", { body: JSON.stringify(frames), contentType: "application/json" });
+  await writeFile(testInfo.outputPath("ink-fluid-transition-evidence.json"), JSON.stringify(frames, null, 2));
+  await page.screenshot({ path: testInfo.outputPath("ink-rapid-reversal-restored.png") });
+});
+
+/** GPU 的液体表面允许运动，真实节点文字与连线仍固定在业务布局；拖动最终只提交一次真实坐标。 */
+test("液体墨团持续变化但文字布局不漂移，拖动后落定并保存", async ({ page }, testInfo) => {
+  const events = createInkMotionEvents();
+  await installBrowserFixture(page, events);
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.goto("/ink-study.html");
+  await page.getByRole("button", { name: "开始探索", exact: true }).click();
+  const input = page.getByRole("searchbox", { name: "搜索任意主题", exact: true });
+  await input.fill("真实液体轮廓与拖动");
+  await input.press("Enter");
+  await expect.poll(async () => (await readFixtureSnapshots(page)).length).toBe(1);
+  await emitFixtureEvents(page, 0, events.map((_, index) => index));
+  await page.evaluate(() => window.__WAYFINDER_E2E__.close(0));
+  await expect(page.locator("[data-ink-node]:visible")).toHaveCount(4);
+  const positions = await Promise.all([READY_NODE_ID, "python-installation", "python-basics", "python-third-party-libraries"]
+    .map(async id => ({ id, position: await readInkPosition(page, id) })));
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  const before = await captureInkRaster(page, testInfo.outputPath("ink-liquid-surface-0.png"));
+  await page.evaluate(() => new Promise<void>(resolve => {
+    let frames = 0;
+    const next = (): void => { if (++frames >= 12) resolve(); else requestAnimationFrame(next); };
+    requestAnimationFrame(next);
+  }));
+  const after = await captureInkRaster(page, testInfo.outputPath("ink-liquid-surface-1.png"));
+  expect(changedInkPixels(before, after)).toBeGreaterThan(20);
+  for (const item of positions) await expectInkPosition(page, item.position, item.id);
+  const first = page.locator(`[data-ink-node="${READY_NODE_ID}"]`);
+  const heading = await first.getByRole("heading").boundingBox();
+  if (heading === null) throw new Error("液体节点缺少真实拖动标题");
+  const x = heading.x + heading.width / 2, y = heading.y + heading.height / 2;
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  await page.mouse.move(x + 4, y);
+  await page.mouse.move(x + 200, y, { steps: 1 });
+  // 首个移动用于跨过真实拖动阈值；等待 React 提交位置再取墨团帧，不能把旧 DOM 当作跟手失败。
+  await expect.poll(() => readInkPosition(page), { intervals: [16, 16, 32] }).not.toEqual(positions[0]?.position);
+  const dragging = await readInkPosition(page);
+  const followingFrame = await captureInkRaster(page, testInfo.outputPath("ink-liquid-drag-follow.png"));
+  const movedHeading = await first.getByRole("heading").boundingBox();
+  if (movedHeading === null) throw new Error("拖动后的标题未跟随指针");
+  await page.mouse.up();
+  await expectInkPosition(page, dragging);
+  const saved = (await readStoredWorkspace(page))?.documents[0];
+  if (saved === undefined) throw new Error("拖动缺少真实保存文档");
+  await expectSavedInkPosition(page, saved.id, dragging);
+  await expect.poll(async () => (await inkPigmentPerNode(page)).find(node => node.id === READY_NODE_ID)?.count ?? 0).toBeGreaterThan(20);
+  await page.evaluate(() => new Promise<void>(resolve => {
+    let frames = 0;
+    const next = (): void => { if (++frames >= 12) resolve(); else requestAnimationFrame(next); };
+    requestAnimationFrame(next);
+  }));
+  const settledFrame = await captureInkRaster(page, testInfo.outputPath("ink-liquid-drag-settled.png"));
+  const topBody = (frame: InkRaster) => [...frame.bodies].filter(body => body.count >= 300).sort((a, b) => a.y - b.y)[0];
+  const initialBody = topBody(after), followingBody = topBody(followingFrame), settledBody = topBody(settledFrame);
+  if (initialBody === undefined || followingBody === undefined || settledBody === undefined) throw new Error("拖动质心缺少可见墨团");
+  const width = page.viewportSize()?.width;
+  if (width === undefined) throw new Error("缺少拖动视口尺寸");
+  const domShift = (movedHeading.x - heading.x) / width;
+  const followingDeficit = domShift - followingBody.x + initialBody.x;
+  const settledDeficit = domShift - settledBody.x + initialBody.x;
+  await writeFile(testInfo.outputPath("ink-liquid-drag-centroids.json"), JSON.stringify({
+    before: after.bodies, following: followingFrame.bodies, settled: settledFrame.bodies, target: dragging,
+    domShift, followingDeficit, settledDeficit,
+  }, null, 2));
+  // 指针与文字先走到目的地，颜料质心少走一段；随后颜料继续同向追近，而非让文字一起滞后。
+  expect(followingDeficit).toBeGreaterThan(0);
+  expect(settledBody.x - followingBody.x).toBeGreaterThan(0.0005);
+  expect(Math.abs(settledDeficit)).toBeLessThan(Math.abs(followingDeficit) + 0.0005);
+  // 其余三个真实世界坐标同时核对，精度与原逐节点轮询完全相同。
+  await expect.poll(() => page.evaluate(items => Math.max(0, ...items.map(item => {
+    const element = document.querySelector(`.react-flow__node[data-id="${item.id}"]`);
+    if (element === null) return Infinity;
+    const transform = new DOMMatrix(getComputedStyle(element).transform);
+    return Math.max(Math.abs(transform.m41 - item.position.x), Math.abs(transform.m42 - item.position.y));
+  })), positions.slice(1))).toBeLessThan(0.02);
+  expect(await readFixtureSnapshots(page)).toHaveLength(1);
 });
 
 /** 用分支、汇合与乱序节点验证传播；状态和 complete 不得让既有节点重播或丢失正式边。 */
@@ -1396,6 +2466,41 @@ test("WebGL不可用时真实图仍以可读DOM降级呈现", async ({ page }, t
   });
   expect(contrast).toBeGreaterThanOrEqual(4.5);
   await page.screenshot({ path: testInfo.outputPath("ink-graph-webgl-fallback.png"), animations: "disabled" });
+
+  // 第二个独立 Page 保留真实 WebGL，验证测量尚未 start 时丢失 context 也会结束门禁。
+  // 上面的 getContext 不可用覆盖仅安装在原 Page，不替换这个真实失败事件或业务完成状态。
+  const live = await page.context().newPage();
+  try {
+    const documents = await prepareWaterPage(live);
+    const first = documents[0], second = documents[1];
+    if (first === undefined || second === undefined) throw new Error("缺少 contextloss 固定样例");
+    await live.getByRole("button", { name: "开始探索", exact: true }).click();
+    await expectWaterReady(live, first);
+    await live.getByRole("button", { name: "搜索历史", exact: true }).click();
+    const hiddenTargets = await live.addStyleTag({ content: `article[data-ink-node^="${second.id}-"] { width: 0 !important; height: 0 !important; }` });
+    await live.getByRole("region", { name: "搜索历史", exact: true }).getByRole("button", { name: second.title, exact: true }).click();
+    const pendingTarget = live.locator(`[data-ink-node="${second.nodes[0]?.id}"]`);
+    await expect(pendingTarget).toHaveCount(1);
+    await expect(live.locator(".graph-canvas--ink")).toHaveAttribute("data-ink-content-state", "moving");
+    const pendingLayout = await pendingTarget.evaluate(article => ({ target: article.getBoundingClientRect().width,
+      wrapper: article.closest(".react-flow__node")?.getBoundingClientRect().width ?? 0 }));
+    expect(pendingLayout.target).toBe(0);
+    expect(pendingLayout.wrapper).toBeGreaterThan(0);
+    await live.evaluate(() => {
+      const canvas = document.querySelector<HTMLCanvasElement>(".ink-study__canvas");
+      const extension = canvas?.getContext("webgl2")?.getExtension("WEBGL_lose_context");
+      if (extension === undefined || extension === null) throw new Error("缺少真实 WebGL contextloss 扩展");
+      extension.loseContext();
+    });
+    await expect(live.locator(".ink-study__stage")).toHaveAttribute("data-ink-renderer", "fallback");
+    await hiddenTargets.evaluate(style => style.parentNode?.removeChild(style));
+    await expectWaterReady(live, second);
+    expect(await live.locator(`[data-ink-node="${second.nodes[0]?.id}"]`).evaluate(element => element.closest("[inert]") !== null)).toBe(false);
+    for (const node of second.nodes) await expect(live.locator(`[data-ink-node="${node.id}"] h3`)).toHaveText(node.title);
+    expect((await readStoredWorkspace(live))?.currentId).toBe(second.id);
+    expect(await readFixtureSnapshots(live)).toHaveLength(0);
+    await live.screenshot({ path: testInfo.outputPath("ink-transfer-contextloss-fallback.png") });
+  } finally { await live.close(); }
 });
 
 /** 图呈现模块与协调器一起预加载；任一模块失败都不能发送请求后留下空白结果阶段。 */
@@ -1447,8 +2552,15 @@ test("返回恢复所选草图而新建清理旧图及计时器，新运行忽�
   await expect(page.locator("[data-ink-node]")).toHaveCount(4);
   await page.clock.fastForward(1200);
   expect(await visibleInkNodeIds(page)).toEqual([READY_NODE_ID]);
-  await page.emulateMedia({ reducedMotion: "reduce" });
   await page.getByRole("button", { name: "返回首页", exact: true }).click();
+  // 保留真实退场过程，未出生节点和未断开的正式边不能因 active=false 被突然全部揭示。
+  await page.clock.fastForward(160);
+  for (const id of ["python-installation", "python-basics", "python-third-party-libraries"]) {
+    await expect(page.locator(`[data-ink-node="${id}"]`)).toHaveCSS("visibility", "hidden");
+  }
+  expect(await visibleInkEdgeIds(page)).toEqual([]);
+  await page.clock.fastForward(1000);
+  await page.emulateMedia({ reducedMotion: "reduce" });
   const start = page.getByRole("button", { name: "开始探索", exact: true });
   await expect(start).toBeFocused();
   await expect(page.locator("[data-ink-node]")).toHaveCount(0);
@@ -1678,13 +2790,14 @@ test("九节点手动历史通过原生存储恢复且每个节点都有墨团",
     updatedAt: new Date(FIXTURE_TIME).toISOString(), lastRunId: null, nodes, edges: [],
     positions: Object.fromEntries(nodes.map((node, index) => [node.id, { x: 32 + index % 3 * 340, y: 32 + Math.floor(index / 3) * 220 }])),
   });
+  const emptyDocument = EditableGraphSchema.parse({ ...document, id: "ink-history-empty", title: "空的人工历史图", nodes: [], edges: [], positions: {} });
   await installBrowserFixture(page, createJourneyEvents());
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.goto("/ink-study.html");
   await page.getByRole("button", { name: "开始探索", exact: true }).click();
   await page.getByRole("button", { name: "搜索历史", exact: true }).click();
   await expect(page.getByRole("region", { name: "搜索历史", exact: true }).getByRole("status")).toHaveText("已保存到本浏览器");
-  await seedStoredWorkspace(page, document);
+  await seedStoredWorkspace(page, [document, emptyDocument]);
   await page.reload();
   await page.getByRole("button", { name: "开始探索", exact: true }).click();
   await expect(page.locator(".ink-study__stage")).toHaveAttribute("data-search-state", "graph");
@@ -1701,6 +2814,19 @@ test("九节点手动历史通过原生存储恢复且每个节点都有墨团",
   expect((await readStoredWorkspace(page))?.currentId).toBe(document.id);
   expect(await readFixtureSnapshots(page)).toHaveLength(0);
   await page.screenshot({ path: testInfo.outputPath("ink-nine-node-history.png"), animations: "disabled" });
+  // 从已有九墨团切到真实空记录仍应聚合为自由墨迹，不能因空 scene 最终把所有颜料关掉。
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await page.clock.install({ time: new Date(FIXTURE_TIME) });
+  await page.clock.pauseAt(new Date(FIXTURE_TIME + 1000));
+  await page.getByRole("button", { name: "搜索历史", exact: true }).click();
+  await page.getByRole("region", { name: "搜索历史", exact: true })
+    .getByRole("button", { name: emptyDocument.title, exact: true }).press("Enter");
+  await page.clock.fastForward(1000);
+  await expect(page.locator(".ink-study__stage")).toHaveAttribute("data-search-state", "graph");
+  await expect(page.locator("[data-ink-node]")).toHaveCount(0);
+  expect((await readStoredWorkspace(page))?.currentId).toBe(emptyDocument.id);
+  expect((await captureInkRaster(page, testInfo.outputPath("ink-nine-to-empty-merge.png"))).count).toBeGreaterThan(30);
+  expect(await readFixtureSnapshots(page)).toHaveLength(0);
 });
 
 test("English 选择器控制请求与页面语言，既有 Run 不随下一次选择混语", async ({
