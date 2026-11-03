@@ -52,19 +52,35 @@ const NODE_TYPES: NodeTypes = {
 const INK_NODE_TYPES: NodeTypes = { wayfinder: InkGraphNode };
 
 /** 先等真实节点测量与首屏视口落定，再让墨迹读取终点，避免换图起飞后又跳位置。 */
-function GraphViewportReady({ onReady }: Readonly<{ onReady: () => void }>) {
+function GraphViewportReady({ onReady, empty }: Readonly<{ onReady: () => void; empty: boolean }>) {
   const initialized = useNodesInitialized();
   const { fitView, viewportInitialized } = useReactFlow();
+  const delivered = useRef(false);
   useEffect(() => {
-    if (!initialized || !viewportInitialized) return;
+    if (delivered.current || (!initialized && !empty) || !viewportInitialized) return;
     let cancelled = false, frame = 0;
-    void fitView({ padding: 0.2 }).then(() => {
-      if (!cancelled) frame = requestAnimationFrame(onReady);
-    });
+    const ready = (): void => {
+      if (!cancelled) frame = requestAnimationFrame(() => { delivered.current = true; onReady(); });
+    };
+    // 空墨迹画布也完成一次视口交接；之后右键加入首节点时保留点击位置，不再次居中。
+    if (empty) ready();
+    else void fitView({ padding: 0.2 }).then(ready);
     return () => { cancelled = true; cancelAnimationFrame(frame); };
-  }, [initialized, viewportInitialized, fitView, onReady]);
+  }, [initialized, viewportInitialized, fitView, onReady, empty]);
   return null;
 }
+
+/** 菜单只接收真实身份与坐标快照；具体编辑、表单和搜索仍由页面既有入口承接。 */
+type GraphContextBase = Readonly<{
+  clientPoint: XYPosition;
+  positions?: Readonly<Record<string, XYPosition>>;
+}>;
+export type GraphContextRequest = GraphContextBase & (
+  | Readonly<{ kind: "pane"; flowPoint: XYPosition }>
+  | Readonly<{ kind: "node"; nodeId: string }>
+  | Readonly<{ kind: "edge"; edgeId: string }>
+);
+export type GraphEditProblem = ReturnType<typeof useGraphEdit>["problem"];
 
 export type GraphViewProps = Readonly<{
   presentationMode: PresentationMode;
@@ -87,12 +103,17 @@ export type GraphViewProps = Readonly<{
   onLayoutReady?: () => void;
   /** 运行草图尚未进入编辑文档时，位置由调用方承接；已保存图继续复用原编辑入口。 */
   onMoveNode?: (nodeId: string, position: XYPosition) => void;
+  onContextRequest?: (request: GraphContextRequest) => void;
+  onInteractionStart?: () => void;
+  onPaneClick?: () => void;
+  onEditProblem?: (problem: GraphEditProblem) => void;
 }>;
 
 /** 两种展示模式共用同一 Product Graph；Compact 只改变视图密度，不改写 Node 或 Edge。 */
 export function GraphView({ presentationMode, language, graph, selectedNodeId: providedSelection, onSelectNode, editableGraphId, flowId,
   appearance = "default", visibleNodeIds, visibleEdgeIds, revealSettled, interactionReady = true,
-  labelSnapshots, inkContentState = "ready", onLayoutReady, onMoveNode }: GraphViewProps) {
+  labelSnapshots, inkContentState = "ready", onLayoutReady, onMoveNode,
+  onContextRequest, onInteractionStart, onPaneClick, onEditProblem }: GraphViewProps) {
   const runNodes = useStore(graphStore, state => state.nodes);
   const runEdges = useStore(graphStore, state => state.edges);
   const runSelection = useStore(graphStore, state => state.selectedNodeId);
@@ -110,10 +131,15 @@ export function GraphView({ presentationMode, language, graph, selectedNodeId: p
   useEffect(() => {
     const addedNode = nodes.length > previousNodeCount.current;
     previousNodeCount.current = nodes.length;
-    if (!addedNode || flowInstance.current === null) return;
+    if (appearance === "ink" || !addedNode || flowInstance.current === null) return;
     const frame = requestAnimationFrame(() => { void flowInstance.current?.fitView({ padding: 0.2 }); });
     return () => cancelAnimationFrame(frame);
-  }, [nodes.length]);
+  }, [nodes.length, appearance]);
+  useEffect(() => { onEditProblem?.(edit.problem); }, [edit.problem, onEditProblem]);
+  const positionsSnapshot = useCallback((): Readonly<Record<string, XYPosition>> | undefined => {
+    const current = flowInstance.current;
+    return current === null ? undefined : Object.fromEntries(current.getNodes().map(node => [node.id, { ...node.position }]));
+  }, []);
   const elements = useMemo(
     () => buildGraphFlowElements(nodes, edges, language, graph?.positions),
     [nodes, edges, language, graph?.positions],
@@ -139,6 +165,8 @@ export function GraphView({ presentationMode, language, graph, selectedNodeId: p
       ({ ...node,
         data: labelSnapshots?.[node.id] === undefined ? node.data : { ...node.data, ...labelSnapshots[node.id], language },
         ...(dragPosition?.nodeId === node.id ? { position: dragPosition.position } : {}),
+        // 隐藏 Handle 仍会参与内部近邻查找，因此同时关闭节点级连接，不能只靠透明或 inert。
+        ...(appearance !== "ink" ? {} : { connectable: editableGraphId !== undefined && interactionReady && (visibleNodeIds?.has(node.id) ?? true) }),
         // 隐藏内容仍占据布局，供墨迹读取目的地；揭示前不能被鼠标或键盘提前选中。
         ...(visibleNodeIds === undefined ? {} : {
           focusable: visibleNodeIds.has(node.id), selectable: visibleNodeIds.has(node.id),
@@ -151,7 +179,7 @@ export function GraphView({ presentationMode, language, graph, selectedNodeId: p
         },
       }),
     ),
-    [elements.nodes, selectedNodeId, dragPosition, visibleNodeIds, labelSnapshots, language],
+    [elements.nodes, selectedNodeId, dragPosition, visibleNodeIds, labelSnapshots, language, appearance, editableGraphId, interactionReady],
   );
   const flowEdges = useMemo(() => visibleEdgeIds === undefined ? elements.edges
     : elements.edges.map(edge => ({ ...edge, hidden: !visibleEdgeIds.has(edge.id) })), [elements.edges, visibleEdgeIds]);
@@ -198,7 +226,7 @@ export function GraphView({ presentationMode, language, graph, selectedNodeId: p
     [flowNodes, selectNode, editableGraphId, onMoveNode],
   );
 
-  if (elements.nodes.length === 0) {
+  if (elements.nodes.length === 0 && appearance !== "ink") {
     return <p className="graph-empty">{messages.empty}</p>;
   }
 
@@ -218,6 +246,35 @@ export function GraphView({ presentationMode, language, graph, selectedNodeId: p
         edges={flowEdges}
         nodeTypes={appearance === "ink" ? INK_NODE_TYPES : NODE_TYPES}
         onInit={instance => { flowInstance.current = instance; }}
+        {...(onContextRequest === undefined ? {} : {
+          onPaneContextMenu: event => {
+            if (!interactionReady || flowInstance.current === null) return;
+            event.preventDefault(); event.stopPropagation();
+            const clientPoint = { x: event.clientX,y: event.clientY }, positions = positionsSnapshot();
+            // API 内部已扣除容器边距并反变换视口；不能再手动减一次 stage 的偏移。
+            onContextRequest({ kind: "pane",clientPoint,flowPoint: flowInstance.current.screenToFlowPosition(clientPoint),
+              ...(positions === undefined ? {} : { positions }) });
+          },
+          onNodeContextMenu: (event,node) => {
+            if (!interactionReady || (visibleNodeIds !== undefined && !visibleNodeIds.has(node.id))) return;
+            event.preventDefault(); event.stopPropagation();
+            selectNode(node.id);
+            const positions = positionsSnapshot();
+            onContextRequest({ kind: "node",nodeId: node.id,clientPoint: { x: event.clientX,y: event.clientY },
+              ...(positions === undefined ? {} : { positions }) });
+          },
+          onEdgeContextMenu: (event,edge) => {
+            if (!interactionReady || (visibleEdgeIds !== undefined && !visibleEdgeIds.has(edge.id))) return;
+            event.preventDefault(); event.stopPropagation();
+            const positions = positionsSnapshot();
+            onContextRequest({ kind: "edge",edgeId: edge.id,clientPoint: { x: event.clientX,y: event.clientY },
+              ...(positions === undefined ? {} : { positions }) });
+          },
+        })}
+        {...(onInteractionStart === undefined ? {} : {
+          onMoveStart: onInteractionStart,onNodeDragStart: onInteractionStart,onConnectStart: onInteractionStart,
+        })}
+        {...(onPaneClick === undefined ? {} : { onPaneClick: () => { if (interactionReady) onPaneClick(); } })}
         onNodesChange={handleNodesChange}
         onNodeClick={(_event, node) => selectNode(node.id)}
         onNodeDragStop={(_event, node) => {
@@ -227,14 +284,22 @@ export function GraphView({ presentationMode, language, graph, selectedNodeId: p
           setDragPosition(null);
         }}
         onConnect={connection => {
-          if (editableGraphId === undefined) return;
+          if (editableGraphId === undefined || !interactionReady) return;
           const type = connection.sourceHandle === "main-source" && connection.targetHandle === "main-target"
             ? "recommended_next"
             : connection.sourceHandle === "related-source" && connection.targetHandle === "related-target"
               ? "related_to" : null;
           edit.commit(graph => {
             if (type === null) throw new InvalidGraphConnectionError();
-            return addEdge(graph, connection.source, connection.target, type);
+            // ink 只在同一撤销步骤承接当前实际布局；旧 App 的既有自动布局语义保持原样。
+            const snapshot = appearance === "ink" ? positionsSnapshot() : undefined;
+            const inherited: Record<string, XYPosition> = {};
+            if (snapshot !== undefined) for (const node of graph.nodes) {
+              const position = snapshot[node.id];
+              if (position !== undefined) inherited[node.id] = position;
+            }
+            const positions = snapshot === undefined ? graph.positions : { ...inherited,...graph.positions };
+            return addEdge(positions === graph.positions ? graph : { ...graph,positions }, connection.source, connection.target, type);
           });
         }}
         // React Flow 的键盘选择不触发 onNodeClick，必须从 selection 事件同步 Store。
@@ -244,7 +309,7 @@ export function GraphView({ presentationMode, language, graph, selectedNodeId: p
         minZoom={appearance === "ink" ? 0.12 : 0.35}
         maxZoom={1.8}
         nodesDraggable={editableGraphId !== undefined || onMoveNode !== undefined}
-        nodesConnectable={editableGraphId !== undefined}
+        nodesConnectable={editableGraphId !== undefined && interactionReady}
         // 删除统一走显式入口与确定性函数；禁止画布内部先删后与工作区漂移。
         deleteKeyCode={null}
         multiSelectionKeyCode={null}
@@ -256,9 +321,9 @@ export function GraphView({ presentationMode, language, graph, selectedNodeId: p
       >
         {appearance === "ink" ? null : <Background variant={BackgroundVariant.Dots} gap={20} size={1.2} />}
         <Controls aria-label={messages.controlsAria} showInteractive={false} />
-        {onLayoutReady === undefined ? null : <GraphViewportReady onReady={onLayoutReady} />}
+        {onLayoutReady === undefined ? null : <GraphViewportReady onReady={onLayoutReady} empty={elements.nodes.length === 0} />}
       </ReactFlow>
-      <div className="graph-edit-notice"><EditNotice problem={edit.problem} language={language} /></div>
+      {onEditProblem === undefined ? <div className="graph-edit-notice"><EditNotice problem={edit.problem} language={language} /></div> : null}
     </div>
   );
 }

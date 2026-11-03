@@ -7,20 +7,25 @@ import { getMessages } from "../i18n/messages.js";
 import { buildNodeStatusPresentation } from "../components/Graph/graph-labels.js";
 import type { GraphFlowNode } from "../components/Graph/graph-layout.js";
 
-export function InkGraphNode({ id, data }: NodeProps<GraphFlowNode>) {
+export function InkGraphNode({ id, data, isConnectable }: NodeProps<GraphFlowNode>) {
   const presentation = buildNodeStatusPresentation(data.status, data.resourceCount, data.language);
   const messages = getMessages(data.language).graph;
-  return <article className="ink-graph-node" data-ink-node={id} data-node-status={data.status} aria-busy={presentation.isLoading}>
+  return <article className="ink-graph-node" data-ink-node={id} data-node-status={data.status}
+    data-ink-connectable={isConnectable} aria-busy={presentation.isLoading}>
     {/* 继续使用原图的四个连接锚点，相关边和推荐边的语义、方向与 ID 完全复用。 */}
-    <Handle id="main-target" type="target" position={Position.Top} isConnectable={false} />
-    <Handle id="related-target" type="target" position={Position.Left} isConnectable={false} />
+    <Handle id="main-target" type="target" position={Position.Top} isConnectable={isConnectable}
+      title={messages.edgeLabels.recommended_next} className="ink-graph-node__handle ink-graph-node__handle--main nodrag nopan" data-ink-control />
+    <Handle id="related-target" type="target" position={Position.Left} isConnectable={isConnectable}
+      title={messages.edgeLabels.related_to} className="ink-graph-node__handle ink-graph-node__handle--related nodrag nopan" data-ink-control />
     <div className="ink-graph-node__content">
       <div className="ink-graph-node__eyebrow"><span>{messages.nodeTypeLabels[data.nodeType]}</span><span>{presentation.label}</span></div>
       <h3>{data.title}</h3>
       <p>{data.description ?? ""}</p>
       <span className="ink-graph-node__detail">{presentation.detail}</span>
     </div>
-    <Handle id="related-source" type="source" position={Position.Right} isConnectable={false} />
-    <Handle id="main-source" type="source" position={Position.Bottom} isConnectable={false} />
+    <Handle id="related-source" type="source" position={Position.Right} isConnectable={isConnectable}
+      title={messages.edgeLabels.related_to} className="ink-graph-node__handle ink-graph-node__handle--related nodrag nopan" data-ink-control />
+    <Handle id="main-source" type="source" position={Position.Bottom} isConnectable={isConnectable}
+      title={messages.edgeLabels.recommended_next} className="ink-graph-node__handle ink-graph-node__handle--main nodrag nopan" data-ink-control />
   </article>;
 }

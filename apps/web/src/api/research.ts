@@ -105,7 +105,11 @@ export function createResearchStore(
           store.setState({ preview: { ...preview, status: "failed" } });
           return;
         }
-        state.replaceGraph(next);
+        // 作用范围表达真实应用意图；同值结果也归本次替换拥有，不能只从前后差异猜测。
+        state.replaceGraph(next, preview.nodeId === null
+          ? { kind: "graph.search", subject: graph.title, scope: { type: "graph.replace" } }
+          : { kind: "node.search", subject: graph.nodes.find(node => node.id === preview.nodeId)?.title ?? graph.title,
+            scope: { type: mode === "append" ? "node.append" : "node.replace", nodeId: preview.nodeId } });
         if (preview.nodeId === null) {
           const previewSelection = temporaryRun.getState().selectedNodeId;
           const selected = next.nodes.some(node => node.id === previewSelection) ? previewSelection

@@ -94,6 +94,7 @@ describe("Graph store", () => {
     expect(state.selectedNodeId).toBeNull();
     expect(state.hasResolvedInitialCompactSelection).toBe(false);
     expect(state.isSearching).toBe(false);
+    expect(state.hasCompleted).toBe(false);
     expect(state.lastSequence).toBe(0);
     expect(selectSelectedNode(state)).toBeNull();
   });
@@ -122,6 +123,7 @@ describe("Graph store", () => {
       selectedNodeId: null,
       hasResolvedInitialCompactSelection: false,
       isSearching: true,
+      hasCompleted: false,
       lastSequence: 0,
     });
   });
@@ -174,6 +176,7 @@ describe("Graph store", () => {
       graphPlan.analysis.presentationMode,
     );
     expect(store.getState().isSearching).toBe(false);
+    expect(store.getState().hasCompleted).toBe(false);
   });
 
   it("reset 恢复完整初始状态", () => {
@@ -197,6 +200,7 @@ describe("Graph store", () => {
       selectedNodeId: null,
       hasResolvedInitialCompactSelection: false,
       isSearching: false,
+      hasCompleted: false,
       lastSequence: 0,
     });
   });

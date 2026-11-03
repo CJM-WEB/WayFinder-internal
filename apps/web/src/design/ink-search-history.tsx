@@ -9,6 +9,7 @@ import type { SearchLanguage } from "@wayfinder/contracts";
 import { getMessages } from "../i18n/messages.js";
 import { workspaceStore } from "../stores/workspace-store.js";
 import { workspacePersistenceStore } from "../stores/workspace-persistence.js";
+import { InkUndoPanel } from "./ink-undo-panel.js";
 
 type Props = Readonly<{
   open: boolean;
@@ -18,6 +19,8 @@ type Props = Readonly<{
   onClose: (restoreFocus: boolean) => void;
   onNewSearch: () => void;
   onSelectGraph: (graphId: string) => Promise<void>;
+  undoOpen: boolean; undoDisabled: boolean;
+  onOpenUndo: () => void; onCloseUndo: (restoreFocus: boolean) => void;
 }>;
 
 /** 每条记录只维护名称草稿；保存与删除仍走已有操作，存储读取失败时禁用写入。 */
@@ -77,9 +80,11 @@ function HistoryRecord({ id, title, language, disabled, onDelete, onSelect, sele
   </li>;
 }
 
-export function InkSearchHistory({ open, available, language, onOpen, onClose, onNewSearch, onSelectGraph }: Props) {
+export function InkSearchHistory({ open, available, language, onOpen, onClose, onNewSearch, onSelectGraph,
+  undoOpen, undoDisabled, onOpenUndo, onCloseUndo }: Props) {
   const panel = useRef<HTMLElement>(null);
   const toggle = useRef<HTMLButtonElement>(null);
+  const [dockExpanded, setDockExpanded] = useState(false);
   const documents = useStore(workspaceStore, state => state.documents);
   const currentId = useStore(workspaceStore, state => state.currentId);
   const persistence = useStore(workspacePersistenceStore, state => state);
@@ -93,7 +98,7 @@ export function InkSearchHistory({ open, available, language, onOpen, onClose, o
   useEffect(() => {
     if (!open) return;
     const closeOutside = (event: Event): void => {
-      if (event.target instanceof Node && !panel.current?.contains(event.target) && !toggle.current?.contains(event.target)) {
+      if (event.target instanceof Element && !panel.current?.contains(event.target) && !event.target.closest(".ink-study__history-dock")) {
         onClose(false);
       }
     };
@@ -113,15 +118,25 @@ export function InkSearchHistory({ open, available, language, onOpen, onClose, o
   }, [open, onClose]);
 
   return (
-    <div className="ink-study__history-drawer" data-ink-control inert={!available} aria-hidden={!available}>
+    <div className="ink-study__history-drawer" data-ink-control data-ink-overlay inert={!available} aria-hidden={!available}>
       {/* 触发器与内容是同级，关闭抽屉时仍可从底边或键盘打开。 */}
+      <div className="ink-study__history-dock" data-expanded={dockExpanded} data-panel-open={open || undoOpen}
+        onMouseEnter={() => setDockExpanded(true)} onMouseLeave={() => setDockExpanded(false)}
+        onFocusCapture={() => setDockExpanded(true)} onBlur={event => {
+          if (!event.currentTarget.contains(event.relatedTarget)) setDockExpanded(false);
+        }}>
       <button type="button" className="ink-study__pill ink-study__history-toggle" ref={toggle}
         aria-label={messages.inkStudy.searchHistory} aria-expanded={open} aria-controls="ink-search-history"
         onClick={() => open ? onClose(true) : onOpen()}>
         <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20V5m-6 6 6-6 6 6" /></svg>
         <span aria-hidden="true">{messages.inkStudy.searchHistory}</span>
       </button>
+      <button type="button" className="ink-study__pill ink-study__undo-toggle" inert={!dockExpanded}
+        aria-label={messages.editor.undo} aria-expanded={undoOpen} aria-controls="ink-undo-history"
+        onClick={() => undoOpen ? onCloseUndo(true) : onOpenUndo()}>{messages.editor.undo}</button>
+      </div>
       <section className="ink-study__history-panel" id="ink-search-history" ref={panel} tabIndex={-1}
+        data-active={open}
         inert={!open} aria-hidden={!open} aria-labelledby="ink-search-history-title">
         <header className="ink-study__history-header">
           <div><h2 id="ink-search-history-title">{messages.inkStudy.searchHistory}</h2><span>{documents.length}</span></div>
@@ -148,6 +163,7 @@ export function InkSearchHistory({ open, available, language, onOpen, onClose, o
           <button type="button" className="ink-study__pill" onClick={() => { void persistence.retry(); }}>{messages.workspace.retry}</button>
         </div>}
       </section>
+      <InkUndoPanel open={undoOpen} available={available} disabled={undoDisabled} language={language} onClose={onCloseUndo} />
     </div>
   );
 }

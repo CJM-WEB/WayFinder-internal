@@ -3,7 +3,7 @@
  * 编辑只调用确定性函数与本地状态，不把人工操作转化为 Search / LLM 指令。
  */
 import { resolveSearchEngine, SearchEngineSchema, type EditableGraph, type Resource, type SearchLanguage } from "@wayfinder/contracts";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useStore } from "zustand";
 
 import { researchStore } from "../../api/research.js";
@@ -15,20 +15,28 @@ import {
 import { createEmptyGraph, selectCurrentGraph, workspaceStore } from "../../stores/workspace-store.js";
 
 type EditProblem = { message: string; nodeId: string | null };
+type EditFailure = Readonly<{ graphId: string | null; kind: "duplicate" | "url" | "connection" | "edit"; nodeId: string | null; nodeTitle?: string }>;
 
 /** 将已分类的输入错误转为本地化提示，不把内部异常正文泄露给界面。 */
 export function useGraphEdit(graphId: string | null, language: SearchLanguage) {
-  const [problem, setProblem] = useState<EditProblem | null>(null);
+  const [failure, setFailure] = useState<EditFailure | null>(null);
   const messages = getMessages(language).editor;
+  // 保存安全分类而非冻结某种语言的句子，切换界面语言后错误与定位操作仍一致。
+  const problem = useMemo<EditProblem | null>(() => failure === null || failure.graphId !== graphId ? null : ({ nodeId: failure.nodeId,
+    message: failure.kind === "duplicate" ? messages.duplicateUrl(failure.nodeTitle ?? "")
+      : failure.kind === "url" ? messages.invalidUrl : failure.kind === "connection" ? messages.invalidConnection : messages.editFailure,
+  }), [failure, graphId, messages]);
+  const clearProblem = useCallback(() => setFailure(null), []);
+  useEffect(() => { setFailure(null); }, [graphId]);
   const execute = (operation: () => void): boolean => {
     try {
       operation();
-      setProblem(null);
+      setFailure(null);
       return true;
     } catch (error: unknown) {
-      setProblem(error instanceof DuplicateResourceUrlError
-        ? { message: messages.duplicateUrl(error.nodeTitle), nodeId: error.nodeId }
-        : { message: error instanceof InvalidResourceUrlError ? messages.invalidUrl : error instanceof InvalidGraphConnectionError ? messages.invalidConnection : messages.editFailure, nodeId: null });
+      setFailure(error instanceof DuplicateResourceUrlError
+        ? { graphId, kind: "duplicate", nodeTitle: error.nodeTitle, nodeId: error.nodeId }
+        : { graphId, kind: error instanceof InvalidResourceUrlError ? "url" : error instanceof InvalidGraphConnectionError ? "connection" : "edit", nodeId: null });
       return false;
     }
   };
@@ -38,7 +46,7 @@ export function useGraphEdit(graphId: string | null, language: SearchLanguage) {
     if (graph === undefined) throw new Error("搜索图已不存在");
     state.replaceGraph(edit(graph));
   });
-  return { problem, execute, commit };
+  return { problem, execute, commit, clearProblem };
 }
 
 export function EditNotice({ problem, language }: { problem: EditProblem | null; language: SearchLanguage }) {

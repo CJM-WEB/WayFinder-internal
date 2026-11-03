@@ -657,7 +657,7 @@ function createWaterDocuments(): readonly EditableGraph[] {
 }
 
 /** 先在独立测试上下文准备历史，再以真实时间恢复首页；不安装或推进虚拟时钟。 */
-async function prepareWaterPage(page: Page, documents = createWaterDocuments()): Promise<readonly EditableGraph[]> {
+async function prepareWaterPage(page: Page, documents = createWaterDocuments(), requireRenderer = true): Promise<readonly EditableGraph[]> {
   await installBrowserFixture(page, createInkMotionEvents());
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.goto("/ink-study.html");
@@ -667,7 +667,7 @@ async function prepareWaterPage(page: Page, documents = createWaterDocuments()):
   await seedStoredWorkspace(page, documents);
   await page.reload();
   await page.emulateMedia({ reducedMotion: "no-preference" });
-  await expect(page.locator(".ink-study__stage")).toHaveAttribute("data-ink-renderer", "active");
+  await expect(page.locator(".ink-study__stage")).toHaveAttribute("data-ink-renderer", requireRenderer ? "active" : "fallback");
   return documents;
 }
 
@@ -1509,6 +1509,352 @@ test("页面中线引擎胶囊影响真实请求，语言默认与独立覆盖�
   await page.evaluate(() => window.__WAYFINDER_E2E__.fail(1));
   await expect(page.getByRole("alert")).toBeVisible();
   expect(await readFixtureSnapshots(page)).toHaveLength(2);
+});
+
+/** 新工作区以真实持久化文档启动，交互仍经过组件、纯编辑函数与Store，不注入业务方法。 */
+function createInkWorkspaceDocument(): EditableGraph {
+  const base = createWaterDocuments()[0];
+  if (base === undefined) throw new Error("缺少工作区夹具");
+  return EditableGraphSchema.parse({ ...base, id: "ink-workspace", title: "墨迹工作区", edges: [],
+    nodes: base.nodes.map((node, index) => ({ ...node, id: `workspace-node-${index}`, title: ["资料入口", "第二节点", "第三节点"][index],
+      status: index === 0 ? "edited" : "empty", resources: index === 0 ? Array.from({ length: 4 }, (_, rank) => ({
+        id: `workspace-resource-${rank}`, origin: "manual", title: `资料链接 ${rank + 1}`, url: `https://workspace.example.com/${rank}`,
+        canonicalUrl: `https://workspace.example.com/${rank}`, domain: "workspace.example.com", sourceType: "user_added",
+        summary: "真实网页说明。".repeat(8), whySelected: "适合当前主题，作为入门资料。".repeat(4), rank: rank + 1,
+      })) : [] })),
+    positions: { "workspace-node-0": { x: 60, y: 80 }, "workspace-node-1": { x: 400, y: 80 }, "workspace-node-2": { x: 60, y: 330 } },
+  });
+}
+
+async function openInkWorkspace(page: Page, withInk = false): Promise<EditableGraph> {
+  const document = createInkWorkspaceDocument();
+  // 流体本身由独立GPU旅程验证；其余功能同时覆盖真实无WebGL降级路径，避免重复采样Shader。
+  if (!withInk) await page.addInitScript(() => {
+    const original = HTMLCanvasElement.prototype.getContext;
+    Object.defineProperty(HTMLCanvasElement.prototype, "getContext", { configurable: true,
+      value: function (this: HTMLCanvasElement, kind: string, ...options: unknown[]): RenderingContext | null {
+        return kind.includes("webgl") ? null : Reflect.apply(original, this, [kind, ...options]) as RenderingContext | null;
+      },
+    });
+  });
+  await prepareWaterPage(page, [document], withInk);
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.getByRole("button", { name: "开始探索", exact: true }).click();
+  await expect(page.locator(".graph-canvas--ink")).toHaveAttribute("data-ink-content-state", "ready");
+  return document;
+}
+
+async function openInkNodeMenu(page: Page, nodeId = "workspace-node-0"): Promise<void> {
+  await page.locator(`[data-ink-node="${nodeId}"]`).getByRole("heading").click({ button: "right" });
+  await expect(page.getByRole("menu", { name: "图操作菜单", exact: true })).toBeVisible();
+}
+
+async function openInkUndo(page: Page): Promise<void> {
+  await page.locator(".ink-study__history-dock").hover();
+  await page.getByRole("button", { name: "撤销", exact: true }).click();
+  await expect(page.getByRole("region", { name: "撤销记录", exact: true })).toBeVisible();
+}
+
+/** 视口缩放后先查真实命中空白，避免父pane上的坐标实际落在其内部节点。 */
+async function openInkPaneMenu(page: Page): Promise<void> {
+  const point = await page.locator(".react-flow__pane").evaluate(element => {
+    const bounds = element.getBoundingClientRect();
+    for (let y = bounds.top + 100; y < bounds.bottom - 80; y += 70) {
+      for (let x = bounds.left + 24; x < bounds.right - 24; x += 70) {
+        if (document.elementFromPoint(x, y) === element) return { x, y };
+      }
+    }
+    throw new Error("图中没有可右键的空白命中区");
+  });
+  await page.mouse.click(point.x, point.y, { button: "right" });
+  await expect(page.getByRole("menu", { name: "图操作菜单", exact: true })).toBeVisible();
+}
+
+/** 覆盖新资源的真实入退场、悬浮挤开、Top3和最终安全打开边界。 */
+test("墨迹工作区资源条从右依次进入，悬浮展开并安全打开，外点反向收回", async ({ page }, testInfo) => {
+  await openInkWorkspace(page, true);
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  const enteredFrames = page.evaluate(() => new Promise<readonly (readonly number[])[]>((resolve, reject) => {
+    const frames: number[][] = [];
+    let raf = 0;
+    const timeout = window.setTimeout(() => { observer.disconnect(); cancelAnimationFrame(raf); reject(new Error("资源入场未开始")); }, 5_000);
+    const observer = new MutationObserver(() => {
+      if (document.querySelectorAll("[data-ink-resource]").length < 2) return;
+      observer.disconnect();
+      const started = performance.now();
+      const frame = (): void => {
+        frames.push([...document.querySelectorAll("[data-ink-resource]")].slice(0, 2).map(element => element.getBoundingClientRect().x));
+        if (performance.now() - started < 850) raf = requestAnimationFrame(frame);
+        else { window.clearTimeout(timeout); resolve(frames); }
+      };
+      raf = requestAnimationFrame(frame);
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+  }));
+  await page.locator('[data-ink-node="workspace-node-0"]').getByRole("heading").click();
+  const frames = await enteredFrames, startX = frames[0]?.[0], endX = frames.at(-1)?.[0];
+  if (startX === undefined || endX === undefined) throw new Error("缺少资源入场帧");
+  expect(startX - endX).toBeGreaterThan(80);
+  expect(frames.some(frame => (frame[1] ?? 0) - (frame[0] ?? 0) > 5)).toBe(true);
+  const panel = page.locator(".ink-resources");
+  await expect(panel).toHaveAttribute("data-phase", "visible");
+  const resources = panel.locator("[data-ink-resource]");
+  await expect(resources).toHaveCount(3);
+  const secondY = (await resources.nth(1).boundingBox())?.y;
+  if (secondY === undefined) throw new Error("缺少第二资源条");
+  await resources.first().hover();
+  await expect.poll(async () => (await resources.nth(1).boundingBox())?.y ?? 0).toBeGreaterThan(secondY + 40);
+  await resources.first().getByRole("button", { name: "在新标签页打开 资料链接 1" }).click();
+  await resources.first().locator(".ink-resources__details h4").first().click();
+  expect(await page.evaluate(() => window.__WAYFINDER_E2E__.openCalls())).toEqual(Array.from({ length: 2 }, () => ["https://workspace.example.com/0", "_blank", "noopener,noreferrer"]));
+  await panel.getByRole("button", { name: "显示更多（1）" }).click();
+  await expect(resources).toHaveCount(4);
+  await page.screenshot({ path: testInfo.outputPath("ink-workspace-resource-strips.png") });
+  await page.locator(".react-flow__pane").click({ position: { x: 22, y: 530 } });
+  await expect(panel).toHaveAttribute("data-phase", "leaving");
+  await expect(panel).toHaveAttribute("inert", "");
+  await expect(panel).toHaveCount(0);
+  expect(await readFixtureSnapshots(page)).toHaveLength(0);
+});
+
+/** 右键表单只提交一次，Esc先关上层，重复URL的恢复按钮可完整接收真实点击。 */
+test("墨迹工作区右键编辑保留资源，Esc优先退出表单，重复URL可定位已有节点", async ({ page }) => {
+  await openInkWorkspace(page);
+  await openInkNodeMenu(page);
+  await page.getByRole("menuitem", { name: "编辑节点", exact: true }).click();
+  let dialog = page.getByRole("dialog", { name: "编辑节点", exact: true });
+  await dialog.getByRole("textbox", { name: "节点标题", exact: true }).fill("新的资料入口");
+  await dialog.getByRole("button", { name: "保存节点", exact: true }).click();
+  await expect(page.locator('[data-ink-node="workspace-node-0"] h3')).toHaveText("新的资料入口");
+  await expect(page.locator(".ink-resources [data-ink-resource]")).toHaveCount(3);
+  await openInkNodeMenu(page);
+  await page.getByRole("menuitem", { name: "编辑节点", exact: true }).click();
+  dialog = page.getByRole("dialog", { name: "编辑节点", exact: true });
+  await dialog.getByRole("textbox", { name: "节点标题", exact: true }).fill("尚未保存");
+  await dialog.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  await expect(page.locator(".ink-resources")).toHaveAttribute("data-phase", "visible");
+  await page.getByRole("button", { name: "收起资源", exact: true }).click();
+  await openInkNodeMenu(page, "workspace-node-1");
+  await page.getByRole("menuitem", { name: "添加资源", exact: true }).click();
+  const resourceForm = page.getByRole("dialog", { name: "添加资源", exact: true });
+  await resourceForm.getByRole("textbox", { name: "资源 URL", exact: true }).fill("https://workspace.example.com/0?utm_source=duplicate#section");
+  await resourceForm.getByRole("button", { name: "添加资源", exact: true }).click();
+  await expect(page.locator(".ink-workspace-notice[data-open=true]")).toContainText("新的资料入口");
+  await page.getByRole("button", { name: "定位已有资源所在节点", exact: true }).click();
+  await expect(resourceForm).toHaveCount(0);
+  await expect(page.locator(".ink-resources h2")).toHaveText("新的资料入口");
+  await expect.poll(async () => (await readStoredWorkspace(page))?.documents[0]?.nodes[0]?.resources.length).toBe(4);
+  expect(await readFixtureSnapshots(page)).toHaveLength(0);
+});
+
+/** 逐条撤销保持后续字段修改，且撤后续事件会按较早事件不存在来重放。 */
+test("墨迹工作区撤销队列保留后续改名并正确重放，支持重做及删除图恢复", async ({ page }) => {
+  await openInkWorkspace(page);
+  for (const title of ["中间名称", "最后名称"]) {
+    await openInkNodeMenu(page);
+    await page.getByRole("menuitem", { name: "编辑节点", exact: true }).click();
+    const form = page.getByRole("dialog", { name: "编辑节点", exact: true });
+    await form.getByRole("textbox", { name: "节点标题", exact: true }).fill(title);
+    await form.getByRole("button", { name: "保存节点", exact: true }).click();
+  }
+  await openInkUndo(page);
+  const panel = page.getByRole("region", { name: "撤销记录", exact: true });
+  const first = panel.locator("[data-ink-undo-event]").filter({ hasText: "资料入口 → 中间名称" });
+  await expect(first.locator("time")).toHaveAttribute("datetime", /T/);
+  await first.getByRole("button", { name: /^撤销：/ }).click();
+  await expect.poll(async () => (await readStoredWorkspace(page))?.documents[0]?.nodes[0]?.title).toBe("最后名称");
+  const later = panel.locator("[data-ink-undo-event]").filter({ hasText: "中间名称 → 最后名称" });
+  await later.getByRole("button", { name: /^撤销：/ }).click();
+  await expect.poll(async () => (await readStoredWorkspace(page))?.documents[0]?.nodes[0]?.title).toBe("资料入口");
+  await panel.getByRole("button", { name: "重做", exact: true }).click();
+  await expect.poll(async () => (await readStoredWorkspace(page))?.documents[0]?.nodes[0]?.title).toBe("最后名称");
+  await page.getByRole("button", { name: "搜索历史", exact: true }).click();
+  await page.getByRole("button", { name: "删除记录：墨迹工作区", exact: true }).click();
+  await page.locator(".ink-study__history-dock").hover();
+  await page.getByRole("button", { name: "撤销", exact: true }).click();
+  await page.getByRole("button", { name: "恢复搜索图", exact: true }).click();
+  await expect(page.locator('[data-ink-node="workspace-node-0"] h3')).toHaveText("最后名称");
+  expect(await readFixtureSnapshots(page)).toHaveLength(0);
+});
+
+/** 新建、拉线和关系菜单复用真实图约束；带资源的父节点事件不能单独撤回。 */
+test("墨迹工作区空白右键新建、边缘拉线和关系编辑接入真实撤销依赖", async ({ page }) => {
+  await openInkWorkspace(page);
+  const before = await readInkPosition(page, "workspace-node-0");
+  await page.locator(".react-flow__pane").click({ button: "right", position: { x: 650, y: 430 } });
+  await page.getByRole("menuitem", { name: "新建节点", exact: true }).click();
+  const form = page.getByRole("dialog", { name: "新建节点", exact: true });
+  await form.getByRole("textbox", { name: "节点标题", exact: true }).fill("新建依赖节点");
+  await form.getByRole("button", { name: "新建节点", exact: true }).click();
+  await expect.poll(async () => (await readStoredWorkspace(page))?.documents[0]?.nodes.length).toBe(4);
+  const nodeId = (await readStoredWorkspace(page))?.documents[0]?.nodes.find(node => node.title === "新建依赖节点")?.id;
+  if (nodeId === undefined) throw new Error("没有保存新节点");
+  await expectInkPosition(page, before, "workspace-node-0");
+  await openInkNodeMenu(page, nodeId);
+  await page.getByRole("menuitem", { name: "添加资源", exact: true }).click();
+  const resourceForm = page.getByRole("dialog", { name: "添加资源", exact: true });
+  await resourceForm.getByRole("textbox", { name: "资源 URL", exact: true }).fill("https://new-workspace.example.com/");
+  await resourceForm.getByRole("button", { name: "添加资源", exact: true }).click();
+  await page.getByRole("button", { name: "收起资源", exact: true }).click();
+  const source = page.locator(`[data-ink-node="${nodeId}"]`);
+  await source.hover();
+  const from = await source.locator('[data-handleid="main-source"]').boundingBox();
+  const to = await page.locator('[data-ink-node="workspace-node-2"] [data-handleid="main-target"]').boundingBox();
+  if (from === null || to === null) throw new Error("连接点没有布局");
+  await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(to.x + to.width / 2, to.y + to.height / 2, { steps: 8 });
+  await page.mouse.up();
+  await expect.poll(async () => (await readStoredWorkspace(page))?.documents[0]?.edges.map(edge => edge.type)).toEqual(["recommended_next"]);
+  const edgePoint = await page.locator(".react-flow__edge-path").evaluate(element => {
+    const path = element as SVGPathElement, point = path.getPointAtLength(path.getTotalLength() / 2);
+    const screen = new DOMPoint(point.x, point.y).matrixTransform(path.getScreenCTM() ?? undefined);
+    return { x: screen.x, y: screen.y };
+  });
+  await page.mouse.click(edgePoint.x, edgePoint.y, { button: "right" });
+  await page.getByRole("menuitemradio", { name: "相关", exact: true }).click();
+  await expect.poll(async () => (await readStoredWorkspace(page))?.documents[0]?.edges.map(edge => edge.type)).toEqual(["related_to"]);
+  await openInkUndo(page);
+  const event = page.getByRole("region", { name: "撤销记录", exact: true }).locator("[data-ink-undo-event]")
+    .filter({ has: page.getByRole("heading", { name: "新建节点", exact: true }) });
+  await expect(event.getByRole("button", { name: /^撤销：/ })).toBeDisabled();
+  await expect(event).toContainText("依赖");
+  expect(await readFixtureSnapshots(page)).toHaveLength(0);
+});
+
+/** 临时请求、取消和明确应用均走既有协调器；新界面不把预览写到原图。 */
+test("墨迹工作区节点重搜可取消或追加，节点引擎与原图内容保持正确", async ({ page }) => {
+  await openInkWorkspace(page);
+  await openInkNodeMenu(page);
+  await page.getByRole("menuitemradio", { name: "Google", exact: true }).click();
+  await openInkNodeMenu(page);
+  await page.getByRole("menuitem", { name: "重新搜索此节点", exact: true }).click();
+  const preview = page.getByRole("dialog", { name: "重搜预览", exact: true });
+  await expect(preview).toBeVisible();
+  await expect.poll(async () => (await readFixtureSnapshots(page))[0]).toMatchObject({ engine: "google", language: "zh-CN", nodeSearch: { node: { id: "workspace-node-0" } } });
+  await preview.getByRole("button", { name: "取消重搜", exact: true }).click();
+  await expect.poll(async () => (await readFixtureSnapshots(page))[0]?.aborted).toBe(true);
+  await expect.poll(async () => (await readStoredWorkspace(page))?.documents[0]?.nodes[0]?.resources.length).toBe(4);
+  await openInkNodeMenu(page);
+  await page.getByRole("menuitem", { name: "重新搜索此节点", exact: true }).click();
+  await expect.poll(async () => (await readFixtureSnapshots(page)).length).toBe(2);
+  const events = createInkMotionEvents();
+  await emitFixtureEvents(page, 1, events.map((_event, index) => index));
+  await page.evaluate(() => window.__WAYFINDER_E2E__.close(1));
+  await expect(preview.getByRole("button", { name: "追加到此节点", exact: true })).toBeEnabled();
+  await expect.poll(async () => (await readStoredWorkspace(page))?.documents[0]?.nodes[0]?.resources.length).toBe(4);
+  await preview.getByRole("button", { name: "追加到此节点", exact: true }).click();
+  await expect(preview).toHaveCount(0);
+  await expect.poll(async () => (await readStoredWorkspace(page))?.documents[0]?.nodes[0]?.resources.length).toBe(8);
+  const graph = (await readStoredWorkspace(page))?.documents[0];
+  expect(graph?.nodes).toHaveLength(3);
+  expect(graph?.nodes[0]?.title).toBe("资料入口");
+  expect(graph?.nodes[0]?.engine).toBe("google");
+  expect(graph?.edges).toEqual([]);
+});
+
+/** 窄屏保留全局控件走廊，挂起预览不丢结果，英文UI不翻译生成内容。 */
+test("墨迹工作区全图重搜预览支持窄屏语言和历史挂起，明确替换后可撤销", async ({ page }, testInfo) => {
+  await openInkWorkspace(page);
+  await page.setViewportSize({ width: 760, height: 780 });
+  await openInkPaneMenu(page);
+  await page.getByRole("menuitem", { name: "重新搜索全图", exact: true }).click();
+  const form = page.getByRole("dialog", { name: "重新搜索全图", exact: true });
+  await form.getByRole("textbox", { name: "搜索主题", exact: true }).fill("Python预览主题");
+  await form.getByRole("button", { name: "重新搜索全图", exact: true }).click();
+  await expect.poll(async () => (await readFixtureSnapshots(page)).length).toBe(1);
+  const events = createInkMotionEvents();
+  await emitFixtureEvents(page, 0, events.map((_event, index) => index));
+  await page.evaluate(() => window.__WAYFINDER_E2E__.close(0));
+  await page.getByRole("button", { name: "语言", exact: true }).click();
+  await page.getByRole("button", { name: "English", exact: true }).click();
+  const preview = page.getByRole("dialog", { name: "Search preview", exact: true });
+  await expect(preview.getByRole("button", { name: "Apply replacement", exact: true })).toBeEnabled();
+  await expect(preview.getByRole("button", { name: "Append to this node", exact: true })).toHaveCount(0);
+  await preview.locator(`.react-flow__node[data-id="${READY_NODE_ID}"]`).click();
+  await expect(preview.locator(".resource-card")).toHaveCount(3);
+  await page.screenshot({ path: testInfo.outputPath("ink-workspace-preview-narrow.png") });
+  await page.getByRole("button", { name: "Search history", exact: true }).click();
+  await expect(preview).toHaveCount(0);
+  await page.getByRole("region", { name: "Search history", exact: true }).press("Escape");
+  await expect(preview).toBeVisible();
+  // 从抽屉直接操作全局控件时，预览恢复不得抢走语言按钮的焦点并收起选项。
+  await page.getByRole("button", { name: "Search history", exact: true }).click();
+  const language = page.getByRole("button", { name: "Language", exact: true });
+  await language.click();
+  await expect(language).toHaveAttribute("aria-expanded", "true");
+  await page.getByRole("button", { name: "English", exact: true }).click();
+  await expect(preview).toBeVisible();
+  await expect.poll(async () => (await readStoredWorkspace(page))?.documents[0]?.nodes.length).toBe(3);
+  await preview.getByRole("button", { name: "Apply replacement", exact: true }).click();
+  await expect.poll(async () => (await readStoredWorkspace(page))?.documents[0]?.nodes.length).toBe(4);
+  expect((await readStoredWorkspace(page))?.documents[0]?.title).toBe("墨迹工作区");
+  await page.locator(".ink-study__history-dock").hover();
+  await page.getByRole("button", { name: "Undo", exact: true }).click();
+  await page.getByRole("region", { name: "Undo history", exact: true }).getByRole("button", { name: /^Undo[：:]/ }).click();
+  await expect.poll(async () => (await readStoredWorkspace(page))?.documents[0]?.nodes.length).toBe(3);
+});
+
+/** 已交付空图与未交付草图不同：撤首次结果、删最后节点都不能从旧Run缓存复活内容。 */
+test("墨迹工作区完成图撤空和删空后保持空图，重做与恢复仍可使用", async ({ page }) => {
+  await openInkWorkspace(page);
+  await page.getByRole("button", { name: "搜索历史", exact: true }).click();
+  await page.getByRole("button", { name: "新建搜索图", exact: true }).click();
+  const input = page.getByRole("searchbox", { name: "搜索任意主题", exact: true });
+  await input.fill("完成后编辑为空");
+  await input.press("Enter");
+  await expect.poll(async () => (await readFixtureSnapshots(page)).length).toBe(1);
+  const events = createInkMotionEvents();
+  await emitFixtureEvents(page, 0, events.map((_event, index) => index));
+  await page.evaluate(() => window.__WAYFINDER_E2E__.close(0));
+  await expect(page.locator("[data-ink-node]")).toHaveCount(4);
+  await openInkUndo(page);
+  const panel = page.getByRole("region", { name: "撤销记录", exact: true });
+  await panel.getByRole("button", { name: /^撤销：/ }).click();
+  await expect(page.locator("[data-ink-node]")).toHaveCount(0);
+  await expect(page.locator(".ink-study__stage")).toHaveAttribute("data-search-state", "graph");
+  await expect(panel.getByRole("button", { name: "重做", exact: true })).toBeEnabled();
+  await panel.getByRole("button", { name: "重做", exact: true }).click();
+  await expect(page.locator("[data-ink-node]")).toHaveCount(4);
+  await panel.press("Escape");
+  const plan = events.find(event => event.type === "graph.plan");
+  if (plan?.type !== "graph.plan") throw new Error("缺少图计划");
+  for (const node of plan.data.nodes) {
+    await openInkNodeMenu(page, node.id);
+    await page.getByRole("menuitem", { name: "删除节点", exact: true }).click();
+  }
+  await expect(page.locator("[data-ink-node]")).toHaveCount(0);
+  await expect(page.locator(".ink-study__stage")).toHaveAttribute("data-search-state", "graph");
+  await openInkUndo(page);
+  await panel.locator("[data-ink-undo-event]").first().getByRole("button", { name: /^撤销：/ }).click();
+  await expect(page.locator("[data-ink-node]")).toHaveCount(1);
+});
+
+/** 异步下载不拥有用户后来的普通点击；不能在新选择上弹出旧节点的菜单。 */
+test("墨迹工作区右键冷加载会被随后普通点击取消", async ({ page }) => {
+  await openInkWorkspace(page);
+  let release = (): void => {}, requested = false;
+  const moduleUrls = new Set<string>();
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  await page.route(/\/src\/design\/ink-(?:workspace-actions|research-preview)\.(?:tsx|js)(?:\?.*)?$/, async route => {
+    moduleUrls.add(route.request().url());
+    if (route.request().url().includes("ink-workspace-actions")) { requested = true; await gate; }
+    await route.continue();
+  });
+  try {
+    await page.locator('[data-ink-node="workspace-node-0"] h3').click({ button: "right" });
+    await expect.poll(() => requested).toBe(true);
+    await expect.poll(() => moduleUrls.size).toBe(2);
+    await page.locator(".react-flow__pane").click({ position: { x: 22, y: 530 } });
+    release();
+    // 等真实模块及其预览依赖完成求值，再核对旧意图；不靠固定sleep抢在异步回调之前通过。
+    await page.evaluate(async urls => { await Promise.all(urls.map(url => import(url))); },
+      [...moduleUrls]);
+    await expect(page.getByRole("menu", { name: "图操作菜单", exact: true })).toHaveCount(0);
+    await openInkNodeMenu(page);
+    await expect(page.getByRole("menuitem", { name: "编辑节点", exact: true })).toBeEnabled();
+  } finally { release(); }
 });
 
 test("新搜索入口沿用 Direct 与拒绝规则，不因改版额外请求后端", async ({ page }) => {

@@ -1,7 +1,7 @@
 /** 测试职责：完成结果只写所属图，记录切换与删除不触发新搜索或复活旧记录。 */
 import { describe, expect, it } from "vitest";
 import { pythonResultGraphFixture } from "../fixtures/python-result-graph.js";
-import { createWorkspaceStore, selectCurrentGraph } from "../stores/workspace-store.js";
+import { createWorkspaceStore, selectCurrentGraph, selectWorkspaceHistory } from "../stores/workspace-store.js";
 import { createWorkspaceSearchHandoff } from "./workspace-search.js";
 
 const request = (runId: string, query: string) => ({ runId, query, language: "zh-CN" as const });
@@ -21,6 +21,8 @@ describe("搜索与记录交付", () => {
     expect(second?.nodes).toHaveLength(4);
     expect(Object.keys(second?.positions ?? {})).toHaveLength(4);
     expect(store.getState().documents[0]?.nodes).toEqual([]);
+    store.getState().selectGraph("图2");
+    expect(selectWorkspaceHistory(store.getState()).at(-1)?.kind).toBe("graph.search");
   });
 
   it("删除后到达的完成不会复活记录，改名也不被完成事件覆盖", () => {
@@ -53,4 +55,9 @@ it("完成交付保留最新引擎偏好，不把该偏好重标为旧资源实�
   const saved = selectCurrentGraph(store.getState());
   expect(saved?.engine).toBe("baidu");
   expect(saved?.nodes[0]?.resources[0]).toMatchObject({ engine: "google", origin: "search" });
+  const preference = selectWorkspaceHistory(store.getState()).find(event => event.kind === "engine.change");
+  if (preference === undefined) throw new Error("缺少引擎偏好事件");
+  expect(store.getState().undoEvent(preference.id)).toEqual({ ok: true });
+  expect(selectCurrentGraph(store.getState())?.engine).toBe("google");
+  expect(selectCurrentGraph(store.getState())?.nodes[0]?.resources[0]).toMatchObject({ engine: "google", origin: "search" });
 });

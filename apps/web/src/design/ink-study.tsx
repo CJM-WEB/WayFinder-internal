@@ -19,13 +19,20 @@ import type { StreamingSearch } from "../api/search.js";
 import { graphStore } from "../stores/graph-store.js";
 import { buildGraphNodeData } from "../components/Graph/graph-labels.js";
 import type { GraphNodeData } from "../components/Graph/graph-layout.js";
+import type { GraphContextRequest, GraphEditProblem } from "../components/Graph/GraphView.js";
+import type { InkActionTarget } from "./ink-workspace-actions.js";
+import { InkNotice } from "./ink-notice.js";
 import { selectCurrentGraph, workspaceStore } from "../stores/workspace-store.js";
 import { moveNode } from "../stores/workspace-edits.js";
 import { initializeWorkspacePersistence, workspacePersistenceStore } from "../stores/workspace-persistence.js";
 import "./ink-study.css";
+import "./ink-workspace.css";
 
 const AUTHOR_EMAIL = "cjmweb@outlook.com";
 const InkGraph = lazy(() => import("./ink-graph.js"));
+const InkResources = lazy(() => import("./ink-resources.js"));
+const InkWorkspaceActions = lazy(() => import("./ink-workspace-actions.js"));
+const InkResearchPreview = lazy(() => import("./ink-research-preview.js"));
 type NodePositions = Readonly<Record<string, XYPosition>>;
 type DraftLayout = Readonly<{ runId: string; positions: NodePositions }>;
 type LabelTransfer = Readonly<{
@@ -73,7 +80,7 @@ function InkStudy() {
   const [showEmptyRecord, setShowEmptyRecord] = useState(false);
   const historySelectionIntent = useRef(0);
   const persistence = useStore(workspacePersistenceStore, state => state);
-  const [feedback, setFeedback] = useState<InvalidOmniboxInputReason | "input_failure" | "search_failure" | "graph_failure" | null>(null);
+  const [feedback, setFeedback] = useState<InvalidOmniboxInputReason | "input_failure" | "search_failure" | "graph_failure" | "panel_failure" | null>(null);
   const [hasSearched, setHasSearched] = useState(false);
   const [pendingSearch, setPendingSearch] = useState(false);
   const [openControl, setOpenControl] = useState<"language" | "engine" | null>(null);
@@ -84,6 +91,13 @@ function InkStudy() {
   const entered = phase === "morphing" || phase === "ready";
   const ready = phase === "ready";
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [undoOpen, setUndoOpen] = useState(false);
+  const [resourcesMounted, setResourcesMounted] = useState(false);
+  const [actionsMounted, setActionsMounted] = useState(false);
+  const [researchOpen, setResearchOpen] = useState(false);
+  const [actionTarget, setActionTarget] = useState<InkActionTarget | null>(null);
+  const [graphProblem, setGraphProblem] = useState<GraphEditProblem>(null);
+  const contextIntent = useRef(0);
   const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "failed">("idle");
   const [language, setLanguage] = useState<SearchLanguage>(
     () => resolveEntryLanguage(window.location.search) ?? "zh-CN",
@@ -95,7 +109,8 @@ function InkStudy() {
   const engine = resolveSearchEngine(language, engineOverride);
   const isCurrentRun = currentDocument !== null && runtime.activeRunId !== null && currentDocument.lastRunId === runtime.activeRunId;
   // 完成图从持久文档恢复；未完成/已取消的真实草图仍取原运行，不能把草图伪装成已完成文档。
-  const showsDraft = isCurrentRun && runtime.nodes.length > 0 && (runtime.isSearching || currentDocument.nodes.length === 0);
+  const showsDraft = isCurrentRun && runtime.nodes.length > 0 &&
+    (runtime.isSearching || (!runtime.hasCompleted && currentDocument.nodes.length === 0));
   const displayedNodes = showsDraft ? runtime.nodes : currentDocument?.nodes ?? EMPTY_NODES;
   const displayedEdges = showsDraft ? runtime.edges : currentDocument?.edges ?? EMPTY_EDGES;
   const nodeLabels = useMemo(() => Object.fromEntries(displayedNodes.map(node => [node.id, buildGraphNodeData(node, renderLanguage)])), [displayedNodes, renderLanguage]);
@@ -112,21 +127,75 @@ function InkStudy() {
   // 首页只隐藏图层；选中身份不随展示层退出而丢失，新建才清空 currentId。
   const searchState = !entered ? "input" : pendingSearch ? "loading"
     : currentDocument !== null && (displayedNodes.length > 0 ||
-      (!(isCurrentRun && runtime.isSearching) && (showEmptyRecord || currentDocument.lastRunId === null))) ? "graph"
+      // 已交付后被编辑/撤销为空仍是工作图，不能复活runtime，也不能把重做入口锁在输入态。
+      (!(isCurrentRun && runtime.isSearching) && (showEmptyRecord || currentDocument.lastRunId === null || !isCurrentRun || runtime.hasCompleted))) ? "graph"
     : isCurrentRun && runtime.isSearching ? "loading" : "input";
   const acceptsInput = ready && searchState === "input";
+  const drawerOpen = historyOpen || undoOpen;
+  const movingGraph = labelTransfer?.graphId === currentDocument?.id && labelTransfer?.moving === true;
+  const canEdit = ready && searchState === "graph" && !showsDraft && !pendingSearch &&
+    !(isCurrentRun && runtime.isSearching) && !storageBlocked && !movingGraph && !drawerOpen && !researchOpen;
+  const canCreate = ready && searchState === "input" && !pendingSearch && !storageBlocked && !drawerOpen && !researchOpen;
+  const resourceNode = displayedNodes.find(node => node.id === displayedSelection) ?? null;
+  const resourcesVisible = searchState === "graph" && !drawerOpen && !movingGraph && !researchOpen && resourceNode !== null;
+  const closeResources = useCallback(() => {
+    if (showsDraft) graphStore.getState().selectNode(null);
+    else workspaceStore.getState().selectNode(null);
+  }, [showsDraft]);
+  useEffect(() => {
+    if (!resourcesVisible || resourcesMounted) return;
+    let cancelled = false;
+    // 只在首次需要资源时加载；模块失败保留图，不能让新的覆盖层把整页带成空白。
+    void import("./ink-resources.js").then(() => { if (!cancelled) setResourcesMounted(true); })
+      .catch(() => { if (!cancelled) setFeedback("panel_failure"); });
+    return () => { cancelled = true; };
+  }, [resourcesVisible, resourcesMounted, resourceNode?.id, currentDocument?.id]);
+  const closeActions = useCallback(() => { ++contextIntent.current; setActionTarget(null); }, []);
+  const showActions = useCallback(async (request: InkActionTarget): Promise<void> => {
+    const intent = ++contextIntent.current;
+    try {
+      // 菜单与预览一起准备就绪，再允许启动重搜，避免请求已开始却缺少取消入口。
+      await Promise.all([import("./ink-workspace-actions.js"), import("./ink-research-preview.js"), import("./ink-graph.js")]);
+      if (contextIntent.current !== intent) return;
+      setActionsMounted(true); setActionTarget(request);
+    } catch { if (contextIntent.current === intent) setFeedback("panel_failure"); }
+  }, []);
+  const graphContext = useCallback((request: GraphContextRequest): void => {
+    if (request.kind !== "node") closeResources();
+    else if (showsDraft) graphStore.getState().selectNode(request.nodeId);
+    else workspaceStore.getState().selectNode(request.nodeId);
+    void showActions({ ...request, graphId: currentDocument?.id ?? null });
+  }, [closeResources, showsDraft, currentDocument?.id, showActions]);
+  useEffect(() => { closeActions(); setGraphProblem(null); }, [currentDocument?.id, closeActions]);
+  const graphNotice = useMemo(() => graphProblem === null || !canEdit ? null : ({ message: graphProblem.message,
+    ...(graphProblem.nodeId === null ? {} : { action: <button className="ink-study__pill" onClick={() => workspaceStore.getState().selectNode(graphProblem.nodeId)}>{messages.editor.locateDuplicate}</button> }),
+  }), [graphProblem, canEdit, messages.editor.locateDuplicate]);
+  useEffect(() => {
+    if (!resourcesVisible) return;
+    const onEscape = (event: KeyboardEvent): void => {
+      if (event.key !== "Escape" || event.defaultPrevented) return;
+      // 上层菜单/表单先处理自己的退出，不能让资源的全局监听抢走同一次 Esc。
+      if (event.target instanceof Element && event.target.closest("[data-ink-overlay]") !== null &&
+          event.target.closest(".ink-resources") === null) return;
+      event.preventDefault();
+      closeResources();
+    };
+    document.addEventListener("keydown", onEscape);
+    return () => document.removeEventListener("keydown", onEscape);
+  }, [resourcesVisible, closeResources]);
   const feedbackMessage = feedback === null ? null
     : feedback === "query" ? messages.omnibox.invalidQuery
     : feedback === "invalid_url" ? messages.omnibox.invalidUrl
     : feedback === "unsupported_protocol" ? messages.omnibox.unsupportedProtocol
     : feedback === "graph_failure" ? messages.inkStudy.graphLoadFailed
+    : feedback === "panel_failure" ? messages.inkStudy.panelLoadFailed
     : feedback === "search_failure" ? messages.inkStudy.searchFailed : messages.omnibox.inputFailure;
   const searchMessage = feedbackMessage ?? (entered && isCurrentRun && runtime.runError !== null
     ? messages.inkStudy.searchFailed : null);
 
   const submitSearch = (event: FormEvent<HTMLFormElement>): void => {
     event.preventDefault();
-    if (!acceptsInput || historyOpen || storageBlocked) return;
+    if (!acceptsInput || drawerOpen || storageBlocked) return;
     const submissionNumber = ++latestSubmission.current;
     try {
       // 只替换提交界面：协议校验、取消旧请求、流式事件和图记录保存均继续走既有实现。
@@ -272,7 +341,7 @@ function InkStudy() {
 
   useEffect(() => {
     // 焦点只响应搜索阶段变化；文案/资源同步不能抢走菜单或用户正在操作的控件焦点。
-    if (historyOpen) return;
+    if (drawerOpen) return;
     const active = document.activeElement;
     if (active !== document.body && !searchShell.current?.contains(active) && !engineControl.current?.contains(active)) return;
     if (searchState === "loading") stopButton.current?.focus({ preventScroll: true });
@@ -304,17 +373,25 @@ function InkStudy() {
 
   const openHistory = useCallback((): void => {
     setOpenControl(null);
+    setUndoOpen(false);
+    closeActions();
     setHistoryOpen(true);
+  }, [closeActions]);
+  const openUndo = useCallback((): void => {
+    setOpenControl(null); setHistoryOpen(false); closeActions(); setUndoOpen(true);
+  }, [closeActions]);
+  const closeUndo = useCallback((restoreFocus: boolean): void => {
+    restoreSearchFocus.current = restoreFocus; setUndoOpen(false);
   }, []);
 
   useEffect(() => {
-    if (!historyOpen && ready && restoreSearchFocus.current) {
+    if (!drawerOpen && ready && restoreSearchFocus.current) {
       restoreSearchFocus.current = false;
       if (searchState === "input") searchInput.current?.focus({ preventScroll: true });
       else if (searchState === "loading") stopButton.current?.focus({ preventScroll: true });
       else stage.current?.querySelector<HTMLButtonElement>(".ink-study__history-toggle")?.focus({ preventScroll: true });
     }
-  }, [historyOpen, ready, searchState]);
+  }, [drawerOpen, ready, searchState]);
 
   /** 重置本页搜索意图：新建与返回首页共用取消门禁，不清空已保存图。 */
   const resetSearch = (): void => {
@@ -326,6 +403,7 @@ function InkStudy() {
     setFeedback(null);
     setHasSearched(false);
     setAnimateRunId(null);
+    setUndoOpen(false); closeActions();
   };
 
   const stopSearch = (): void => {
@@ -470,7 +548,24 @@ function InkStudy() {
   return (
     <main className="ink-study">
       <section className="ink-study__stage" id="ink-stage" ref={stage}
-        data-layer={entered ? "explore" : "intro"} data-search-ready={ready} data-history-open={historyOpen} data-search-state={searchState}
+        data-layer={entered ? "explore" : "intro"} data-search-ready={ready} data-history-open={drawerOpen} data-search-state={searchState}
+        onPointerDownCapture={event => {
+          // 普通点击也撤销尚未完成的右键模块加载，不能在用户已移到别处后弹出旧菜单。
+          if (event.button === 0 && event.target instanceof Element && event.target.closest("[data-ink-overlay]") === null) closeActions();
+        }}
+        onClick={event => {
+          if (!(event.target instanceof Element) || event.defaultPrevented || event.target.closest("[data-ink-overlay]")) return;
+          closeActions();
+          if (event.target.closest("[data-ink-node], .react-flow")) return;
+          if (resourcesVisible) closeResources();
+        }}
+        onContextMenu={event => {
+          if (!canCreate || event.defaultPrevented || !(event.target instanceof Element) || event.target.closest("button, a, input, textarea, [data-ink-overlay]")) return;
+          event.preventDefault();
+          const bounds = event.currentTarget.getBoundingClientRect();
+          void showActions({ kind: "pane", graphId: currentDocument?.id ?? null, clientPoint: { x: event.clientX, y: event.clientY },
+            flowPoint: { x: event.clientX - bounds.left - 120, y: event.clientY - bounds.top - 56 } });
+        }}
         aria-label={messages.inkStudy.stageAria}>
         <h1 className="ink-study__wordmark" ref={heading}>WAYFINDER</h1>
         <canvas className="ink-study__canvas" ref={canvas} aria-hidden="true" />
@@ -481,7 +576,7 @@ function InkStudy() {
         </header>
 
         {/* 同一胶囊先移动伸展，再分裂提交与引擎入口；进入展示态或更换选项均不会搜索。 */}
-        <div className="ink-study__search-layer" inert={historyOpen} aria-hidden={historyOpen}>
+        <div className="ink-study__search-layer" inert={drawerOpen} aria-hidden={drawerOpen}>
         <form className="ink-study__search" ref={searchShell} data-ink-control
           aria-label={messages.omnibox.formAria} onSubmit={submitSearch}
           onTransitionEnd={event => {
@@ -558,7 +653,7 @@ function InkStudy() {
 
         {/* 回程只短暂保留文字层淡出；真实选中图与坐标不因墨迹融合而重置。 */}
         {(searchState === "graph" || (phase === "returning" && displayedNodes.length > 0)) && currentDocument !== null ? <div className="ink-study__graph" ref={graphHost} tabIndex={-1}
-          inert={historyOpen || searchState !== "graph"} aria-hidden={historyOpen || searchState !== "graph"}
+          inert={drawerOpen || researchOpen || searchState !== "graph"} aria-hidden={drawerOpen || researchOpen || searchState !== "graph"}
           data-returning={phase === "returning"} data-resuming={!(isCurrentRun && animateRunId === runtime.activeRunId)}
           data-ink-graph-id={currentDocument.id} data-ink-control>
           <Suspense fallback={null}>
@@ -568,10 +663,24 @@ function InkStudy() {
               selectedNodeId={displayedSelection}
               onSelectNode={showsDraft ? graphStore.getState().selectNode : workspaceStore.getState().selectNode}
               animate={isCurrentRun && animateRunId === runtime.activeRunId} active={searchState === "graph"}
+              onPaneClick={closeResources}
+              {...(canEdit && currentDocument !== null ? { editableGraphId: currentDocument.id } : {})}
+              onContextRequest={graphContext} onInteractionStart={closeActions} onEditProblem={setGraphProblem}
               transferMoving={labelTransfer?.graphId === currentDocument.id && labelTransfer.moving}
               labelSnapshots={labelTransfer?.graphId === currentDocument.id ? labelTransfer.labels : EMPTY_LABELS} />
           </Suspense>
         </div> : null}
+        {resourcesMounted ? <Suspense fallback={null}><InkResources graphId={currentDocument?.id ?? null}
+          node={resourceNode} language={renderLanguage} visible={resourcesVisible} onClose={closeResources}
+          onResourceContext={(resourceId, clientPoint) => {
+            if (resourceNode !== null) void showActions({ kind: "resource", graphId: currentDocument?.id ?? null,
+              nodeId: resourceNode.id, resourceId, clientPoint });
+          }} /></Suspense> : null}
+        {actionsMounted ? <Suspense fallback={null}><InkWorkspaceActions target={actionTarget} language={renderLanguage}
+          enabled={canEdit} allowCreate={canCreate} active={entered && !drawerOpen && !researchOpen} onClose={closeActions} />
+          <InkResearchPreview language={renderLanguage} active={entered} suspended={drawerOpen} onVisibilityChange={setResearchOpen} />
+        </Suspense> : null}
+        <InkNotice notice={graphNotice} />
 
         <button type="button" className="ink-study__pill ink-study__back" onClick={returnHome}
           inert={!entered} aria-hidden={!entered} aria-label={messages.inkStudy.backHome}>
@@ -581,6 +690,8 @@ function InkStudy() {
         </button>
 
         <InkSearchHistory open={historyOpen} available={ready} language={renderLanguage}
+          undoOpen={undoOpen} undoDisabled={storageBlocked || showsDraft || pendingSearch || movingGraph || researchOpen || (isCurrentRun && runtime.isSearching)}
+          onOpenUndo={openUndo} onCloseUndo={closeUndo}
           onOpen={openHistory} onClose={closeHistory} onNewSearch={newSearch} onSelectGraph={restoreHistory} />
 
         {/* 披露面板使用普通按钮与自然 Tab 顺序，避免模拟系统下拉框或改变语言协议。 */}

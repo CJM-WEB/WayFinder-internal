@@ -952,7 +952,8 @@ export function createInkReveal(
   const onPointer = (event: PointerEvent): void => {
     if (scene.kind==="graph") {
       // 被控件、透明门禁或触屏接管的输入不能续接旧扫线，重新进入图时先建立新起点。
-      if (motion.matches || sceneMorph!==null || event.pointerType==="touch" || !(event.target instanceof Element) || event.target.closest("[inert]")!==null) {
+      if (motion.matches || sceneMorph!==null || event.pointerType==="touch" || !(event.target instanceof Element) ||
+        event.target.closest("[inert], [data-ink-overlay], .react-flow__handle")!==null) {
         graphPointer = null;
         return;
       }
