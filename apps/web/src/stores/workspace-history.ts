@@ -1,15 +1,16 @@
 /**
- * 模块职责：在每图最多 100 步的会话快照上，按稳定标识重放局部差异。
+ * 模块职责：在每图最多 100 步的本地快照上，按稳定标识重放局部差异。
  * 选择性撤销只排除指定事件；后续独立字段继续生效，同字段后写覆盖先写。
- * 边界：不执行搜索、不持久化事件、不引入通用命令系统；缺失依赖或非法图一律拒绝。
+ * 边界：只输出可校验的本地存储数据，不执行搜索或引入通用命令系统；缺失依赖或非法图一律拒绝。
  */
 import {
-  EditableGraphSchema, type EditableGraph, type EditableNode, type EditableResource, type GraphEdge,
+  EditableGraphSchema, EditableNodeSchema, EditableResourceSchema, GraphEdgeSchema,
+  type EditableGraph, type EditableNode, type EditableResource, type GraphEdge,
 } from "@wayfinder/contracts";
 
 export type WorkspaceHistoryKind =
   | "graph.rename" | "graph.update" | "graph.search"
-  | "node.add" | "node.edit" | "node.delete" | "node.move" | "node.search"
+  | "node.add" | "node.edit" | "node.delete" | "node.search"
   | "resource.add" | "resource.edit" | "resource.delete" | "resource.move"
   | "edge.add" | "edge.edit" | "edge.delete" | "engine.change";
 export type WorkspaceHistoryScope = Readonly<{ type: "graph.replace" }>
@@ -44,7 +45,7 @@ type ReplayState = {
   manualNodes: Set<string>;
 };
 export type GraphHistory = {
-  /** 兼容原工具栏的顺序快照；事件及基线只存在当前页面会话。 */
+  /** 兼容原工具栏的派生顺序快照；持久化时仅保存基线、事件和重做标识。 */
   past: EditableGraph[];
   future: EditableGraph[];
   base: ReplayState;
@@ -59,6 +60,10 @@ const same = (first: unknown, second: unknown): boolean => JSON.stringify(first)
 /** 文档更新时间不是内容操作；同值保存即使带新时间，也不能凭空新增事件。 */
 export const sameGraphContent = (first: EditableGraph, second: EditableGraph): boolean =>
   same({ ...first, updatedAt: "" }, { ...second, updatedAt: "" });
+
+/** 坐标属于持久布局，不是可撤销内容；更新时间同样不能产生一次编辑。 */
+export const onlyGraphLayoutChanged = (first: EditableGraph, second: EditableGraph): boolean =>
+  sameGraphContent({ ...first, positions: {} }, { ...second, positions: {} });
 
 export const createGraphHistory = (graph: EditableGraph): GraphHistory => ({
   past: [], future: [], base: { graph, nodes: new Map(), resources: new Map(), edges: new Map(), positions: new Map(), manualNodes: new Set() },
@@ -336,6 +341,171 @@ function rebuild(history: GraphHistory, events: HistoryEntry[], redoIds: string[
   }
 }
 
+/**
+ * 布局重基线化：把拖动的位置写回当前节点生命期内的保留快照，不生成事件或清除重做。
+ * 新增节点与有效全图替换是生命期边界；不能把新图的拖动位置反写进被替换的旧图。
+ * 已撤销的删除/替换只更新当前生命期所在的一侧，从而保留删除恢复与全图恢复的原布局。
+ */
+export function updateHistoryLayout(history: GraphHistory, before: EditableGraph, after: EditableGraph): GraphHistory {
+  const events = [...history.events];
+  const base = copyReplay(history.base);
+  const writePosition = (graph: EditableGraph, id: string, position: Position | undefined): EditableGraph => {
+    if (!graph.nodes.some(node => node.id === id)) return graph;
+    const positions = { ...graph.positions };
+    if (position === undefined) delete positions[id];
+    else positions[id] = { ...position };
+    return { ...graph, positions };
+  };
+  for (const id of new Set([...Object.keys(before.positions), ...Object.keys(after.positions)])) {
+    const position = after.positions[id];
+    if (same(before.positions[id], position)) continue;
+    let reachedBase = true;
+    for (let index = events.length - 1; index >= 0; index--) {
+      const event = events[index];
+      if (event === undefined) continue;
+      if (event.scope?.type === "graph.replace") {
+        events[index] = event.active ? { ...event, after: writePosition(event.after, id, position) }
+          : { ...event, before: writePosition(event.before, id, position) };
+        if (event.active) { reachedBase = false; break; }
+        continue;
+      }
+      const existedBefore = event.before.nodes.some(node => node.id === id);
+      const existedAfter = event.after.nodes.some(node => node.id === id);
+      // 无效的新增/有效的删除不属于当前节点生命期；不能跨过它们改写旧布局。
+      if (event.active && !existedAfter) { reachedBase = false; break; }
+      events[index] = { ...event,
+        before: writePosition(event.before, id, position),
+        after: event.active || existedBefore ? writePosition(event.after, id, position) : event.after };
+      if (event.active && !existedBefore && existedAfter) { reachedBase = false; break; }
+    }
+    if (reachedBase) base.graph = writePosition(base.graph, id, position);
+  }
+  const rebuilt = rebuild({ ...history, base }, events, history.redoIds);
+  if (!rebuilt.ok || !sameGraphContent(rebuilt.graph, after)) throw new Error("布局历史无法重建当前图");
+  return rebuilt.history;
+}
+
+type StoredMissing<T> = [string, MissingEntity<T>][];
+export type StoredGraphHistory = Readonly<{
+  version: "history.v1";
+  base: Readonly<{
+    graph: EditableGraph;
+    nodes: StoredMissing<EditableNode>;
+    resources: [string, StoredMissing<EditableResource>][];
+    edges: StoredMissing<GraphEdge>;
+    positions: [string, Position | null][];
+    manualNodes: string[];
+  }>;
+  events: HistoryEntry[];
+  redoIds: string[];
+}>;
+
+/** 显式展开 Map/Set；不保存可重建的 past/future，也不把运行控制器写进浏览器数据库。 */
+export function storeGraphHistory(history: GraphHistory): StoredGraphHistory {
+  return {
+    version: "history.v1",
+    base: { graph: history.base.graph, nodes: [...history.base.nodes], edges: [...history.base.edges],
+      resources: [...history.base.resources].map(([id, missing]) => [id, [...missing]]),
+      positions: [...history.base.positions].map(([id, position]) => [id, position ?? null]),
+      manualNodes: [...history.base.manualNodes] },
+    events: history.events, redoIds: history.redoIds,
+  };
+}
+
+/** 存储是未知输入；这里只校验本地容器，实体字段始终复用唯一 Contract（协议）Schema。 */
+function storedObject(value: unknown): Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)
+      || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) throw new Error("本地撤销历史格式无效");
+  return value as Record<string, unknown>;
+}
+function storedString(value: unknown): string {
+  if (typeof value !== "string" || value.length === 0) throw new Error("本地撤销历史标识无效");
+  return value;
+}
+function storedIds(value: unknown): string[] {
+  if (!Array.isArray(value)) throw new Error("本地撤销历史列表无效");
+  const ids = value.map(storedString);
+  if (new Set(ids).size !== ids.length) throw new Error("本地撤销历史标识重复");
+  return ids;
+}
+function storedPairs<T>(value: unknown, parse: (value: unknown, id: string) => T): Map<string, T> {
+  if (!Array.isArray(value)) throw new Error("本地撤销历史映射无效");
+  const map = new Map<string, T>();
+  for (const entry of value) {
+    if (!Array.isArray(entry) || entry.length !== 2) throw new Error("本地撤销历史映射无效");
+    const id = storedString(entry[0]);
+    if (map.has(id)) throw new Error("本地撤销历史映射重复");
+    map.set(id, parse(entry[1], id));
+  }
+  return map;
+}
+function storedMissing<T extends { id: string }>(value: unknown, id: string, parse: (value: unknown) => T): MissingEntity<T> {
+  const input = storedObject(value), initial = parse(input.initial);
+  if (initial.id !== id) throw new Error("本地撤销历史实体标识不匹配");
+  return { initial,
+    ...(input.order === undefined ? {} : { order: storedIds(input.order) }),
+    ...(input.ownedResourceIds === undefined ? {} : { ownedResourceIds: storedIds(input.ownedResourceIds) }) };
+}
+
+const historyKinds: readonly WorkspaceHistoryKind[] = [
+  "graph.rename", "graph.update", "graph.search", "node.add", "node.edit", "node.delete", "node.search",
+  "resource.add", "resource.edit", "resource.delete", "resource.move", "edge.add", "edge.edit", "edge.delete", "engine.change",
+];
+
+/**
+ * 截断基线可能含等待后续事件消解的临时依赖，不能把完整图约束错误地施加于中间状态。
+ * 因此逐字段复用原 Schema 校验形状，最终重放仍必须通过完整图约束并与保存文档一致。
+ */
+function storedBaseGraph(value: unknown): EditableGraph {
+  const input = storedObject(value), shape = EditableGraphSchema.shape;
+  if (Object.keys(input).some(key => !Object.hasOwn(shape, key))) throw new Error("本地撤销历史图字段无效");
+  return Object.fromEntries((Object.keys(shape) as (keyof typeof shape)[]).flatMap(key => {
+    const parsed = shape[key].parse(input[key]);
+    return parsed === undefined ? [] : [[key, parsed]];
+  })) as EditableGraph;
+}
+
+/**
+ * 恢复只接纳当前版本、当前图与最多100条真实事件；旧文档缺少历史时由调用方建立空基线。
+ * 重做分支和所有派生快照均重新计算；损坏、跨图、矛盾或无法重建的数据必须显式读取失败。
+ */
+export function restoreGraphHistory(value: unknown, document: EditableGraph, limit: number): GraphHistory {
+  const input = storedObject(value), base = storedObject(input.base);
+  if (input.version !== "history.v1" || !Array.isArray(input.events) || input.events.length > limit) throw new Error("本地撤销历史版本或数量无效");
+  const graph = storedBaseGraph(base.graph);
+  if (graph.id !== document.id) throw new Error("本地撤销历史不属于当前搜索图");
+  const events: HistoryEntry[] = input.events.map(value => {
+    const event = storedObject(value), before = EditableGraphSchema.parse(event.before), after = EditableGraphSchema.parse(event.after);
+    if (before.id !== document.id || after.id !== document.id || typeof event.active !== "boolean"
+        || typeof event.kind !== "string" || !historyKinds.includes(event.kind as WorkspaceHistoryKind)
+        || typeof event.subject !== "string") throw new Error("本地撤销事件无效");
+    let scope: WorkspaceHistoryScope | undefined;
+    if (event.scope !== undefined) {
+      const incoming = storedObject(event.scope);
+      if (incoming.type === "graph.replace") scope = { type: incoming.type };
+      else if (incoming.type === "node.append" || incoming.type === "node.replace") scope = { type: incoming.type, nodeId: storedString(incoming.nodeId) };
+      else throw new Error("本地撤销事件作用范围无效");
+    }
+    return { id: storedString(event.id), occurredAt: EditableGraphSchema.shape.createdAt.parse(event.occurredAt),
+      active: event.active, kind: event.kind as WorkspaceHistoryKind, subject: event.subject, before, after,
+      ...(scope === undefined ? {} : { scope }) };
+  });
+  if (new Set(events.map(event => event.id)).size !== events.length) throw new Error("本地撤销事件标识重复");
+  const redoIds = storedIds(input.redoIds);
+  if (redoIds.some(id => !events.some(event => event.id === id && !event.active))) throw new Error("本地重做分支无效");
+  const restored: GraphHistory = { past: [], future: [], events, redoIds, base: {
+    graph,
+    nodes: storedPairs(base.nodes, (value, id) => storedMissing(value, id, value => EditableNodeSchema.parse(value))),
+    resources: storedPairs(base.resources, value => storedPairs(value, (value, id) => storedMissing(value, id, value => EditableResourceSchema.parse(value)))),
+    edges: storedPairs(base.edges, (value, id) => storedMissing(value, id, value => GraphEdgeSchema.parse(value))),
+    positions: storedPairs(base.positions, value => value === null ? undefined : EditableGraphSchema.shape.positions.parse({ value }).value),
+    manualNodes: new Set(storedIds(base.manualNodes)),
+  } };
+  const result = rebuild(restored, events, redoIds);
+  if (!result.ok || !sameGraphContent(result.graph, document)) throw new Error("本地撤销历史与当前搜索图不一致");
+  return result.history;
+}
+
 /** 当前事件集合重新重建，失败不返回半成品，调用方只能保留原图和原历史。 */
 export function undoHistoryEvent(history: GraphHistory, id: string): HistoryChange {
   return rebuild(history, history.events.map(event => event.id === id ? { ...event, active: false } : event),
@@ -366,7 +536,8 @@ export function describeHistory(history: GraphHistory): readonly WorkspaceHistor
 }
 
 /**
- * 新编辑清除重做分支，但保留已撤销事件的会话展示；超限时只把最早有效差异折入基线。
+ * 新编辑清除重做分支，但保留已撤销事件供依赖重放；UI 只展示有效事件。
+ * 超限时只把最早有效差异折入基线，不把派生 past/future 持久化为第二份事实来源。
  * before/after 复用 Store 已校验快照，不额外保存第三份图或通用补丁协议。
  */
 export function appendHistory(
@@ -416,7 +587,5 @@ export function inferHistoryDescription(before: EditableGraph, after: EditableGr
     return { kind: edgeAdded !== undefined ? "edge.add" : edgeRemoved !== undefined ? "edge.delete" : "edge.edit",
       subject: `${nodes.find(node => node.id === edge.source)?.title ?? edge.source} → ${nodes.find(node => node.id === edge.target)?.title ?? edge.target}` };
   }
-  const moved = Object.keys(after.positions).find(id => !same(before.positions[id], after.positions[id]));
-  if (moved !== undefined) return { kind: "node.move", subject: after.nodes.find(node => node.id === moved)?.title ?? after.title };
   return { kind: before.engine !== after.engine ? "engine.change" : "graph.update", subject: after.title };
 }

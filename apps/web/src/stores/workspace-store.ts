@@ -1,7 +1,7 @@
 /**
- * 模块职责：保存可编辑搜索图及每张图独立的会话撤销状态。
+ * 模块职责：保存可编辑搜索图及每张图独立的本地撤销状态。
  * 搜索运行仍由 graph-store 管理；只有明确交付或应用的结果才单向进入工作区。
- * 边界：快照通过 Zod 解析复制，不共享调用方的可变对象；历史不进入持久化文档。
+ * 边界：图与撤销历史分别校验；布局持久保存，但拖动不产生可撤销事件。
  */
 import {
   EditableGraphSchema,
@@ -13,7 +13,7 @@ import {
 import { createStore } from "zustand/vanilla";
 import {
   appendHistory, createGraphHistory, describeHistory, inferHistoryDescription, redoHistoryEvent,
-  sameGraphContent, undoHistoryEvent,
+  onlyGraphLayoutChanged, restoreGraphHistory, sameGraphContent, undoHistoryEvent, updateHistoryLayout,
   type GraphHistory, type WorkspaceHistoryDescription, type WorkspaceHistoryEventView, type WorkspaceHistoryResult,
 } from "./workspace-history.js";
 
@@ -41,7 +41,7 @@ type WorkspaceActions = {
   undo: () => void;
   undoEvent: (eventId: string) => WorkspaceHistoryResult;
   redo: () => void;
-  restoreDocuments: (documents: EditableGraph[], currentId: string | null) => void;
+  restoreDocuments: (documents: EditableGraph[], currentId: string | null, histories?: Readonly<Record<string, unknown>>) => void;
 };
 export type WorkspaceStoreState = WorkspaceData & WorkspaceActions;
 
@@ -127,16 +127,17 @@ export const createWorkspaceStore = (clock: WorkspaceHistoryClock = {}) => creat
       if (previous === undefined) throw new Error("搜索图不存在");
       if (sameGraphContent(previous, document)) return state;
       const history = state.histories[document.id] ?? createGraphHistory(previous);
+      // 纯布局更新不耗费100步额度，也不清除重做；重基线化防止后续撤销把节点拉回旧位置。
+      const nextHistory = description?.scope === undefined && onlyGraphLayoutChanged(previous, document)
+        ? updateHistoryLayout(history, previous, document)
+        : appendHistory(history, previous, document, {
+          ...(description ?? inferHistoryDescription(previous, document)),
+          id: clock.createEventId?.() ?? crypto.randomUUID(),
+          occurredAt: clock.now?.() ?? new Date().toISOString(), active: true,
+        }, WORKSPACE_HISTORY_LIMIT);
       return {
         documents: state.documents.map(item => item.id === document.id ? document : item),
-        histories: {
-          ...state.histories,
-          [document.id]: appendHistory(history, previous, document, {
-            ...(description ?? inferHistoryDescription(previous, document)),
-            id: clock.createEventId?.() ?? crypto.randomUUID(),
-            occurredAt: clock.now?.() ?? new Date().toISOString(), active: true,
-          }, WORKSPACE_HISTORY_LIMIT),
-        },
+        histories: { ...state.histories, [document.id]: nextHistory },
       };
     });
   },
@@ -214,13 +215,18 @@ export const createWorkspaceStore = (clock: WorkspaceHistoryClock = {}) => creat
       };
     });
   },
-  restoreDocuments: (inputs, currentId) => {
+  restoreDocuments: (inputs, currentId, historyInputs) => {
     const documents = inputs.map(document => EditableGraphSchema.parse(document));
     if (new Set(documents.map(document => document.id)).size !== documents.length) throw new Error("搜索图标识重复");
+    if (historyInputs !== undefined && (Object.keys(historyInputs).length !== documents.length
+        || documents.some(document => !Object.hasOwn(historyInputs, document.id)))) throw new Error("本地撤销历史与搜索图记录不匹配");
+    // 所有图和事件先完成校验再一次发布；失败不得清空当前内存图或触发自动覆盖旧库。
+    const histories = Object.fromEntries(documents.map(document => [document.id,
+      historyInputs === undefined ? createGraphHistory(document) : restoreGraphHistory(historyInputs[document.id], document, WORKSPACE_HISTORY_LIMIT)]));
     set({
       ...initialState(), documents,
       currentId: documents.some(document => document.id === currentId) ? currentId : documents[0]?.id ?? null,
-      histories: Object.fromEntries(documents.map(document => [document.id, createGraphHistory(document)])),
+      histories,
     });
   },
 }));

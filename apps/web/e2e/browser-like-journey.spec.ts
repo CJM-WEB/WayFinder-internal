@@ -1168,8 +1168,24 @@ test("真实时间异ID历史先搬源文字再换目标，快速连续切图仅
   expect(await readFixtureSnapshots(page)).toHaveLength(0);
 });
 
-/** 局部拨散以自身基线和远处节点作对照，不与独立拖动风险共用 30 秒测试预算。 */
-test("真实时间hover拨散当前节点颜料后自然聚回，不改变文字布局与存储", async ({ page }, testInfo) => {
+/**
+ * 验证边界：按人员要求，三条 GPU（图形处理器）旅程各使用 40 秒总预算，功能与像素判据保持原样。
+ * 诊断隔离：独立 worker（测试进程）保留 DOM/HAR（页面结构/HTTP 存档）快照与源码；hover 的聚回期限仍为 4 秒。
+ * hover 与加载保留主动采帧，关闭额外 trace 录屏；液体拖动继续保留完整 trace（诊断记录）。
+ */
+const hoverInkTest = test.extend({
+  trace: { mode: "retain-on-failure", screenshots: false, snapshots: true, sources: true },
+});
+const loadingInkTest = test.extend({
+  trace: { mode: "retain-on-failure", screenshots: false, snapshots: true, sources: true },
+});
+const liquidInkTest = test.extend({
+  trace: { mode: "retain-on-failure", screenshots: true, snapshots: true, sources: true },
+});
+
+/** 局部拨散以自身基线和远处节点作对照，与独立拖动风险分开验证。 */
+hoverInkTest("真实时间hover拨散当前节点颜料后自然聚回，不改变文字布局与存储", async ({ page }, testInfo) => {
+  test.setTimeout(40_000);
   const documents = await prepareWaterPage(page);
   const document = documents[0], active = document?.nodes[0], control = document?.nodes[2];
   if (document === undefined || active === undefined || control === undefined) throw new Error("缺少局部水波固定样例");
@@ -1526,7 +1542,7 @@ function createInkWorkspaceDocument(): EditableGraph {
   });
 }
 
-async function openInkWorkspace(page: Page, withInk = false): Promise<EditableGraph> {
+async function openInkWorkspace(page: Page, withInk = false, additionalDocuments: readonly EditableGraph[] = []): Promise<EditableGraph> {
   const document = createInkWorkspaceDocument();
   // 流体本身由独立GPU旅程验证；其余功能同时覆盖真实无WebGL降级路径，避免重复采样Shader。
   if (!withInk) await page.addInitScript(() => {
@@ -1537,7 +1553,7 @@ async function openInkWorkspace(page: Page, withInk = false): Promise<EditableGr
       },
     });
   });
-  await prepareWaterPage(page, [document], withInk);
+  await prepareWaterPage(page, [document, ...additionalDocuments], withInk);
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.getByRole("button", { name: "开始探索", exact: true }).click();
   await expect(page.locator(".graph-canvas--ink")).toHaveAttribute("data-ink-content-state", "ready");
@@ -1675,6 +1691,374 @@ test("墨迹工作区撤销队列保留后续改名并正确重放，支持重�
   await page.getByRole("button", { name: "撤销", exact: true }).click();
   await page.getByRole("button", { name: "恢复搜索图", exact: true }).click();
   await expect(page.locator('[data-ink-node="workspace-node-0"] h3')).toHaveText("最后名称");
+  expect(await readFixtureSnapshots(page)).toHaveLength(0);
+});
+
+/** 真实本地数据库跨刷新和重开恢复有界历史，移动不占事件且不破坏重做或最新坐标。 */
+test("墨迹撤销队列隐藏已撤销事件，刷新重开恢复且移动不入栈并按图隔离", async ({ page, context }) => {
+  const other = EditableGraphSchema.parse({ ...createInkWorkspaceDocument(), id: "ink-workspace-other", title: "另一张搜索图" });
+  const document = await openInkWorkspace(page, false, [other]);
+  const nodeId = "workspace-node-0";
+  let moved = await dragInkNode(page, 45, 25, nodeId);
+  await expectSavedInkPosition(page, document.id, moved, nodeId);
+  await openInkUndo(page);
+  const panel = page.getByRole("region", { name: "撤销记录", exact: true });
+  await expect(panel.locator("[data-ink-undo-event]")).toHaveCount(0);
+  await panel.press("Escape");
+  for (const title of ["持久中间名", "持久最终名"]) {
+    await openInkNodeMenu(page, nodeId);
+    await page.getByRole("menuitem", { name: "编辑节点", exact: true }).click();
+    const form = page.getByRole("dialog", { name: "编辑节点", exact: true });
+    await form.getByRole("textbox", { name: "节点标题", exact: true }).fill(title);
+    await form.getByRole("button", { name: "保存节点", exact: true }).click();
+  }
+  await openInkUndo(page);
+  const earlier = panel.locator("[data-ink-undo-event]").filter({ hasText: "资料入口 → 持久中间名" });
+  const later = panel.locator("[data-ink-undo-event]").filter({ hasText: "持久中间名 → 持久最终名" });
+  const occurredAt = await later.locator("time").getAttribute("datetime");
+  await earlier.getByRole("button", { name: /^撤销：/ }).click();
+  await expect(earlier).toHaveCount(0);
+  await expect(later).toHaveCount(1);
+  await expectInkPosition(page, moved, nodeId);
+  await expectSavedInkPosition(page, document.id, moved, nodeId);
+  await expect.poll(async () => (await readStoredWorkspace(page))?.documents[0]?.nodes[0]?.title).toBe("持久最终名");
+
+  await page.reload();
+  await page.getByRole("button", { name: "开始探索", exact: true }).click();
+  await openInkUndo(page);
+  await expect(panel.locator("[data-ink-undo-event]")).toHaveCount(1);
+  await expect(later.locator("time")).toHaveAttribute("datetime", occurredAt ?? "");
+  await expect(panel.getByRole("button", { name: "重做", exact: true })).toBeEnabled();
+  await panel.getByRole("button", { name: "重做", exact: true }).click();
+  await expect(panel.locator("[data-ink-undo-event]")).toHaveCount(2);
+  await later.getByRole("button", { name: /^撤销：/ }).click();
+  await expect(later).toHaveCount(0);
+  await expect.poll(async () => (await readStoredWorkspace(page))?.documents[0]?.nodes[0]?.title).toBe("持久中间名");
+  await panel.press("Escape");
+  moved = await dragInkNode(page, 35, 20, nodeId);
+  await expectSavedInkPosition(page, document.id, moved, nodeId);
+  await openInkUndo(page);
+  await expect(panel.locator("[data-ink-undo-event]")).toHaveCount(1);
+  await expect(panel.getByRole("button", { name: "重做", exact: true })).toBeEnabled();
+  await page.reload();
+  await page.getByRole("button", { name: "开始探索", exact: true }).click();
+  await openInkUndo(page);
+  await panel.getByRole("button", { name: "重做", exact: true }).click();
+  await expect(panel.locator("[data-ink-undo-event]")).toHaveCount(2);
+  await expectInkPosition(page, moved, nodeId);
+  await expectSavedInkPosition(page, document.id, moved, nodeId);
+
+  // 切图只恢复所属队列；另一张图不得继承当前图的撤销或重做。
+  await page.locator(".ink-study__history-dock").hover();
+  await page.getByRole("button", { name: "搜索历史", exact: true }).click();
+  await page.getByRole("button", { name: "另一张搜索图", exact: true }).click();
+  await openInkUndo(page);
+  await expect(panel.locator("[data-ink-undo-event]")).toHaveCount(0);
+  await expect(panel.getByRole("button", { name: "重做", exact: true })).toBeDisabled();
+  await page.locator(".ink-study__history-dock").hover();
+  await page.getByRole("button", { name: "搜索历史", exact: true }).click();
+  await page.getByRole("button", { name: "墨迹工作区", exact: true }).click();
+  await openInkUndo(page);
+  await expect(panel.locator("[data-ink-undo-event]")).toHaveCount(2);
+  expect(await readFixtureSnapshots(page)).toHaveLength(0);
+
+  // 新标签复用同一浏览器存储，以原入口实际执行恢复后的撤销，保证两入口共用一套状态。
+  const reopened = await context.newPage();
+  await installBrowserFixture(reopened, createJourneyEvents());
+  await reopened.goto("/");
+  await expect(reopened.getByRole("complementary", { name: "搜索图记录" }).getByRole("status")).toHaveText("已保存到本浏览器");
+  await expect(reopened.getByRole("heading", { name: "持久最终名", exact: true })).toBeVisible();
+  await reopened.getByRole("button", { name: "撤销", exact: true }).click();
+  await expect(reopened.getByRole("heading", { name: "持久中间名", exact: true })).toBeVisible();
+  await expectSavedInkPosition(reopened, document.id, moved, nodeId);
+  expect(await readFixtureSnapshots(reopened)).toHaveLength(0);
+  await reopened.close();
+});
+
+/** 逐帧读取条目自身的 translate，避免把父抽屉运动误认为列表错峰。 */
+test("两类历史逐条S曲线上滑且撤销行退场消失，底部胶囊分开并在离开后合回", async ({ page }, testInfo) => {
+  const other = EditableGraphSchema.parse({ ...createInkWorkspaceDocument(), id: "motion-history-other", title: "动效第二图" });
+  await openInkWorkspace(page, false, [other]);
+  for (const title of ["动效中间名", "动效最终名"]) {
+    await openInkNodeMenu(page);
+    await page.getByRole("menuitem", { name: "编辑节点", exact: true }).click();
+    const form = page.getByRole("dialog", { name: "编辑节点", exact: true });
+    await form.getByRole("textbox", { name: "节点标题", exact: true }).fill(title);
+    await form.getByRole("button", { name: "保存节点", exact: true }).click();
+  }
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  const dock = page.locator(".ink-study__history-dock");
+  const historyButton = page.getByRole("button", { name: "搜索历史", exact: true });
+  const undoButton = page.getByRole("button", { name: "撤销", exact: true });
+  await dock.hover();
+  await expect.poll(async () => {
+    const history = await historyButton.boundingBox(), undo = await undoButton.boundingBox();
+    return history === null || undo === null ? 0 : undo.x - history.x - history.width;
+  }).toBeGreaterThan(10);
+  await expect(dock).toHaveCSS("width", "188px");
+  const historyBounds = await historyButton.boundingBox(), undoBounds = await undoButton.boundingBox();
+  if (historyBounds === null || undoBounds === null) throw new Error("缺少展开胶囊");
+  // 从两按钮间的透明留白穿过，命中桥保持展开，不抖动收回。
+  await page.mouse.move(historyBounds.x + historyBounds.width + 6, historyBounds.y + historyBounds.height / 2);
+  await expect(dock).toHaveAttribute("data-expanded", "true");
+  await page.mouse.move(0, 0);
+  await expect(dock).toHaveAttribute("data-expanded", "false");
+  await expect(historyButton).toHaveCSS("width", "40px");
+  await expect(page.locator(".ink-study__undo-toggle")).toHaveAttribute("inert", "");
+
+  const sampleEntryMotion = async (selector: string, trigger: () => Promise<void>) => {
+    const pending = page.evaluate(selector => new Promise<readonly Readonly<{ at: number; y: readonly number[]; opacity: readonly number[]; easing: string }>[]>((resolve, reject) => {
+      const panel = document.querySelector(selector);
+      if (!(panel instanceof HTMLElement)) throw new Error("缺少待采样历史面板");
+      const frames: { at: number; y: number[]; opacity: number[]; easing: string }[] = [];
+      let raf = 0;
+      const timeout = window.setTimeout(() => { observer.disconnect(); cancelAnimationFrame(raf); reject(new Error("历史条目入场未开始")); }, 5_000);
+      const observer = new MutationObserver(() => {
+        if (panel.dataset.active !== "true") return;
+        observer.disconnect();
+        const start = performance.now();
+        const frame = (): void => {
+          const styles = [...panel.querySelectorAll(".ink-history-entry")].slice(0, 2).map(entry => getComputedStyle(entry));
+          frames.push({ at: performance.now() - start, y: styles.map(style => Number.parseFloat(style.translate.split(" ")[1] ?? "0")),
+            opacity: styles.map(style => Number(style.opacity)), easing: styles[0]?.animationTimingFunction ?? "" });
+          if (performance.now() - start < 850) raf = requestAnimationFrame(frame);
+          else { window.clearTimeout(timeout); resolve(frames); }
+        };
+        raf = requestAnimationFrame(frame);
+      });
+      observer.observe(panel, { attributes: true, attributeFilter: ["data-active"] });
+    }), selector);
+    await trigger();
+    const frames = await pending;
+    expect(frames[0]?.y[0]).toBeGreaterThan(20);
+    expect(frames.some(frame => (frame.y[1] ?? 0) - (frame.y[0] ?? 0) > 3)).toBe(true);
+    expect(frames.some(frame => frame.easing.includes("cubic-bezier"))).toBe(true);
+    expect(frames.at(-1)?.y).toEqual([0, 0]);
+    return frames;
+  };
+  const historyFrames = await sampleEntryMotion("#ink-search-history", async () => { await historyButton.click(); });
+  await page.keyboard.press("Escape");
+  const undoFrames = await sampleEntryMotion("#ink-undo-history", async () => { await dock.hover(); await undoButton.click(); });
+  const panel = page.getByRole("region", { name: "撤销记录", exact: true });
+  const event = panel.locator("[data-ink-undo-event]").first();
+  const eventId = await event.getAttribute("data-ink-undo-event");
+  if (eventId === null) throw new Error("缺少撤销事件标识");
+  const leavingFrames = page.evaluate(id => new Promise<readonly Readonly<{ y: number; opacity: number; nextTop: number; removed: boolean }>[]>((resolve, reject) => {
+    const entry = document.querySelector(`[data-ink-undo-event="${id}"]`);
+    if (!(entry instanceof HTMLElement)) throw new Error("缺少退场事件");
+    const next = entry.nextElementSibling;
+    if (!(next instanceof HTMLElement)) throw new Error("缺少退场后应上移的邻行");
+    const frames: { y: number; opacity: number; nextTop: number; removed: boolean }[] = [];
+    let raf = 0;
+    const timeout = window.setTimeout(() => { observer.disconnect(); cancelAnimationFrame(raf); reject(new Error("撤销行未退场移除")); }, 5_000);
+    const observer = new MutationObserver(() => {
+      if (entry.dataset.leaving !== "true") return;
+      observer.disconnect();
+      const frame = (): void => {
+        if (!entry.isConnected) {
+          frames.push({ y: -28, opacity: 0, nextTop: next.getBoundingClientRect().top, removed: true });
+          window.clearTimeout(timeout); resolve(frames); return;
+        }
+        const style = getComputedStyle(entry);
+        frames.push({ y: Number.parseFloat(style.translate.split(" ")[1] ?? "0"), opacity: Number(style.opacity),
+          nextTop: next.getBoundingClientRect().top, removed: false });
+        raf = requestAnimationFrame(frame);
+      };
+      raf = requestAnimationFrame(frame);
+    });
+    observer.observe(entry, { attributes: true, attributeFilter: ["data-leaving"] });
+  }), eventId);
+  await event.getByRole("button", { name: /^撤销：/ }).click();
+  const leave = await leavingFrames;
+  expect(leave.some(frame => frame.opacity > .05 && frame.opacity < .95 && frame.y < -2)).toBe(true);
+  const last = leave.at(-1), penultimate = leave.at(-2), initial = leave[0];
+  if (last === undefined || penultimate === undefined || initial === undefined) throw new Error("缺少退场邻行位移证据");
+  expect(last.removed).toBe(true);
+  expect(initial.nextTop - last.nextTop).toBeGreaterThan(30);
+  expect(Math.abs(last.nextTop - penultimate.nextTop)).toBeLessThan(2);
+  await expect(panel.locator(`[data-ink-undo-event="${eventId}"]`)).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  await openInkUndo(page);
+  await expect(panel.locator("[data-ink-undo-event]").first()).toHaveCSS("--ink-history-delay", "0ms");
+  await expect(panel.locator("[data-ink-undo-event]").first()).toHaveCSS("translate", "none");
+  await dock.hover();
+  await expect(dock).toHaveCSS("width", "188px");
+  await page.screenshot({ path: testInfo.outputPath("ink-history-pills-and-undo.png"), animations: "disabled" });
+  await writeFile(testInfo.outputPath("ink-history-motion.json"), JSON.stringify({ historyFrames, undoFrames, leave }, null, 2));
+  expect(await readFixtureSnapshots(page)).toHaveLength(0);
+});
+
+/** 连体背景跟随父抽屉完整下滑；逐 RAF 排除 360ms 内层淡出掩盖半程运动的回归。 */
+test("历史与撤销面板连接两个按钮并随共同箭头完整滑出，关闭期间不提前淡出", async ({ page }, testInfo) => {
+  await openInkWorkspace(page);
+  await openInkNodeMenu(page);
+  await page.getByRole("menuitem", { name: "编辑节点", exact: true }).click();
+  const form = page.getByRole("dialog", { name: "编辑节点", exact: true });
+  await form.getByRole("textbox", { name: "节点标题", exact: true }).fill("连体面板记录");
+  await form.getByRole("button", { name: "保存节点", exact: true }).click();
+  await page.getByRole("button", { name: "收起资源", exact: true }).click();
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  const dock = page.locator(".ink-study__history-dock");
+  const drawer = page.locator(".ink-study__history-drawer");
+  const evidence: Record<string, unknown> = {};
+  type SplitFrame = Readonly<{ at: number; panelTop: number; dockBottom: number; historyBottom: number; undoBottom: number; gap: number }>;
+  const sampleSplit = async (expanded: boolean): Promise<readonly SplitFrame[]> => {
+    const pending = page.evaluate(expanded => new Promise<readonly SplitFrame[]>((resolve, reject) => {
+      const dock = document.querySelector(".ink-study__history-dock"), drawer = dock?.parentElement;
+      const history = dock?.querySelector(".ink-study__history-toggle"), undo = dock?.querySelector(".ink-study__undo-toggle");
+      if (!(dock instanceof HTMLElement) || drawer === null || drawer === undefined || history === null || history === undefined
+          || undo === null || undo === undefined) throw new Error("缺少分裂按钮的真实几何");
+      const read = (at: number): SplitFrame => ({ at, panelTop: drawer.getBoundingClientRect().top,
+        dockBottom: dock.getBoundingClientRect().bottom, historyBottom: history.getBoundingClientRect().bottom,
+        undoBottom: undo.getBoundingClientRect().bottom, gap: undo.getBoundingClientRect().left - history.getBoundingClientRect().right });
+      const frames: SplitFrame[] = [read(0)];
+      let raf = 0;
+      const timeout = window.setTimeout(() => { observer.disconnect(); cancelAnimationFrame(raf); reject(new Error("按钮分裂/合回未开始")); }, 3_000);
+      const observer = new MutationObserver(() => {
+        if (dock.dataset.expanded !== String(expanded)) return;
+        observer.disconnect();
+        const started = performance.now();
+        const frame = (): void => {
+          const at = performance.now() - started;
+          frames.push(read(at));
+          if (at < 550) raf = requestAnimationFrame(frame);
+          else { window.clearTimeout(timeout); resolve(frames); }
+        };
+        raf = requestAnimationFrame(frame);
+      });
+      observer.observe(dock, { attributes: true, attributeFilter: ["data-expanded"] });
+    }), expanded);
+    if (expanded) await dock.hover();
+    else await page.mouse.move(0, 0);
+    const frames = await pending;
+    expect(Math.abs((frames[0]?.gap ?? Infinity) - (expanded ? 0 : 12))).toBeLessThan(.2);
+    expect(Math.abs((frames.at(-1)?.gap ?? Infinity) - (expanded ? 12 : 0))).toBeLessThan(.2);
+    expect(frames.filter(frame => frame.gap > .5 && frame.gap < 11.5).length).toBeGreaterThan(3);
+    for (const [index, frame] of frames.entries()) {
+      expect(Math.abs(frame.panelTop - frame.dockBottom)).toBeLessThan(1);
+      expect(Math.abs(frame.panelTop - frame.historyBottom)).toBeLessThan(1);
+      expect(Math.abs(frame.panelTop - frame.undoBottom)).toBeLessThan(1);
+      const previous = frames[index - 1];
+      if (previous === undefined) continue;
+      const change = frame.gap - previous.gap;
+      expect(expanded ? change : -change).toBeGreaterThanOrEqual(-.05);
+      // 按真实帧间隔限制位移，允许低帧率仍按同一 S 曲线推进，拒绝间距突然跳到终值。
+      expect(Math.abs(change)).toBeLessThanOrEqual((frame.at - previous.at) / 420 * 12 * 3 + .15);
+    }
+    return frames;
+  };
+  const closedSplit = await sampleSplit(true);
+  await page.screenshot({ path: testInfo.outputPath("ink-closed-split-tabs.png") });
+  evidence.closed = { split: closedSplit, merge: await sampleSplit(false) };
+  for (const kind of ["history", "undo"] as const) {
+    const selector = kind === "history" ? "#ink-search-history" : "#ink-undo-history";
+    const panel = page.locator(selector);
+    await dock.hover();
+    await page.getByRole("button", { name: kind === "history" ? "搜索历史" : "撤销", exact: true }).click();
+    await expect(drawer).toHaveAttribute("data-present-panel", kind);
+    await expect(panel).toBeFocused();
+    await expect.poll(() => panel.evaluate(element => {
+      const stage = element.closest(".ink-study__stage")?.getBoundingClientRect();
+      return stage === undefined ? Infinity : Math.abs(element.getBoundingClientRect().top - stage.top - stage.height * .095);
+    })).toBeLessThan(1);
+    await page.mouse.move(0, 0);
+    await expect(dock).toHaveCSS("width", "40px");
+    const split = await sampleSplit(true);
+    await expect(dock).toHaveCSS("width", "188px");
+    const connection = await dock.evaluate((element, kind) => {
+      const panel = element.parentElement?.querySelector(kind === "history" ? "#ink-search-history" : "#ink-undo-history");
+      const history = element.querySelector(".ink-study__history-toggle"), undo = element.querySelector(".ink-study__undo-toggle");
+      if (panel === null || panel === undefined || history === null || undo === null) throw new Error("缺少连体按钮或面板");
+      const selected = kind === "history" ? history : undo, other = kind === "history" ? undo : history;
+      const edge = panel.getBoundingClientRect().top, style = getComputedStyle(selected);
+      return { connectedGap: Math.abs(selected.getBoundingClientRect().bottom - edge), otherGap: Math.abs(edge - other.getBoundingClientRect().bottom),
+        horizontalGap: undo.getBoundingClientRect().left - history.getBoundingClientRect().right,
+        bottomBorder: style.borderBottomWidth, bottomRadius: style.borderBottomLeftRadius,
+        sameColor: style.backgroundColor === getComputedStyle(panel).backgroundColor,
+        otherBottomBorder: getComputedStyle(other).borderBottomWidth, otherBottomRadius: getComputedStyle(other).borderBottomLeftRadius,
+        otherSameColor: getComputedStyle(other).backgroundColor === getComputedStyle(panel).backgroundColor };
+    }, kind);
+    expect(connection.connectedGap).toBeLessThan(1);
+    expect(connection.otherGap).toBeLessThan(1);
+    expect(connection.horizontalGap).toBeGreaterThan(10);
+    expect(connection.bottomBorder).toBe("0px");
+    expect(connection.bottomRadius).toBe("0px");
+    expect(connection.sameColor).toBe(true);
+    expect(connection.otherBottomBorder).toBe("0px");
+    expect(connection.otherBottomRadius).toBe("0px");
+    expect(connection.otherSameColor).toBe(true);
+    await page.screenshot({ path: testInfo.outputPath(`ink-${kind}-attached-panel.png`) });
+    // 两种面板离开按钮后均回到同一个40px箭头连接柄，不能留下悬空胶囊。
+    const merge = await sampleSplit(false);
+    await expect(dock).toHaveAttribute("data-expanded", "false");
+    await expect(page.locator(".ink-study__history-toggle")).toHaveCSS("width", "40px");
+    await expect.poll(() => panel.evaluate(element => {
+      const button = element.parentElement?.querySelector(".ink-study__history-toggle");
+      return button === null || button === undefined ? Infinity : Math.abs(element.getBoundingClientRect().top - button.getBoundingClientRect().bottom);
+    })).toBeLessThan(1);
+    const closing = page.evaluate(selector => new Promise<readonly Readonly<{
+      at: number; panelTop: number; dockBottom: number; arrowBottom: number; stageBottom: number;
+      opacity: number; visibility: string; present: string; inert: boolean; hidden: string | null; easing: string;
+    }>[]>((resolve, reject) => {
+      const panel = document.querySelector(selector), drawer = panel?.parentElement;
+      const dock = drawer?.querySelector(".ink-study__history-dock"), arrow = drawer?.querySelector(".ink-study__history-toggle");
+      const stage = drawer?.closest(".ink-study__stage");
+      if (!(panel instanceof HTMLElement) || !(drawer instanceof HTMLElement) || dock === null || dock === undefined
+          || arrow === null || arrow === undefined || stage === null || stage === undefined) throw new Error("缺少整块下滑的真实元素");
+      const frames: { at: number; panelTop: number; dockBottom: number; arrowBottom: number; stageBottom: number;
+        opacity: number; visibility: string; present: string; inert: boolean; hidden: string | null; easing: string }[] = [];
+      let raf = 0;
+      const timeout = window.setTimeout(() => { observer.disconnect(); cancelAnimationFrame(raf); reject(new Error("连体面板未完整退出")); }, 3_000);
+      const observer = new MutationObserver(() => {
+        if (panel.dataset.active !== "false") return;
+        observer.disconnect();
+        const started = performance.now();
+        const frame = (): void => {
+          const style = getComputedStyle(panel);
+          frames.push({ at: performance.now() - started, panelTop: panel.getBoundingClientRect().top, dockBottom: dock.getBoundingClientRect().bottom,
+            arrowBottom: arrow.getBoundingClientRect().bottom, stageBottom: stage.getBoundingClientRect().bottom,
+            opacity: Number(style.opacity), visibility: style.visibility, present: drawer.dataset.presentPanel ?? "none",
+            inert: panel.inert, hidden: panel.getAttribute("aria-hidden"), easing: getComputedStyle(drawer).transitionTimingFunction });
+          if (drawer.dataset.presentPanel === "none" && style.visibility === "hidden") { window.clearTimeout(timeout); resolve(frames); }
+          else raf = requestAnimationFrame(frame);
+        };
+        raf = requestAnimationFrame(frame);
+      });
+      observer.observe(panel, { attributes: true, attributeFilter: ["data-active"] });
+    }), selector);
+    const stage = await page.locator(".ink-study__stage").boundingBox();
+    if (stage === null) throw new Error("缺少外点关闭位置");
+    await page.mouse.click(stage.x + 5, stage.y + 5);
+    const frames = await closing, first = frames[0], last = frames.at(-1);
+    if (first === undefined || last === undefined) throw new Error("缺少连体退场帧");
+    expect(frames.length).toBeGreaterThan(15);
+    expect(last.panelTop - first.panelTop).toBeGreaterThan(500);
+    expect(frames.some(frame => frame.at > 450 && frame.panelTop < frame.stageBottom - 12)).toBe(true);
+    for (const frame of frames) {
+      expect(Math.abs(frame.panelTop - frame.dockBottom)).toBeLessThan(1);
+      expect(Math.abs(frame.panelTop - frame.arrowBottom)).toBeLessThan(1);
+      expect(frame.inert).toBe(true);
+      expect(frame.hidden).toBe("true");
+      expect(frame.easing).toContain("cubic-bezier");
+      if (frame.present === kind && frame.panelTop < frame.stageBottom - 1) {
+        expect(frame.opacity).toBe(1);
+        expect(frame.visibility).toBe("visible");
+      }
+    }
+    const visible = frames.filter(frame => frame.present === kind);
+    expect(visible.at(-1)?.panelTop ?? 0).toBeGreaterThan(last.stageBottom - 2);
+    expect(last.present).toBe("none");
+    expect(last.visibility).toBe("hidden");
+    evidence[kind] = { connection, split, merge, frames };
+  }
+  // 减少动态仍立即收回并隔离，不能被940ms视觉持有延迟。
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.getByRole("button", { name: "搜索历史", exact: true }).click();
+  await expect(drawer).toHaveAttribute("data-present-panel", "history");
+  await page.keyboard.press("Escape");
+  await expect(drawer).toHaveAttribute("data-present-panel", "none");
+  await expect(page.locator("#ink-search-history")).toHaveAttribute("inert", "");
+  await writeFile(testInfo.outputPath("ink-attached-drawer-motion.json"), JSON.stringify(evidence, null, 2));
   expect(await readFixtureSnapshots(page)).toHaveLength(0);
 });
 
@@ -2364,7 +2748,8 @@ test("联系作者点击复制真实邮箱，拒绝剪贴板权限时显示失�
 });
 
 /** 有效请求才进入融合态；同一三个控件保留 DOM 身份，并以真实取消恢复交互。 */
-test("有效搜索将三组件融合为中心停止圆，墨迹保持中心且取消中止真实运行", async ({ page }, testInfo) => {
+loadingInkTest("有效搜索将三组件融合为中心停止圆，墨迹保持中心且取消中止真实运行", async ({ page }, testInfo) => {
+  test.setTimeout(40_000);
   await installBrowserFixture(page, createJourneyEvents());
   await page.emulateMedia({ reducedMotion: "no-preference" });
   await page.goto("/ink-study.html");
@@ -2374,8 +2759,10 @@ test("有效搜索将三组件融合为中心停止圆，墨迹保持中心且�
   const shell = page.locator(".ink-study__search");
   const engine = page.locator(".ink-study__engine");
   const submit = page.locator(".ink-study__search-submit");
-  const handles = await Promise.all([shell.elementHandle(), engine.elementHandle(), submit.elementHandle()]);
-  const canvas = await page.locator(".ink-study__canvas").elementHandle();
+  // 同一时刻取得四个原始 DOM 身份，避免重 GPU 场景额外的串行自动快照开销。
+  const captured = await Promise.all([shell.elementHandle(), engine.elementHandle(), submit.elementHandle(),
+    page.locator(".ink-study__canvas").elementHandle()]);
+  const handles = captured.slice(0, 3), canvas = captured[3];
   await input.fill("验证中心墨迹与取消");
   await input.press("Enter");
   const stage = page.locator(".ink-study__stage");
@@ -2451,12 +2838,31 @@ test("有效搜索将三组件融合为中心停止圆，墨迹保持中心且�
   await stop.click();
   await expect.poll(async () => (await readFixtureSnapshots(page))[0])
     .toMatchObject({ aborted: true, cancelled: true });
-  await expect(stage).toHaveAttribute("data-search-state", "input");
-  await expect(input).toBeFocused();
-  await expect(input).toHaveValue("验证中心墨迹与取消");
-  await expect(page.getByRole("button", { name: "搜索", exact: true })).toBeEnabled();
-  await expect(page.getByRole("button", { name: "搜索引擎：百度", exact: true })).toBeVisible();
-  await expect(page.locator("[data-ink-node]")).toHaveCount(0);
+  // 取消后的原断言在同一帧取齐；仍核对原生角色、名称、可见性与 aria/inert，不能命中隐藏控件冒充恢复。
+  await expect.poll(() => page.evaluate(() => {
+    const input = document.querySelector(".ink-study__search-input");
+    const submit = document.querySelector(".ink-study__search-submit");
+    const engine = document.querySelector(".ink-study__engine > button");
+    const accessible = (element: Element | null): boolean => element !== null && !element.closest('[inert], [aria-hidden="true"]');
+    const visible = (element: Element | null): boolean => {
+      if (element === null) return false;
+      const bounds = element.getBoundingClientRect(), style = getComputedStyle(element);
+      return bounds.width > 0 && bounds.height > 0 && style.visibility === "visible";
+    };
+    return {
+      state: document.querySelector(".ink-study__stage")?.getAttribute("data-search-state"),
+      input: { focused: document.activeElement === input, value: input instanceof HTMLInputElement ? input.value : null,
+        label: input?.getAttribute("aria-label"), accessible: accessible(input) },
+      submit: { role: submit?.tagName, label: submit?.getAttribute("aria-label"), accessible: accessible(submit),
+        visible: visible(submit), enabled: submit instanceof HTMLButtonElement && !submit.disabled },
+      engine: { role: engine?.tagName, label: engine?.getAttribute("aria-label"), accessible: accessible(engine), visible: visible(engine) },
+      nodes: document.querySelectorAll("[data-ink-node]").length,
+    };
+  })).toEqual({
+    state: "input", input: { focused: true, value: "验证中心墨迹与取消", label: "搜索任意主题", accessible: true },
+    submit: { role: "BUTTON", label: "搜索", accessible: true, visible: true, enabled: true },
+    engine: { role: "BUTTON", label: "搜索引擎：百度", accessible: true, visible: true }, nodes: 0,
+  });
 });
 
 /**
@@ -2562,7 +2968,8 @@ test("已有图回首页聚合再分裂恢复，新建与快速逆转不丢原�
 });
 
 /** GPU 的液体表面允许运动，真实节点文字与连线仍固定在业务布局；拖动最终只提交一次真实坐标。 */
-test("液体墨团持续变化但文字布局不漂移，拖动后落定并保存", async ({ page }, testInfo) => {
+liquidInkTest("液体墨团持续变化但文字布局不漂移，拖动后落定并保存", async ({ page }, testInfo) => {
+  test.setTimeout(40_000);
   const events = createInkMotionEvents();
   await installBrowserFixture(page, events);
   await page.emulateMedia({ reducedMotion: "reduce" });
@@ -2586,7 +2993,13 @@ test("液体墨团持续变化但文字布局不漂移，拖动后落定并保�
   }));
   const after = await captureInkRaster(page, testInfo.outputPath("ink-liquid-surface-1.png"));
   expect(changedInkPixels(before, after)).toBeGreaterThan(20);
-  for (const item of positions) await expectInkPosition(page, item.position, item.id);
+  // 四个世界坐标在同一帧取齐，精度仍为原来的0.02；减少重 GPU 下串行诊断快照的额外等待。
+  await expect.poll(() => page.evaluate(items => Math.max(0, ...items.map(item => {
+    const elements = document.querySelectorAll(`.react-flow__node[data-id="${item.id}"]`);
+    if (elements.length !== 1) return Infinity;
+    const transform = new DOMMatrix(getComputedStyle(elements[0]!).transform);
+    return Math.max(Math.abs(transform.m41 - item.position.x), Math.abs(transform.m42 - item.position.y));
+  })), positions)).toBeLessThan(0.02);
   const first = page.locator(`[data-ink-node="${READY_NODE_ID}"]`);
   const heading = await first.getByRole("heading").boundingBox();
   if (heading === null) throw new Error("液体节点缺少真实拖动标题");
@@ -3480,7 +3893,7 @@ test("手动节点与资源支持编辑、全图去重定位、拖拽排序和�
   await expect(cards).toHaveCount(7);
   await expect(cards.first().getByRole("heading", { level: 3 })).toHaveText("resource-1.example.com");
   await expect(cards.nth(1).getByText("我写的网页说明", { exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "撤销", exact: true })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "撤销", exact: true })).toBeEnabled();
   await page.getByRole("button", { name: "删除节点", exact: true }).click();
   await expect(page.locator(".react-flow__node")).toHaveCount(1);
   await page.getByRole("button", { name: "撤销", exact: true }).click();
@@ -3488,8 +3901,8 @@ test("手动节点与资源支持编辑、全图去重定位、拖拽排序和�
   expect(await readFixtureSnapshots(page)).toHaveLength(0);
 });
 
-/** 布局与关系走真实画布手势；临时拖动只形成一次可撤销提交。 */
-test("节点拖动与连线编辑可撤销并持久保存，相关可成环而推荐顺序不可成环", async ({ page }) => {
+/** 布局与关系走真实画布手势；移动仅保存位置，其他编辑的撤销不能回退后续位置。 */
+test("节点移动不入撤销且保留最新布局，连线可撤销并持久保存", async ({ page }) => {
   const pageErrors: string[] = [];
   const flowWarnings: string[] = [];
   page.on("pageerror", error => pageErrors.push(error.message));
@@ -3504,6 +3917,8 @@ test("节点拖动与连线编辑可撤销并持久保存，相关可成环而�
   };
   await addNode("布局甲");
   await addNode("布局乙");
+  const originalTitle = (await readStoredWorkspace(page))?.documents[0]?.title;
+  if (originalTitle === undefined) throw new Error("缺少手动图初始名称");
   await sidebar.getByRole("button", { name: "重命名", exact: true }).click();
   await sidebar.getByRole("textbox", { name: "记录名称" }).fill("布局图");
   await sidebar.getByRole("button", { name: "保存名称" }).click();
@@ -3521,17 +3936,20 @@ test("节点拖动与连线编辑可撤销并持久保存，相关可成环而�
   await expect(firstNode).not.toHaveCSS("transform", before);
   const after = await firstNode.evaluate(element => getComputedStyle(element).transform);
   await page.getByRole("button", { name: "撤销", exact: true }).click();
-  await expect(firstNode).toHaveCSS("transform", before);
+  await expect(firstNode).toHaveCSS("transform", after);
+  await expect.poll(async () => (await readStoredWorkspace(page))?.documents[0]?.title).toBe(originalTitle);
   await page.getByRole("button", { name: "重做", exact: true }).click();
   await expect(firstNode).toHaveCSS("transform", after);
-  // 方向键不触发指针 DragStop，也必须保存为独立一步并可恢复。
+  await expect.poll(async () => (await readStoredWorkspace(page))?.documents[0]?.title).toBe("布局图");
+  // 方向键和指针移动采用同一保存规则，均不占用编辑事件或清空重做。
   await firstNode.focus();
   await firstNode.press("ArrowRight");
   await expect(firstNode).not.toHaveCSS("transform", after);
   const keyboardAfter = await firstNode.evaluate(element => getComputedStyle(element).transform);
   await expect(sidebar.getByRole("status")).toHaveText("已保存到本浏览器");
   await page.getByRole("button", { name: "撤销", exact: true }).click();
-  await expect(firstNode).toHaveCSS("transform", after);
+  await expect(firstNode).toHaveCSS("transform", keyboardAfter);
+  await expect.poll(async () => (await readStoredWorkspace(page))?.documents[0]?.title).toBe(originalTitle);
   await page.getByRole("button", { name: "重做", exact: true }).click();
   await expect(firstNode).toHaveCSS("transform", keyboardAfter);
 
@@ -3579,7 +3997,7 @@ test("节点拖动与连线编辑可撤销并持久保存，相关可成环而�
   await page.reload();
   await expect(firstNode).toHaveCSS("transform", keyboardAfter);
   await expect(page.locator(".react-flow__edge")).toHaveCount(2);
-  await expect(page.getByRole("button", { name: "撤销", exact: true })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "撤销", exact: true })).toBeEnabled();
   expect(await readFixtureSnapshots(page)).toHaveLength(0);
   expect(pageErrors).toEqual([]);
   expect(flowWarnings).toEqual([]);

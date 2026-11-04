@@ -3,13 +3,14 @@
  * 范围边界：选图、重命名、删除均复用工作区，不搜索、不复制保存逻辑；撤销入口另行呈现。
  * 交互边界：外点与焦点移出只收起；Esc 和触发按钮关闭时才请求恢复搜索焦点。
  */
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 import { useStore } from "zustand";
 import type { SearchLanguage } from "@wayfinder/contracts";
 import { getMessages } from "../i18n/messages.js";
 import { workspaceStore } from "../stores/workspace-store.js";
 import { workspacePersistenceStore } from "../stores/workspace-persistence.js";
 import { InkUndoPanel } from "./ink-undo-panel.js";
+import { useInkPresence } from "./ink-presence.js";
 
 type Props = Readonly<{
   open: boolean;
@@ -24,9 +25,9 @@ type Props = Readonly<{
 }>;
 
 /** 每条记录只维护名称草稿；保存与删除仍走已有操作，存储读取失败时禁用写入。 */
-function HistoryRecord({ id, title, language, disabled, onDelete, onSelect, selected }: {
+function HistoryRecord({ id, title, language, disabled, onDelete, onSelect, selected, index }: {
   id: string; title: string; language: SearchLanguage; disabled: boolean; onDelete: () => void;
-  onSelect: () => void; selected: boolean;
+  onSelect: () => void; selected: boolean; index: number;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(title);
@@ -50,7 +51,9 @@ function HistoryRecord({ id, title, language, disabled, onDelete, onSelect, sele
     finishEditing();
   };
 
-  return <li className="ink-study__history-record">
+  // 入场错峰只作用于显示顺序，独立 translate 动画不覆盖条目原有的悬浮扩张。
+  return <li className="ink-study__history-record ink-history-entry"
+    style={{ "--ink-history-delay": `${index * 55}ms` } as CSSProperties}>
     <form onSubmit={event => { event.preventDefault(); saveTitle(); }}>
       {editing ? <input className="ink-study__history-title-input" aria-label={messages.titleLabel}
         autoFocus value={draft} disabled={disabled} onChange={event => setDraft(event.target.value)}
@@ -82,9 +85,22 @@ function HistoryRecord({ id, title, language, disabled, onDelete, onSelect, sele
 
 export function InkSearchHistory({ open, available, language, onOpen, onClose, onNewSearch, onSelectGraph,
   undoOpen, undoDisabled, onOpenUndo, onCloseUndo }: Props) {
+  const drawer = useRef<HTMLDivElement>(null);
   const panel = useRef<HTMLElement>(null);
   const toggle = useRef<HTMLButtonElement>(null);
-  const [dockExpanded, setDockExpanded] = useState(false);
+  const [drawerDuration, setDrawerDuration] = useState(0);
+  // 业务关闭立即隔离交互；视觉内容沿父抽屉滑完才释放，避免内层提前淡出造成“半路消失”。
+  // 读取既有 CSS 时间，保持整块按钮/面板与父 top 的同一条 S 时间线；减少动态由 presence 即时处理。
+  useLayoutEffect(() => {
+    if (drawer.current === null) return;
+    const duration = getComputedStyle(drawer.current).getPropertyValue("--ink-history-duration").trim();
+    const milliseconds = Number.parseFloat(duration) * (duration.endsWith("ms") ? 1 : 1000);
+    setDrawerDuration(Number.isFinite(milliseconds) ? milliseconds : 0);
+  }, []);
+  const present = useInkPresence(open ? "history" : undoOpen ? "undo" : null, drawerDuration);
+  const [dockHovered, setDockHovered] = useState(false);
+  const [dockFocused, setDockFocused] = useState(false);
+  const dockExpanded = dockHovered || dockFocused;
   const documents = useStore(workspaceStore, state => state.documents);
   const currentId = useStore(workspaceStore, state => state.currentId);
   const persistence = useStore(workspacePersistenceStore, state => state);
@@ -92,8 +108,9 @@ export function InkSearchHistory({ open, available, language, onOpen, onClose, o
   const disabled = persistence.status === "loading" || persistence.error === "load";
 
   useEffect(() => {
-    if (open) panel.current?.focus({ preventScroll: true });
-  }, [open]);
+    // presence 的视觉选择可能比业务开关晚一个提交；等 CSS 可见后再聚焦，不依赖盲等计时。
+    if (open && present.value === "history") panel.current?.focus({ preventScroll: true });
+  }, [open, present.value]);
 
   useEffect(() => {
     if (!open) return;
@@ -118,12 +135,18 @@ export function InkSearchHistory({ open, available, language, onOpen, onClose, o
   }, [open, onClose]);
 
   return (
-    <div className="ink-study__history-drawer" data-ink-control data-ink-overlay inert={!available} aria-hidden={!available}>
+    <div className="ink-study__history-drawer" ref={drawer} data-present-panel={present.value ?? "none"}
+      data-ink-control data-ink-overlay inert={!available} aria-hidden={!available}>
       {/* 触发器与内容是同级，关闭抽屉时仍可从底边或键盘打开。 */}
-      <div className="ink-study__history-dock" data-expanded={dockExpanded} data-panel-open={open || undoOpen}
-        onMouseEnter={() => setDockExpanded(true)} onMouseLeave={() => setDockExpanded(false)}
-        onFocusCapture={() => setDockExpanded(true)} onBlur={event => {
-          if (!event.currentTarget.contains(event.relatedTarget)) setDockExpanded(false);
+      <div className="ink-study__history-dock" data-expanded={dockExpanded} data-panel-open={present.value !== null}
+        onMouseEnter={() => setDockHovered(true)} onMouseLeave={() => setDockHovered(false)}
+        onPointerDownCapture={() => setDockFocused(false)}
+        onFocusCapture={event => setDockFocused(event.target.matches(":focus-visible"))} onBlur={event => {
+          // 两个胶囊之间保留父层命中桥；键盘在按钮间移动时也不提前收拢。
+          if (!event.currentTarget.contains(event.relatedTarget)) setDockFocused(false);
+        }} onClick={event => {
+          // 透明圆角/间隔只补主入口的命中，子按钮事件仍由各自处理，不能误触撤销入口。
+          if (event.target === event.currentTarget) { if (open) onClose(true); else onOpen(); }
         }}>
       <button type="button" className="ink-study__pill ink-study__history-toggle" ref={toggle}
         aria-label={messages.inkStudy.searchHistory} aria-expanded={open} aria-controls="ink-search-history"
@@ -147,7 +170,7 @@ export function InkSearchHistory({ open, available, language, onOpen, onClose, o
         </header>
         {documents.length === 0 ? <p className="ink-study__history-empty">{messages.workspace.emptyRecords}</p> : null}
         <ul className="ink-study__history-list">
-          {documents.map(document => <HistoryRecord key={document.id} id={document.id} title={document.title}
+          {documents.map((document, index) => <HistoryRecord key={document.id} id={document.id} title={document.title} index={index}
             language={language} disabled={disabled} selected={document.id === currentId}
             onSelect={() => { void onSelectGraph(document.id); }} onDelete={() => {
               workspaceStore.getState().deleteGraph(document.id);
@@ -163,7 +186,8 @@ export function InkSearchHistory({ open, available, language, onOpen, onClose, o
           <button type="button" className="ink-study__pill" onClick={() => { void persistence.retry(); }}>{messages.workspace.retry}</button>
         </div>}
       </section>
-      <InkUndoPanel open={undoOpen} available={available} disabled={undoDisabled} language={language} onClose={onCloseUndo} />
+      <InkUndoPanel open={undoOpen} presented={present.value === "undo"} available={available}
+        disabled={undoDisabled} language={language} onClose={onCloseUndo} />
     </div>
   );
 }

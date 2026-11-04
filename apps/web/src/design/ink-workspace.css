@@ -39,48 +39,78 @@
 .ink-workspace-notice[data-open="true"] { opacity: 1; transform: translate(-50%, 0); pointer-events: auto; }
 .ink-workspace-notice .ink-study__pill { flex: none; }
 
-/* 历史抽屉保留同一运动主体；底边胶囊展开为两个选择，面板不会复制第二套搜索逻辑。 */
-.ink-study__history-dock { position: absolute; bottom: 100%; left: 50%; display: flex; width: 40px; height: 34px;
-  transform: translateX(-50%); overflow: hidden; border: 1px solid #ffffffa6; border-bottom: 0; border-radius: 18px 18px 0 0;
-  background: transparent; backdrop-filter: blur(14px); opacity: 0;
-  transition: width 420ms var(--ink-slide-ease), opacity 180ms var(--ink-slide-ease); }
+/* 透明父层只连接命中区域；边框、背景分别属于两个胶囊，穿过中间留白也不会闪回箭头。 */
+.ink-study__history-dock { position: absolute; z-index: 1; bottom: 100%; left: 50%; display: flex; gap: 0; width: 40px; height: 34px;
+  transform: translateX(-50%); background: transparent; opacity: 0;
+  transition: width 420ms var(--ink-slide-ease), gap 420ms var(--ink-slide-ease), opacity 180ms var(--ink-slide-ease); }
 .ink-study__stage[data-search-ready="true"] .ink-study__history-dock { opacity: 1; }
-.ink-study__history-dock[data-expanded="true"] { width: 218px; }
+/* 总宽 188 与主按钮 114 同步扩张，主按钮右端始终停在原箭头右端，直接点按不会落到间隔或撤销上。 */
+.ink-study__history-dock[data-expanded="true"] { width: 188px; gap: 12px; }
 .ink-study__history-dock .ink-study__history-toggle { position: relative; inset: auto; left: auto; flex: none; width: 40px; height: 100%; min-height: 0;
-  transform: none; border: 0; border-radius: 0; background: var(--ink-history-glass); backdrop-filter: none; opacity: 1; }
+  transform: none; border: 1px solid #ffffffa6; border-bottom: 0; border-radius: 18px 18px 0 0;
+  background: var(--ink-history-glass); backdrop-filter: blur(14px); opacity: 1;
+  transition: width 420ms var(--ink-slide-ease), background-color 240ms var(--ink-slide-ease); }
 .ink-study__history-dock[data-expanded="true"] .ink-study__history-toggle { width: 114px; }
 .ink-study__history-dock[data-expanded="true"] .ink-study__history-toggle span { opacity: 1; }
 .ink-study__history-dock[data-expanded="true"] .ink-study__history-toggle svg { opacity: 0; }
-.ink-study__history-dock .ink-study__history-toggle svg { transition: opacity 240ms var(--ink-slide-ease), transform 420ms var(--ink-slide-ease); }
+.ink-study__history-dock .ink-study__history-toggle span { transition: opacity 420ms var(--ink-slide-ease); }
+.ink-study__history-dock .ink-study__history-toggle svg { transition: opacity 420ms var(--ink-slide-ease), transform 420ms var(--ink-slide-ease); }
 .ink-study__history-dock[data-panel-open="true"] .ink-study__history-toggle svg { transform: translate(-50%, -50%) rotate(180deg); }
-.ink-study__history-dock .ink-study__undo-toggle { flex: 1; justify-content: center; min-width: 0; border: 0; border-radius: 0; background: transparent; color: #22221e;
-  background: var(--ink-history-glass); opacity: 0; white-space: nowrap; transition: opacity 240ms var(--ink-slide-ease), background-color 240ms var(--ink-slide-ease); }
-.ink-study__history-dock[data-expanded="true"] .ink-study__undo-toggle { opacity: 1; }
+/* 两个分支始终共用面板顶边；新分支从主按钮右沿随宽度与间距一起长出，不额外平移或上浮。 */
+.ink-study__history-dock .ink-study__undo-toggle { flex: none; justify-content: center; width: 0; min-width: 0; min-height: 0; height: 100%; padding: 0;
+  overflow: hidden; border: 1px solid #ffffffa6; border-bottom: 0; border-radius: 18px 18px 0 0; color: #22221e; backdrop-filter: blur(14px);
+  background: var(--ink-history-glass); opacity: 0; pointer-events: none; white-space: nowrap;
+  transition: width 420ms var(--ink-slide-ease), opacity 420ms var(--ink-slide-ease), background-color 240ms var(--ink-slide-ease); }
+.ink-study__history-dock[data-expanded="true"] .ink-study__undo-toggle { width: 62px; opacity: 1; pointer-events: auto; }
 .ink-study__history-dock .ink-study__pill:hover { background: var(--ink-history-glass); color: #111; }
+/* 退场继续持有连接柄的可见性，按钮和面板随父层完成同一条下滑时间线。 */
+.ink-study__history-drawer:not([data-present-panel="none"]) .ink-study__history-dock { opacity: 1; }
+/* 面板仅在相互切换时淡入淡出，关闭期间由父层持有视觉选择；不再叠加独立位移或提前隐藏。 */
 .ink-study__history-drawer > .ink-study__history-panel { position: absolute; inset: 0; opacity: 0; visibility: hidden;
-  transform: translateY(18px); transition: opacity 360ms var(--ink-slide-ease), transform 360ms var(--ink-slide-ease), visibility 0s 360ms; }
-.ink-study__history-drawer > .ink-study__history-panel[data-active="true"] { opacity: 1; visibility: visible; transform: translateY(0); transition-delay: 0s; }
+  transform: none; transition: opacity 360ms var(--ink-slide-ease), visibility 0s 360ms; }
+.ink-study__history-drawer[data-present-panel="history"] > #ink-search-history,
+.ink-study__history-drawer[data-present-panel="undo"] > #ink-undo-history { opacity: 1; visibility: visible; transition-delay: 0s; }
+.ink-study__history-drawer[data-present-panel="none"] > .ink-study__history-panel { visibility: hidden; transition: none; }
+/* 两类历史共用逐条向上入场；仅 backwards 填充等待段，结束后释放 translate 供悬浮与退场使用。 */
+.ink-study__history-drawer[data-present-panel="history"] > #ink-search-history .ink-history-entry:not([data-leaving="true"]),
+.ink-study__history-drawer[data-present-panel="undo"] > #ink-undo-history .ink-history-entry:not([data-leaving="true"]) {
+  animation: ink-history-entry-in 520ms var(--ink-slide-ease) var(--ink-history-delay, 0ms) backwards;
+}
+@keyframes ink-history-entry-in {
+  from { opacity: 0; translate: 0 32px; }
+  to { opacity: 1; translate: 0 0; }
+}
 .ink-undo-actions { display: flex; flex-wrap: wrap; gap: 8px; }
-.ink-undo-list { display: grid; gap: 10px; padding: 4px; margin: 20px 0; list-style: none; }
-.ink-undo-event { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 16px 18px; border-radius: 20px; background: #ffffff50;
-  transition: padding 360ms var(--ink-slide-ease), background-color 360ms var(--ink-slide-ease); }
+.ink-undo-list { display: flex; flex-direction: column; padding: 4px; margin: 20px 0; list-style: none; }
+.ink-undo-event { display: grid; grid-template-rows: 1fr; flex: none; margin-bottom: 10px; padding: 16px 18px; border-radius: 20px; background: #ffffff50;
+  transition: padding 360ms var(--ink-slide-ease), background-color 360ms var(--ink-slide-ease),
+    opacity 360ms var(--ink-slide-ease), translate 360ms var(--ink-slide-ease),
+    grid-template-rows 360ms var(--ink-slide-ease), margin-bottom 360ms var(--ink-slide-ease); }
+.ink-undo-event:last-child { margin-bottom: 0; }
+.ink-undo-event__content { min-height: 0; overflow: hidden; display: flex; align-items: center; justify-content: space-between; gap: 20px; }
 .ink-undo-event:is(:hover, :focus-within) { padding-block: 21px; background: #ffffff80; }
-.ink-undo-event > div { min-width: 0; }
+.ink-undo-event__content > div { min-width: 0; }
 .ink-undo-event h3 { margin: 0 0 5px; font-size: 13px; font-weight: 500; }
 .ink-undo-event p { margin: 0; color: #66665e; font-size: 11px; overflow-wrap: anywhere; }
 .ink-undo-event time { display: block; margin-top: 7px; color: #7c7c72; font-size: 10px; }
 .ink-undo-event button { flex: none; }
-.ink-undo-event[data-active="false"] { opacity: .52; }
+/* 同步折叠内容、内边距与条目间距，释放 DOM 时邻行已到位，不再瞬间跳动。 */
+.ink-undo-event[data-leaving="true"] { grid-template-rows: 0fr; padding-block: 0; margin-bottom: 0;
+  opacity: 0; translate: 0 -28px; pointer-events: none; animation: none; }
 .ink-undo-event .ink-undo-event__reason { margin-top: 7px; color: #6c6454; }
 
 @media (max-width: 620px) {
   .ink-study__history-dock { height: 44px; }
-  .ink-undo-event { gap: 10px; padding-inline: 14px; }
+  .ink-undo-event { padding-inline: 14px; }
+  .ink-undo-event__content { gap: 10px; }
   .ink-undo-actions { flex-basis: 100%; }
   .ink-workspace-notice { top: 78px; flex-wrap: wrap; }
 }
 @media (prefers-reduced-motion: reduce) {
   .ink-workspace-menu, .ink-workspace-form, .ink-workspace-notice,
   .ink-study__history-dock, .ink-study__history-dock .ink-study__pill, .ink-undo-event,
+  .ink-study__history-dock .ink-study__history-toggle svg, .ink-study__history-dock .ink-study__history-toggle span,
   .ink-study__history-drawer > .ink-study__history-panel { transition: none; }
+  .ink-study__history-drawer[data-present-panel="history"] > #ink-search-history .ink-history-entry:not([data-leaving="true"]),
+  .ink-study__history-drawer[data-present-panel="undo"] > #ink-undo-history .ink-history-entry:not([data-leaving="true"]) { animation: none; }
 }

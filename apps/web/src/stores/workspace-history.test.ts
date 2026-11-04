@@ -12,6 +12,7 @@ import {
 import { applyGraphSearchResult, applyNodeSearchResult } from "./workspace-research.js";
 import { createEmptyGraph, createWorkspaceStore, fromResultGraph, selectCurrentGraph, selectWorkspaceHistory,
   type WorkspaceHistoryDescription } from "./workspace-store.js";
+import { storeGraphHistory } from "./workspace-history.js";
 
 const baseGraph = (): EditableGraph => addNode(addNode(createEmptyGraph("图", "原图", "zh-CN", "2026-01-01T00:00:00Z"),
   "甲", "原说明", "甲"), "乙", "", "乙");
@@ -83,18 +84,13 @@ describe("选择性会话撤销", () => {
     expect(test.current().nodes.some(node => node.id === "新")).toBe(false);
   });
 
-  it("节点连线或布局依赖都不能在撤销新增时被级联删除", () => {
-    for (const dependent of [
-      (graph: EditableGraph) => addEdge(graph, "甲", "新", "related_to", "连线"),
-      (graph: EditableGraph) => moveNode(graph, "新", { x: 345, y: 678 }),
-    ]) {
-      const test = setup();
-      test.edit(graph => addNode(graph, "新", "", "新"));
-      test.edit(dependent);
-      const before = test.current();
-      expect(test.undo(0)).toEqual({ ok: false, reason: "dependency" });
-      expect(test.current()).toBe(before);
-    }
+  it("节点连线依赖不能在撤销新增时被级联删除", () => {
+    const test = setup();
+    test.edit(graph => addNode(graph, "新", "", "新"));
+    test.edit(graph => addEdge(graph, "甲", "新", "related_to", "连线"));
+    const before = test.current();
+    expect(test.undo(0)).toEqual({ ok: false, reason: "dependency" });
+    expect(test.current()).toBe(before);
   });
 
   it("新增节点后的资源已主动删除则允许撤新增，删除被撤回时依赖重新阻断", () => {
@@ -223,18 +219,50 @@ describe("选择性会话撤销", () => {
     expect(test.current().nodes[0]).toMatchObject({ description: "删空后编辑", status: "edited", resources: [{ id: "资源" }] });
   });
 
-  it("布局按节点与坐标字段重放，撤x移动保留后续y移动及文本", () => {
+  it("节点移动不计事件，内容撤销/重做保留最新坐标，也不清已有重做", () => {
     const test = setup();
-    const original = test.current().positions["甲"];
-    if (original === undefined) throw new Error("缺少原布局");
-    test.edit(graph => moveNode(graph, "甲", { x: 500, y: original.y }));
-    test.edit(graph => moveNode(graph, "甲", { x: 500, y: 600 }));
     test.edit(graph => updateNode(graph, "乙", { description: "独立文本" }));
+    test.edit(graph => moveNode(graph, "甲", { x: 500, y: 600 }));
+    expect(test.events()).toHaveLength(1);
+    expect(test.events()[0]?.kind).toBe("node.edit");
     expect(test.undo(0)).toEqual({ ok: true });
-    expect(test.current().positions["甲"]).toEqual({ x: original.x, y: 600 });
+    expect(test.current().positions["甲"]).toEqual({ x: 500, y: 600 });
+    expect(test.current().nodes[1]?.description).toBe("");
+    test.edit(graph => moveNode(graph, "甲", { x: 700, y: 800 }));
+    expect(test.store.getState().histories["图"]?.future).toHaveLength(1);
+    test.store.getState().redo();
+    expect(test.current().positions["甲"]).toEqual({ x: 700, y: 800 });
     expect(test.current().nodes[1]?.description).toBe("独立文本");
-    expect(test.undo(1)).toEqual({ ok: true });
-    expect(test.current().positions["甲"]).toEqual(original);
+    expect(test.events()).toHaveLength(1);
+  });
+
+  it("新增节点后的移动不阻断撤新增，重做恢复拖动后位置", () => {
+    const test = setup();
+    test.edit(graph => addNode(graph, "新", "", "新"));
+    test.edit(graph => moveNode(graph, "新", { x: 345, y: 678 }));
+    expect(test.events()).toHaveLength(1);
+    expect(test.events()[0]?.blockedReason).toBeUndefined();
+    expect(test.undo(0)).toEqual({ ok: true });
+    expect(test.current().nodes.some(node => node.id === "新")).toBe(false);
+    test.store.getState().redo();
+    expect(test.current().positions["新"]).toEqual({ x: 345, y: 678 });
+  });
+
+  it("移动不耗最近100步，删除恢复保留删除时布局，恢复后继续拖动可再撤销/重做删除", () => {
+    const test = setup();
+    test.edit(graph => moveNode(graph, "甲", { x: 100, y: 200 }));
+    test.edit(graph => deleteNode(graph, "甲"));
+    expect(test.events()).toHaveLength(1);
+    expect(test.undo(0)).toEqual({ ok: true });
+    expect(test.current().positions["甲"]).toEqual({ x: 100, y: 200 });
+    test.edit(graph => moveNode(graph, "甲", { x: 300, y: 400 }));
+    test.store.getState().redo();
+    expect(test.current().nodes.some(node => node.id === "甲")).toBe(false);
+    test.store.getState().undo();
+    expect(test.current().positions["甲"]).toEqual({ x: 300, y: 400 });
+    for (let index = 0; index < 105; index++) test.edit(graph => moveNode(graph, "甲", { x: index, y: index }));
+    expect(test.events()).toHaveLength(1);
+    expect(test.store.getState().histories["图"]?.future).toHaveLength(1);
   });
 
   it("撤销删节点恢复其资源、边与位置，后续其他节点修改继续保留", () => {
@@ -260,6 +288,23 @@ describe("选择性会话撤销", () => {
     expect(test.current().edges).toEqual(graph.edges);
     expect(test.current().positions).toEqual(graph.positions);
     expect(test.current().title).toBe("应用后的记录名");
+  });
+
+  it("全图替换后的拖动只改变新图生命期，撤销/重做替换分别恢复对应布局", () => {
+    const graph = fromResultGraph(pythonResultGraphFixture, "图");
+    const nodeId = graph.nodes[0]?.id;
+    if (nodeId === undefined) throw new Error("缺少固定节点");
+    const test = setup(moveNode(graph, nodeId, { x: 10, y: 20 }));
+    test.edit(current => applyGraphSearchResult(current, pythonResultGraphFixture), { kind: "graph.search", subject: "完整替换", scope: { type: "graph.replace" } });
+    test.edit(current => moveNode(current, nodeId, { x: 700, y: 800 }));
+    expect(test.events()).toHaveLength(1);
+    expect(test.undo(0)).toEqual({ ok: true });
+    expect(test.current().positions[nodeId]).toEqual({ x: 10, y: 20 });
+    test.edit(current => moveNode(current, nodeId, { x: 30, y: 40 }));
+    test.store.getState().redo();
+    expect(test.current().positions[nodeId]).toEqual({ x: 700, y: 800 });
+    test.store.getState().undo();
+    expect(test.current().positions[nodeId]).toEqual({ x: 30, y: 40 });
   });
 
   it("全图替换拥有同值节点标题与资源说明，撤先前编辑不能改写仍有效的替换结果", () => {
@@ -378,7 +423,7 @@ describe("选择性会话撤销", () => {
     expect(test.current().nodes[1]?.title).toBe("独立编辑");
   });
 
-  it("事件按图隔离，删除恢复带回该图历史，刷新恢复全部清空", () => {
+  it("事件按图隔离，删除恢复带回该图历史；没有旧历史的兼容恢复建立空基线", () => {
     const test = setup();
     test.store.getState().renameGraph("图", "第一图修改");
     const eventId = test.events()[0]?.id;
@@ -396,6 +441,27 @@ describe("选择性会话撤销", () => {
     expect(test.events()).toEqual([]);
     expect(test.store.getState().deletedGraphs).toEqual([]);
     expect(test.store.getState().undoEvent(eventId)).toEqual({ ok: false, reason: "missing" });
+  });
+
+  it("保存历史恢复真实标识/时间及选择性重做，重建派生快照而不共用外部对象", () => {
+    const test = setup();
+    test.edit(graph => updateNode(graph, "甲", { title: "B" }));
+    test.edit(graph => updateNode(graph, "甲", { title: "C" }));
+    expect(test.undo(0)).toEqual({ ok: true });
+    const history = test.store.getState().histories["图"];
+    if (history === undefined) throw new Error("缺少历史");
+    const stored = structuredClone(storeGraphHistory(history));
+    const restored = createWorkspaceStore();
+    restored.getState().restoreDocuments(test.store.getState().documents, "图", { 图: stored });
+    expect(selectWorkspaceHistory(restored.getState())).toEqual(test.events());
+    const later = selectWorkspaceHistory(restored.getState())[1];
+    if (later === undefined) throw new Error("缺少后续事件");
+    expect(restored.getState().undoEvent(later.id)).toEqual({ ok: true });
+    expect(selectCurrentGraph(restored.getState())?.nodes[0]?.title).toBe("甲");
+    restored.getState().redo();
+    expect(selectCurrentGraph(restored.getState())?.nodes[0]?.title).toBe("C");
+    stored.events[1]!.after.nodes[0]!.title = "外部修改";
+    expect(selectCurrentGraph(restored.getState())?.nodes[0]?.title).toBe("C");
   });
 
   it("最近100事件以有效基线截断，最早记录不可再执行但保留既有顺序撤销上限", () => {
