@@ -595,7 +595,7 @@ async function captureInkRaster(page: Page, path: string, session?: CDPSession):
   let screenshot: string;
   if (session === undefined) screenshot = (await page.screenshot({ path })).toString("base64");
   else {
-    // 加载控件已稳定、字体已等待且无可见光标；直接保存同一视口的原生 PNG，不重复附加 action 快照。
+    // 从浏览器合成器保存同一视口的原生 PNG，读取连续动效时避免每次截图再产生一份操作快照。
     screenshot = (await session.send("Page.captureScreenshot", { format: "png", fromSurface: true, captureBeyondViewport: false })).data;
     await writeFile(path, Buffer.from(screenshot, "base64"));
   }
@@ -3066,13 +3066,17 @@ liquidInkTest("液体墨团持续变化但文字布局不漂移，拖动后落�
   // 目标质心，要求连续三次合成画面的主体回到两个采样像素以内，避免把途经目标当成落定。
   let settledFrame = followingFrame;
   const settling: Array<ReturnType<typeof topBody>> = [];
-  await expect.poll(async () => {
-    settledFrame = await captureInkRaster(page, testInfo.outputPath("ink-liquid-drag-settled.png"));
-    settling.push(topBody(settledFrame));
-    return settling.length >= 3 && settling.slice(-3).every(body => body !== undefined
-      && Math.abs(body.x - initialBody.x - domShift) < 2 / 320
-      && Math.abs(body.y - initialBody.y) < 2 / 180);
-  }, { timeout: 4000, intervals: [100, 200, 300] }).toBe(true);
+  // 在四秒观测窗口内复用同一原生截图会话；仍保存完整像素，并保留 Playwright 的失败跟踪。
+  const captures = await page.context().newCDPSession(page);
+  try {
+    await expect.poll(async () => {
+      settledFrame = await captureInkRaster(page, testInfo.outputPath("ink-liquid-drag-settled.png"), captures);
+      settling.push(topBody(settledFrame));
+      return settling.length >= 3 && settling.slice(-3).every(body => body !== undefined
+        && Math.abs(body.x - initialBody.x - domShift) < 2 / 320
+        && Math.abs(body.y - initialBody.y) < 2 / 180);
+    }, { timeout: 4000, intervals: [100, 200, 300] }).toBe(true);
+  } finally { await captures.detach(); }
   const settledBody = topBody(settledFrame);
   if (settledBody === undefined) throw new Error("松手后缺少可见墨团");
   const settledDeficit = domShift - settledBody.x + initialBody.x;
@@ -3928,8 +3932,9 @@ test("正式入口手动资源超过六条可编辑取消草稿、拖拽、撤�
     await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
   }
   await page.mouse.up();
-  await expect(cards.nth(0).getByRole("heading")).toHaveText("resource-1.example.com");
-  await expect(cards.nth(1).getByRole("heading")).toHaveText("我的首个链接");
+  // 拖放后指针可能仍悬停在卡片上；只核对资源主标题，展开的网页说明和入选原因也各有小标题。
+  await expect(cards.nth(0).getByRole("heading", { level: 3 })).toHaveText("resource-1.example.com");
+  await expect(cards.nth(1).getByRole("heading", { level: 3 })).toHaveText("我的首个链接");
   expect(await page.evaluate(() => window.__WAYFINDER_E2E__.openCalls())).toEqual([]);
   // 拖拽之后键盘激活仍要打开资源，不能把一次拖后click抑制泄漏给Enter。
   const openButton = cards.nth(1).getByRole("button", { name: "在新标签页打开 我的首个链接", exact: true });
@@ -3941,9 +3946,9 @@ test("正式入口手动资源超过六条可编辑取消草稿、拖拽、撤�
   await page.getByRole("region", { name: "撤销记录", exact: true }).press("Escape");
   await undoInkEvent(page, "可上下拖拽调整资源顺序");
   await page.locator(`[data-ink-node="${firstId}"]`).getByRole("heading").click();
-  await expect(cards.first().getByRole("heading")).toHaveText("我的首个链接");
+  await expect(cards.first().getByRole("heading", { level: 3 })).toHaveText("我的首个链接");
   await redoInkEvent(page); await page.locator(`[data-ink-node="${firstId}"]`).getByRole("heading").click();
-  await expect(cards.first().getByRole("heading")).toHaveText("resource-1.example.com");
+  await expect(cards.first().getByRole("heading", { level: 3 })).toHaveText("resource-1.example.com");
   await page.getByRole("button", { name: "显示更多（4）", exact: true }).click();
   const lastId = await cards.last().getAttribute("data-ink-resource"); if (lastId === null) throw new Error("缺少末条资源");
   await openInkResourceMenu(page, lastId); await page.getByRole("menuitem", { name: "删除资源", exact: true }).click();
@@ -3954,7 +3959,7 @@ test("正式入口手动资源超过六条可编辑取消草稿、拖拽、撤�
   await expect(page.locator("[data-ink-node]")).toHaveCount(2);
   await page.locator(`[data-ink-node="${firstId}"]`).getByRole("heading").click();
   await page.getByRole("button", { name: "显示更多（4）", exact: true }).click();
-  await expect(cards).toHaveCount(7); await expect(cards.nth(1).getByRole("heading")).toHaveText("我的首个链接");
+  await expect(cards).toHaveCount(7); await expect(cards.nth(1).getByRole("heading", { level: 3 })).toHaveText("我的首个链接");
   await cards.nth(1).hover(); await expect(cards.nth(1).getByText("我写的网页说明", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "收起资源", exact: true }).click();
   await openInkNodeMenu(page, firstId); await page.getByRole("menuitem", { name: "删除节点", exact: true }).click();
