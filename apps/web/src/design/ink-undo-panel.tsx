@@ -2,7 +2,7 @@
  * 模块职责：展示当前图持久保存的可撤销事件；逐条撤销仍由Store的最新依赖/图约束校验决定。
  * 生命周期：面板常驻供抽屉退场，关闭后立即隔离命中；列表不从旧文档时间伪造事件时间。
  */
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useStore } from "zustand";
 import type { SearchLanguage } from "@wayfinder/contracts";
 import { getMessages } from "../i18n/messages.js";
@@ -10,7 +10,6 @@ import { workspacePersistenceStore } from "../stores/workspace-persistence.js";
 import { selectWorkspaceHistory, workspaceStore } from "../stores/workspace-store.js";
 import type { WorkspaceHistoryEventView, WorkspaceHistoryKind, WorkspaceHistoryResult } from "../stores/workspace-history.js";
 import { InkNotice } from "./ink-notice.js";
-import { useInkPresence } from "./ink-presence.js";
 
 type Props = Readonly<{ open: boolean; presented: boolean; available: boolean; disabled: boolean; language: SearchLanguage; onClose: (restoreFocus: boolean) => void }>;
 
@@ -22,10 +21,22 @@ function UndoEvent({ event, index, disabled, name, date, reason, undoLabel, onUn
   event: WorkspaceHistoryEventView; index: number; disabled: boolean; name: string; date: Intl.DateTimeFormat;
   reason: (code: string) => string; undoLabel: string; onUndo: (id: string) => void;
 }) {
-  const presence = useInkPresence(event.active ? event : null);
-  const held = presence.value;
+  const row = useRef<HTMLLIElement>(null);
+  const [held, setHeld] = useState(event.active ? event : null);
+  useLayoutEffect(() => {
+    if (event.active) { setHeld(event); return; }
+    // 折叠从浏览器提交样式时开始。以真实过渡为准，避免定时器先到、邻行尚未到位就卸载。
+    const transitions = row.current?.getAnimations() ?? [];
+    if (transitions.length === 0) { setHeld(null); return; }
+    let current = true, frame = 0;
+    void Promise.allSettled(transitions.map(transition => transition.finished)).then(() => {
+      // 运行中切换为减少动态会取消过渡，同样可以释放；重做或切图后旧回调不得回写。
+      if (current) frame = requestAnimationFrame(() => setHeld(null));
+    });
+    return () => { current = false; cancelAnimationFrame(frame); };
+  }, [event]);
   if (held === null) return null;
-  return <li className="ink-undo-event ink-history-entry" data-active={event.active} data-leaving={!event.active}
+  return <li ref={row} className="ink-undo-event ink-history-entry" data-active={event.active} data-leaving={!event.active}
     data-ink-undo-event={event.id} inert={!event.active} aria-hidden={!event.active}
     style={{ "--ink-history-delay": `${index * 55}ms` } as CSSProperties}>
     <div className="ink-undo-event__content"><div><h3>{name}</h3><p>{held.subject}</p><time dateTime={held.occurredAt}>{date.format(new Date(held.occurredAt))}</time>

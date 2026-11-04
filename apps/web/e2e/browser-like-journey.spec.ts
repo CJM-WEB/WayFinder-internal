@@ -1859,12 +1859,19 @@ test("两类历史逐条S曲线上滑且撤销行退场消失，底部胶囊分�
   const event = panel.locator("[data-ink-undo-event]").first();
   const eventId = await event.getAttribute("data-ink-undo-event");
   if (eventId === null) throw new Error("缺少撤销事件标识");
-  const leavingFrames = page.evaluate(id => new Promise<readonly Readonly<{ y: number; opacity: number; nextTop: number; removed: boolean }>[]>((resolve, reject) => {
+  type LeaveFrame = Readonly<{ y: number; opacity: number; nextTop: number }>;
+  const leavingFrames = page.evaluate(id => new Promise<{ frames: LeaveFrame[]; collapsedTop: number; removedTop: number }>((resolve, reject) => {
     const entry = document.querySelector(`[data-ink-undo-event="${id}"]`);
     if (!(entry instanceof HTMLElement)) throw new Error("缺少退场事件");
-    const next = entry.nextElementSibling;
-    if (!(next instanceof HTMLElement)) throw new Error("缺少退场后应上移的邻行");
-    const frames: { y: number; opacity: number; nextTop: number; removed: boolean }[] = [];
+    const next = entry.nextElementSibling, list = entry.parentElement;
+    if (!(next instanceof HTMLElement) || list === null) throw new Error("缺少退场后应上移的邻行");
+    const nextTop = (): number => next.getBoundingClientRect().top - list.getBoundingClientRect().top;
+    const frames: LeaveFrame[] = [];
+    let collapsedTop: number | undefined;
+    // 捕获折叠完成且条目仍在列表中的几何；慢帧下前一次逐帧采样可能远早于卸载。
+    entry.addEventListener("transitionend", event => {
+      if (event.target === entry && event.propertyName === "grid-template-rows") collapsedTop = nextTop();
+    });
     let raf = 0;
     const timeout = window.setTimeout(() => { observer.disconnect(); cancelAnimationFrame(raf); reject(new Error("撤销行未退场移除")); }, 5_000);
     const observer = new MutationObserver(() => {
@@ -1872,12 +1879,14 @@ test("两类历史逐条S曲线上滑且撤销行退场消失，底部胶囊分�
       observer.disconnect();
       const frame = (): void => {
         if (!entry.isConnected) {
-          frames.push({ y: -28, opacity: 0, nextTop: next.getBoundingClientRect().top, removed: true });
-          window.clearTimeout(timeout); resolve(frames); return;
+          window.clearTimeout(timeout);
+          if (collapsedTop === undefined) reject(new Error("撤销行在折叠完成前已卸载"));
+          else resolve({ frames, collapsedTop, removedTop: nextTop() });
+          return;
         }
         const style = getComputedStyle(entry);
         frames.push({ y: Number.parseFloat(style.translate.split(" ")[1] ?? "0"), opacity: Number(style.opacity),
-          nextTop: next.getBoundingClientRect().top, removed: false });
+          nextTop: nextTop() });
         raf = requestAnimationFrame(frame);
       };
       raf = requestAnimationFrame(frame);
@@ -1886,12 +1895,11 @@ test("两类历史逐条S曲线上滑且撤销行退场消失，底部胶囊分�
   }), eventId);
   await event.getByRole("button", { name: /^撤销：/ }).click();
   const leave = await leavingFrames;
-  expect(leave.some(frame => frame.opacity > .05 && frame.opacity < .95 && frame.y < -2)).toBe(true);
-  const last = leave.at(-1), penultimate = leave.at(-2), initial = leave[0];
-  if (last === undefined || penultimate === undefined || initial === undefined) throw new Error("缺少退场邻行位移证据");
-  expect(last.removed).toBe(true);
-  expect(initial.nextTop - last.nextTop).toBeGreaterThan(30);
-  expect(Math.abs(last.nextTop - penultimate.nextTop)).toBeLessThan(2);
+  expect(leave.frames.some(frame => frame.opacity > .05 && frame.opacity < .95 && frame.y < -2)).toBe(true);
+  const initial = leave.frames[0];
+  if (initial === undefined) throw new Error("缺少退场邻行位移证据");
+  expect(initial.nextTop - leave.removedTop).toBeGreaterThan(30);
+  expect(Math.abs(leave.removedTop - leave.collapsedTop)).toBeLessThan(2);
   await expect(panel.locator(`[data-ink-undo-event="${eventId}"]`)).toHaveCount(0);
   await page.keyboard.press("Escape");
   await openInkUndo(page);
@@ -3855,10 +3863,18 @@ test("正式入口历史切换改名删除恢复及后台完成不抢选择", as
   await emitFixtureEvents(page, 1, events.flatMap((_event, index) => planIndexes.includes(index) ? [] : [index]));
   await page.evaluate(() => window.__WAYFINDER_E2E__.close(1));
   await expect.poll(async () => (await readStoredWorkspace(page))?.documents.find(document => document.query === SECOND_QUERY)?.nodes.length).toBe(4);
-  expect((await readStoredWorkspace(page))?.currentId).toBe(firstId);
+  const completed = await readStoredWorkspace(page);
+  expect(completed?.currentId).toBe(firstId);
+  const second = completed?.documents.find(document => document.query === SECOND_QUERY);
+  if (second === undefined) throw new Error("缺少已在后台完成的第二张图");
+  // 两份样例共享节点 ID；布局测量时节点已经挂载，必须等所选图就绪才能读取世界坐标。
+  const secondCanvas = page.locator(`[data-ink-graph-id="${second.id}"] .graph-canvas--ink`);
   await openInkHistory(page); await page.getByRole("button", { name: SECOND_QUERY, exact: true }).click();
+  await expect.poll(async () => (await readStoredWorkspace(page))?.currentId).toBe(second.id);
+  await expect(secondCanvas).toHaveAttribute("data-ink-content-state", "ready");
   const before = await readInkPosition(page);
   await page.reload(); await page.getByRole("button", { name: "开始探索", exact: true }).click();
+  await expect(secondCanvas).toHaveAttribute("data-ink-content-state", "ready");
   await expectInkPosition(page, before); expect(await readFixtureSnapshots(page)).toHaveLength(0);
   await page.locator(`[data-ink-node="${READY_NODE_ID}"]`).getByRole("heading").click();
   await page.getByRole("button", { name: "显示更多（1）", exact: true }).click();
