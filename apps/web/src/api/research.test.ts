@@ -3,8 +3,8 @@ import { ResultGraphSchema, StreamEventSchema, type ResultGraph } from "@wayfind
 import { expect, it, vi } from "vitest";
 import { pythonResultGraphFixture } from "../fixtures/python-result-graph.js";
 import type { ReadSearchEventStreamOptions } from "../lib/stream.js";
-import { addNode, addResource, deleteNode } from "../stores/workspace-edits.js";
-import { createEmptyGraph, createWorkspaceStore, selectCurrentGraph } from "../stores/workspace-store.js";
+import { addNode, addResource, deleteNode, deleteResource, updateNode, updateResource } from "../stores/workspace-edits.js";
+import { createEmptyGraph, createWorkspaceStore, fromResultGraph, selectCurrentGraph, selectWorkspaceHistory } from "../stores/workspace-store.js";
 import { createResearchStore } from "./research.js";
 
 function nodeResult(runId: string, nodeId = "节点"): ResultGraph {
@@ -46,6 +46,61 @@ it("节点重搜使用当前标题与原语境，预览完成前后都不改旧�
   expect(selectCurrentGraph(workspace.getState())?.nodes[0]?.resources).toHaveLength(1);
   expect(selectCurrentGraph(workspace.getState())?.analysis).toBeUndefined();
   expect(store.getState().preview).toBeNull();
+  expect(selectWorkspaceHistory(workspace.getState()).at(-1)?.kind).toBe("node.search");
+});
+
+it("真实全图应用明确拥有未变化的节点与资源字段，选择性撤销先前人工编辑不覆盖结果", async () => {
+  const workspace = createWorkspaceStore();
+  const original = fromResultGraph(pythonResultGraphFixture, "图");
+  workspace.getState().addGraph(original);
+  const node = original.nodes[0], resource = node?.resources[0];
+  if (node === undefined || resource === undefined) throw new Error("缺少全图固定资源");
+  workspace.getState().replaceGraph(updateNode(original, node.id, { title: "B" }));
+  const edited = selectCurrentGraph(workspace.getState());
+  if (edited === null) throw new Error("缺少编辑图");
+  workspace.getState().replaceGraph(updateResource(edited, node.id, resource.id, { summary: "说明B" }));
+  const result = { ...pythonResultGraphFixture, runId: "完整替换", graph: { ...pythonResultGraphFixture.graph,
+    nodes: pythonResultGraphFixture.graph.nodes.map(current => current.id === node.id ? { ...current, title: "B",
+      resources: current.resources.map(item => item.id === resource.id ? { ...item, summary: "说明B" } : item) } : current) } };
+  const research = createResearchStore(workspace, {
+    createRunId: () => result.runId, fetchImplementation: async () => new Response(""),
+    readStreamImplementation: async options => { await options.onEvent(complete(result)); },
+  }, vi.fn());
+  await research.getState().start("图");
+  research.getState().apply("replace");
+  const events = selectWorkspaceHistory(workspace.getState());
+  expect(events.at(-1)?.kind).toBe("graph.search");
+  for (const event of events.slice(0, 2)) expect(workspace.getState().undoEvent(event.id)).toEqual({ ok: true });
+  expect(selectCurrentGraph(workspace.getState())?.nodes[0]).toMatchObject({ title: "B", resources: [{ summary: "说明B" }] });
+  const applied = events.at(-1);
+  if (applied === undefined) throw new Error("缺少应用事件");
+  expect(workspace.getState().undoEvent(applied.id)).toEqual({ ok: true });
+  expect(selectCurrentGraph(workspace.getState())?.nodes[0]).toEqual(original.nodes[0]);
+});
+
+it("真实节点替换完全拥有资源集合，但不拥有节点标题与说明", async () => {
+  const workspace = createWorkspaceStore();
+  const original = addResource(addNode(createEmptyGraph("图", "手动图", "zh-CN"), "原标题", "原说明", "节点"), "节点", "https://old-node.example.com/", "旧资源");
+  workspace.getState().addGraph(original);
+  workspace.getState().replaceGraph(updateNode(original, "节点", { title: "新标题", description: "新说明" }));
+  const edited = selectCurrentGraph(workspace.getState());
+  if (edited === null) throw new Error("缺少编辑图");
+  workspace.getState().replaceGraph(deleteResource(edited, "节点", "旧资源"));
+  const research = createResearchStore(workspace, {
+    createRunId: () => "替换", fetchImplementation: async () => new Response(""),
+    readStreamImplementation: async options => { await options.onEvent(complete(nodeResult("替换"))); },
+  }, vi.fn());
+  await research.getState().start("图", "节点");
+  research.getState().apply("replace");
+  const events = selectWorkspaceHistory(workspace.getState());
+  expect(events.at(-1)?.kind).toBe("node.search");
+  const title = events[0], deletion = events[1];
+  if (title === undefined || deletion === undefined) throw new Error("缺少节点编辑事件");
+  expect(workspace.getState().undoEvent(deletion.id)).toEqual({ ok: true });
+  expect(selectCurrentGraph(workspace.getState())?.nodes[0]?.resources.some(item => item.id === "旧资源")).toBe(false);
+  expect(workspace.getState().undoEvent(title.id)).toEqual({ ok: true });
+  expect(selectCurrentGraph(workspace.getState())?.nodes[0]).toMatchObject({ title: "原标题", description: "原说明" });
+  expect(selectCurrentGraph(workspace.getState())?.nodes[0]?.resources).toHaveLength(1);
 });
 
 it("取消真实触发Signal，旧Reader即使伪装当前Run也不能写临时状态或预览", async () => {

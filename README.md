@@ -4,6 +4,9 @@ WayFinder 是一个 AI-native Browser 方向的 Web MVP。它把搜索结果组�
 
 > Graph is the search result page. AI organizes the web. You decide where to go.
 
+正式前端为“墨迹漫游”，开发与生产均从 `/` 进入。搜索、图编辑、重搜预览和浏览器本地保存复用同一套状态与 API；旧版产品入口和独立试验 HTML 已移除。
+H1 / H2 内部评估继续通过原有显式查询参数按需加载，与产品导航及启动样式隔离。
+
 ## Repository role
 
 当前仓库是 WayFinder 的永久私有开发源，包含构建、运行、测试和受控协作所需的工程资产。

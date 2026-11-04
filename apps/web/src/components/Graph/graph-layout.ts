@@ -20,6 +20,7 @@ import type { Edge, Node, XYPosition } from "@xyflow/react";
 
 import type { GraphStoreNode } from "../../stores/graph-store.js";
 import { getMessages } from "../../i18n/messages.js";
+import { buildGraphNodeData } from "./graph-labels.js";
 
 export const GRAPH_NODE_WIDTH = 240;
 export const GRAPH_NODE_HEIGHT = 112;
@@ -32,6 +33,7 @@ export type GraphDisplayNode = GraphStoreNode | EditableNode;
 
 export type GraphNodeData = {
   title: string;
+  description?: string;
   nodeType: NodeType;
   status: StreamNodeStatus | EditableNode["status"];
   resourceCount: number;
@@ -275,13 +277,7 @@ export const buildGraphFlowElements = (
         messages.statusLabels[node.status],
       ),
       className: `graph-node graph-node--${node.nodeType} graph-node--${node.status}`,
-      data: {
-        title: node.title,
-        nodeType: node.nodeType,
-        status: node.status,
-        resourceCount: "resources" in node ? node.resources.length : 0,
-        language,
-      },
+      data: buildGraphNodeData(node, language),
     })),
     edges: edges.map(edge => toFlowEdge(edge, language)),
   };

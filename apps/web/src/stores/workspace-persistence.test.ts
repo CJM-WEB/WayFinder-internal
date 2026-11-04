@@ -1,7 +1,10 @@
-/** 测试职责：读取失败不覆盖历史、串行保存最新状态，失败后可重试且不持久化会话历史。 */
+/** 测试职责：图与撤销/重做一致恢复；旧库兼容，损坏不覆盖，顺序保存失败可重试。 */
 import { describe, expect, it, vi } from "vitest";
 import { createStore } from "zustand/vanilla";
-import { createEmptyGraph, createWorkspaceStore } from "./workspace-store.js";
+import { WEB_WAIT_TIMEOUT_MS } from "../../test-timing.js";
+import { createEmptyGraph, createWorkspaceStore, selectCurrentGraph, selectWorkspaceHistory } from "./workspace-store.js";
+import { storeGraphHistory } from "./workspace-history.js";
+import { addNode, addResource, deleteResource, moveNode, updateNode, updateResource } from "./workspace-edits.js";
 import {
   initializeWorkspacePersistence, type WorkspacePersistenceState,
   type WorkspaceSnapshot, type WorkspaceStorage,
@@ -11,9 +14,14 @@ const document = createEmptyGraph("图", "已保存", "zh-CN", "2026-11-01T00:00
 const createFeedback = () => createStore<WorkspacePersistenceState>(() => ({
   status: "loading", error: null, retry: async () => {},
 }));
+const snapshot = (store: ReturnType<typeof createWorkspaceStore>): WorkspaceSnapshot => {
+  const { documents, currentId, histories } = store.getState();
+  return { version: "workspace-storage.v2", documents, currentId,
+    histories: Object.fromEntries(Object.entries(histories).map(([id, history]) => [id, storeGraphHistory(history)])) };
+};
 
 describe("本地搜索图持久化", () => {
-  it("恢复文档不写回空状态，撤销历史不被恢复或写入", async () => {
+  it("兼容旧文档且不写回空状态，下一次保存迁入版本化历史", async () => {
     const store = createWorkspaceStore();
     const save = vi.fn(async (snapshot: WorkspaceSnapshot) => { void snapshot; });
     const feedback = createFeedback();
@@ -23,8 +31,10 @@ describe("本地搜索图持久化", () => {
     expect(store.getState().documents).toEqual([document]);
     expect(save).not.toHaveBeenCalled();
     store.getState().renameGraph(document.id, "修改标题");
-    await vi.waitFor(() => expect(feedback.getState().status).toBe("ready"));
-    expect(Object.keys(save.mock.calls[0]?.[0] ?? {})).toEqual(["documents", "currentId"]);
+    await vi.waitFor(() => expect(feedback.getState().status).toBe("ready"), WEB_WAIT_TIMEOUT_MS);
+    expect(save.mock.calls[0]?.[0]).toMatchObject({ version: "workspace-storage.v2", histories: { 图: { version: "history.v1", events: [{ kind: "graph.rename" }] } } });
+    expect(save.mock.calls[0]?.[0].histories[document.id]).not.toHaveProperty("past");
+    expect(save.mock.calls[0]?.[0].histories[document.id]).not.toHaveProperty("future");
     expect(store.getState().histories[document.id]?.past).toHaveLength(1);
     stop();
   });
@@ -52,10 +62,10 @@ describe("本地搜索图持久化", () => {
     const feedback = createFeedback();
     const stop = await initializeWorkspacePersistence(store, { load: async () => null, save }, feedback);
     store.getState().addGraph(document);
-    await vi.waitFor(() => expect(feedback.getState().error).toBe("save"));
+    await vi.waitFor(() => expect(feedback.getState().error).toBe("save"), WEB_WAIT_TIMEOUT_MS);
     expect(store.getState().documents).toEqual([document]);
     await feedback.getState().retry();
-    expect(save.mock.calls.at(-1)?.[0]).toEqual({ documents: [document], currentId: document.id });
+    expect(save.mock.calls.at(-1)?.[0]).toEqual(snapshot(store));
     expect(feedback.getState().status).toBe("ready");
     stop();
   });
@@ -69,12 +79,121 @@ describe("本地搜索图持久化", () => {
     const stop = await initializeWorkspacePersistence(store, { load: async () => null, save }, feedback);
     store.getState().addGraph(document);
     store.getState().renameGraph(document.id, "最终标题");
-    await vi.waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(save).toHaveBeenCalledTimes(1), WEB_WAIT_TIMEOUT_MS);
     expect(feedback.getState().status).toBe("saving");
     release?.();
-    await vi.waitFor(() => expect(feedback.getState().status).toBe("ready"));
+    await vi.waitFor(() => expect(feedback.getState().status).toBe("ready"), WEB_WAIT_TIMEOUT_MS);
     expect(save).toHaveBeenCalledTimes(2);
     expect(save.mock.calls[1]?.[0].documents[0].title).toBe("最终标题");
+    stop();
+  });
+
+  it("刷新恢复选择性撤销和重做，并保留操作标识、时间与不入栈的最新坐标", async () => {
+    const original = createWorkspaceStore();
+    const initial = addNode(document, "A", "", "节点");
+    original.getState().addGraph(initial);
+    original.getState().replaceGraph(updateNode(initial, "节点", { title: "B" }));
+    const graphB = selectCurrentGraph(original.getState());
+    if (graphB === null) throw new Error("缺少测试图");
+    original.getState().replaceGraph(updateNode(graphB, "节点", { title: "C" }));
+    const events = selectWorkspaceHistory(original.getState());
+    if (events[0] === undefined || events[1] === undefined) throw new Error("缺少测试事件");
+    original.getState().undoEvent(events[0].id);
+    const current = selectCurrentGraph(original.getState());
+    if (current === null) throw new Error("缺少当前图");
+    original.getState().replaceGraph(moveNode(current, "节点", { x: 456, y: 789 }));
+    const saved = structuredClone(snapshot(original));
+    const restored = createWorkspaceStore(), feedback = createFeedback();
+    const save = vi.fn(async () => {});
+    const stop = await initializeWorkspacePersistence(restored, { load: async () => saved, save }, feedback);
+    expect(feedback.getState().status).toBe("ready");
+    expect(save).not.toHaveBeenCalled();
+    expect(selectWorkspaceHistory(restored.getState())).toEqual(selectWorkspaceHistory(original.getState()));
+    expect(restored.getState().histories[document.id]?.future).toHaveLength(1);
+    expect(restored.getState().undoEvent(events[1].id)).toEqual({ ok: true });
+    expect(selectCurrentGraph(restored.getState())?.nodes[0]?.title).toBe("A");
+    expect(selectCurrentGraph(restored.getState())?.positions["节点"]).toEqual({ x: 456, y: 789 });
+    restored.getState().redo();
+    expect(selectCurrentGraph(restored.getState())?.nodes[0]?.title).toBe("C");
+    await vi.waitFor(() => expect(feedback.getState().status).toBe("ready"), WEB_WAIT_TIMEOUT_MS);
+    expect(save).toHaveBeenCalled();
+    stop();
+  });
+
+  it("引擎偏好同时捕获画布坐标时仍是引擎事件，刷新后撤销保留后续拖动", async () => {
+    const original = createWorkspaceStore();
+    const initial = addNode(document, "节点", "", "节点");
+    original.getState().addGraph(initial);
+    original.getState().replaceGraph({ ...initial, engine: "google", positions: { 节点: { x: 120, y: 240 } } });
+    expect(selectWorkspaceHistory(original.getState())).toMatchObject([{ kind: "engine.change" }]);
+    const current = selectCurrentGraph(original.getState());
+    if (current === null) throw new Error("缺少当前图");
+    original.getState().replaceGraph(moveNode(current, "节点", { x: 480, y: 720 }));
+    const restored = createWorkspaceStore(), feedback = createFeedback();
+    const stop = await initializeWorkspacePersistence(restored, { load: async () => structuredClone(snapshot(original)), save: async () => {} }, feedback);
+    expect(feedback.getState().status).toBe("ready");
+    expect(selectWorkspaceHistory(restored.getState())).toMatchObject([{ kind: "engine.change" }]);
+    restored.getState().undo();
+    expect(selectCurrentGraph(restored.getState())).not.toHaveProperty("engine");
+    expect(selectCurrentGraph(restored.getState())?.positions["节点"]).toEqual({ x: 480, y: 720 });
+    stop();
+  });
+
+  it("超过100步后的折叠依赖基线也可恢复，不把临时资源或过期事件复活", async () => {
+    const original = createWorkspaceStore();
+    let graph = addNode(document, "节点", "", "节点");
+    original.getState().addGraph(graph);
+    graph = addResource(graph, "节点", "https://history.example.com/", "资源");
+    original.getState().replaceGraph(graph);
+    graph = updateResource(graph, "节点", "资源", { summary: "后来说明" });
+    original.getState().replaceGraph(graph);
+    graph = deleteResource(graph, "节点", "资源");
+    original.getState().replaceGraph(graph);
+    const first = selectWorkspaceHistory(original.getState())[0];
+    if (first === undefined) throw new Error("缺少首条事件");
+    original.getState().undoEvent(first.id);
+    // 恰好折入“缺失资源的后续编辑”，将消解依赖的删除留在最近100条中，真实覆盖非空Map基线。
+    for (let index = 0; index < 99; index++) original.getState().renameGraph(document.id, `编辑${index}`);
+    expect(original.getState().histories[document.id]?.base.resources.get("节点")?.has("资源")).toBe(true);
+    expect(original.getState().histories[document.id]?.base.manualNodes.has("节点")).toBe(true);
+    const restored = createWorkspaceStore(), feedback = createFeedback();
+    const stop = await initializeWorkspacePersistence(restored, { load: async () => structuredClone(snapshot(original)), save: async () => {} }, feedback);
+    expect(feedback.getState().status).toBe("ready");
+    expect(selectWorkspaceHistory(restored.getState())).toHaveLength(100);
+    expect(selectWorkspaceHistory(restored.getState())).toEqual(selectWorkspaceHistory(original.getState()));
+    for (let index = 0; index < 99; index++) restored.getState().undo();
+    expect(selectCurrentGraph(restored.getState())?.title).toBe(document.title);
+    expect(selectCurrentGraph(restored.getState())?.nodes[0]?.resources).toEqual([]);
+    stop();
+  });
+
+  it.each([
+    ["未知版本", (saved: WorkspaceSnapshot) => ({ ...saved, version: "未知版本" })],
+    ["缺失历史", (saved: WorkspaceSnapshot) => ({ ...saved, histories: {} })],
+    ["不存在图的历史", (saved: WorkspaceSnapshot) => ({ ...saved, histories: { ...saved.histories, 其他图: saved.histories[document.id] } })],
+    ["错误事件时间", (saved: WorkspaceSnapshot) => ({ ...saved, histories: { 图: { ...saved.histories[document.id], events: [{ ...saved.histories[document.id]?.events[0], occurredAt: "昨天" }] } } })],
+    ["重复事件", (saved: WorkspaceSnapshot) => ({ ...saved, histories: { 图: { ...saved.histories[document.id], events: [saved.histories[document.id]?.events[0], saved.histories[document.id]?.events[0]] } } })],
+    ["越界数量", (saved: WorkspaceSnapshot) => ({ ...saved, histories: { 图: { ...saved.histories[document.id], events: Array.from({ length: 101 }, () => saved.histories[document.id]?.events[0]) } } })],
+    ["无效重做", (saved: WorkspaceSnapshot) => ({ ...saved, histories: { 图: { ...saved.histories[document.id], redoIds: [saved.histories[document.id]?.events[0]?.id] } } })],
+    ["当前图与历史不一致", (saved: WorkspaceSnapshot) => ({ ...saved, documents: [{ ...saved.documents[0], title: "并非历史结果" }] })],
+    ["基线损坏", (saved: WorkspaceSnapshot) => ({ ...saved, histories: { 图: { ...saved.histories[document.id], base: { ...saved.histories[document.id]?.base, nodes: [["节点", {}]] } } } })],
+  ])("%s 时读取失败，不订阅写入、不覆盖旧库，重试可完整恢复", async (_name, corrupt) => {
+    const original = createWorkspaceStore();
+    original.getState().addGraph(document);
+    original.getState().renameGraph(document.id, "改名");
+    const saved = structuredClone(snapshot(original)), restored = createWorkspaceStore(), feedback = createFeedback();
+    const storage: WorkspaceStorage = { load: vi.fn().mockResolvedValueOnce(corrupt(saved)).mockResolvedValue(saved), save: vi.fn(async () => {}) };
+    const stop = await initializeWorkspacePersistence(restored, storage, feedback);
+    expect(feedback.getState().error).toBe("load");
+    expect(restored.getState().documents).toEqual([]);
+    restored.getState().addGraph(createEmptyGraph("内存图", "内存图", "zh-CN"));
+    await Promise.resolve();
+    expect(storage.save).not.toHaveBeenCalled();
+    await feedback.getState().retry();
+    expect(feedback.getState().status).toBe("ready");
+    expect(selectCurrentGraph(restored.getState())?.title).toBe("改名");
+    expect(selectWorkspaceHistory(restored.getState())).toHaveLength(1);
+    expect(storage.save).not.toHaveBeenCalled();
     stop();
   });
 });

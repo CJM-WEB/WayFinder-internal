@@ -19,6 +19,16 @@ import type {
 } from "@wayfinder/contracts";
 
 export type Messages = Readonly<{
+  inkStudy: Readonly<{
+    statement: string; tagline: string; explore: string; contact: string; stageAria: string; pageTitle: string;
+    emailCopied: string; emailCopyFailed: string;
+    searchFailed: string; graphLoadFailed: string; panelLoadFailed: string;
+    backHome: string; searchHistory: string; newGraph: string;
+    closeResources: string; showResourceDetails: string; hideResourceDetails: string;
+    actionMenu: string; closePanel: string; undoHistory: string; emptyUndo: string;
+    undoHint: string; undoDependency: string; undoConstraint: string; undoUnavailable: string; restoreGraph: string;
+    graphResultApplied: string; nodeResultApplied: string;
+  }>;
   research: Readonly<{
     startGraph: string; startNode: string; preview: string; searching: string;
     failure: string; cancel: string; dismiss: string; append: string; replace: string;
@@ -130,6 +140,21 @@ export type Messages = Readonly<{
  */
 export const MESSAGES: Record<SearchLanguage, Messages> = {
   "zh-CN": {
+    inkStudy: {
+      statement: "让每个好奇，\n都有去处。", tagline: "打造属于自己的互联网", explore: "开始探索", contact: "联系作者",
+      emailCopied: "邮箱已复制", emailCopyFailed: "复制失败，请手动复制邮箱",
+      searchFailed: "本次搜索未完成，请重试。",
+      graphLoadFailed: "搜索图暂时无法显示，请重新打开。",
+      panelLoadFailed: "操作面板暂时无法显示，请收起后重新打开。",
+      backHome: "返回首页", searchHistory: "搜索历史", newGraph: "新建搜索图",
+      closeResources: "收起资源", showResourceDetails: "展开详情", hideResourceDetails: "收起详情",
+      actionMenu: "图操作菜单", closePanel: "收起面板", undoHistory: "撤销记录", emptyUndo: "暂无可撤销操作",
+      undoHint: "仅撤销选中的操作，保留后续独立修改。",
+      undoDependency: "后续内容依赖此操作，请先处理依赖项。", undoConstraint: "撤销会破坏当前图约束，请先处理冲突。",
+      undoUnavailable: "此操作已发生变化，请重新选择。", restoreGraph: "恢复搜索图",
+      graphResultApplied: "应用全图结果", nodeResultApplied: "应用节点结果",
+      stageAria: "WAYFINDER 墨迹漫游", pageTitle: "WAYFINDER — 墨迹漫游",
+    },
     research: {
       startGraph: "重新搜索全图", startNode: "重新搜索此节点", preview: "重搜预览", searching: "正在重新搜索，当前图保持不变。",
       failure: "没有可应用的新结果，当前图保持不变。", cancel: "取消重搜", dismiss: "弃用新结果", append: "追加到此节点", replace: "应用替换",
@@ -280,6 +305,21 @@ export const MESSAGES: Record<SearchLanguage, Messages> = {
     },
   },
   "en-US": {
+    inkStudy: {
+      statement: "Every curiosity,\na place to go.", tagline: "BUILD YOUR OWN INTERNET", explore: "Start exploring", contact: "Contact author",
+      emailCopied: "Email copied", emailCopyFailed: "Could not copy. Please copy the email manually.",
+      searchFailed: "The search could not be completed. Please try again.",
+      graphLoadFailed: "The search graph could not be displayed. Please open it again.",
+      panelLoadFailed: "The panel could not be displayed. Close it and open it again.",
+      backHome: "Back to home", searchHistory: "Search history", newGraph: "New search graph",
+      closeResources: "Close resources", showResourceDetails: "Show details", hideResourceDetails: "Hide details",
+      actionMenu: "Graph actions", closePanel: "Close panel", undoHistory: "Undo history", emptyUndo: "No edits to undo",
+      undoHint: "Undo one edit while keeping later independent changes.",
+      undoDependency: "Later content depends on this edit. Resolve those dependencies first.", undoConstraint: "Undo would violate the current graph constraints. Resolve the conflict first.",
+      undoUnavailable: "This edit has changed. Please select it again.", restoreGraph: "Restore search graph",
+      graphResultApplied: "Apply graph results", nodeResultApplied: "Apply node results",
+      stageAria: "WAYFINDER ink exploration", pageTitle: "WAYFINDER — Ink in motion",
+    },
     research: {
       startGraph: "Search entire graph again", startNode: "Search this node again", preview: "Search preview", searching: "Searching again. Your current graph is unchanged.",
       failure: "No new results can be applied. Your current graph is unchanged.", cancel: "Cancel search", dismiss: "Discard new results", append: "Append to this node", replace: "Apply replacement",

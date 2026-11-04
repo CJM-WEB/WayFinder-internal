@@ -1,7 +1,7 @@
 /**
- * 模块职责：保存可编辑搜索图及每张图独立的会话撤销状态。
+ * 模块职责：保存可编辑搜索图及每张图独立的本地撤销状态。
  * 搜索运行仍由 graph-store 管理；只有明确交付或应用的结果才单向进入工作区。
- * 边界：快照通过 Zod 解析复制，不共享调用方的可变对象；历史不进入持久化文档。
+ * 边界：图与撤销历史分别校验；布局持久保存，但拖动不产生可撤销事件。
  */
 import {
   EditableGraphSchema,
@@ -11,10 +11,17 @@ import {
   type SearchLanguage,
 } from "@wayfinder/contracts";
 import { createStore } from "zustand/vanilla";
+import {
+  appendHistory, createGraphHistory, describeHistory, inferHistoryDescription, redoHistoryEvent,
+  onlyGraphLayoutChanged, restoreGraphHistory, sameGraphContent, undoHistoryEvent, updateHistoryLayout,
+  type GraphHistory, type WorkspaceHistoryDescription, type WorkspaceHistoryEventView, type WorkspaceHistoryResult,
+} from "./workspace-history.js";
+
+export type { WorkspaceHistoryDescription, WorkspaceHistoryEvent, WorkspaceHistoryEventView,
+  WorkspaceHistoryKind, WorkspaceHistoryBlockedReason, WorkspaceHistoryResult, WorkspaceHistoryScope } from "./workspace-history.js";
 
 export const WORKSPACE_HISTORY_LIMIT = 100;
 
-type GraphHistory = { past: EditableGraph[]; future: EditableGraph[] };
 type DeletedGraph = { document: EditableGraph; index: number; history: GraphHistory };
 type WorkspaceData = {
   documents: EditableGraph[];
@@ -27,17 +34,17 @@ type WorkspaceActions = {
   addGraph: (graph: EditableGraph) => void;
   selectGraph: (id: string | null) => void;
   selectNode: (id: string | null) => void;
-  replaceGraph: (graph: EditableGraph) => void;
+  replaceGraph: (graph: EditableGraph, description?: WorkspaceHistoryDescription) => void;
   renameGraph: (id: string, title: string) => void;
   deleteGraph: (id: string) => void;
   restoreDeletedGraph: () => void;
   undo: () => void;
+  undoEvent: (eventId: string) => WorkspaceHistoryResult;
   redo: () => void;
-  restoreDocuments: (documents: EditableGraph[], currentId: string | null) => void;
+  restoreDocuments: (documents: EditableGraph[], currentId: string | null, histories?: Readonly<Record<string, unknown>>) => void;
 };
 export type WorkspaceStoreState = WorkspaceData & WorkspaceActions;
 
-const emptyHistory = (): GraphHistory => ({ past: [], future: [] });
 const initialState = (): WorkspaceData => ({
   documents: [], currentId: null, selectedNodeIds: {}, histories: {}, deletedGraphs: [],
 });
@@ -81,7 +88,15 @@ export const fromResultGraph = (result: ResultGraph, graphId: string): EditableG
 export const selectCurrentGraph = (state: WorkspaceStoreState): EditableGraph | null =>
   state.documents.find(document => document.id === state.currentId) ?? null;
 
-export const createWorkspaceStore = () => createStore<WorkspaceStoreState>()((set, get) => ({
+/** UI 可按原始 history 引用 memo；选择器不泄露实体快照，也不缓存过期阻断判定。 */
+export const selectWorkspaceHistory = (state: WorkspaceStoreState): readonly WorkspaceHistoryEventView[] => {
+  const history = state.histories[state.currentId ?? ""];
+  return history === undefined ? [] : describeHistory(history);
+};
+
+type WorkspaceHistoryClock = Readonly<{ now?: () => string; createEventId?: () => string }>;
+
+export const createWorkspaceStore = (clock: WorkspaceHistoryClock = {}) => createStore<WorkspaceStoreState>()((set, get) => ({
   ...initialState(),
   addGraph: input => {
     const document = EditableGraphSchema.parse(input);
@@ -89,7 +104,7 @@ export const createWorkspaceStore = () => createStore<WorkspaceStoreState>()((se
       if (state.documents.some(item => item.id === document.id)) throw new Error("搜索图标识重复");
       return {
         documents: [...state.documents, document], currentId: document.id,
-        histories: { ...state.histories, [document.id]: emptyHistory() },
+        histories: { ...state.histories, [document.id]: createGraphHistory(document) },
       };
     });
   },
@@ -105,19 +120,24 @@ export const createWorkspaceStore = () => createStore<WorkspaceStoreState>()((se
       return { selectedNodeIds: { ...state.selectedNodeIds, [document.id]: id } };
     });
   },
-  replaceGraph: input => {
+  replaceGraph: (input, description) => {
     const document = EditableGraphSchema.parse(input);
     set(state => {
       const previous = state.documents.find(item => item.id === document.id);
       if (previous === undefined) throw new Error("搜索图不存在");
-      if (JSON.stringify(previous) === JSON.stringify(document)) return state;
-      const history = state.histories[document.id] ?? emptyHistory();
+      if (sameGraphContent(previous, document)) return state;
+      const history = state.histories[document.id] ?? createGraphHistory(previous);
+      // 纯布局更新不耗费100步额度，也不清除重做；重基线化防止后续撤销把节点拉回旧位置。
+      const nextHistory = description?.scope === undefined && onlyGraphLayoutChanged(previous, document)
+        ? updateHistoryLayout(history, previous, document)
+        : appendHistory(history, previous, document, {
+          ...(description ?? inferHistoryDescription(previous, document)),
+          id: clock.createEventId?.() ?? crypto.randomUUID(),
+          occurredAt: clock.now?.() ?? new Date().toISOString(), active: true,
+        }, WORKSPACE_HISTORY_LIMIT);
       return {
         documents: state.documents.map(item => item.id === document.id ? document : item),
-        histories: {
-          ...state.histories,
-          [document.id]: { past: [...history.past, previous].slice(-WORKSPACE_HISTORY_LIMIT), future: [] },
-        },
+        histories: { ...state.histories, [document.id]: nextHistory },
       };
     });
   },
@@ -138,7 +158,7 @@ export const createWorkspaceStore = () => createStore<WorkspaceStoreState>()((se
         documents, histories,
         currentId: state.currentId === id ? documents[0]?.id ?? null : state.currentId,
         deletedGraphs: [...state.deletedGraphs, {
-          document, index, history: state.histories[id] ?? emptyHistory(),
+          document, index, history: state.histories[id] ?? createGraphHistory(document),
         }].slice(-WORKSPACE_HISTORY_LIMIT),
       };
     });
@@ -157,42 +177,56 @@ export const createWorkspaceStore = () => createStore<WorkspaceStoreState>()((se
     });
   },
   undo: () => {
+    const state = get();
+    const event = state.histories[state.currentId ?? ""]?.events.findLast(item => item.active);
+    if (event !== undefined) state.undoEvent(event.id);
+  },
+  undoEvent: eventId => {
+    let outcome: WorkspaceHistoryResult = { ok: false, reason: "missing" };
     set(state => {
       const document = selectCurrentGraph(state);
       if (document === null) return state;
-      const history = state.histories[document.id] ?? emptyHistory();
-      const previous = history.past.at(-1);
-      if (previous === undefined) return state;
+      const history = state.histories[document.id];
+      const event = history?.events.find(item => item.id === eventId);
+      if (history === undefined || event === undefined) return state;
+      if (!event.active) { outcome = { ok: false, reason: "inactive" }; return state; }
+      // 每次执行重新读取当前图所属事件；失败既不修改文档，也不改变 Undo/Redo 分支。
+      const result = undoHistoryEvent(history, eventId);
+      if (!result.ok) { outcome = result; return state; }
+      outcome = { ok: true };
       return {
-        documents: state.documents.map(item => item.id === document.id ? previous : item),
-        histories: { ...state.histories, [document.id]: {
-          past: history.past.slice(0, -1), future: [document, ...history.future],
-        } },
+        documents: state.documents.map(item => item.id === document.id ? result.graph : item),
+        histories: { ...state.histories, [document.id]: result.history },
       };
     });
+    return outcome;
   },
   redo: () => {
     set(state => {
       const document = selectCurrentGraph(state);
       if (document === null) return state;
-      const history = state.histories[document.id] ?? emptyHistory();
-      const next = history.future[0];
-      if (next === undefined) return state;
+      const history = state.histories[document.id];
+      if (history === undefined) return state;
+      const result = redoHistoryEvent(history);
+      if (result === null || !result.ok) return state;
       return {
-        documents: state.documents.map(item => item.id === document.id ? next : item),
-        histories: { ...state.histories, [document.id]: {
-          past: [...history.past, document].slice(-WORKSPACE_HISTORY_LIMIT), future: history.future.slice(1),
-        } },
+        documents: state.documents.map(item => item.id === document.id ? result.graph : item),
+        histories: { ...state.histories, [document.id]: result.history },
       };
     });
   },
-  restoreDocuments: (inputs, currentId) => {
+  restoreDocuments: (inputs, currentId, historyInputs) => {
     const documents = inputs.map(document => EditableGraphSchema.parse(document));
     if (new Set(documents.map(document => document.id)).size !== documents.length) throw new Error("搜索图标识重复");
+    if (historyInputs !== undefined && (Object.keys(historyInputs).length !== documents.length
+        || documents.some(document => !Object.hasOwn(historyInputs, document.id)))) throw new Error("本地撤销历史与搜索图记录不匹配");
+    // 所有图和事件先完成校验再一次发布；失败不得清空当前内存图或触发自动覆盖旧库。
+    const histories = Object.fromEntries(documents.map(document => [document.id,
+      historyInputs === undefined ? createGraphHistory(document) : restoreGraphHistory(historyInputs[document.id], document, WORKSPACE_HISTORY_LIMIT)]));
     set({
       ...initialState(), documents,
       currentId: documents.some(document => document.id === currentId) ? currentId : documents[0]?.id ?? null,
-      histories: Object.fromEntries(documents.map(document => [document.id, emptyHistory()])),
+      histories,
     });
   },
 }));

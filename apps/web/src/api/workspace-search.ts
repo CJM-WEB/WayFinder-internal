@@ -37,7 +37,7 @@ export const createWorkspaceSearchHandoff = (
       ...document, title: previous.title, createdAt: previous.createdAt,
       ...(previous.engine === undefined ? {} : { engine: previous.engine }),
       positions: Object.fromEntries(elements.nodes.map(node => [node.id, node.position])),
-    });
+    }, { kind: "graph.search", subject: previous.title, scope: { type: "graph.replace" } });
   },
 });
 

@@ -1,4 +1,4 @@
-/** 测试职责：布局与连线只修改确定性图数据，复用协议约束并保持一次操作一次撤销。 */
+/** 测试职责：布局与连线只修改确定性图数据；移动不入撤销，连线编辑仍可撤销且保留最新布局。 */
 import { describe, expect, it } from "vitest";
 import { createEmptyGraph, createWorkspaceStore } from "./workspace-store.js";
 import { addNode, addEdge, updateEdge, deleteEdge, moveNode, InvalidGraphConnectionError } from "./workspace-edits.js";
@@ -6,17 +6,25 @@ import { addNode, addEdge, updateEdge, deleteEdge, moveNode, InvalidGraphConnect
 const graph = () => addNode(addNode(addNode(createEmptyGraph("图", "布局", "zh-CN"), "甲", "", "a"), "乙", "", "b"), "独立", "", "c");
 
 describe("人工布局与连线", () => {
-  it("拖动终点保存为一次快照，可完整撤销重做而不重排其他节点", () => {
+  it("拖动保存但不入撤销，撤销与重做连线不回退最新位置", () => {
     const store = createWorkspaceStore();
     const initial = graph();
     store.getState().addGraph(initial);
-    store.getState().replaceGraph(moveNode(initial, "a", { x: -123, y: 456 }));
+    const moved = moveNode(initial, "a", { x: -123, y: 456 });
+    store.getState().replaceGraph(moved);
     expect(store.getState().documents[0]?.positions).toEqual({ ...initial.positions, a: { x: -123, y: 456 } });
+    expect(store.getState().histories[initial.id]?.events).toHaveLength(0);
+    expect(store.getState().histories[initial.id]?.past).toHaveLength(0);
+    store.getState().undo();
+    expect(store.getState().documents[0]).toEqual(moved);
+    store.getState().replaceGraph(addEdge(moved, "a", "b", "related_to", "e1"));
     expect(store.getState().histories[initial.id]?.past).toHaveLength(1);
     store.getState().undo();
-    expect(store.getState().documents[0]).toEqual(initial);
+    expect(store.getState().documents[0]?.edges).toHaveLength(0);
+    expect(store.getState().documents[0]?.positions).toEqual(moved.positions);
     store.getState().redo();
-    expect(store.getState().documents[0]?.positions.a).toEqual({ x: -123, y: 456 });
+    expect(store.getState().documents[0]?.edges[0]?.id).toBe("e1");
+    expect(store.getState().documents[0]?.positions).toEqual(moved.positions);
   });
 
   it("相关线可成环，人工图可有独立节点，连线修改和删除保留其他内容", () => {

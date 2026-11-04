@@ -200,6 +200,8 @@ try {
   const index = await fetchFromLoopback(`${address}/`);
   const html = await index.text();
   assert(index.status === 200 && html.includes('id="root"'), "生产首页不可用");
+  // 根入口必须交付已验收的新版，不能只因空 root 与某个脚本存在就把旧展示误报为迁移成功。
+  assert(html.includes("<title>WAYFINDER — 墨迹漫游</title>"), "生产首页未使用墨迹漫游入口");
   const assetPaths = [
     ...html.matchAll(/(?:src|href)="(\/assets\/[^"]+)"/gu),
   ].map(match => match[1]);

@@ -6,7 +6,8 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { AriaLabelConfig, NodeChange } from "@xyflow/react";
+import type { AriaLabelConfig, NodeChange, ReactFlowInstance, ReactFlowProps } from "@xyflow/react";
+import type { MouseEvent as ReactMouseEvent } from "react";
 
 import type { GraphFlowEdge, GraphFlowNode } from "./graph-layout.js";
 
@@ -15,6 +16,7 @@ const capturedFlow = vi.hoisted(() => ({
   edges: undefined as readonly unknown[] | undefined,
   ariaLabels: undefined as Partial<AriaLabelConfig> | undefined,
   onNodesChange: undefined as ((changes: readonly unknown[]) => void) | undefined,
+  props: undefined as ReactFlowProps<GraphFlowNode, GraphFlowEdge> | undefined,
 }));
 
 vi.mock("zustand", () => ({
@@ -39,6 +41,7 @@ vi.mock("@xyflow/react", async importOriginal => {
       capturedFlow.edges = props.edges;
       capturedFlow.ariaLabels = props.ariaLabelConfig;
       capturedFlow.onNodesChange = props.onNodesChange;
+      capturedFlow.props = props as unknown as ReactFlowProps<GraphFlowNode, GraphFlowEdge>;
       return null;
     },
     Background: () => null,
@@ -49,6 +52,8 @@ vi.mock("@xyflow/react", async importOriginal => {
 import { graphStore } from "../../stores/graph-store.js";
 import { createPythonMockStream } from "../../testing/python-mock-stream.js";
 import { GraphView } from "./GraphView.js";
+import { fromResultGraph, workspaceStore } from "../../stores/workspace-store.js";
+import { pythonResultGraphFixture } from "../../fixtures/python-result-graph.js";
 
 afterEach(() => {
   graphStore.getState().reset();
@@ -56,6 +61,95 @@ afterEach(() => {
   capturedFlow.edges = undefined;
   capturedFlow.ariaLabels = undefined;
   capturedFlow.onNodesChange = undefined;
+  capturedFlow.props = undefined;
+  workspaceStore.getState().restoreDocuments([], null);
+});
+
+/** 仅替换浏览器事件/画布实例；身份、坐标转发和生产编辑函数保持真实。 */
+const contextEvent = (clientX: number, clientY: number): ReactMouseEvent => ({
+  clientX,clientY,preventDefault: vi.fn(),stopPropagation: vi.fn(),
+}) as unknown as ReactMouseEvent;
+
+describe("GraphView 墨迹交互桥", () => {
+  it("旧空态不挂 Flow；墨迹空态保留可接世界坐标的同一画布", () => {
+    const empty = { nodes: [],edges: [],positions: {} };
+    const oldMarkup = renderToStaticMarkup(<GraphView presentationMode="graph" language="zh-CN" graph={empty} />);
+    expect(oldMarkup).toContain("graph-empty");
+    expect(capturedFlow.props).toBeUndefined();
+    const request = vi.fn();
+    renderToStaticMarkup(<GraphView appearance="ink" presentationMode="graph" language="zh-CN" graph={empty} onContextRequest={request} />);
+    const convert = vi.fn(() => ({ x: 123,y: -45 }));
+    capturedFlow.props?.onInit?.({ screenToFlowPosition: convert,getNodes: () => [] } as unknown as ReactFlowInstance<GraphFlowNode, GraphFlowEdge>);
+    const event = contextEvent(700,480);
+    capturedFlow.props?.onPaneContextMenu?.(event);
+    expect(convert).toHaveBeenCalledWith({ x: 700,y: 480 });
+    expect(request).toHaveBeenCalledWith({ kind: "pane",clientPoint: { x: 700,y: 480 },flowPoint: { x: 123,y: -45 },positions: {} });
+    expect(event.preventDefault).toHaveBeenCalledOnce();
+    expect(event.stopPropagation).toHaveBeenCalledOnce();
+  });
+
+  it("右键传真实 Node/Edge ID 和 world 布局快照，不从标签或屏幕像素猜身份", () => {
+    const graph = fromResultGraph(pythonResultGraphFixture,"context-graph");
+    const request = vi.fn(), select = vi.fn();
+    renderToStaticMarkup(<GraphView appearance="ink" presentationMode="graph" language="zh-CN" graph={graph}
+      onSelectNode={select} onContextRequest={request} />);
+    const nodes = capturedFlow.nodes as GraphFlowNode[], edges = capturedFlow.edges as GraphFlowEdge[];
+    const first = nodes[0], edge = edges[0];
+    if (first===undefined || edge===undefined) throw new Error("Fixture 缺少节点或边");
+    capturedFlow.props?.onInit?.({ getNodes: () => nodes } as unknown as ReactFlowInstance<GraphFlowNode, GraphFlowEdge>);
+    capturedFlow.props?.onNodeContextMenu?.(contextEvent(20,30),first);
+    expect(select).toHaveBeenCalledWith(first.id);
+    expect(request).toHaveBeenLastCalledWith(expect.objectContaining({ kind: "node",nodeId: first.id,clientPoint: { x: 20,y: 30 },
+      positions: expect.objectContaining({ [first.id]: first.position }) }));
+    capturedFlow.props?.onEdgeContextMenu?.(contextEvent(40,50),edge);
+    expect(request).toHaveBeenLastCalledWith(expect.objectContaining({ kind: "edge",edgeId: edge.id,clientPoint: { x: 40,y: 50 } }));
+  });
+
+  it("搬动门禁期间不能连接或呼出菜单，正常拖动/空白点击可通知外层", () => {
+    const request = vi.fn(), pane = vi.fn(), interaction = vi.fn();
+    const graph = fromResultGraph(pythonResultGraphFixture,"locked-graph");
+    renderToStaticMarkup(<GraphView appearance="ink" presentationMode="graph" language="zh-CN" graph={graph}
+      editableGraphId={graph.id} interactionReady={false} onContextRequest={request} onPaneClick={pane} onInteractionStart={interaction} />);
+    expect(capturedFlow.props?.nodesConnectable).toBe(false);
+    const first = (capturedFlow.nodes as GraphFlowNode[])[0];
+    if (first===undefined) throw new Error("Fixture 缺少节点");
+    capturedFlow.props?.onNodeContextMenu?.(contextEvent(20,30),first);
+    capturedFlow.props?.onPaneClick?.(contextEvent(20,30));
+    expect(request).not.toHaveBeenCalled();
+    expect(pane).not.toHaveBeenCalled();
+    renderToStaticMarkup(<GraphView appearance="ink" presentationMode="graph" language="zh-CN" graph={graph}
+      editableGraphId={graph.id} onPaneClick={pane} onInteractionStart={interaction} />);
+    expect(capturedFlow.props?.nodesConnectable).toBe(true);
+    capturedFlow.props?.onPaneClick?.(contextEvent(20,30));
+    (capturedFlow.props?.onNodeDragStart as (() => void) | undefined)?.();
+    (capturedFlow.props?.onConnectStart as (() => void) | undefined)?.();
+    expect(pane).toHaveBeenCalledOnce();
+    expect(interaction).toHaveBeenCalledTimes(2);
+    renderToStaticMarkup(<GraphView appearance="ink" presentationMode="graph" language="zh-CN" graph={graph}
+      editableGraphId={graph.id} visibleNodeIds={new Set([first.id])} />);
+    const gatedNodes = capturedFlow.nodes as GraphFlowNode[];
+    expect(gatedNodes.find(node => node.id===first.id)?.connectable).toBe(true);
+    expect(gatedNodes.filter(node => node.id!==first.id).every(node => node.connectable===false)).toBe(true);
+  });
+
+  it("墨迹连线一次提交原编辑函数及未保存布局，最新显式位置优先且可一次撤销", () => {
+    const base = fromResultGraph(pythonResultGraphFixture,"connect-graph");
+    const first = base.nodes[0], second = base.nodes[1];
+    if (first===undefined || second===undefined) throw new Error("Fixture 缺少连接端点");
+    const graph = { ...base,edges: [],positions: { [first.id]: { x: 501,y: 602 } } };
+    workspaceStore.getState().restoreDocuments([graph],graph.id);
+    renderToStaticMarkup(<GraphView appearance="ink" presentationMode="graph" language="zh-CN" graph={graph} editableGraphId={graph.id} />);
+    const nodes = (capturedFlow.nodes as GraphFlowNode[]).map((node,index) => ({ ...node,position: { x: index*30+10,y: index*20+5 } }));
+    capturedFlow.props?.onInit?.({ getNodes: () => nodes } as unknown as ReactFlowInstance<GraphFlowNode, GraphFlowEdge>);
+    capturedFlow.props?.onConnect?.({ source: first.id,target: second.id,sourceHandle: "related-source",targetHandle: "related-target" });
+    const edited = workspaceStore.getState().documents[0];
+    expect(edited?.edges).toEqual([expect.objectContaining({ source: first.id,target: second.id,type: "related_to" })]);
+    expect(edited?.positions[first.id]).toEqual({ x: 501,y: 602 });
+    expect(edited?.positions[second.id]).toEqual(nodes[1]?.position);
+    expect(workspaceStore.getState().histories[graph.id]?.past).toHaveLength(1);
+    workspaceStore.getState().undo();
+    expect(workspaceStore.getState().documents[0]).toEqual(graph);
+  });
 });
 
 describe("GraphView 渐进快照接线", () => {

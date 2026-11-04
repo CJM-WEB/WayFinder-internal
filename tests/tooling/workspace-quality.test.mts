@@ -340,7 +340,7 @@ describe("Browser E2E 质量门禁", () => {
     );
     expect(webScripts.test).toBe("vitest run src");
     expect(rootScripts.ci).toContain("&& pnpm run test:e2e");
-    expect(workflow).toContain("runs-on: ubuntu-24.04");
+    expect(workflow).toMatch(/^\s*runs-on: ubuntu-24\.04-arm\s*$/mu);
     expect(workflow).not.toContain("runs-on: ubuntu-latest");
     expect(workflow).toContain(
       "pnpm --filter @wayfinder/web exec playwright install chromium",

@@ -11,6 +11,17 @@ import type {
 } from "@wayfinder/contracts";
 
 import { getMessages } from "../../i18n/messages.js";
+import type { GraphDisplayNode, GraphNodeData } from "./graph-layout.js";
+
+/** 文案快照与普通节点共用同一映射；换图旧字不需要重新布局或复制业务图。 */
+export const buildGraphNodeData = (node: GraphDisplayNode, language: SearchLanguage): GraphNodeData => ({
+  title: node.title,
+  description: node.description,
+  nodeType: node.nodeType,
+  status: node.status,
+  resourceCount: "resources" in node ? node.resources.length : 0,
+  language,
+});
 
 /** H1/H2 评估界面暂不纳入本次多语言范围，保留中文默认导出以维持既有实验行为。 */
 export const NODE_STATUS_LABELS: Readonly<
