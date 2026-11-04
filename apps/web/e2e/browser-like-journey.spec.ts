@@ -18,9 +18,10 @@ import {
   type SearchEngine,
   type StreamEvent,
 } from "@wayfinder/contracts";
-import { copyFile, writeFile } from "node:fs/promises";
+import { copyFile, open, readFile, writeFile } from "node:fs/promises";
 import { expect, test, type CDPSession, type Page, type TestInfo } from "@playwright/test";
 
+import { WEB_WAIT_TIMEOUT_MS } from "../test-timing.js";
 import { createPythonMockStream } from "../src/testing/python-mock-stream.js";
 
 const FIXTURE_TIME = Date.parse("2026-10-22T00:00:00.000Z");
@@ -849,11 +850,11 @@ async function decodeWaterFrames(page: Page, encoded: readonly { at: number; dat
 }
 
 /** 失败也要保存已收到的原生帧；兜底错误只附加证据，不覆盖原来的断言或超时失败。 */
-const pendingWaterEvidence = new Map<TestInfo, Set<() => Promise<unknown>>>();
+const pendingWaterEvidence = new Map<TestInfo, Set<(analyze: boolean) => Promise<unknown>>>();
 test.afterEach(async ({ page }, testInfo) => {
   const pending = pendingWaterEvidence.get(testInfo);
   if (pending === undefined) return;
-  const results = await Promise.allSettled([...pending].map(stop => stop()));
+  const results = await Promise.allSettled([...pending].map(stop => stop(testInfo.status === "passed")));
   pendingWaterEvidence.delete(testInfo);
   const errors = results.flatMap(result => result.status === "rejected" ? [String(result.reason)] : []);
   if (errors.length === 0) return;
@@ -948,20 +949,30 @@ async function observeWaterMotion(page: Page, testInfo: TestInfo, name: string, 
     } };
   });
   const session = await page.context().newCDPSession(page);
-  const images: Array<{ at: number; data: string }> = [];
+  const images: Array<{ at: number; path: string; written: Promise<void> }> = [];
+  const errors: string[] = [];
   const acknowledgmentErrors: string[] = [];
   let recording = true;
   session.on("Page.screencastFrame", event => {
     if (!recording) return;
-    images.push({ at: event.metadata.timestamp ?? 0, data: event.data });
-    // 关闭期间可能收到最后一帧；仅记录仍在观察时的协议错误，避免未处理的异步拒绝污染后续用例。
-    void session.send("Page.screencastFrameAck", { sessionId: event.sessionId }).catch((error: unknown) => {
+    // 保存该帧后才确认接收，由浏览器控制在途帧数。长等待不会在内存中堆积整段录像。
+    const path = testInfo.outputPath(`${name}-compositor-${String(images.length).padStart(3, "0")}.jpeg`);
+    const written = writeFile(path, event.data, "base64").catch((error: unknown) => { errors.push(String(error)); });
+    images.push({ at: event.metadata.timestamp ?? 0, path, written });
+    void written.then(() => session.send("Page.screencastFrameAck", { sessionId: event.sessionId })).catch((error: unknown) => {
       if (recording) acknowledgmentErrors.push(String(error));
     });
   });
+  const analyzeImages = async (batch: typeof images) => {
+    const encoded = await Promise.all(batch.map(async image => {
+      await image.written;
+      return { at: image.at, data: await readFile(image.path, "base64") };
+    }));
+    return decodeWaterFrames(page, encoded, regions);
+  };
   const readDom = () => observer.evaluate(value => value.stop());
-  const save = async () => {
-    const errors: string[] = [];
+  const save = async (analyze: boolean) => {
+    const batchSize = 32;
     let dom: Awaited<ReturnType<typeof readDom>> | undefined;
     try {
       await session.send("Page.stopScreencast");
@@ -970,26 +981,38 @@ async function observeWaterMotion(page: Page, testInfo: TestInfo, name: string, 
     } catch (error: unknown) { errors.push(String(error)); }
     finally {
       recording = false;
-      // Node 已收到的图片先落盘；之后即使 Page/context 已关闭，最关键的黑屏帧也不会丢。
-      await Promise.all(images.map((image, index) => writeFile(testInfo.outputPath(`${name}-compositor-${String(index).padStart(3, "0")}.jpeg`), Buffer.from(image.data, "base64"))));
+      await Promise.all(images.map(image => image.written));
       await session.detach().catch((error: unknown) => errors.push(String(error)));
       await observer.dispose().catch((error: unknown) => errors.push(String(error)));
-      await writeFile(testInfo.outputPath(`${name}-raw-dom.json`), JSON.stringify({ ...(dom ?? {}), acknowledgmentErrors, errors, imageCount: images.length }, null, 2));
+      // 图片序号与时间戳一一对应；即便用例超时，仍能把原始合成画面与指针、布局事件对齐。
+      await writeFile(testInfo.outputPath(`${name}-raw-dom.json`), JSON.stringify({ ...(dom ?? {}), acknowledgmentErrors, errors, imageCount: images.length, imageTimes: images.map(image => image.at) }, null, 2));
     }
     if (dom === undefined || errors.length > 0) throw new Error(`动效观察收尾失败：${errors.join("；")}`);
-    const pixels = await decodeWaterFrames(page, images, regions);
-    await writeFile(testInfo.outputPath(`${name}-evidence.json`), JSON.stringify({ ...dom, acknowledgmentErrors, pixels }, null, 2));
+    const pixels: WaterPixelFrame[] = [];
+    if (analyze) {
+      // 分批解码并写入同一份 JSON（证据报告），避免整段像素超过单条消息或字符串的容量。
+      const report = await open(testInfo.outputPath(`${name}-evidence.json`), "w");
+      try {
+        await report.writeFile(`${JSON.stringify({ ...dom, acknowledgmentErrors }).slice(0, -1)},"pixels":[`);
+        for (let start = 0; start < images.length; start += batchSize) {
+          const batch = await analyzeImages(images.slice(start, start + batchSize));
+          await report.writeFile((start === 0 ? "" : ",") + batch.map(frame => JSON.stringify(frame)).join(","));
+          pixels.push(...batch);
+        }
+        await report.writeFile("]}");
+      } finally { await report.close(); }
+    }
     return { ...dom, acknowledgmentErrors, pixels };
   };
   let stopped: ReturnType<typeof save> | undefined;
-  const stop = (): ReturnType<typeof save> => {
-    stopped ??= save().finally(() => { pendingWaterEvidence.get(testInfo)?.delete(stop); });
+  const stop = (analyze = true): ReturnType<typeof save> => {
+    stopped ??= save(analyze).finally(() => { pendingWaterEvidence.get(testInfo)?.delete(stop); });
     return stopped;
   };
-  const pending = pendingWaterEvidence.get(testInfo) ?? new Set<() => Promise<unknown>>();
+  const pending = pendingWaterEvidence.get(testInfo) ?? new Set<(analyze: boolean) => Promise<unknown>>();
   pending.add(stop); pendingWaterEvidence.set(testInfo, pending);
   await session.send("Page.startScreencast", { format: "jpeg", quality: 85, maxWidth: 640, maxHeight: 360, everyNthFrame: 1 });
-  return { frameCount: () => images.length, sampleLatest: (count = 2) => decodeWaterFrames(page, images.slice(-count), regions), stop };
+  return { frameCount: () => images.length, sampleLatest: (count = 2) => analyzeImages(images.slice(-count)), stop };
 }
 
 type WaterEvidence = Awaited<ReturnType<Awaited<ReturnType<typeof observeWaterMotion>>["stop"]>>;
@@ -1023,8 +1046,8 @@ async function selectWaterHistory(page: Page, title: string): Promise<void> {
 async function interruptWaterHistory(page: Page, first: string, last: string): Promise<void> {
   const session = await page.context().newCDPSession(page);
   const focus = async (title: string | null, open: boolean): Promise<void> => {
-    const locate = (name: string | null, expanded: boolean) => new Promise<boolean>((resolve, reject) => {
-      const deadline = performance.now() + 1000;
+    const locate = (name: string | null, expanded: boolean, timeoutMs: number) => new Promise<boolean>((resolve, reject) => {
+      const deadline = performance.now() + timeoutMs;
       const check = (): void => {
         const toggle = document.querySelector<HTMLButtonElement>(".ink-study__history-toggle");
         const button = name === null ? toggle : [...document.querySelectorAll<HTMLButtonElement>(".ink-study__history-title")].find(element => element.textContent === name);
@@ -1036,7 +1059,7 @@ async function interruptWaterHistory(page: Page, first: string, last: string): P
       };
       check();
     });
-    const result = await session.send("Runtime.evaluate", { expression: `(${locate.toString()})(${JSON.stringify(title)},${open})`, awaitPromise: true, returnByValue: true });
+    const result = await session.send("Runtime.evaluate", { expression: `(${locate.toString()})(${JSON.stringify(title)},${open},${WEB_WAIT_TIMEOUT_MS})`, awaitPromise: true, returnByValue: true });
     if (result.exceptionDetails !== undefined || result.result.value !== true) throw new Error("原生历史键盘输入未能获得真实焦点");
   };
   const enter = async (): Promise<void> => {
@@ -1174,8 +1197,7 @@ test("真实时间异ID历史先搬源文字再换目标，快速连续切图仅
 });
 
 /**
- * 验证边界：按人员要求，三条 GPU（图形处理器）旅程各使用 40 秒总预算，功能与像素判据保持原样。
- * 诊断隔离：独立 worker（测试进程）保留 DOM/HAR（页面结构/HTTP 存档）快照与源码；hover 的聚回期限仍为 4 秒。
+ * 三条图形旅程共用前端测试等待上限。独立测试进程保留页面结构、网络存档和源码供失败诊断。
  * hover 与加载保留主动采帧，关闭额外 trace 录屏；液体拖动继续保留完整 trace（诊断记录）。
  */
 const hoverInkTest = test.extend({
@@ -1190,7 +1212,6 @@ const liquidInkTest = test.extend({
 
 /** 局部拨散以自身基线和远处节点作对照，与独立拖动风险分开验证。 */
 hoverInkTest("真实时间hover拨散当前节点颜料后自然聚回，不改变文字布局与存储", async ({ page }, testInfo) => {
-  test.setTimeout(40_000);
   const documents = await prepareWaterPage(page);
   const document = documents[0], active = document?.nodes[0], control = document?.nodes[2];
   if (document === undefined || active === undefined || control === undefined) throw new Error("缺少局部水波固定样例");
@@ -1242,13 +1263,13 @@ hoverInkTest("真实时间hover拨散当前节点颜料后自然聚回，不改�
       && Math.abs(body.x - baselineMaterial.x) < 0.025 && Math.abs(body.y - baselineMaterial.y) < 0.025
       && Math.abs(body.bulkWidth / baselineMaterial.width - 1) < 0.18 && Math.abs(body.bulkHeight / baselineMaterial.height - 1) < 0.18;
   };
-  // 以原生帧中的集中度/外轮廓回近自身基线判断聚回，最多 4 秒；不靠一段固定 sleep 假设材料已经恢复。
+  // 以原生帧中的集中度/外轮廓回近自身基线判断聚回；每次检查实际画面，达到条件就继续。
   await expect.poll(async () => {
     const frames = await hover.sampleLatest(3);
     const ready = frames.length === 3 && frames.every(materialRecovered);
     if (ready) recoveredFrameAt = frames[0]?.at ?? Number.POSITIVE_INFINITY;
     return ready;
-  }, { timeout: 4000, intervals: [100, 200, 300] }).toBe(true);
+  }, { intervals: [100, 200, 300] }).toBe(true);
   const afterRecovery = hover.frameCount();
   await expect.poll(hover.frameCount).toBeGreaterThanOrEqual(afterRecovery + 1);
   const hoverEvidence = await hover.stop();
@@ -1361,7 +1382,7 @@ test("真实时间曲线拖动文字连线跟手，首页流体尾迹连续收�
     const frame = (await drag.sampleLatest()).at(-1), body = frame === undefined ? undefined : topBody(frame);
     return body !== undefined && Math.abs(body.bulkWidth / initialBulk.width - 1) < 0.18 && Math.abs(body.bulkHeight / initialBulk.height - 1) < 0.18
       && Math.abs(body.x - target.x) < 0.025 && Math.abs(body.y - target.y) < 0.025;
-  }, { timeout: 4000, intervals: [100, 200, 300] }).toBe(true);
+  }, { intervals: [100, 200, 300] }).toBe(true);
   await expect.poll(async () => (await inkPigmentPerNode(page)).find(node => node.id === active.id)?.count ?? 0).toBeGreaterThan(20);
   const evidence = await drag.stop();
   expectWaterContinuity(evidence);
@@ -1595,10 +1616,10 @@ async function openInkPaneMenu(page: Page): Promise<void> {
 test("墨迹工作区资源条从右依次进入，悬浮展开并安全打开，外点反向收回", async ({ page }, testInfo) => {
   await openInkWorkspace(page, true);
   await page.emulateMedia({ reducedMotion: "no-preference" });
-  const enteredFrames = page.evaluate(() => new Promise<readonly (readonly number[])[]>((resolve, reject) => {
+  const enteredFrames = page.evaluate(timeoutMs => new Promise<readonly (readonly number[])[]>((resolve, reject) => {
     const frames: number[][] = [];
     let raf = 0;
-    const timeout = window.setTimeout(() => { observer.disconnect(); cancelAnimationFrame(raf); reject(new Error("资源入场未开始")); }, 5_000);
+    const timeout = window.setTimeout(() => { observer.disconnect(); cancelAnimationFrame(raf); reject(new Error("资源入场未开始")); }, timeoutMs);
     const observer = new MutationObserver(() => {
       if (document.querySelectorAll("[data-ink-resource]").length < 2) return;
       observer.disconnect();
@@ -1611,7 +1632,7 @@ test("墨迹工作区资源条从右依次进入，悬浮展开并安全打开�
       raf = requestAnimationFrame(frame);
     });
     observer.observe(document.body, { childList: true, subtree: true });
-  }));
+  }), WEB_WAIT_TIMEOUT_MS);
   await page.locator('[data-ink-node="workspace-node-0"]').getByRole("heading").click();
   const frames = await enteredFrames, startX = frames[0]?.[0], endX = frames.at(-1)?.[0];
   if (startX === undefined || endX === undefined) throw new Error("缺少资源入场帧");
@@ -1823,12 +1844,12 @@ test("两类历史逐条S曲线上滑且撤销行退场消失，底部胶囊分�
   await expect(page.locator(".ink-study__undo-toggle")).toHaveAttribute("inert", "");
 
   const sampleEntryMotion = async (selector: string, trigger: () => Promise<void>) => {
-    const pending = page.evaluate(selector => new Promise<readonly Readonly<{ at: number; y: readonly number[]; opacity: readonly number[]; easing: string }>[]>((resolve, reject) => {
+    const pending = page.evaluate(({ selector, timeoutMs }) => new Promise<readonly Readonly<{ at: number; y: readonly number[]; opacity: readonly number[]; easing: string }>[]>((resolve, reject) => {
       const panel = document.querySelector(selector);
       if (!(panel instanceof HTMLElement)) throw new Error("缺少待采样历史面板");
       const frames: { at: number; y: number[]; opacity: number[]; easing: string }[] = [];
       let raf = 0;
-      const timeout = window.setTimeout(() => { observer.disconnect(); cancelAnimationFrame(raf); reject(new Error("历史条目入场未开始")); }, 5_000);
+      const timeout = window.setTimeout(() => { observer.disconnect(); cancelAnimationFrame(raf); reject(new Error("历史条目入场未开始")); }, timeoutMs);
       const observer = new MutationObserver(() => {
         if (panel.dataset.active !== "true") return;
         observer.disconnect();
@@ -1843,7 +1864,7 @@ test("两类历史逐条S曲线上滑且撤销行退场消失，底部胶囊分�
         raf = requestAnimationFrame(frame);
       });
       observer.observe(panel, { attributes: true, attributeFilter: ["data-active"] });
-    }), selector);
+    }), { selector, timeoutMs: WEB_WAIT_TIMEOUT_MS });
     await trigger();
     const frames = await pending;
     expect(frames[0]?.y[0]).toBeGreaterThan(20);
@@ -1860,7 +1881,7 @@ test("两类历史逐条S曲线上滑且撤销行退场消失，底部胶囊分�
   const eventId = await event.getAttribute("data-ink-undo-event");
   if (eventId === null) throw new Error("缺少撤销事件标识");
   type LeaveFrame = Readonly<{ y: number; opacity: number; nextTop: number }>;
-  const leavingFrames = page.evaluate(id => new Promise<{ frames: LeaveFrame[]; collapsedTop: number; removedTop: number }>((resolve, reject) => {
+  const leavingFrames = page.evaluate(({ id, timeoutMs }) => new Promise<{ frames: LeaveFrame[]; collapsedTop: number; removedTop: number }>((resolve, reject) => {
     const entry = document.querySelector(`[data-ink-undo-event="${id}"]`);
     if (!(entry instanceof HTMLElement)) throw new Error("缺少退场事件");
     const next = entry.nextElementSibling, list = entry.parentElement;
@@ -1873,7 +1894,7 @@ test("两类历史逐条S曲线上滑且撤销行退场消失，底部胶囊分�
       if (event.target === entry && event.propertyName === "grid-template-rows") collapsedTop = nextTop();
     });
     let raf = 0;
-    const timeout = window.setTimeout(() => { observer.disconnect(); cancelAnimationFrame(raf); reject(new Error("撤销行未退场移除")); }, 5_000);
+    const timeout = window.setTimeout(() => { observer.disconnect(); cancelAnimationFrame(raf); reject(new Error("撤销行未退场移除")); }, timeoutMs);
     const observer = new MutationObserver(() => {
       if (entry.dataset.leaving !== "true") return;
       observer.disconnect();
@@ -1892,7 +1913,7 @@ test("两类历史逐条S曲线上滑且撤销行退场消失，底部胶囊分�
       raf = requestAnimationFrame(frame);
     });
     observer.observe(entry, { attributes: true, attributeFilter: ["data-leaving"] });
-  }), eventId);
+  }), { id: eventId, timeoutMs: WEB_WAIT_TIMEOUT_MS });
   await event.getByRole("button", { name: /^撤销：/ }).click();
   const leave = await leavingFrames;
   expect(leave.frames.some(frame => frame.opacity > .05 && frame.opacity < .95 && frame.y < -2)).toBe(true);
@@ -1927,7 +1948,7 @@ test("历史与撤销面板连接两个按钮并随共同箭头完整滑出，�
   const evidence: Record<string, unknown> = {};
   type SplitFrame = Readonly<{ at: number; panelTop: number; dockBottom: number; historyBottom: number; undoBottom: number; gap: number }>;
   const sampleSplit = async (expanded: boolean): Promise<readonly SplitFrame[]> => {
-    const pending = page.evaluate(expanded => new Promise<readonly SplitFrame[]>((resolve, reject) => {
+    const pending = page.evaluate(({ expanded, timeoutMs }) => new Promise<readonly SplitFrame[]>((resolve, reject) => {
       const dock = document.querySelector(".ink-study__history-dock"), drawer = dock?.parentElement;
       const history = dock?.querySelector(".ink-study__history-toggle"), undo = dock?.querySelector(".ink-study__undo-toggle");
       if (!(dock instanceof HTMLElement) || drawer === null || drawer === undefined || history === null || history === undefined
@@ -1937,7 +1958,7 @@ test("历史与撤销面板连接两个按钮并随共同箭头完整滑出，�
         undoBottom: undo.getBoundingClientRect().bottom, gap: undo.getBoundingClientRect().left - history.getBoundingClientRect().right });
       const frames: SplitFrame[] = [read(0)];
       let raf = 0;
-      const timeout = window.setTimeout(() => { observer.disconnect(); cancelAnimationFrame(raf); reject(new Error("按钮分裂/合回未开始")); }, 3_000);
+      const timeout = window.setTimeout(() => { observer.disconnect(); cancelAnimationFrame(raf); reject(new Error("按钮分裂/合回未开始")); }, timeoutMs);
       const observer = new MutationObserver(() => {
         if (dock.dataset.expanded !== String(expanded)) return;
         observer.disconnect();
@@ -1963,7 +1984,7 @@ test("历史与撤销面板连接两个按钮并随共同箭头完整滑出，�
         raf = requestAnimationFrame(frame);
       });
       observer.observe(dock, { attributes: true, attributeFilter: ["data-expanded"] });
-    }), expanded);
+    }), { expanded, timeoutMs: WEB_WAIT_TIMEOUT_MS });
     if (expanded) await dock.hover();
     else await page.mouse.move(0, 0);
     const frames = await pending;
@@ -2033,7 +2054,7 @@ test("历史与撤销面板连接两个按钮并随共同箭头完整滑出，�
       const button = element.parentElement?.querySelector(".ink-study__history-toggle");
       return button === null || button === undefined ? Infinity : Math.abs(element.getBoundingClientRect().top - button.getBoundingClientRect().bottom);
     })).toBeLessThan(1);
-    const closing = page.evaluate(selector => new Promise<readonly Readonly<{
+    const closing = page.evaluate(({ selector, timeoutMs }) => new Promise<readonly Readonly<{
       at: number; panelTop: number; dockBottom: number; arrowBottom: number; stageBottom: number;
       opacity: number; visibility: string; present: string; inert: boolean; hidden: string | null; easing: string;
     }>[]>((resolve, reject) => {
@@ -2045,7 +2066,7 @@ test("历史与撤销面板连接两个按钮并随共同箭头完整滑出，�
       const frames: { at: number; panelTop: number; dockBottom: number; arrowBottom: number; stageBottom: number;
         opacity: number; visibility: string; present: string; inert: boolean; hidden: string | null; easing: string }[] = [];
       let raf = 0;
-      const timeout = window.setTimeout(() => { observer.disconnect(); cancelAnimationFrame(raf); reject(new Error("连体面板未完整退出")); }, 3_000);
+      const timeout = window.setTimeout(() => { observer.disconnect(); cancelAnimationFrame(raf); reject(new Error("连体面板未完整退出")); }, timeoutMs);
       const observer = new MutationObserver(() => {
         if (panel.dataset.active !== "false") return;
         observer.disconnect();
@@ -2062,7 +2083,7 @@ test("历史与撤销面板连接两个按钮并随共同箭头完整滑出，�
         raf = requestAnimationFrame(frame);
       });
       observer.observe(panel, { attributes: true, attributeFilter: ["data-active"] });
-    }), selector);
+    }), { selector, timeoutMs: WEB_WAIT_TIMEOUT_MS });
     const stage = await page.locator(".ink-study__stage").boundingBox();
     if (stage === null) throw new Error("缺少外点关闭位置");
     await page.mouse.click(stage.x + 5, stage.y + 5);
@@ -2792,7 +2813,6 @@ test("联系作者点击复制真实邮箱，拒绝剪贴板权限时显示失�
 
 /** 有效请求才进入融合态；同一三个控件保留 DOM 身份，并以真实取消恢复交互。 */
 loadingInkTest("有效搜索将三组件融合为中心停止圆，墨迹保持中心且取消中止真实运行", async ({ page }, testInfo) => {
-  test.setTimeout(40_000);
   await installBrowserFixture(page, createJourneyEvents());
   await page.emulateMedia({ reducedMotion: "no-preference" });
   await page.goto("/");
@@ -3012,7 +3032,6 @@ test("已有图回首页聚合再分裂恢复，新建与快速逆转不丢原�
 
 /** GPU 的液体表面允许运动，真实节点文字与连线仍固定在业务布局；拖动最终只提交一次真实坐标。 */
 liquidInkTest("液体墨团持续变化但文字布局不漂移，拖动后落定并保存", async ({ page }, testInfo) => {
-  test.setTimeout(40_000);
   const events = createInkMotionEvents();
   await installBrowserFixture(page, events);
   await page.emulateMedia({ reducedMotion: "reduce" });
@@ -3083,7 +3102,7 @@ liquidInkTest("液体墨团持续变化但文字布局不漂移，拖动后落�
       return settling.length >= 3 && settling.slice(-3).every(body => body !== undefined
         && Math.abs(body.x - initialBody.x - domShift) < 2 / 320
         && Math.abs(body.y - initialBody.y) < 2 / 180);
-    }, { timeout: 4000, intervals: [100, 200, 300] }).toBe(true);
+    }, { intervals: [100, 200, 300] }).toBe(true);
   } finally { await captures.detach(); }
   const settledBody = topBody(settledFrame);
   if (settledBody === undefined) throw new Error("松手后缺少可见墨团");
@@ -3184,8 +3203,8 @@ test("真实graph.plan在complete前按连线波次成形，状态不断流且�
     [analysisIndex, planIndex, firstStatus, firstReady, complete].includes(index) ? [] : [index]));
   const expectedIds = plan.data.nodes.map(node => node.id).sort();
   await page.clock.fastForward(4000);
-  await expect.poll(() => visibleInkNodeIds(page), { timeout: 10_000 }).toEqual(expectedIds);
-  await expect.poll(() => visibleInkEdgeIds(page), { timeout: 10_000 }).toEqual(plan.data.edges.map(edge => edge.id).sort());
+  await expect.poll(() => visibleInkNodeIds(page)).toEqual(expectedIds);
+  await expect.poll(() => visibleInkEdgeIds(page)).toEqual(plan.data.edges.map(edge => edge.id).sort());
   await expect(page.locator(".graph-edge--recommended")).toHaveCount(2);
   await expect(page.locator(".graph-edge--related")).toHaveCount(2);
   await expect(page.locator('[data-ink-node="python-installation"]')).toHaveAttribute("data-node-status", "partial");

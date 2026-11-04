@@ -10,6 +10,7 @@ import {
 } from "@wayfinder/contracts";
 import { describe, expect, it, vi } from "vitest";
 
+import { WEB_WAIT_TIMEOUT_MS } from "../../test-timing.js";
 import { pythonResultGraphFixture } from "../fixtures/python-result-graph.js";
 import type { ReadSearchEventStreamOptions } from "../lib/stream.js";
 import { createGraphStore } from "../stores/graph-store.js";
@@ -169,7 +170,7 @@ describe("Query 取消协调器", () => {
     });
 
     const validRun = search({ query: "有效查询", language: "zh-CN" });
-    await vi.waitFor(() => expect(activeSignal).toBeDefined());
+    await vi.waitFor(() => expect(activeSignal).toBeDefined(), WEB_WAIT_TIMEOUT_MS);
     const beforeInvalid = store.getState();
 
     await expect(
@@ -224,10 +225,10 @@ describe("Query 取消协调器", () => {
     });
 
     const runA = search({ query: "fetch A", language: "zh-CN" });
-    await vi.waitFor(() => expect(signals).toHaveLength(1));
+    await vi.waitFor(() => expect(signals).toHaveLength(1), WEB_WAIT_TIMEOUT_MS);
 
     const runB = search({ query: "fetch B", language: "zh-CN" });
-    await vi.waitFor(() => expect(signals).toHaveLength(2));
+    await vi.waitFor(() => expect(signals).toHaveLength(2), WEB_WAIT_TIMEOUT_MS);
 
     expect(signals[0]?.aborted).toBe(true);
     expect(signals[1]?.aborted).toBe(false);

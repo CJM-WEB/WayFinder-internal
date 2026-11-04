@@ -1,6 +1,7 @@
 /** 测试职责：图与撤销/重做一致恢复；旧库兼容，损坏不覆盖，顺序保存失败可重试。 */
 import { describe, expect, it, vi } from "vitest";
 import { createStore } from "zustand/vanilla";
+import { WEB_WAIT_TIMEOUT_MS } from "../../test-timing.js";
 import { createEmptyGraph, createWorkspaceStore, selectCurrentGraph, selectWorkspaceHistory } from "./workspace-store.js";
 import { storeGraphHistory } from "./workspace-history.js";
 import { addNode, addResource, deleteResource, moveNode, updateNode, updateResource } from "./workspace-edits.js";
@@ -30,7 +31,7 @@ describe("本地搜索图持久化", () => {
     expect(store.getState().documents).toEqual([document]);
     expect(save).not.toHaveBeenCalled();
     store.getState().renameGraph(document.id, "修改标题");
-    await vi.waitFor(() => expect(feedback.getState().status).toBe("ready"));
+    await vi.waitFor(() => expect(feedback.getState().status).toBe("ready"), WEB_WAIT_TIMEOUT_MS);
     expect(save.mock.calls[0]?.[0]).toMatchObject({ version: "workspace-storage.v2", histories: { 图: { version: "history.v1", events: [{ kind: "graph.rename" }] } } });
     expect(save.mock.calls[0]?.[0].histories[document.id]).not.toHaveProperty("past");
     expect(save.mock.calls[0]?.[0].histories[document.id]).not.toHaveProperty("future");
@@ -61,7 +62,7 @@ describe("本地搜索图持久化", () => {
     const feedback = createFeedback();
     const stop = await initializeWorkspacePersistence(store, { load: async () => null, save }, feedback);
     store.getState().addGraph(document);
-    await vi.waitFor(() => expect(feedback.getState().error).toBe("save"));
+    await vi.waitFor(() => expect(feedback.getState().error).toBe("save"), WEB_WAIT_TIMEOUT_MS);
     expect(store.getState().documents).toEqual([document]);
     await feedback.getState().retry();
     expect(save.mock.calls.at(-1)?.[0]).toEqual(snapshot(store));
@@ -78,10 +79,10 @@ describe("本地搜索图持久化", () => {
     const stop = await initializeWorkspacePersistence(store, { load: async () => null, save }, feedback);
     store.getState().addGraph(document);
     store.getState().renameGraph(document.id, "最终标题");
-    await vi.waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(save).toHaveBeenCalledTimes(1), WEB_WAIT_TIMEOUT_MS);
     expect(feedback.getState().status).toBe("saving");
     release?.();
-    await vi.waitFor(() => expect(feedback.getState().status).toBe("ready"));
+    await vi.waitFor(() => expect(feedback.getState().status).toBe("ready"), WEB_WAIT_TIMEOUT_MS);
     expect(save).toHaveBeenCalledTimes(2);
     expect(save.mock.calls[1]?.[0].documents[0].title).toBe("最终标题");
     stop();
@@ -114,7 +115,7 @@ describe("本地搜索图持久化", () => {
     expect(selectCurrentGraph(restored.getState())?.positions["节点"]).toEqual({ x: 456, y: 789 });
     restored.getState().redo();
     expect(selectCurrentGraph(restored.getState())?.nodes[0]?.title).toBe("C");
-    await vi.waitFor(() => expect(feedback.getState().status).toBe("ready"));
+    await vi.waitFor(() => expect(feedback.getState().status).toBe("ready"), WEB_WAIT_TIMEOUT_MS);
     expect(save).toHaveBeenCalled();
     stop();
   });

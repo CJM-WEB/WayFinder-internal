@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
+import { WEB_TEST_TIMEOUT_MS } from "./test-timing.ts";
 
 const contractsEntry = fileURLToPath(
   new globalThis.URL("../../packages/contracts/src/index.ts", import.meta.url),
@@ -14,6 +15,11 @@ const contractsEntry = fileURLToPath(
 
 export default defineConfig({
   plugins: [react()],
+  // 单元测试和钩子共用完成上限；异步状态一旦就绪，断言仍立即返回。
+  test: {
+    testTimeout: WEB_TEST_TIMEOUT_MS,
+    hookTimeout: WEB_TEST_TIMEOUT_MS,
+  },
   // 开发预览使用 .env.example 中约定的本地 API 端口；生产仍由原 Fastify 同源提供。
   server: {
     proxy: {

@@ -27,8 +27,8 @@ jobs:
     name: Install and quality gates
     # 使用标准 ARM64 运行器，避开 x64 软件渲染器上已复现的逐帧阻塞。
     runs-on: ubuntu-24.04-arm
-    # 依赖安装和全部门禁共享总预算，58 条串行浏览器用例仍各自受原超时约束。
-    timeout-minutes: 25
+    # 安装、构建和 58 条串行浏览器用例共用两小时预算；每项成功后立即进入下一项。
+    timeout-minutes: 120
 
     steps:
       - name: Check out repository
