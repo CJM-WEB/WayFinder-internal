@@ -14,7 +14,7 @@ import {
   type ResultGraphNode,
   type StreamEventPayload,
 } from "@wayfinder/contracts";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   createDeferred,
@@ -210,18 +210,27 @@ describe("processNode 成功与局部降级", () => {
     const remainingBudgets = [20_000, 4_000];
     const signal = new AbortController().signal;
 
-    const result = await processNode(
-      createNode(),
-      createContext(searchProvider, rerankProvider, events, {
-        observeRanking: observation => {
-          rankingObservations.push(observation);
-        },
-      }),
-      createRunScope(
-        signal,
-        () => remainingBudgets.shift() ?? 4_000,
-      ),
-    );
+    // 本用例验证固定 Run（运行）剩余预算的传递；资源重排器内部也固定单调时钟，
+    // 避免构建输入的真实耗时偶尔扣去 1ms，污染精确 4000ms 的接线断言。
+    const monotonicClock = vi.spyOn(performance, "now").mockReturnValue(0);
+    let result: ResultGraphNode;
+    try {
+      result = await processNode(
+        createNode(),
+        createContext(searchProvider, rerankProvider, events, {
+          observeRanking: observation => {
+            rankingObservations.push(observation);
+          },
+        }),
+        createRunScope(
+          signal,
+          () => remainingBudgets.shift() ?? 4_000,
+        ),
+      );
+    } finally {
+      // 管线失败时同样恢复原时钟，不影响随后用例的真实期限验证。
+      monotonicClock.mockRestore();
+    }
 
     expect(ResultGraphNodeSchema.parse(result)).toEqual(result);
     expect(result).toMatchObject({

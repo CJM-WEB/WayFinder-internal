@@ -13,7 +13,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import process from "node:process";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   FakeLLMProvider,
@@ -355,14 +355,22 @@ describe("H2 Retrieval Baseline 执行器", () => {
       },
     };
 
-    await evaluateH2RetrievalBaseline({
-      smokeCase: fixture.smokeCase,
-      searchProvider: fixture.searchProvider,
-      rerankProvider: advancingReranker,
-      rerankTimeoutMs: 15_000,
-      runDeadlineMs: 20_000,
-      now: () => currentTime,
-    });
+    // 外层 Deadline（运行期限）已用受控时钟；真实 Reranker（资源重排器）的默认时钟也必须一致。
+    // 否则构建输入偶尔消耗的真实 1ms 会污染本用例要验证的独立预算，形成随机失败。
+    const monotonicClock = vi.spyOn(performance, "now").mockImplementation(() => currentTime);
+    try {
+      await evaluateH2RetrievalBaseline({
+        smokeCase: fixture.smokeCase,
+        searchProvider: fixture.searchProvider,
+        rerankProvider: advancingReranker,
+        rerankTimeoutMs: 15_000,
+        runDeadlineMs: 20_000,
+        now: () => currentTime,
+      });
+    } finally {
+      // 即使评估管线失败，也不能将替身时钟泄漏到随后测试。
+      monotonicClock.mockRestore();
+    }
 
     expect(
       scriptedReranker.calls.map(call => call.options.timeoutMs),
