@@ -1,15 +1,19 @@
 /**
- * 模块职责：把既有资源展示模型呈现为墨迹页面右侧的只读资源条。
- * 业务边界：Top 3、状态、来源和 URL 校验继续复用原入口，不产生搜索或工作区写入。
+ * 模块职责：把既有资源展示模型呈现为墨迹页面右侧资源条，保留原生拖拽排序。
+ * 业务边界：Top 3、状态、来源和 URL 校验继续复用共享模型；排序复用原编辑事务，不产生搜索。
  * 动效边界：退场立即失去交互，旧内容保留至结束；待展示目标只保留最后一次选择。
  */
 import type { EditableNode, EditableResource, Resource, SearchLanguage } from "@wayfinder/contracts";
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 
 import { buildResourcePanelModel, selectVisibleResources, type ResourcePanelModel } from "../components/ResourcePanel/ResourcePanel.js";
+import { useGraphEdit } from "../components/Workspace/use-graph-edit.js";
 import { getMessages } from "../i18n/messages.js";
 import { requestSafeUrlOpen, resolveSafeHttpUrl } from "../lib/url.js";
 import type { GraphStoreNode } from "../stores/graph-store.js";
+import { moveResource } from "../stores/workspace-edits.js";
+import { workspaceStore } from "../stores/workspace-store.js";
+import { InkNotice } from "./ink-notice.js";
 
 import "./ink-resources.css";
 
@@ -19,6 +23,8 @@ export type InkResourcesProps = Readonly<{
   node: GraphStoreNode | EditableNode | null;
   language: SearchLanguage;
   visible: boolean;
+  /** 仅已完成且可编辑的当前图允许拖拽；运行草图与退场内容始终只读。 */
+  editable?: boolean;
   onClose: () => void;
   onResourceContext?: (resourceId: string, point: InkResourceClientPoint) => void;
 }>;
@@ -70,11 +76,12 @@ function OutcomeNotice({ notice, reduced }: { notice: SelectedModel["outcomeNoti
 }
 
 /** 打开主体与展开详情为两个独立按钮，触屏、键盘及右键都不会误触第二次 URL 打开。 */
-function ResourceStrip({ resource, language, index, count, onResourceContext }: {
+function ResourceStrip({ resource, language, index, count, editable, onResourceContext }: {
   resource: Resource | EditableResource;
   language: SearchLanguage;
   index: number;
   count: number;
+  editable: boolean;
   onResourceContext: InkResourcesProps["onResourceContext"];
 }) {
   const [detailsOpen, setDetailsOpen] = useState(false);
@@ -86,6 +93,7 @@ function ResourceStrip({ resource, language, index, count, onResourceContext }: 
     : "engine" in resource && resource.engine !== undefined ? messages.searchEngine.labels[resource.engine] : messages.searchEngine.unknownSource;
   const openResource = (): void => { requestSafeUrlOpen(resource.url, (url, target, features) => window.open(url, target, features)); };
   return <article className="ink-resources__item ink-resources__card" role="listitem" data-ink-resource={resource.id}
+    draggable={editable} title={editable ? messages.editor.dragResource : undefined}
     style={itemStyle(index, count)} data-details-open={detailsOpen}
     onClick={event => {
       // 详情也属于资源的打开区域；展开按钮和正在选择的文字保留自身交互，避免重复打开。
@@ -124,14 +132,17 @@ function ResourceStrip({ resource, language, index, count, onResourceContext }: 
 }
 
 /** 以图与节点的联合身份重建展开状态，避免两张图重用同一业务 nodeId 时串内容。 */
-function ResourceSelection({ model, language, reduced, onClose, onResourceContext }: {
+function ResourceSelection({ model, language, reduced, onClose, onResourceContext, onMoveResource }: {
   model: SelectedModel;
   language: SearchLanguage;
   reduced: boolean;
   onClose: () => void;
   onResourceContext: InkResourcesProps["onResourceContext"];
+  onMoveResource: ((sourceId: string, targetId: string) => void) | undefined;
 }) {
   const [expanded, setExpanded] = useState(false);
+  const dragged = useRef<string | null>(null);
+  const suppressDragClick = useRef(false);
   const messages = getMessages(language);
   const resources = selectVisibleResources(model.resources, expanded);
   const hiddenCount = model.resources.length - resources.length;
@@ -144,17 +155,51 @@ function ResourceSelection({ model, language, reduced, onClose, onResourceContex
       <div className="ink-resources__status"><span data-node-status={model.nodeStatus}>{model.nodeStatusLabel}</span><span>{messages.resourcePanel.resourceCount(model.resources.length)}</span></div>
     </header>
     {resources.length === 0 && model.emptyMessage !== null ? <p className="ink-resources__item ink-resources__empty" role="status" style={itemStyle(1, count)}>{model.emptyMessage}</p> : null}
-    <div className="ink-resources__list" role="list" aria-label={messages.resourcePanel.resourceListAria}>
+    <div className="ink-resources__list" role="list" aria-label={messages.resourcePanel.resourceListAria}
+      onPointerDownCapture={() => { suppressDragClick.current = false; }}
+      onClickCapture={event => {
+        // 原生拖动后的释放只完成排序，不能同时打开被拖动或目标条目的网址。
+        // 键盘激活的 click.detail 为 0；拖动隔离不得吞掉之后的 Enter / Space。
+        if (!suppressDragClick.current || event.detail === 0) return;
+        suppressDragClick.current = false;
+        event.preventDefault(); event.stopPropagation();
+      }}
+      onDragStart={event => {
+        const sourceId = event.target instanceof Element ? event.target.closest<HTMLElement>("[data-ink-resource]")?.dataset.inkResource : undefined;
+        if (onMoveResource === undefined || sourceId === undefined || !model.resources.some(resource => resource.id === sourceId)) {
+          event.preventDefault(); return;
+        }
+        // 本面板私有引用作为排序身份，不接收外部 DataTransfer（拖放数据）伪造的资源 ID。
+        dragged.current = sourceId;
+        suppressDragClick.current = true;
+        event.dataTransfer.effectAllowed = "move";
+        event.dataTransfer.setData("text/plain", sourceId);
+        event.stopPropagation();
+      }}
+      onDragOver={event => {
+        if (onMoveResource === undefined || dragged.current === null) return;
+        event.preventDefault(); event.stopPropagation(); event.dataTransfer.dropEffect = "move";
+      }}
+      onDrop={event => {
+        const sourceId = dragged.current;
+        dragged.current = null;
+        if (onMoveResource === undefined || sourceId === null) return;
+        event.preventDefault(); event.stopPropagation();
+        const targetId = event.target instanceof Element ? event.target.closest<HTMLElement>("[data-ink-resource]")?.dataset.inkResource : undefined;
+        if (targetId !== undefined && sourceId !== targetId && model.resources.some(resource => resource.id === targetId)) onMoveResource(sourceId, targetId);
+      }}
+      onDragEnd={() => { dragged.current = null; }}>
       {resources.map((resource, index) => <ResourceStrip key={resource.id} resource={resource} language={language}
-        index={index + 1} count={count} onResourceContext={onResourceContext} />)}
+        index={index + 1} count={count} editable={onMoveResource !== undefined} onResourceContext={onResourceContext} />)}
     </div>
     {hiddenCount > 0 ? <button type="button" className="ink-resources__item ink-resources__more" style={itemStyle(resources.length + 1, count)}
       onClick={() => setExpanded(true)}>{messages.resourcePanel.showMore(hiddenCount)}<span aria-hidden="true">↓</span></button> : null}
   </>;
 }
 
-export default function InkResources({ graphId, node, language, visible, onClose, onResourceContext }: InkResourcesProps) {
+export default function InkResources({ graphId, node, language, visible, editable = false, onClose, onResourceContext }: InkResourcesProps) {
   const reduced = useReducedMotion();
+  const edit = useGraphEdit(graphId, language);
   const requested = useMemo<Selection | null>(() => !visible || graphId === null || node === null ? null
     : { owner: JSON.stringify([graphId, node.id]), node }, [visible, graphId, node]);
   const desired = useRef(requested);
@@ -200,12 +245,18 @@ export default function InkResources({ graphId, node, language, visible, onClose
 
   if (display === null || model.kind !== "selected") return null;
   const interactive = visible && requested?.owner === display.owner && display.phase === "visible";
-  return <aside className="ink-resources" ref={panel} data-ink-overlay data-ink-control data-phase={display.phase}
+  return <><InkNotice notice={!interactive || edit.problem === null ? null : { message: edit.problem.message }} />
+  <aside className="ink-resources" ref={panel} data-ink-overlay data-ink-control data-phase={display.phase}
     data-ink-resource-owner={display.owner} aria-label={getMessages(language).resourcePanel.panelName}
     inert={!interactive} aria-hidden={!interactive} onKeyDown={event => {
       if (event.key === "Escape" && interactive) { event.preventDefault(); event.stopPropagation(); onClose(); }
     }}>
     <div className="ink-resources__scroll"><ResourceSelection key={display.owner} model={model} language={language} reduced={reduced}
+      onMoveResource={!interactive || !editable ? undefined : (sourceId, targetId) => {
+        // 完成拖拽时再读取当前图；切图或删除目标后的迟到释放不能改写旧记录。
+        if (workspaceStore.getState().currentId !== graphId) return;
+        edit.commit(graph => moveResource(graph, display.node.id, sourceId, targetId));
+      }}
       onClose={onClose} onResourceContext={onResourceContext} /></div>
-  </aside>;
+  </aside></>;
 }

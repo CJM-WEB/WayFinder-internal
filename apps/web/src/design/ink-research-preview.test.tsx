@@ -1,5 +1,5 @@
 /**
- * 静态回归：新皮肤共享旧预览模型和动作，只验证呈现、所有权与退场保护，不调用搜索或 GPU。
+ * 静态回归：墨迹页面共享既有预览模型和动作，只验证呈现、所有权与退场保护，不调用搜索或 GPU。
  * 动态退出由 presence 提供；此处注入保留快照，证明临时 store 清空后完整内容仍可被呈现。
  */
 import type { ResearchPreview } from "../api/research.js";
@@ -37,7 +37,7 @@ import { researchStore } from "../api/research.js";
 import { pythonResultGraphFixture } from "../fixtures/python-result-graph.js";
 import { getMessages } from "../i18n/messages.js";
 import { fromResultGraph, workspaceStore } from "../stores/workspace-store.js";
-import { ResearchPreviewView, WorkspaceResearchPreview } from "../components/Workspace/WorkspaceResearchPreview.js";
+import { ResearchPreviewView } from "../components/Workspace/WorkspaceResearchPreview.js";
 import InkResearchPreview, { clearRetiredResearchInput } from "./ink-research-preview.js";
 
 const originalActions = { cancel: researchStore.getState().cancel,dismiss: researchStore.getState().dismiss,apply: researchStore.getState().apply };
@@ -112,10 +112,12 @@ describe("共享重搜纯视图", () => {
     expect(html).not.toContain("Append to this node");
   });
 
-  it("原 Workspace 容器仍使用原 section 与同一动作文案", () => {
-    prepare(preview());
-    const html = renderToStaticMarkup(<WorkspaceResearchPreview language="en-US" />);
+  it("共享纯视图只消费传入预览，不被全局临时结果改写", () => {
+    prepare(preview({ query: "另一个全局预览" }));
+    const html = pure(preview());
     expect(html).toContain('class="workspace-research-preview"');
+    expect(html).toContain("保留原始查询");
+    expect(html).not.toContain("另一个全局预览");
     expect(html).toContain("Append to this node");
     expect(html).not.toContain('role="dialog"');
   });

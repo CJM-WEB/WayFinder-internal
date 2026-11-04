@@ -50,6 +50,8 @@
 .ink-resources__status { grid-column: 1 / -1; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; color: #5b5b56; font-size: 11px; }
 .ink-resources__list { display: flex; flex-direction: column; gap: 10px; }
 .ink-resources__card { overflow: hidden; }
+/* 排序复用浏览器原生拖拽；视觉仍使用同一资源条，不引入另一套编辑卡片。 */
+.ink-resources__card[draggable="true"] { cursor: grab; }
 .ink-resources__open-area { position: relative; padding: 18px 18px 10px; }
 .ink-resources__open { position: absolute; inset: 0; width: 100%; border: 0; border-radius: 20px 20px 0 0; background: transparent; }
 .ink-resources__open:focus-visible, .ink-resources__details-toggle:focus-visible { outline-offset: -3px; }

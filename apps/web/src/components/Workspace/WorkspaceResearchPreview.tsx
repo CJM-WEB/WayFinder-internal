@@ -4,9 +4,8 @@
  */
 import type { SearchLanguage } from "@wayfinder/contracts";
 import { useMemo } from "react";
-import { useStore } from "zustand";
 
-import { researchStore, type ResearchPreview } from "../../api/research.js";
+import type { ResearchPreview } from "../../api/research.js";
 import { getMessages } from "../../i18n/messages.js";
 import { fromResultGraph } from "../../stores/workspace-store.js";
 import { GraphView } from "../Graph/GraphView.js";
@@ -69,14 +68,4 @@ export function ResearchPreviewView({ language, preview, selectedNodeId, onSelec
       </div>}
     </>}
   </section>;
-}
-
-/** 原入口保留原订阅、选择和操作，只将共享内容交给上面的纯视图。 */
-export function WorkspaceResearchPreview({ language }: { language: SearchLanguage }) {
-  const preview = useStore(researchStore, state => state.preview);
-  const runtime = useStore(researchStore.getState().runStore, state => state);
-  if (preview === null) return null;
-  return <ResearchPreviewView language={language} preview={preview} selectedNodeId={runtime.selectedNodeId} onSelectNode={runtime.selectNode}
-    onCancel={() => researchStore.getState().cancel()} onDismiss={() => researchStore.getState().dismiss()}
-    onApply={mode => researchStore.getState().apply(mode)} />;
 }

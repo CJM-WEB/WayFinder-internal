@@ -153,7 +153,7 @@ export const MESSAGES: Record<SearchLanguage, Messages> = {
       undoDependency: "后续内容依赖此操作，请先处理依赖项。", undoConstraint: "撤销会破坏当前图约束，请先处理冲突。",
       undoUnavailable: "此操作已发生变化，请重新选择。", restoreGraph: "恢复搜索图",
       graphResultApplied: "应用全图结果", nodeResultApplied: "应用节点结果",
-      stageAria: "墨迹揭字交互试验", pageTitle: "WAYFINDER — 墨迹漫游",
+      stageAria: "WAYFINDER 墨迹漫游", pageTitle: "WAYFINDER — 墨迹漫游",
     },
     research: {
       startGraph: "重新搜索全图", startNode: "重新搜索此节点", preview: "重搜预览", searching: "正在重新搜索，当前图保持不变。",
@@ -318,7 +318,7 @@ export const MESSAGES: Record<SearchLanguage, Messages> = {
       undoDependency: "Later content depends on this edit. Resolve those dependencies first.", undoConstraint: "Undo would violate the current graph constraints. Resolve the conflict first.",
       undoUnavailable: "This edit has changed. Please select it again.", restoreGraph: "Restore search graph",
       graphResultApplied: "Apply graph results", nodeResultApplied: "Apply node results",
-      stageAria: "Interactive ink reveal", pageTitle: "WAYFINDER — Ink in motion",
+      stageAria: "WAYFINDER ink exploration", pageTitle: "WAYFINDER — Ink in motion",
     },
     research: {
       startGraph: "Search entire graph again", startNode: "Search this node again", preview: "Search preview", searching: "Searching again. Your current graph is unchanged.",

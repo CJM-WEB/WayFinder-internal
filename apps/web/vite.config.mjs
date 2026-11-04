@@ -20,15 +20,7 @@ export default defineConfig({
       "/api": "http://127.0.0.1:3000",
     },
   },
-  // 独立视觉试验单独打包；原应用仍使用 index.html，不增加其启动依赖。
-  build: {
-    rolldownOptions: {
-      input: {
-        app: fileURLToPath(new globalThis.URL("./index.html", import.meta.url)),
-        inkStudy: fileURLToPath(new globalThis.URL("./ink-study.html", import.meta.url)),
-      },
-    },
-  },
+  // 沿用 Vite 默认 index.html 单入口；墨迹漫游即正式产品，不再打包重复的试验页面。
   resolve: {
     alias: {
       "@wayfinder/contracts": contractsEntry,

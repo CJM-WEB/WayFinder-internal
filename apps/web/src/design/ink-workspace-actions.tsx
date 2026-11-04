@@ -7,7 +7,7 @@ import { useStore } from "zustand";
 import { resolveSearchEngine, SearchEngineSchema, type EditableGraph, type SearchLanguage } from "@wayfinder/contracts";
 import type { XYPosition } from "@xyflow/react";
 import type { GraphContextRequest } from "../components/Graph/GraphView.js";
-import { useGraphEdit } from "../components/Workspace/WorkspaceEditor.js";
+import { useGraphEdit } from "../components/Workspace/use-graph-edit.js";
 import { getMessages } from "../i18n/messages.js";
 import { researchStore } from "../api/research.js";
 import { addNode, updateNode, deleteNode, addResource, updateResource, deleteResource, moveResource, moveNode,
@@ -221,6 +221,8 @@ export default function InkWorkspaceActions({ target, language, enabled, allowCr
           () => runAction(document => updateEdge(document, held.edgeId, { type }), true), !writable || edge === undefined, edge?.type === type)}</div>)}
         {option(messages.editor.deleteConnection, () => runAction(document => deleteEdge(document, held.edgeId), true), !writable || edge === undefined)}
       </>}
+      {graph !== undefined && (held.kind === "pane" || held.kind === "node")
+        ? <p className="ink-engine-note" role="note">{messages.searchEngine.baiduRegionNotice}</p> : null}
     </div>}
     {form.value === null ? null : <section className="ink-workspace-form" ref={formRef} role="dialog" aria-label={formTitle}
       data-open={active && form.open} inert={!active || !form.open} aria-hidden={!active || !form.open} data-ink-overlay data-ink-control

@@ -59,7 +59,7 @@ export default function InkResearchPreview({ language, active = true, suspended 
   }, [requested]);
   useLayoutEffect(() => { onVisibilityChange?.(valid); }, [valid,onVisibilityChange]);
   useEffect(() => {
-    // 与旧 App 相同的失效取消；精确核对当前对象，旧 effect 不能误取消后来建立的新预览。
+    // 目标失效时取消；精确核对当前对象，旧 effect 不能误取消后来建立的新预览。
     if ((preview !== null && !valid && researchStore.getState().preview === preview) ||
       (!active && inputError !== null && researchStore.getState().inputError === inputError)) researchStore.getState().cancel();
   }, [preview,valid,active,inputError]);

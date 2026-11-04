@@ -27,7 +27,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "zustand";
 
 import { addEdge, moveNode, InvalidGraphConnectionError } from "../../stores/workspace-edits.js";
-import { EditNotice, useGraphEdit } from "../Workspace/WorkspaceEditor.js";
+import { EditNotice, useGraphEdit } from "../Workspace/use-graph-edit.js";
 import { graphStore } from "../../stores/graph-store.js";
 import { getMessages } from "../../i18n/messages.js";
 import { GraphNode } from "./GraphNode.js";
@@ -197,7 +197,7 @@ export function GraphView({ presentationMode, language, graph, selectedNodeId: p
     (changes: NodeChange<GraphFlowNode>[]) => {
       /**
        * 键盘 Enter / Space 只产生 select change，不触发 onNodeClick；这里仅提取选择，
-       * 测量不进入业务 Store；拖动仅保存临时位置，结束时才提交一次撤销快照。
+       * 测量不进入业务 Store；拖动仅保存临时位置，结束时保存最新布局，不生成撤销事件。
        */
       if (editableGraphId !== undefined || onMoveNode !== undefined) {
         for (const change of changes) {
@@ -291,7 +291,7 @@ export function GraphView({ presentationMode, language, graph, selectedNodeId: p
               ? "related_to" : null;
           edit.commit(graph => {
             if (type === null) throw new InvalidGraphConnectionError();
-            // ink 只在同一撤销步骤承接当前实际布局；旧 App 的既有自动布局语义保持原样。
+            // ink 只在连线编辑时承接当前实际布局；只读评估和预览不启用此编辑分支。
             const snapshot = appearance === "ink" ? positionsSnapshot() : undefined;
             const inherited: Record<string, XYPosition> = {};
             if (snapshot !== undefined) for (const node of graph.nodes) {

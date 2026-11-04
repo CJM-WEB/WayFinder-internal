@@ -10,6 +10,7 @@
  */
 import {
   EditableGraphSchema,
+  H2EvaluationArtifactSchema,
   StreamEventSchema,
   type EditableGraph,
   type Resource,
@@ -660,7 +661,7 @@ function createWaterDocuments(): readonly EditableGraph[] {
 async function prepareWaterPage(page: Page, documents = createWaterDocuments(), requireRenderer = true): Promise<readonly EditableGraph[]> {
   await installBrowserFixture(page, createInkMotionEvents());
   await page.emulateMedia({ reducedMotion: "reduce" });
-  await page.goto("/ink-study.html");
+  await page.goto("/");
   await page.getByRole("button", { name: "开始探索", exact: true }).click();
   await page.getByRole("button", { name: "搜索历史", exact: true }).click();
   await expect(page.getByRole("region", { name: "搜索历史", exact: true }).getByRole("status")).toHaveText("已保存到本浏览器");
@@ -1407,7 +1408,7 @@ test("新搜索页直接携带语言请求后端且不跳转旧展示页", async
   const events = createJourneyEvents();
   await installBrowserFixture(page, events);
   await page.emulateMedia({ reducedMotion: "reduce" });
-  await page.goto("/ink-study.html");
+  await page.goto("/");
 
   await expect(page.getByText("©26", { exact: true })).toHaveCount(0);
   await expect(page.getByText("浏览", { exact: true })).toHaveCount(0);
@@ -1428,14 +1429,14 @@ test("新搜索页直接携带语言请求后端且不跳转旧展示页", async
   await expect(page.getByRole("button", { name: "Language", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Contact author", exact: true })).toBeVisible();
   expect(await canvas?.evaluate(element => element.isConnected)).toBe(true);
-  await expect(page).toHaveURL(/\/ink-study\.html$/);
+  await expect(page).toHaveURL(/\/$/);
 
   const queryInput = page.getByRole("searchbox", { name: "Search any topic" });
   await queryInput.fill("TypeScript guides");
   await queryInput.press("Enter");
   await expect.poll(async () => (await readFixtureSnapshots(page))[0])
     .toMatchObject({ query: "TypeScript guides", language: "en-US", engine: "google" });
-  await expect(page).toHaveURL(/\/ink-study\.html$/);
+  await expect(page).toHaveURL(/\/$/);
   await expect.poll(async () => (await readFixtureSnapshots(page)).length).toBe(1);
   await emitFixtureEvents(page, 0, events.map((_, index) => index));
   await page.evaluate(() => window.__WAYFINDER_E2E__.close(0));
@@ -1445,7 +1446,7 @@ test("新搜索页直接携带语言请求后端且不跳转旧展示页", async
 });
 
 test("开始胶囊连续伸展为搜索框并分裂按钮，品牌下移且角落控件不移动", async ({ page }) => {
-  await page.goto("/ink-study.html");
+  await page.goto("/");
   const shell = page.locator(".ink-study__search");
   const originalShell = await shell.elementHandle();
   const initialShell = await shell.boundingBox();
@@ -1484,7 +1485,7 @@ test("开始胶囊连续伸展为搜索框并分裂按钮，品牌下移且角�
 test("页面中线引擎胶囊影响真实请求，语言默认与独立覆盖仍遵循原规则", async ({ page }) => {
   await installBrowserFixture(page, createJourneyEvents());
   await page.emulateMedia({ reducedMotion: "reduce" });
-  await page.goto("/ink-study.html");
+  await page.goto("/");
   await page.getByRole("button", { name: "开始探索", exact: true }).click();
   const engine = page.locator(".ink-study__engine");
   const input = page.getByRole("searchbox", { name: "搜索任意主题", exact: true });
@@ -1562,7 +1563,7 @@ async function openInkWorkspace(page: Page, withInk = false, additionalDocuments
 
 async function openInkNodeMenu(page: Page, nodeId = "workspace-node-0"): Promise<void> {
   await page.locator(`[data-ink-node="${nodeId}"]`).getByRole("heading").click({ button: "right" });
-  await expect(page.getByRole("menu", { name: "图操作菜单", exact: true })).toBeVisible();
+  await expect(page.locator('.ink-workspace-menu[role="menu"]')).toBeVisible();
 }
 
 async function openInkUndo(page: Page): Promise<void> {
@@ -1583,7 +1584,7 @@ async function openInkPaneMenu(page: Page): Promise<void> {
     throw new Error("图中没有可右键的空白命中区");
   });
   await page.mouse.click(point.x, point.y, { button: "right" });
-  await expect(page.getByRole("menu", { name: "图操作菜单", exact: true })).toBeVisible();
+  await expect(page.locator('.ink-workspace-menu[role="menu"]')).toBeVisible();
 }
 
 /** 覆盖新资源的真实入退场、悬浮挤开、Top3和最终安全打开边界。 */
@@ -1762,14 +1763,25 @@ test("墨迹撤销队列隐藏已撤销事件，刷新重开恢复且移动不�
   await expect(panel.locator("[data-ink-undo-event]")).toHaveCount(2);
   expect(await readFixtureSnapshots(page)).toHaveLength(0);
 
-  // 新标签复用同一浏览器存储，以原入口实际执行恢复后的撤销，保证两入口共用一套状态。
+  // 新标签复用真实浏览器存储，通过正式探索、历史和撤销面板执行恢复，不再依赖已删除的侧栏。
   const reopened = await context.newPage();
   await installBrowserFixture(reopened, createJourneyEvents());
-  await reopened.goto("/");
-  await expect(reopened.getByRole("complementary", { name: "搜索图记录" }).getByRole("status")).toHaveText("已保存到本浏览器");
+  await openInkProduct(reopened);
+  await openInkHistory(reopened);
+  const reopenedHistory = reopened.getByRole("region", { name: "搜索历史", exact: true });
+  await expect(reopenedHistory.getByRole("status")).toHaveText("已保存到本浏览器");
+  await reopenedHistory.press("Escape");
   await expect(reopened.getByRole("heading", { name: "持久最终名", exact: true })).toBeVisible();
-  await reopened.getByRole("button", { name: "撤销", exact: true }).click();
+  await openInkUndo(reopened);
+  const reopenedUndo = reopened.getByRole("region", { name: "撤销记录", exact: true });
+  const restoredLater = reopenedUndo.locator("[data-ink-undo-event]").filter({ hasText: "持久中间名 → 持久最终名" });
+  await expect(reopenedUndo.locator("[data-ink-undo-event]")).toHaveCount(2);
+  await expect(restoredLater.locator("time")).toHaveAttribute("datetime", occurredAt ?? "");
+  await restoredLater.getByRole("button", { name: /^撤销：/ }).click();
+  await expect(reopenedUndo.locator("[data-ink-undo-event]")).toHaveCount(1);
+  await reopenedUndo.press("Escape");
   await expect(reopened.getByRole("heading", { name: "持久中间名", exact: true })).toBeVisible();
+  await expectInkPosition(reopened, moved, nodeId);
   await expectSavedInkPosition(reopened, document.id, moved, nodeId);
   expect(await readFixtureSnapshots(reopened)).toHaveLength(0);
   await reopened.close();
@@ -2244,7 +2256,7 @@ test("墨迹工作区右键冷加载会被随后普通点击取消", async ({ pa
 test("新搜索入口沿用 Direct 与拒绝规则，不因改版额外请求后端", async ({ page }) => {
   await installBrowserFixture(page, createJourneyEvents());
   await page.emulateMedia({ reducedMotion: "reduce" });
-  await page.goto("/ink-study.html");
+  await page.goto("/");
   await page.getByRole("button", { name: "开始探索", exact: true }).click();
   const input = page.getByRole("searchbox", { name: "搜索任意主题", exact: true });
   await expect(input).toBeFocused();
@@ -2260,7 +2272,7 @@ test("新搜索入口沿用 Direct 与拒绝规则，不因改版额外请求后
     .toEqual([["https://example.com/docs", "_blank", "noopener,noreferrer"]]);
   expect(await readFixtureSnapshots(page)).toHaveLength(0);
   await expect(page.locator(".ink-study__stage")).toHaveAttribute("data-search-state", "input");
-  await expect(page).toHaveURL(/\/ink-study\.html$/);
+  await expect(page).toHaveURL(/\/$/);
 });
 
 test("后端运行失败明确反馈且不覆盖状态文字，重试和取消继续走原协调器", async ({ page }) => {
@@ -2270,7 +2282,7 @@ test("后端运行失败明确反馈且不覆盖状态文字，重试和取消�
   });
   await installBrowserFixture(page, [failure]);
   await page.emulateMedia({ reducedMotion: "reduce" });
-  await page.goto("/ink-study.html");
+  await page.goto("/");
   await page.getByRole("button", { name: "开始探索", exact: true }).click();
   const input = page.getByRole("searchbox", { name: "搜索任意主题", exact: true });
   await input.fill("计划失败固定样例");
@@ -2304,7 +2316,7 @@ test("冷加载期间取消会撤销合法搜索意图，恢复后无效输入�
     await route.continue();
   });
   try {
-    await page.goto("/ink-study.html");
+    await page.goto("/");
     await page.getByRole("button", { name: "开始探索", exact: true }).click();
     const input = page.getByRole("searchbox", { name: "搜索任意主题", exact: true });
     await input.fill("应保留的合法查询");
@@ -2335,7 +2347,7 @@ test("冷加载期间取消会撤销合法搜索意图，恢复后无效输入�
 
 test("左箭头原路返回并保留跨语言的输入和引擎选择", async ({ page }) => {
   await installBrowserFixture(page, createJourneyEvents());
-  await page.goto("/ink-study.html");
+  await page.goto("/");
   const canvas = await page.locator(".ink-study__canvas").elementHandle();
   await page.getByRole("button", { name: "开始探索", exact: true }).click();
   const input = page.getByRole("searchbox", { name: "搜索任意主题", exact: true });
@@ -2370,7 +2382,7 @@ test("左箭头原路返回并保留跨语言的输入和引擎选择", async ({
 test("历史按钮底边悬浮稳定展开，真实历史进出与外部焦点恢复正确", async ({ page }) => {
   const events = createJourneyEvents();
   await installBrowserFixture(page, events);
-  await page.goto("/ink-study.html");
+  await page.goto("/");
   await page.getByRole("button", { name: "开始探索", exact: true }).click();
   const input = page.getByRole("searchbox", { name: "搜索任意主题", exact: true });
   await expect(input).toBeFocused();
@@ -2428,7 +2440,7 @@ test("历史按钮底边悬浮稳定展开，真实历史进出与外部焦点�
 test("历史重命名拒绝空白并支持Escape，在途完成保留人工标题与原查询", async ({ page }) => {
   const events = createJourneyEvents();
   await installBrowserFixture(page, events);
-  await page.goto("/ink-study.html");
+  await page.goto("/");
   await page.getByRole("button", { name: "开始探索", exact: true }).click();
   const input = page.getByRole("searchbox", { name: "搜索任意主题", exact: true });
   await expect(input).toBeFocused();
@@ -2475,7 +2487,7 @@ test("历史信息条重命名保留原查询，悬浮推动邻行，删除与�
     window.__WAYFINDER_E2E__.close(run);
   }, { run, indexes: events.map((_, index) => index) });
   await installBrowserFixture(page, events);
-  await page.goto("/ink-study.html");
+  await page.goto("/");
   await page.getByRole("button", { name: "开始探索", exact: true }).click();
   const input = page.getByRole("searchbox", { name: "搜索任意主题", exact: true });
   await expect(input).toBeFocused();
@@ -2547,7 +2559,7 @@ test("历史信息条重命名保留原查询，悬浮推动邻行，删除与�
 test("历史新建取消本页在途搜索，保留旧记录与引擎，下一次提交才创建新图", async ({ page }) => {
   await installBrowserFixture(page, createJourneyEvents());
   await page.emulateMedia({ reducedMotion: "reduce" });
-  await page.goto("/ink-study.html");
+  await page.goto("/");
   await page.getByRole("button", { name: "开始探索", exact: true }).click();
   const input = page.getByRole("searchbox", { name: "搜索任意主题", exact: true });
   await page.getByRole("button", { name: "搜索引擎：百度", exact: true }).click();
@@ -2581,7 +2593,7 @@ test("历史删除在途记录后，迟到完成不得复活记录或新发搜�
   const events = createJourneyEvents();
   await installBrowserFixture(page, events);
   await page.emulateMedia({ reducedMotion: "reduce" });
-  await page.goto("/ink-study.html");
+  await page.goto("/");
   await page.getByRole("button", { name: "开始探索", exact: true }).click();
   const input = page.getByRole("searchbox", { name: "搜索任意主题", exact: true });
   await input.fill("将被删除的图");
@@ -2605,7 +2617,7 @@ test("历史读取失败时禁用新建并保留原存储错误反馈", async ({
     Object.defineProperty(window, "indexedDB", { value: { open: () => { throw new Error("固定的存储读取失败"); } } });
   });
   await page.emulateMedia({ reducedMotion: "reduce" });
-  await page.goto("/ink-study.html");
+  await page.goto("/");
   await page.getByRole("button", { name: "开始探索", exact: true }).click();
   await page.getByRole("button", { name: "搜索历史", exact: true }).click();
   const panel = page.getByRole("region", { name: "搜索历史", exact: true });
@@ -2619,7 +2631,7 @@ test("历史读取失败时禁用新建并保留原存储错误反馈", async ({
 test("历史打开时返回首页会取消本页搜索但保留真实记录", async ({ page }) => {
   await installBrowserFixture(page, createJourneyEvents());
   await page.emulateMedia({ reducedMotion: "reduce" });
-  await page.goto("/ink-study.html");
+  await page.goto("/");
   await page.getByRole("button", { name: "开始探索", exact: true }).click();
   const input = page.getByRole("searchbox", { name: "搜索任意主题", exact: true });
   await input.fill("保留未完成记录");
@@ -2643,7 +2655,7 @@ test("减弱动态时胶囊直接完成变形并聚焦输入框", async ({ page 
   await page.emulateMedia({ reducedMotion: "reduce" });
   for (const viewport of [{ width: 390, height: 844 }, { width: 1920, height: 400 }]) {
     await page.setViewportSize(viewport);
-    await page.goto("/ink-study.html");
+    await page.goto("/");
     await page.getByRole("button", { name: "开始探索", exact: true }).click();
     await expect(page.getByRole("searchbox", { name: "搜索任意主题", exact: true })).toBeFocused();
     await expect(page.locator(".ink-study__stage")).toHaveAttribute("data-search-ready", "true");
@@ -2655,7 +2667,13 @@ test("减弱动态时胶囊直接完成变形并聚焦输入框", async ({ page 
 
 test("第二层的滑出与滑入均先加速后减速", async ({ page }) => {
   await page.emulateMedia({ reducedMotion: "no-preference" });
-  await page.goto("/ink-study.html");
+  await page.goto("/");
+  // 根入口按需加载页面；先等真实组件挂载，再安装原动画监听，不能把HTML完成加载当作React已就绪。
+  await expect(page.locator(".ink-study__stage")).toBeVisible();
+  await expect(page.getByRole("button", { name: "开始探索", exact: true })).toBeVisible();
+  await expect(page.locator(".ink-study__intro")).toBeVisible();
+  // 返回按钮初始就在屏外且不可交互，此处只核对已挂载，不改变其原来的入场条件。
+  await expect(page.locator(".ink-study__back")).toBeAttached();
 
   // 点击前安装监听，在动画创建时立即暂停并采样，慢机器也不会错过短暂的离场动画。
   await page.evaluate(() => {
@@ -2700,7 +2718,7 @@ test("第二层的滑出与滑入均先加速后减速", async ({ page }) => {
 });
 
 test("墨迹页圆角语言面板可收起，联系胶囊悬浮展开并在离开后恢复", async ({ page }) => {
-  await page.goto("/ink-study.html");
+  await page.goto("/");
   const language = page.getByRole("button", { name: "语言", exact: true });
   await language.click();
   await expect(page.getByRole("button", { name: "简体中文", exact: true })).toHaveAttribute("aria-pressed", "true");
@@ -2730,7 +2748,7 @@ test("墨迹页圆角语言面板可收起，联系胶囊悬浮展开并在离�
 
 test("联系作者点击复制真实邮箱，拒绝剪贴板权限时显示失败提示", async ({ page, context }) => {
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);
-  await page.goto("/ink-study.html");
+  await page.goto("/");
   await page.getByRole("button", { name: "联系作者", exact: true }).click();
   await expect(page.getByRole("status")).toHaveText("邮箱已复制");
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe("cjmweb@outlook.com");
@@ -2752,7 +2770,7 @@ loadingInkTest("有效搜索将三组件融合为中心停止圆，墨迹保持�
   test.setTimeout(40_000);
   await installBrowserFixture(page, createJourneyEvents());
   await page.emulateMedia({ reducedMotion: "no-preference" });
-  await page.goto("/ink-study.html");
+  await page.goto("/");
   await page.getByRole("button", { name: "开始探索", exact: true }).click();
   const input = page.getByRole("searchbox", { name: "搜索任意主题", exact: true });
   await expect(input).toBeFocused();
@@ -2873,7 +2891,7 @@ test("已有图回首页聚合再分裂恢复，新建与快速逆转不丢原�
   const events = createInkMotionEvents();
   await installBrowserFixture(page, events);
   await page.emulateMedia({ reducedMotion: "reduce" });
-  await page.goto("/ink-study.html");
+  await page.goto("/");
   await page.getByRole("button", { name: "开始探索", exact: true }).click();
   const input = page.getByRole("searchbox", { name: "搜索任意主题", exact: true });
   await input.fill("液体聚合恢复的真实图");
@@ -2973,7 +2991,7 @@ liquidInkTest("液体墨团持续变化但文字布局不漂移，拖动后落�
   const events = createInkMotionEvents();
   await installBrowserFixture(page, events);
   await page.emulateMedia({ reducedMotion: "reduce" });
-  await page.goto("/ink-study.html");
+  await page.goto("/");
   await page.getByRole("button", { name: "开始探索", exact: true }).click();
   const input = page.getByRole("searchbox", { name: "搜索任意主题", exact: true });
   await input.fill("真实液体轮廓与拖动");
@@ -3066,7 +3084,7 @@ test("真实graph.plan在complete前按连线波次成形，状态不断流且�
   }
   await installBrowserFixture(page, events);
   await page.emulateMedia({ reducedMotion: "no-preference" });
-  await page.goto("/ink-study.html");
+  await page.goto("/");
   await page.getByRole("button", { name: "开始探索", exact: true }).click();
   const input = page.getByRole("searchbox", { name: "搜索任意主题", exact: true });
   await expect(input).toBeFocused();
@@ -3154,7 +3172,7 @@ test("减弱动态在真实计划到达后立即显示全部节点和边而不�
   if (plan?.type !== "graph.plan") throw new Error("缺少图计划");
   await installBrowserFixture(page, events);
   await page.emulateMedia({ reducedMotion: "reduce" });
-  await page.goto("/ink-study.html");
+  await page.goto("/");
   await page.getByRole("button", { name: "开始探索", exact: true }).click();
   const input = page.getByRole("searchbox", { name: "搜索任意主题", exact: true });
   await expect(input).toBeFocused();
@@ -3193,7 +3211,7 @@ test("WebGL不可用时真实图仍以可读DOM降级呈现", async ({ page }, t
     });
   });
   await page.emulateMedia({ reducedMotion: "reduce" });
-  await page.goto("/ink-study.html");
+  await page.goto("/");
   await page.getByRole("button", { name: "开始探索", exact: true }).click();
   const input = page.getByRole("searchbox", { name: "搜索任意主题", exact: true });
   await input.fill("无 GPU 的图结果");
@@ -3271,7 +3289,7 @@ test("图模块加载失败明确恢复输入且不发API请求", async ({ page 
     requested = true;
     await route.abort("failed");
   });
-  await page.goto("/ink-study.html");
+  await page.goto("/");
   const canvas = await page.locator(".ink-study__canvas").elementHandle();
   expect(requested).toBe(false);
   await page.getByRole("button", { name: "开始探索", exact: true }).click();
@@ -3297,7 +3315,7 @@ test("返回恢复所选草图而新建清理旧图及计时器，新运行忽�
   const complete = events.findIndex(event => event.type === "complete");
   await installBrowserFixture(page, events);
   await page.emulateMedia({ reducedMotion: "reduce" });
-  await page.goto("/ink-study.html");
+  await page.goto("/");
   await page.getByRole("button", { name: "开始探索", exact: true }).click();
   const input = page.getByRole("searchbox", { name: "搜索任意主题", exact: true });
   await expect(input).toBeFocused();
@@ -3360,7 +3378,7 @@ test("历史标题恢复两张真实图且独立保存拖动位置，切图不�
   const events = createJourneyEvents();
   await installBrowserFixture(page, events);
   await page.emulateMedia({ reducedMotion: "reduce" });
-  await page.goto("/ink-study.html");
+  await page.goto("/");
   await page.getByRole("button", { name: "开始探索", exact: true }).click();
   const input = page.getByRole("searchbox", { name: "搜索任意主题", exact: true });
   await input.fill("保存图甲");
@@ -3410,7 +3428,7 @@ test("运行中独立拖动的节点在完成后承接，返回重入及刷新�
   const complete = events.findIndex(event => event.type === "complete");
   await installBrowserFixture(page, events);
   await page.emulateMedia({ reducedMotion: "reduce" });
-  await page.goto("/ink-study.html");
+  await page.goto("/");
   await page.getByRole("button", { name: "开始探索", exact: true }).click();
   const input = page.getByRole("searchbox", { name: "搜索任意主题", exact: true });
   await input.fill("运行中移动后保存");
@@ -3450,7 +3468,7 @@ test("图画布覆盖完整stage且边缘节点保持可读语义与实际命中
   const events = createJourneyEvents();
   await installBrowserFixture(page, events);
   await page.emulateMedia({ reducedMotion: "reduce" });
-  await page.goto("/ink-study.html");
+  await page.goto("/");
   await page.getByRole("button", { name: "开始探索", exact: true }).click();
   const input = page.getByRole("searchbox", { name: "搜索任意主题", exact: true });
   await input.fill("页面边缘文本");
@@ -3488,7 +3506,7 @@ test("新页语言即时更新状态连线控件和历史，原始内容及请�
   const events = createInkMotionEvents();
   await installBrowserFixture(page, events);
   await page.emulateMedia({ reducedMotion: "reduce" });
-  await page.goto("/ink-study.html");
+  await page.goto("/");
   await page.getByRole("button", { name: "开始探索", exact: true }).click();
   const input = page.getByRole("searchbox", { name: "搜索任意主题", exact: true });
   await input.fill("保留中文结果");
@@ -3552,7 +3570,7 @@ test("九节点手动历史通过原生存储恢复且每个节点都有墨团",
   const emptyDocument = EditableGraphSchema.parse({ ...document, id: "ink-history-empty", title: "空的人工历史图", nodes: [], edges: [], positions: {} });
   await installBrowserFixture(page, createJourneyEvents());
   await page.emulateMedia({ reducedMotion: "reduce" });
-  await page.goto("/ink-study.html");
+  await page.goto("/");
   await page.getByRole("button", { name: "开始探索", exact: true }).click();
   await page.getByRole("button", { name: "搜索历史", exact: true }).click();
   await expect(page.getByRole("region", { name: "搜索历史", exact: true }).getByRole("status")).toHaveText("已保存到本浏览器");
@@ -3588,658 +3606,557 @@ test("九节点手动历史通过原生存储恢复且每个节点都有墨团",
   expect(await readFixtureSnapshots(page)).toHaveLength(0);
 });
 
-test("English 选择器控制请求与页面语言，既有 Run 不随下一次选择混语", async ({
-  page,
-}) => {
+/**
+ * 正式入口迁移：旧工作区的业务回归改走墨迹真实按钮、菜单与面板。
+ * 流体另有原生GPU旅程；这里采用真实WebGL拒绝与减弱动态，专注编辑、存储及协议接线。
+ * 预览覆盖层按已确认规格隔离编辑；应用时再去重、目标被其他编辑删除的竞态仍由API/Store集成矩阵冻结。
+ */
+async function openInkProduct(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    const original = HTMLCanvasElement.prototype.getContext;
+    Object.defineProperty(HTMLCanvasElement.prototype, "getContext", { configurable: true,
+      value: function (this: HTMLCanvasElement, kind: string, ...options: unknown[]): RenderingContext | null {
+        return kind.includes("webgl") ? null : Reflect.apply(original, this, [kind, ...options]) as RenderingContext | null;
+      },
+    });
+  });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.goto("/");
+  await page.getByRole("button", { name: "开始探索", exact: true }).click();
+  await expect(page.locator(".ink-study__stage")).toHaveAttribute("data-search-ready", "true");
+}
+
+async function openInkHistory(page: Page): Promise<void> {
+  await page.getByRole("button", { name: "搜索历史", exact: true }).click();
+  await expect(page.getByRole("region", { name: "搜索历史", exact: true })).toBeVisible();
+}
+
+async function newInkSearch(page: Page): Promise<void> {
+  await openInkHistory(page);
+  await page.getByRole("button", { name: "新建搜索图", exact: true }).click();
+  await expect(page.getByRole("searchbox", { name: "搜索任意主题", exact: true })).toBeFocused();
+}
+
+/** 创建仍经实际右键表单；只读取浏览器已保存的ID，不注入Store或直接调用业务方法。 */
+async function addInkManualNode(page: Page, title: string): Promise<string> {
+  if (await page.locator(".react-flow__pane").count() === 0) {
+    await page.locator(".ink-study__stage").click({ button: "right", position: { x: 340, y: 230 } });
+  } else await openInkPaneMenu(page);
+  await page.getByRole("menuitem", { name: "新建节点", exact: true }).click();
+  const form = page.getByRole("dialog", { name: "新建节点", exact: true });
+  await form.getByRole("textbox", { name: "节点标题", exact: true }).fill(title);
+  await form.getByRole("button", { name: "新建节点", exact: true }).click();
+  await expect(page.locator("[data-ink-node]").getByRole("heading", { name: title, exact: true })).toBeVisible();
+  const id = await page.locator("[data-ink-node]").filter({ has: page.getByRole("heading", { name: title, exact: true }) }).getAttribute("data-ink-node");
+  if (id === null) throw new Error("新建节点没有真实标识");
+  return id;
+}
+
+async function addInkResource(page: Page, nodeId: string, url: string): Promise<void> {
+  await openInkNodeMenu(page, nodeId);
+  await page.getByRole("menuitem", { name: "添加资源", exact: true }).click();
+  const form = page.getByRole("dialog", { name: "添加资源", exact: true });
+  await form.getByRole("textbox", { name: "资源 URL", exact: true }).fill(url);
+  await form.getByRole("button", { name: "添加资源", exact: true }).click();
+  await expect(form).toHaveCount(0);
+}
+
+async function openInkResourceMenu(page: Page, resourceId: string): Promise<void> {
+  await page.locator(`[data-ink-resource="${resourceId}"]`).click({ button: "right" });
+  await expect(page.locator('.ink-workspace-menu[role="menu"]')).toBeVisible();
+}
+
+async function undoInkEvent(page: Page, operation: string, content?: string): Promise<void> {
+  await openInkUndo(page);
+  let event = page.getByRole("region", { name: "撤销记录", exact: true }).locator("[data-ink-undo-event]")
+    .filter({ has: page.getByRole("heading", { name: operation, exact: true }) });
+  if (content !== undefined) event = event.filter({ hasText: content });
+  await event.first().getByRole("button", { name: /^撤销：/ }).click();
+  await page.getByRole("region", { name: "撤销记录", exact: true }).press("Escape");
+}
+
+async function redoInkEvent(page: Page): Promise<void> {
+  await openInkUndo(page);
+  await page.getByRole("region", { name: "撤销记录", exact: true }).getByRole("button", { name: "重做", exact: true }).click();
+  await page.getByRole("region", { name: "撤销记录", exact: true }).press("Escape");
+}
+
+async function renameInkGraph(page: Page, oldTitle: string, nextTitle: string): Promise<void> {
+  await openInkHistory(page);
+  const panel = page.getByRole("region", { name: "搜索历史", exact: true });
+  await panel.getByRole("button", { name: `重命名：${oldTitle}`, exact: true }).click();
+  await panel.getByRole("textbox", { name: "记录名称", exact: true }).fill(nextTitle);
+  await panel.getByRole("button", { name: "保存名称", exact: true }).click();
+  await panel.press("Escape");
+}
+
+/** 根地址直接呈现新版；评估代码和旧工作区样式不得成为普通首页启动依赖。 */
+test("正式入口仅挂载墨迹漫游且不加载旧产品壳或评估样式", async ({ page }) => {
+  const loaded: string[] = [];
+  page.on("request", request => loaded.push(new URL(request.url()).pathname));
   await installBrowserFixture(page, createJourneyEvents());
   await page.goto("/");
-
-  const languageSelector = page.getByRole("combobox", { name: "语言" });
-  await languageSelector.selectOption("en-US");
-
-  await expect(page.locator("html")).toHaveAttribute("lang", "en-US");
-  const queryInput = page.getByRole("searchbox", {
-    name: "Search any topic",
-  });
-  await queryInput.fill("What is MySQL?");
-  await queryInput.press("Enter");
-  await expect.poll(async () => (await readFixtureSnapshots(page)).length)
-    .toBe(1);
-  await expect.poll(async () => (await readFixtureSnapshots(page))[0])
-    .toMatchObject({ query: "What is MySQL?", language: "en-US" });
-
-  const activeRunSelector = page.getByRole("combobox", { name: "Language" });
-  await activeRunSelector.selectOption("zh-CN");
-
-  await expect(activeRunSelector).toHaveValue("zh-CN");
-  await expect(page.locator("html")).toHaveAttribute("lang", "en-US");
-  await expect(page.getByRole("heading", { name: "Search results" }))
-    .toBeVisible();
-  await expect(page.getByRole("heading", { name: "搜索结果" })).toHaveCount(0);
+  await expect(page).toHaveTitle("WAYFINDER — 墨迹漫游");
+  await expect(page.getByRole("button", { name: "开始探索", exact: true })).toBeVisible();
+  await expect(page.locator(".ink-study__stage")).toHaveCount(1);
+  await expect(page.locator(".app-shell--workspace, .workspace-sidebar")).toHaveCount(0);
+  expect(loaded.filter(path => path.includes("/components/Evaluation/") || path.endsWith("/evaluation.css") || path.endsWith("/app.css"))).toEqual([]);
+  expect(await readFixtureSnapshots(page)).toHaveLength(0);
 });
 
-test("fixture 覆盖 Graph Draft、Resource 交互、取消与第二次 Query", async ({
-  page,
-}) => {
+/** H1/H2只通过隐藏查询进入，实验原条件和本地工件读取继续有效；非法条件回新版产品。 */
+test("正式入口隔离保留H1与H2内部评估，非法条件回到墨迹首页", async ({ page }) => {
+  await installBrowserFixture(page, createJourneyEvents());
+  await page.goto("/?evaluation=h1&condition=structured-flat-list");
+  await expect(page.getByRole("heading", { name: "H1 呈现评估", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Structured Flat List", exact: true })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator(".ink-study__stage, .workspace-sidebar")).toHaveCount(0);
+  await page.getByRole("searchbox", { name: "搜索任意主题", exact: true }).fill("Python");
+  await page.getByRole("searchbox", { name: "搜索任意主题", exact: true }).press("Enter");
   const events = createJourneyEvents();
-  const analysisIndex = events.findIndex(
-    event => event.type === "query.analysis",
-  );
-  const planIndex = events.findIndex(event => event.type === "graph.plan");
-  const readyIndex = events.findIndex(
-    event => event.type === "node.ready" && event.nodeId === READY_NODE_ID,
-  );
-  const statusIndex = events.findIndex(
-    event => event.type === "node.status" && event.nodeId === READY_NODE_ID,
-  );
-  const completeIndex = events.findIndex(event => event.type === "complete");
-  if (
-    analysisIndex < 0 ||
-    planIndex < 0 ||
-    readyIndex < 0 ||
-    statusIndex < 0 ||
-    completeIndex < 0
-  ) {
-    throw new Error("Browser-like Fixture 事件不完整");
-  }
-
-  const externalRequests: string[] = [];
-  page.on("request", request => {
-    const url = new URL(request.url());
-    if (url.hostname !== "127.0.0.1") externalRequests.push(url.href);
-  });
-  await installBrowserFixture(page, events);
-  await page.goto("/");
-
-  const queryInput = page.getByRole("searchbox", { name: "搜索任意主题" });
-  await queryInput.fill(FIRST_QUERY);
-  await queryInput.press("Enter");
-  await expect.poll(async () => (await readFixtureSnapshots(page)).length)
-    .toBe(1);
-
-  // 先只释放 Analysis + Plan，证明 Graph Draft 不等待任何 Node 终态或 complete。
-  await emitFixtureEvents(page, 0, [analysisIndex, planIndex]);
-  await expect(page.locator('[data-node-status="planned"]')).toHaveCount(4);
-  await expect(page.getByText("暂无可展示的搜索结果。")).toHaveCount(0);
-  await expect(page.getByRole("definition").filter({ hasText: "搜索中" }))
-    .toHaveCount(1);
-
-  await emitFixtureEvents(page, 0, [statusIndex]);
-  await expect(
-    page.locator(`.react-flow__node[data-id="${READY_NODE_ID}"]`)
-      .locator('[data-node-status="searching"]'),
-  ).toHaveCount(1);
-
-  await emitFixtureEvents(page, 0, [readyIndex]);
-  const readyNode = page.locator(
-    `.react-flow__node[data-id="${READY_NODE_ID}"]`,
-  );
-  await expect(readyNode.locator('[data-node-status="ready"]')).toHaveCount(1);
-  await readyNode.click();
-
-  const resourceList = page.getByRole("list", { name: "节点资源" });
-  await expect(page.getByRole("heading", { name: "Python 简介" })).toHaveCount(2);
-  await expect(resourceList.getByRole("listitem")).toHaveCount(3);
-  await expect(page.getByText("Python Standard Library")).toHaveCount(0);
-
-  await page.getByRole("button", { name: "显示更多（1）" }).click();
-  await expect(resourceList.getByRole("listitem")).toHaveCount(4);
-  await expect(page.getByText("Python Standard Library")).toBeVisible();
-  expect(await readFixtureSnapshots(page)).toHaveLength(1);
-
-  await page.getByRole("button", {
-    name: "在新标签页打开 Python Programming Language",
-  }).click();
-  await expect.poll(() =>
-    page.evaluate(() => window.__WAYFINDER_E2E__.openCalls()),
-  ).toEqual([
-    ["https://www.python.org/", "_blank", "noopener,noreferrer"],
-  ]);
-
-  // 第一条 Stream 保持 pending；第二次提交必须同步取消旧 Signal 并立即取得 Store 所有权。
-  await queryInput.fill(SECOND_QUERY);
-  await queryInput.press("Enter");
-  await expect.poll(async () => (await readFixtureSnapshots(page)).length)
-    .toBe(2);
-  await expect.poll(async () => (await readFixtureSnapshots(page))[0])
-    .toMatchObject({ query: FIRST_QUERY, aborted: true, cancelled: true });
-  await expect(page.getByRole("definition").filter({ hasText: SECOND_QUERY }))
-    .toHaveCount(1);
-  await expect(page.getByText("暂无可展示的搜索结果。")).toBeVisible();
-
-  // 把旧 Run 的合法 complete 注入新 Reader；随后同一 Stream 的新 Plan 成功出现，证明
-  // 旧 complete 已按顺序处理并被 runId Guard 丢弃，而非断言抢在 Reader 之前执行。
-  await emitFixtureEvents(page, 1, [completeIndex], 0);
-  await emitFixtureEvents(page, 1, [analysisIndex, planIndex]);
-  await expect(page.locator('[data-node-status="planned"]')).toHaveCount(4);
-
-  // 新 Run 随后走剩余 Fixture Stream，证明旧事件不会破坏 sequence 或终态收敛。
-  await emitFixtureEvents(
-    page,
-    1,
-    events.flatMap((_event, index) =>
-      index === analysisIndex || index === planIndex ? [] : [index],
-    ),
-  );
-  await page.evaluate(() => window.__WAYFINDER_E2E__.close(1));
-  await expect(page.locator(".react-flow__node")).toHaveCount(4);
-  await expect(page.getByRole("definition").filter({ hasText: "已完成" }))
-    .toHaveCount(1);
-  await expect(page.getByRole("definition").filter({ hasText: SECOND_QUERY }))
-    .toHaveCount(1);
-  expect(externalRequests).toEqual([]);
-});
-
-/** 使用真实 IndexedDB 与正式侧栏证明恢复和记录隔离，不把状态直接注入应用仓库。 */
-test("本地记录支持切换改名删除恢复，刷新及重新打开后不重新搜索", async ({ page, context }) => {
-  const events = createJourneyEvents();
-  await installBrowserFixture(page, events);
-  await page.goto("/");
-  const sidebar = page.getByRole("complementary", { name: "搜索图记录" });
-  const queryInput = page.getByRole("searchbox", { name: "搜索任意主题" });
-  const saved = sidebar.getByRole("status");
-  await expect(saved).toHaveText("已保存到本浏览器");
-
-  await queryInput.fill(FIRST_QUERY);
-  await queryInput.press("Enter");
   await expect.poll(async () => (await readFixtureSnapshots(page)).length).toBe(1);
   await emitFixtureEvents(page, 0, events.map((_event, index) => index));
   await page.evaluate(() => window.__WAYFINDER_E2E__.close(0));
+  await expect(page.getByRole("list", { name: "Structured Flat List 搜索结果", exact: true }).getByRole("listitem").filter({ has: page.locator(".h1-flat-list__node") })).toHaveCount(4);
+  await page.getByRole("button", { name: "Graph View", exact: true }).click();
   await expect(page.locator(".react-flow__node")).toHaveCount(4);
-  await expect(saved).toHaveText("已保存到本浏览器");
-  const firstRecord = sidebar.getByRole("listitem").filter({ has: page.getByRole("button", { name: FIRST_QUERY, exact: true }) });
-  await firstRecord.getByRole("button", { name: "重命名", exact: true }).click();
-  await firstRecord.getByRole("textbox", { name: "记录名称" }).fill("Python 资料");
-  await firstRecord.getByRole("button", { name: "保存名称" }).click();
+  expect(await readFixtureSnapshots(page)).toHaveLength(1);
 
-  await sidebar.getByRole("button", { name: "新建搜索", exact: true }).click();
-  await expect(page.locator(".react-flow__node")).toHaveCount(0);
-  await queryInput.fill(SECOND_QUERY);
-  await queryInput.press("Enter");
+  await page.goto("/?evaluation=h2&condition=B");
+  await expect(page.getByRole("heading", { name: "载入 H2 评估工件", exact: true })).toBeVisible();
+  const ready = events.find(event => event.type === "node.ready" && event.nodeId === READY_NODE_ID);
+  const complete = events.find(event => event.type === "complete");
+  const node = complete?.type === "complete" ? complete.data.result.graph.nodes.find(item => item.id === READY_NODE_ID) : undefined;
+  if (ready?.type !== "node.ready" || node === undefined || node.status === "failed") throw new Error("H2缺少可用评估样例");
+  const artifact = H2EvaluationArtifactSchema.parse({ version: "h2-evaluation.v1", query: "Python", conditions: [
+    { id: "A", source: "node_specific", node },
+    { id: "B", source: "raw_query", node: { ...node, searchPlan: { ...node.searchPlan, queries: ["Python"], maxResults: node.searchPlan.queries.length * node.searchPlan.maxResults }, resources: node.resources.map(resource => ({ ...resource, title: `条件乙资源 ${resource.rank}` })) } },
+  ] });
+  await page.locator('input[type="file"]').setInputFiles({ name: "h2-fixture.json", mimeType: "application/json", buffer: Buffer.from(JSON.stringify(artifact)) });
+  await expect(page.locator('[data-evaluation-condition="B"]')).toBeVisible();
+  await expect(page.getByRole("heading", { name: "条件乙资源 1", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "条件 A", exact: true }).click();
+  await expect(page.getByRole("heading", { name: node.title, exact: true })).toBeVisible();
+  await expect(page.getByText("node_specific", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("raw_query", { exact: true })).toHaveCount(0);
+  expect(await readFixtureSnapshots(page)).toHaveLength(0);
+  for (const search of ["?evaluation=h1&condition=invalid", "?evaluation=h2&condition=invalid"]) {
+    await page.goto(`/${search}`);
+    await expect(page.getByRole("button", { name: "开始探索", exact: true })).toBeVisible();
+    await expect(page.locator(".h1-evaluation, .h2-evaluation")).toHaveCount(0);
+    expect(await readFixtureSnapshots(page)).toHaveLength(0);
+  }
+});
+
+/** 界面随选择即时切换，已创建请求的生成语言不变，不再保留旧壳的Run语言锁定断言。 */
+test("正式入口语言即时切换并保持已提交请求的生成语言", async ({ page }) => {
+  await installBrowserFixture(page, createJourneyEvents());
+  await openInkProduct(page);
+  await page.getByRole("button", { name: "语言", exact: true }).click();
+  await page.getByRole("button", { name: "English", exact: true }).click();
+  const input = page.getByRole("searchbox", { name: "Search any topic", exact: true });
+  await input.fill("What is MySQL?"); await input.press("Enter");
+  await expect.poll(async () => (await readFixtureSnapshots(page))[0]).toMatchObject({ query: "What is MySQL?", language: "en-US", engine: "google" });
+  await page.getByRole("button", { name: "Language", exact: true }).click();
+  await page.getByRole("button", { name: "简体中文", exact: true }).click();
+  await expect(page.locator("html")).toHaveAttribute("lang", "zh-CN");
+  await expect(page.getByRole("button", { name: "取消", exact: true })).toBeVisible();
+  expect((await readFixtureSnapshots(page))[0]?.language).toBe("en-US");
+  await page.getByRole("button", { name: "取消", exact: true }).click();
+  await expect.poll(async () => (await readFixtureSnapshots(page))[0]).toMatchObject({ aborted: true, cancelled: true });
+});
+
+/** 旧根页面的渐进交付、资源浏览和新查询取消全部迁移到同一个墨迹画布。 */
+test("正式入口保留Graph Draft、资源交互、新建取消和迟到事件隔离", async ({ page }) => {
+  const events = createJourneyEvents();
+  const indexes = (type: StreamEvent["type"]) => events.flatMap((event, index) => event.type === type ? [index] : []);
+  const ready = events.findIndex(event => event.type === "node.ready" && event.nodeId === READY_NODE_ID);
+  const status = events.findIndex(event => event.type === "node.status" && event.nodeId === READY_NODE_ID);
+  const external: string[] = [];
+  page.on("request", request => { if (new URL(request.url()).hostname !== "127.0.0.1") external.push(request.url()); });
+  await installBrowserFixture(page, events); await openInkProduct(page);
+  const input = page.getByRole("searchbox", { name: "搜索任意主题", exact: true });
+  await input.fill(FIRST_QUERY); await input.press("Enter");
+  await expect.poll(async () => (await readFixtureSnapshots(page)).length).toBe(1);
+  await emitFixtureEvents(page, 0, [...indexes("query.analysis"), ...indexes("graph.plan")]);
+  await expect(page.locator('[data-node-status="planned"]')).toHaveCount(4);
+  await emitFixtureEvents(page, 0, [status]);
+  await expect(page.locator(`[data-ink-node="${READY_NODE_ID}"]`)).toHaveAttribute("data-node-status", "searching");
+  await emitFixtureEvents(page, 0, [ready]);
+  await page.locator(`[data-ink-node="${READY_NODE_ID}"]`).getByRole("heading").click();
+  const resources = page.locator(".ink-resources [data-ink-resource]");
+  await expect(resources).toHaveCount(3);
+  await expect(resources.first()).toHaveAttribute("draggable", "false");
+  await page.getByRole("button", { name: "显示更多（1）", exact: true }).click();
+  await expect(resources).toHaveCount(4);
+  await page.getByRole("button", { name: "在新标签页打开 Python Programming Language", exact: true }).click();
+  expect(await page.evaluate(() => window.__WAYFINDER_E2E__.openCalls())).toEqual([["https://www.python.org/", "_blank", "noopener,noreferrer"]]);
+  await newInkSearch(page);
+  await expect.poll(async () => (await readFixtureSnapshots(page))[0]).toMatchObject({ query: FIRST_QUERY, aborted: true, cancelled: true });
+  await input.fill(SECOND_QUERY); await input.press("Enter");
+  await expect.poll(async () => (await readFixtureSnapshots(page)).length).toBe(2);
+  await emitFixtureEvents(page, 1, indexes("complete"), 0);
+  await emitFixtureEvents(page, 1, [...indexes("query.analysis"), ...indexes("graph.plan")]);
+  await expect(page.locator('[data-node-status="planned"]')).toHaveCount(4);
+  await emitFixtureEvents(page, 1, events.flatMap((event, index) => event.type === "query.analysis" || event.type === "graph.plan" ? [] : [index]));
+  await page.evaluate(() => window.__WAYFINDER_E2E__.close(1));
+  await expect.poll(async () => (await readStoredWorkspace(page))?.documents.find(document => document.query === SECOND_QUERY)?.nodes.length).toBe(4);
+  await expect(page.locator("[data-ink-node]")).toHaveCount(4);
+  expect(external).toEqual([]);
+});
+
+/** 后台完成仅写所属记录；刷新及新标签必须真实恢复，不能重新发搜索。 */
+test("正式入口历史切换改名删除恢复及后台完成不抢选择", async ({ page, context }) => {
+  const events = createJourneyEvents();
+  await installBrowserFixture(page, events); await openInkProduct(page);
+  const input = page.getByRole("searchbox", { name: "搜索任意主题", exact: true });
+  await input.fill(FIRST_QUERY); await input.press("Enter");
+  await expect.poll(async () => (await readFixtureSnapshots(page)).length).toBe(1);
+  await emitFixtureEvents(page, 0, events.map((_event, index) => index)); await page.evaluate(() => window.__WAYFINDER_E2E__.close(0));
+  await expect(page.locator("[data-ink-node]")).toHaveCount(4);
+  await renameInkGraph(page, FIRST_QUERY, "Python 资料");
+  const firstId = (await readStoredWorkspace(page))?.currentId;
+  if (firstId === undefined || firstId === null) throw new Error("缺少首张图身份");
+  await newInkSearch(page); await input.fill(SECOND_QUERY); await input.press("Enter");
   await expect.poll(async () => (await readFixtureSnapshots(page)).length).toBe(2);
   const planIndexes = events.flatMap((event, index) => event.type === "query.analysis" || event.type === "graph.plan" ? [index] : []);
   await emitFixtureEvents(page, 1, planIndexes);
   await expect(page.locator('[data-node-status="planned"]')).toHaveCount(4);
-  await sidebar.getByRole("button", { name: "Python 资料", exact: true }).click();
-  await expect(page.getByRole("definition").filter({ hasText: FIRST_QUERY })).toHaveCount(1);
-  await expect(page.locator('[data-node-status="ready"]')).toHaveCount(2);
-
-  // 后台新图完成后仍停留在用户选择的旧图。
+  await openInkHistory(page); await page.getByRole("button", { name: "Python 资料", exact: true }).click();
+  await expect.poll(async () => (await readStoredWorkspace(page))?.currentId).toBe(firstId);
   await emitFixtureEvents(page, 1, events.flatMap((_event, index) => planIndexes.includes(index) ? [] : [index]));
   await page.evaluate(() => window.__WAYFINDER_E2E__.close(1));
-  await expect(saved).toHaveText("已保存到本浏览器");
-  await expect(page.getByRole("definition").filter({ hasText: FIRST_QUERY })).toHaveCount(1);
-  await sidebar.getByRole("button", { name: SECOND_QUERY, exact: true }).click();
-  const readyNode = page.locator(`.react-flow__node[data-id="${READY_NODE_ID}"]`);
-  await readyNode.click();
-  await page.getByRole("button", { name: "显示更多（1）" }).click();
-  await expect(page.getByRole("list", { name: "节点资源" }).getByRole("listitem")).toHaveCount(4);
-  const positionBefore = await readyNode.evaluate(node => getComputedStyle(node).transform);
-  await expect(saved).toHaveText("已保存到本浏览器");
-
-  await page.reload();
-  await expect(sidebar.getByRole("listitem")).toHaveCount(2);
-  await expect(page.getByRole("definition").filter({ hasText: SECOND_QUERY })).toHaveCount(1);
-  await expect(readyNode).toHaveCSS("transform", positionBefore);
-  expect(await readFixtureSnapshots(page)).toHaveLength(0);
-  await readyNode.click();
-  await page.getByRole("button", { name: "显示更多（1）" }).click();
-  const titles = await page.getByRole("list", { name: "节点资源" }).getByRole("heading", { level: 3 }).allTextContents();
-  expect(titles).toEqual(["Python Programming Language", "Python Documentation", "Python Language Reference", "Python Standard Library"]);
-
-  await sidebar.getByRole("button", { name: "Python 资料", exact: true }).click();
-  const renamedRecord = sidebar.getByRole("listitem").filter({ has: page.getByRole("button", { name: "Python 资料", exact: true }) });
-  await renamedRecord.getByRole("button", { name: "删除记录", exact: true }).click();
-  await expect(sidebar.getByRole("listitem")).toHaveCount(1);
-  await sidebar.getByRole("button", { name: "撤销删除记录", exact: true }).click();
-  await expect(sidebar.getByRole("listitem")).toHaveCount(2);
-  await expect(page.getByRole("definition").filter({ hasText: FIRST_QUERY })).toHaveCount(1);
-  await expect(saved).toHaveText("已保存到本浏览器");
-  expect(await readFixtureSnapshots(page)).toHaveLength(0);
-
+  await expect.poll(async () => (await readStoredWorkspace(page))?.documents.find(document => document.query === SECOND_QUERY)?.nodes.length).toBe(4);
+  expect((await readStoredWorkspace(page))?.currentId).toBe(firstId);
+  await openInkHistory(page); await page.getByRole("button", { name: SECOND_QUERY, exact: true }).click();
+  const before = await readInkPosition(page);
+  await page.reload(); await page.getByRole("button", { name: "开始探索", exact: true }).click();
+  await expectInkPosition(page, before); expect(await readFixtureSnapshots(page)).toHaveLength(0);
+  await page.locator(`[data-ink-node="${READY_NODE_ID}"]`).getByRole("heading").click();
+  await page.getByRole("button", { name: "显示更多（1）", exact: true }).click();
+  await expect(page.locator(".ink-resources [data-ink-resource] h3")).toHaveText(["Python Programming Language", "Python Documentation", "Python Language Reference", "Python Standard Library"]);
+  await openInkHistory(page); await page.getByRole("button", { name: "Python 资料", exact: true }).click();
+  await openInkHistory(page); await page.getByRole("button", { name: "删除记录：Python 资料", exact: true }).click();
+  await expect(page.getByRole("region", { name: "搜索历史", exact: true }).locator(".ink-study__history-record")).toHaveCount(1);
+  await openInkUndo(page);
+  await page.getByRole("button", { name: "恢复搜索图", exact: true }).click();
+  await expect.poll(async () => (await readStoredWorkspace(page))?.currentId).toBe(firstId);
   const reopened = await context.newPage();
-  const searchRequests: string[] = [];
-  reopened.on("request", request => { if (new URL(request.url()).pathname === "/api/search") searchRequests.push(request.url()); });
-  await reopened.goto("/");
-  await expect(reopened.getByRole("complementary", { name: "搜索图记录" }).getByRole("listitem")).toHaveCount(2);
-  await expect(reopened.locator(".react-flow__node")).toHaveCount(4);
-  await expect(reopened.getByRole("definition").filter({ hasText: FIRST_QUERY })).toHaveCount(1);
-  expect(searchRequests).toEqual([]);
-  await reopened.close();
+  const searches: string[] = [];
+  reopened.on("request", request => { if (new URL(request.url()).pathname === "/api/search") searches.push(request.url()); });
+  await reopened.goto("/"); await reopened.getByRole("button", { name: "开始探索", exact: true }).click();
+  await expect(reopened.locator("[data-ink-node]")).toHaveCount(4);
+  await reopened.getByRole("button", { name: "搜索历史", exact: true }).click();
+  await expect(reopened.getByRole("button", { name: "Python 资料", exact: true })).toBeVisible();
+  await expect(reopened.getByRole("button", { name: SECOND_QUERY, exact: true })).toBeVisible();
+  expect(searches).toEqual([]); await reopened.close();
 });
 
-/** 纯手动编辑走真实界面和持久化，禁止把编辑误接成搜索或模型调用。 */
-test("手动节点与资源支持编辑、全图去重定位、拖拽排序和撤销恢复", async ({ page }) => {
-  await installBrowserFixture(page, createJourneyEvents());
-  await page.goto("/");
-  const sidebar = page.getByRole("complementary", { name: "搜索图记录" });
-  await expect(sidebar.getByRole("status")).toHaveText("已保存到本浏览器");
-  const addNode = async (title: string): Promise<void> => {
-    await page.getByRole("textbox", { name: "新节点标题", exact: true }).fill(title);
-    await page.getByRole("button", { name: "新建节点", exact: true }).click();
-  };
-  await addNode("资料节点");
-  await page.getByRole("button", { name: "编辑节点", exact: true }).click();
-  await page.getByRole("textbox", { name: "节点标题", exact: true }).fill("主要资料");
-  await page.getByRole("textbox", { name: "节点说明", exact: true }).fill("用户自行整理的网页");
-  await page.getByRole("button", { name: "保存节点", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "主要资料", exact: true })).toHaveCount(2);
-
-  for (let index = 0; index < 7; index += 1) {
-    await page.getByRole("textbox", { name: "资源 URL", exact: true }).fill(`https://resource-${index}.example.com/page`);
-    await page.getByRole("button", { name: "添加资源", exact: true }).click();
-  }
-  await page.getByRole("button", { name: "显示更多（4）" }).click();
-  const resourceList = page.getByRole("list", { name: "节点资源" });
-  const cards = resourceList.getByRole("listitem");
-  await expect(cards).toHaveCount(7);
-  await cards.first().getByRole("button", { name: "编辑资源", exact: true }).click();
-  await cards.first().getByRole("textbox", { name: "资源标题", exact: true }).fill("我的首个链接");
-  await cards.first().getByRole("textbox", { name: "网页说明", exact: true }).fill("我写的网页说明");
-  await cards.first().getByRole("textbox", { name: "选用理由", exact: true }).fill("适合当前研究主题");
-  await cards.first().getByRole("button", { name: "保存资源", exact: true }).click();
-  await expect(cards.first().getByText("我写的网页说明", { exact: true })).toBeVisible();
-  await cards.first().getByRole("button", { name: "编辑资源", exact: true }).click();
-  await cards.first().getByRole("textbox", { name: "资源标题", exact: true }).fill("未保存的草稿");
-  await cards.first().getByRole("textbox", { name: "网页说明", exact: true }).fill("取消的说明");
-  await cards.first().getByRole("button", { name: "取消编辑", exact: true }).click();
-  await cards.first().getByRole("button", { name: "编辑资源", exact: true }).click();
-  await expect(cards.first().getByRole("textbox", { name: "资源标题", exact: true })).toHaveValue("我的首个链接");
-  await expect(cards.first().getByRole("textbox", { name: "网页说明", exact: true })).toHaveValue("我写的网页说明");
-  await cards.first().getByRole("button", { name: "取消编辑", exact: true }).click();
-
-  await addNode("另一个节点");
-  await page.getByRole("textbox", { name: "资源 URL", exact: true }).fill("https://resource-0.example.com/page?utm_source=test#section");
-  await page.getByRole("button", { name: "添加资源", exact: true }).click();
-  await expect(page.getByRole("alert")).toContainText("主要资料");
+/** 保留旧版七条以上资源和原生拖拽纵切；全部动作走新版菜单、表单、撤销面板与数据库。 */
+test("正式入口手动资源超过六条可编辑取消草稿、拖拽、撤销并刷新恢复", async ({ page }) => {
+  await installBrowserFixture(page, createJourneyEvents()); await openInkProduct(page);
+  const firstId = await addInkManualNode(page, "资料节点");
+  await openInkNodeMenu(page, firstId); await page.getByRole("menuitem", { name: "编辑节点", exact: true }).click();
+  const nodeForm = page.getByRole("dialog", { name: "编辑节点", exact: true });
+  await nodeForm.getByRole("textbox", { name: "节点标题", exact: true }).fill("主要资料");
+  await nodeForm.getByRole("textbox", { name: "节点说明", exact: true }).fill("用户自行整理的网页");
+  await nodeForm.getByRole("button", { name: "保存节点", exact: true }).click();
+  for (let index = 0; index < 7; index++) await addInkResource(page, firstId, `https://resource-${index}.example.com/page`);
+  await page.getByRole("button", { name: "显示更多（4）", exact: true }).click();
+  const cards = page.locator(".ink-resources [data-ink-resource]"); await expect(cards).toHaveCount(7);
+  const resourceId = await cards.first().getAttribute("data-ink-resource");
+  if (resourceId === null) throw new Error("没有资源标识");
+  await openInkResourceMenu(page, resourceId); await page.getByRole("menuitem", { name: "编辑资源", exact: true }).click();
+  const form = page.getByRole("dialog", { name: "编辑资源", exact: true });
+  await form.getByRole("textbox", { name: "资源标题", exact: true }).fill("我的首个链接");
+  await form.getByRole("textbox", { name: "网页说明", exact: true }).fill("我写的网页说明");
+  await form.getByRole("textbox", { name: "选用理由", exact: true }).fill("适合当前研究主题");
+  await form.getByRole("button", { name: "保存资源", exact: true }).click();
+  await openInkResourceMenu(page, resourceId); await page.getByRole("menuitem", { name: "编辑资源", exact: true }).click();
+  await form.getByRole("textbox", { name: "资源标题", exact: true }).fill("未保存的草稿");
+  await form.getByRole("textbox", { name: "网页说明", exact: true }).fill("取消的说明");
+  await form.getByRole("button", { name: "取消编辑", exact: true }).click();
+  await openInkResourceMenu(page, resourceId); await page.getByRole("menuitem", { name: "编辑资源", exact: true }).click();
+  await expect(form.getByRole("textbox", { name: "资源标题", exact: true })).toHaveValue("我的首个链接");
+  await expect(form.getByRole("textbox", { name: "网页说明", exact: true })).toHaveValue("我写的网页说明");
+  await form.press("Escape");
+  await page.getByRole("button", { name: "收起资源", exact: true }).click();
+  const otherId = await addInkManualNode(page, "另一个节点");
+  await openInkNodeMenu(page, otherId); await page.getByRole("menuitem", { name: "添加资源", exact: true }).click();
+  const duplicate = page.getByRole("dialog", { name: "添加资源", exact: true });
+  await duplicate.getByRole("textbox", { name: "资源 URL", exact: true }).fill("https://resource-0.example.com/page?utm_source=test#section");
+  await duplicate.getByRole("button", { name: "添加资源", exact: true }).click();
+  await expect(page.locator(".ink-workspace-notice[data-open=true]")).toContainText("主要资料");
   await page.getByRole("button", { name: "定位已有资源所在节点", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "主要资料", exact: true })).toHaveCount(2);
-  await page.getByRole("button", { name: "显示更多（4）" }).click();
-  await expect(cards).toHaveCount(7);
-
-  // 使用浏览器原生拖拽；撤销与重做只恢复数组顺序，不调用搜索。
-  const grip = cards.first().locator(".resource-card__drag-handle");
-  await grip.scrollIntoViewIfNeeded();
-  const gripBounds = await grip.boundingBox();
-  if (gripBounds === null) throw new Error("拖拽起点不可见");
-  await page.mouse.move(gripBounds.x + gripBounds.width / 2, gripBounds.y + gripBounds.height / 2);
-  await page.mouse.down();
-  await page.mouse.move(gripBounds.x + gripBounds.width / 2 + 12, gripBounds.y + gripBounds.height / 2, { steps: 5 });
-  // 长资源卡片位于滚动面板中；拖动保持按下，滚动到真实目标后再释放。
-  const dropHeader = cards.nth(1).locator(".resource-card__header");
-  await dropHeader.evaluate(element => element.scrollIntoView({ block: "center" }));
-  const dropBounds = await dropHeader.boundingBox();
-  if (dropBounds === null) throw new Error("拖拽目标不可见");
-  await page.mouse.move(dropBounds.x + dropBounds.width / 2, dropBounds.y + dropBounds.height / 2, { steps: 8 });
-  await page.mouse.move(dropBounds.x + dropBounds.width / 2 + 1, dropBounds.y + dropBounds.height / 2);
+  await page.getByRole("button", { name: "显示更多（4）", exact: true }).click(); await expect(cards).toHaveCount(7);
+  // 原生HTML拖拽：从第一条移到第二条，不能通过直接调用moveResource伪造排序。
+  const targetId = await cards.nth(1).getAttribute("data-ink-resource");
+  if (targetId === null) throw new Error("缺少排序目标");
+  const start = await cards.first().locator(".ink-resources__open").boundingBox();
+  if (start === null) throw new Error("缺少资源拖动起点");
+  await page.mouse.move(start.x + 20, start.y + 20); await page.mouse.down();
+  await page.mouse.move(start.x + 32, start.y + 20, { steps: 3 });
+  // 悬浮详情会推动邻条，先走到目标，再按目标当前真实顶边释放，避免使用已失效的中心坐标。
+  for (let step = 0; step < 2; step++) {
+    const target = await page.locator(`[data-ink-resource="${targetId}"] .ink-resources__card-top`).boundingBox();
+    if (target === null) throw new Error("缺少资源拖动目标");
+    await page.mouse.move(target.x + 16, target.y + 12, { steps: 5 });
+    await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+  }
   await page.mouse.up();
-  await expect(cards.nth(0).getByRole("heading", { level: 3 })).toHaveText("resource-1.example.com");
-  await expect(cards.nth(1).getByRole("heading", { level: 3 })).toHaveText("我的首个链接");
-  await page.getByRole("button", { name: "撤销", exact: true }).click();
-  await expect(cards.first().getByRole("heading", { level: 3 })).toHaveText("我的首个链接");
-  await page.getByRole("button", { name: "重做", exact: true }).click();
-  await expect(cards.first().getByRole("heading", { level: 3 })).toHaveText("resource-1.example.com");
-  await cards.last().getByRole("button", { name: "删除资源", exact: true }).click();
-  await expect(cards).toHaveCount(6);
-  await page.getByRole("button", { name: "撤销", exact: true }).click();
-  await expect(cards).toHaveCount(7);
-  await expect(sidebar.getByRole("status")).toHaveText("已保存到本浏览器");
-  expect(await readFixtureSnapshots(page)).toHaveLength(0);
-
-  await page.reload();
-  await expect(page.locator(".react-flow__node")).toHaveCount(2);
-  await page.locator(".react-flow__node").filter({ has: page.getByRole("heading", { name: "主要资料", exact: true }) }).click();
-  await page.getByRole("button", { name: "显示更多（4）" }).click();
-  await expect(cards).toHaveCount(7);
-  await expect(cards.first().getByRole("heading", { level: 3 })).toHaveText("resource-1.example.com");
-  await expect(cards.nth(1).getByText("我写的网页说明", { exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "撤销", exact: true })).toBeEnabled();
-  await page.getByRole("button", { name: "删除节点", exact: true }).click();
-  await expect(page.locator(".react-flow__node")).toHaveCount(1);
-  await page.getByRole("button", { name: "撤销", exact: true }).click();
-  await expect(page.locator(".react-flow__node")).toHaveCount(2);
+  await expect(cards.nth(0).getByRole("heading")).toHaveText("resource-1.example.com");
+  await expect(cards.nth(1).getByRole("heading")).toHaveText("我的首个链接");
+  expect(await page.evaluate(() => window.__WAYFINDER_E2E__.openCalls())).toEqual([]);
+  // 拖拽之后键盘激活仍要打开资源，不能把一次拖后click抑制泄漏给Enter。
+  const openButton = cards.nth(1).getByRole("button", { name: "在新标签页打开 我的首个链接", exact: true });
+  await openButton.focus(); await openButton.press("Enter");
+  expect(await page.evaluate(() => window.__WAYFINDER_E2E__.openCalls())).toEqual([["https://resource-0.example.com/page", "_blank", "noopener,noreferrer"]]);
+  await openInkUndo(page);
+  await expect(page.getByRole("region", { name: "撤销记录", exact: true }).locator("[data-ink-undo-event]")
+    .filter({ has: page.getByRole("heading", { name: "可上下拖拽调整资源顺序", exact: true }) })).toHaveCount(1);
+  await page.getByRole("region", { name: "撤销记录", exact: true }).press("Escape");
+  await undoInkEvent(page, "可上下拖拽调整资源顺序");
+  await page.locator(`[data-ink-node="${firstId}"]`).getByRole("heading").click();
+  await expect(cards.first().getByRole("heading")).toHaveText("我的首个链接");
+  await redoInkEvent(page); await page.locator(`[data-ink-node="${firstId}"]`).getByRole("heading").click();
+  await expect(cards.first().getByRole("heading")).toHaveText("resource-1.example.com");
+  await page.getByRole("button", { name: "显示更多（4）", exact: true }).click();
+  const lastId = await cards.last().getAttribute("data-ink-resource"); if (lastId === null) throw new Error("缺少末条资源");
+  await openInkResourceMenu(page, lastId); await page.getByRole("menuitem", { name: "删除资源", exact: true }).click();
+  await expect(cards).toHaveCount(6); await undoInkEvent(page, "删除资源");
+  await page.locator(`[data-ink-node="${firstId}"]`).getByRole("heading").click();
+  await page.getByRole("button", { name: "显示更多（4）", exact: true }).click(); await expect(cards).toHaveCount(7);
+  await page.reload(); await page.getByRole("button", { name: "开始探索", exact: true }).click();
+  await expect(page.locator("[data-ink-node]")).toHaveCount(2);
+  await page.locator(`[data-ink-node="${firstId}"]`).getByRole("heading").click();
+  await page.getByRole("button", { name: "显示更多（4）", exact: true }).click();
+  await expect(cards).toHaveCount(7); await expect(cards.nth(1).getByRole("heading")).toHaveText("我的首个链接");
+  await cards.nth(1).hover(); await expect(cards.nth(1).getByText("我写的网页说明", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "收起资源", exact: true }).click();
+  await openInkNodeMenu(page, firstId); await page.getByRole("menuitem", { name: "删除节点", exact: true }).click();
+  await expect(page.locator("[data-ink-node]")).toHaveCount(1); await undoInkEvent(page, "删除节点");
+  await expect(page.locator("[data-ink-node]")).toHaveCount(2);
   expect(await readFixtureSnapshots(page)).toHaveLength(0);
 });
 
-/** 布局与关系走真实画布手势；移动仅保存位置，其他编辑的撤销不能回退后续位置。 */
-test("节点移动不入撤销且保留最新布局，连线可撤销并持久保存", async ({ page }) => {
-  const pageErrors: string[] = [];
-  const flowWarnings: string[] = [];
+/** 节点移动仅保存最新位置，关系仍由真实锚点拉线和右键菜单修改。 */
+test("正式入口移动不入撤销、连线编辑与布局持久化保持原能力", async ({ page }) => {
+  const pageErrors: string[] = [], warnings: string[] = [];
   page.on("pageerror", error => pageErrors.push(error.message));
-  page.on("console", message => { if (message.type() === "warning" && message.text().includes("[React Flow]")) flowWarnings.push(message.text()); });
-  await installBrowserFixture(page, createJourneyEvents());
-  await page.goto("/");
-  const sidebar = page.getByRole("complementary", { name: "搜索图记录" });
-  await expect(sidebar.getByRole("status")).toHaveText("已保存到本浏览器");
-  const addNode = async (title: string): Promise<void> => {
-    await page.getByRole("textbox", { name: "新节点标题", exact: true }).fill(title);
-    await page.getByRole("button", { name: "新建节点", exact: true }).click();
+  page.on("console", message => { if (message.type() === "warning" && message.text().includes("[React Flow]")) warnings.push(message.text()); });
+  await openInkWorkspace(page);
+  const graphId = "ink-workspace", firstId = "workspace-node-0", secondId = "workspace-node-1";
+  await renameInkGraph(page, "墨迹工作区", "布局图");
+  const after = await dragInkNode(page, 80, 50, firstId);
+  await undoInkEvent(page, "重命名"); await expectInkPosition(page, after, firstId);
+  await redoInkEvent(page); await expectInkPosition(page, after, firstId);
+  const first = page.locator(`.react-flow__node[data-id="${firstId}"]`);
+  await first.focus(); await first.press("ArrowRight");
+  const keyboardAfter = await readInkPosition(page, firstId); expect(keyboardAfter).not.toEqual(after);
+  await undoInkEvent(page, "重命名"); await expectInkPosition(page, keyboardAfter, firstId); await redoInkEvent(page);
+  const connect = async (sourceId: string, targetId: string, related = false): Promise<void> => {
+    const source = page.locator(`[data-ink-node="${sourceId}"]`), target = page.locator(`[data-ink-node="${targetId}"]`);
+    // 拖动或键盘选择会打开右侧资源层；先通过其正式关闭入口释放被覆盖的右侧连接锚点。
+    const closeResources = page.getByRole("button", { name: "收起资源", exact: true });
+    if (await closeResources.isVisible()) await closeResources.click();
+    await source.hover();
+    const from = await source.locator(`[data-handleid="${related ? "related" : "main"}-source"]`).boundingBox();
+    const to = await target.locator(`[data-handleid="${related ? "related" : "main"}-target"]`).boundingBox();
+    if (from === null || to === null) throw new Error("连接点没有真实布局");
+    await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
+    expect(await page.evaluate(({ x, y }) => { const handle = document.elementFromPoint(x, y)?.closest<HTMLElement>(".react-flow__handle"); return { id: handle?.dataset.handleid, node: handle?.dataset.nodeid }; },
+      { x: from.x + from.width / 2, y: from.y + from.height / 2 })).toEqual({ id: `${related ? "related" : "main"}-source`, node: sourceId });
+    await page.mouse.down();
+    const targetBody = await target.boundingBox();
+    if (targetBody === null) throw new Error("目标节点没有布局");
+    await page.mouse.move(targetBody.x + targetBody.width / 2, targetBody.y + targetBody.height / 2, { steps: 8 });
+    // target锚点在文字层之前绘制，选择其实际露出的外半边，不能把内容层中心误作连接点。
+    const targetX = to.x + to.width * (related ? 0.2 : 0.5), targetY = to.y + to.height * (related ? 0.5 : 0.2);
+    await page.mouse.move(targetX, targetY, { steps: 3 });
+    expect(await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.closest<HTMLElement>(".react-flow__handle")?.dataset.handleid,
+      { x: targetX, y: targetY })).toBe(`${related ? "related" : "main"}-target`);
+    await page.mouse.up();
   };
-  await addNode("布局甲");
-  await addNode("布局乙");
-  const originalTitle = (await readStoredWorkspace(page))?.documents[0]?.title;
-  if (originalTitle === undefined) throw new Error("缺少手动图初始名称");
-  await sidebar.getByRole("button", { name: "重命名", exact: true }).click();
-  await sidebar.getByRole("textbox", { name: "记录名称" }).fill("布局图");
-  await sidebar.getByRole("button", { name: "保存名称" }).click();
-  const firstNode = page.locator(".react-flow__node").filter({ has: page.getByRole("heading", { name: "布局甲", exact: true }) });
-  const secondNode = page.locator(".react-flow__node").filter({ has: page.getByRole("heading", { name: "布局乙", exact: true }) });
-  const before = await firstNode.evaluate(element => getComputedStyle(element).transform);
-  const heading = firstNode.getByRole("heading", { name: "布局甲", exact: true });
-  await heading.scrollIntoViewIfNeeded();
-  const bounds = await heading.boundingBox();
-  if (bounds === null) throw new Error("节点拖动起点不可见");
-  await page.mouse.move(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
-  await page.mouse.down();
-  await page.mouse.move(bounds.x + bounds.width / 2 + 80, bounds.y + bounds.height / 2 + 50, { steps: 12 });
-  await page.mouse.up();
-  await expect(firstNode).not.toHaveCSS("transform", before);
-  const after = await firstNode.evaluate(element => getComputedStyle(element).transform);
-  await page.getByRole("button", { name: "撤销", exact: true }).click();
-  await expect(firstNode).toHaveCSS("transform", after);
-  await expect.poll(async () => (await readStoredWorkspace(page))?.documents[0]?.title).toBe(originalTitle);
-  await page.getByRole("button", { name: "重做", exact: true }).click();
-  await expect(firstNode).toHaveCSS("transform", after);
-  await expect.poll(async () => (await readStoredWorkspace(page))?.documents[0]?.title).toBe("布局图");
-  // 方向键和指针移动采用同一保存规则，均不占用编辑事件或清空重做。
-  await firstNode.focus();
-  await firstNode.press("ArrowRight");
-  await expect(firstNode).not.toHaveCSS("transform", after);
-  const keyboardAfter = await firstNode.evaluate(element => getComputedStyle(element).transform);
-  await expect(sidebar.getByRole("status")).toHaveText("已保存到本浏览器");
-  await page.getByRole("button", { name: "撤销", exact: true }).click();
-  await expect(firstNode).toHaveCSS("transform", keyboardAfter);
-  await expect.poll(async () => (await readStoredWorkspace(page))?.documents[0]?.title).toBe(originalTitle);
-  await page.getByRole("button", { name: "重做", exact: true }).click();
-  await expect(firstNode).toHaveCSS("transform", keyboardAfter);
-
-  // 同类端口通过原生指针拖线；编辑既有边仍使用相同的确定性关系规则。
-  await firstNode.locator('[data-handleid="main-source"]').dragTo(secondNode.locator('[data-handleid="main-target"]'));
-  await expect(page.locator(".react-flow__edge")).toHaveCount(1);
-  await expect(page.locator(".graph-edge--recommended")).toHaveCount(1);
-  await secondNode.locator('[data-handleid="related-source"]').dragTo(firstNode.locator('[data-handleid="related-target"]'));
+  await connect(firstId, secondId); await expect(page.locator(".react-flow__edge")).toHaveCount(1);
+  // 相关边连接第三节点，避免改型后反向同类型路径完全重叠而要求鼠标命中被覆盖的下层边。
+  await connect(secondId, "workspace-node-2", true);
   await expect(page.locator(".react-flow__edge")).toHaveCount(2);
-  const edgeEditor = page.locator(".workspace-edge-editor");
-  await edgeEditor.locator("summary").click();
-  const edgeSelector = edgeEditor.getByRole("combobox", { name: "选择连线", exact: true });
-  const firstEdgeId = await edgeSelector.locator("option").nth(1).getAttribute("value");
-  if (firstEdgeId === null) throw new Error("缺少测试连线");
-  await edgeSelector.selectOption(firstEdgeId);
-  await edgeEditor.getByRole("combobox", { name: "关系类型", exact: true }).selectOption("related_to");
-  await edgeEditor.getByRole("button", { name: "保存连线", exact: true }).click();
+  const edgeId = (await readStoredWorkspace(page))?.documents.find(document => document.id === graphId)?.edges[0]?.id;
+  if (edgeId === undefined) throw new Error("没有已保存连线");
+  const edgeMenu = async (): Promise<void> => {
+    const point = await page.locator(`.react-flow__edge[data-id="${edgeId}"] .react-flow__edge-path`).evaluate(element => {
+      const path = element as SVGPathElement, mid = path.getPointAtLength(path.getTotalLength() / 4);
+      const screen = new DOMPoint(mid.x, mid.y).matrixTransform(path.getScreenCTM() ?? undefined); return { x: screen.x, y: screen.y };
+    });
+    // 选择路径四分之一处并核对真实命中ID，避免交叉连线时编辑上层另一条边。
+    expect(await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.closest(".react-flow__edge")?.getAttribute("data-id"), point)).toBe(edgeId);
+    await page.mouse.click(point.x, point.y, { button: "right" });
+  };
+  await edgeMenu(); await page.getByRole("menuitemradio", { name: "相关", exact: true }).click();
   await expect(page.locator(".graph-edge--related")).toHaveCount(2);
-  await edgeEditor.getByRole("combobox", { name: "关系类型", exact: true }).selectOption("recommended_next");
-  await edgeEditor.getByRole("button", { name: "保存连线", exact: true }).click();
+  await edgeMenu(); await page.getByRole("menuitemradio", { name: "推荐下一步", exact: true }).click();
   await expect(page.locator(".graph-edge--recommended")).toHaveCount(1);
-
-  await edgeSelector.selectOption("");
-  await edgeEditor.getByRole("combobox", { name: "起点节点", exact: true }).selectOption({ label: "布局乙" });
-  await edgeEditor.getByRole("combobox", { name: "终点节点", exact: true }).selectOption({ label: "布局甲" });
-  await edgeEditor.getByRole("combobox", { name: "关系类型", exact: true }).selectOption("recommended_next");
-  await edgeEditor.getByRole("button", { name: "添加连线", exact: true }).click();
-  await expect(edgeEditor.getByRole("alert")).toContainText("推荐下一步不能形成环");
+  await connect(secondId, firstId); await expect(page.getByRole("alert")).toContainText("推荐下一步不能形成环");
   await expect(page.locator(".react-flow__edge")).toHaveCount(2);
-  await edgeSelector.selectOption(firstEdgeId);
-  await edgeEditor.getByRole("button", { name: "删除连线", exact: true }).click();
-  await expect(page.locator(".react-flow__edge")).toHaveCount(1);
-  await page.getByRole("button", { name: "撤销", exact: true }).click();
+  await edgeMenu(); await page.getByRole("menuitem", { name: "删除连线", exact: true }).click();
+  await expect(page.locator(".react-flow__edge")).toHaveCount(1); await undoInkEvent(page, "删除连线");
   await expect(page.locator(".react-flow__edge")).toHaveCount(2);
-
-  // 原生 Delete 键不绕过显式删除入口，不允许画布与保存的数据出现两套内容。
-  await firstNode.press("Delete");
-  await expect(page.locator(".react-flow__node")).toHaveCount(2);
-  await sidebar.getByRole("button", { name: "新建搜索", exact: true }).click();
-  await addNode("其他记录节点");
-  await sidebar.getByRole("button", { name: "布局图", exact: true }).click();
-  await expect(firstNode).toHaveCSS("transform", keyboardAfter);
-  await expect(page.locator(".react-flow__edge")).toHaveCount(2);
-  await expect(sidebar.getByRole("status")).toHaveText("已保存到本浏览器");
-  await page.reload();
-  await expect(firstNode).toHaveCSS("transform", keyboardAfter);
-  await expect(page.locator(".react-flow__edge")).toHaveCount(2);
-  await expect(page.getByRole("button", { name: "撤销", exact: true })).toBeEnabled();
-  expect(await readFixtureSnapshots(page)).toHaveLength(0);
-  expect(pageErrors).toEqual([]);
-  expect(flowWarnings).toEqual([]);
+  await first.press("Delete"); await expect(page.locator("[data-ink-node]")).toHaveCount(3);
+  await expectSavedInkPosition(page, graphId, keyboardAfter, firstId);
+  await page.reload(); await page.getByRole("button", { name: "开始探索", exact: true }).click();
+  await expectInkPosition(page, keyboardAfter, firstId); await expect(page.locator(".react-flow__edge")).toHaveCount(2);
+  expect(await readFixtureSnapshots(page)).toHaveLength(0); expect(pageErrors).toEqual([]); expect(warnings).toEqual([]);
 });
 
-/** 引擎覆盖只影响下一次请求，偏好与资源实际来源分开，所有响应均为本地固定样例。 */
-test("引擎随语言默认且可独立覆盖，节点偏好保存而旧资源来源不变", async ({ page }) => {
-  const events = createJourneyEvents();
-  await installBrowserFixture(page, events);
-  await page.goto("/");
-  const sidebar = page.getByRole("complementary", { name: "搜索图记录" });
-  await expect(sidebar.getByRole("status")).toHaveText("已保存到本浏览器");
-  await expect(page.getByRole("combobox", { name: "搜索引擎", exact: true })).toHaveValue("baidu");
-  await page.getByRole("combobox", { name: "语言", exact: true }).selectOption("en-US");
-  const globalEngine = page.getByRole("combobox", { name: "Search engine", exact: true });
-  await expect(globalEngine).toHaveValue("google");
-  await globalEngine.selectOption("baidu");
-  await expect(page.getByRole("note")).toHaveText("Baidu does not guarantee regional targeting.");
-  expect(await readFixtureSnapshots(page)).toHaveLength(0);
-
-  await page.getByRole("searchbox", { name: "Search any topic" }).fill("Engine fixture");
-  await page.getByRole("searchbox", { name: "Search any topic" }).press("Enter");
+/** 引擎选择仅改后续请求，资源实际来源与人工编辑的节点偏好分别持久保存。 */
+test("正式入口引擎独立覆盖与节点偏好恢复且旧来源不变", async ({ page }) => {
+  const events = createJourneyEvents(); await installBrowserFixture(page, events); await openInkProduct(page);
+  await page.getByRole("button", { name: "语言", exact: true }).click(); await page.getByRole("button", { name: "English", exact: true }).click();
+  const engine = page.locator(".ink-study__engine");
+  await engine.getByRole("button", { name: "Search engine：Google", exact: true }).click(); await engine.getByRole("button", { name: "Baidu", exact: true }).click();
+  await engine.getByRole("button", { name: "Search engine：Baidu", exact: true }).click();
+  await expect(engine.getByRole("note")).toHaveText("Baidu does not guarantee regional targeting.");
+  expect(await engine.getByRole("note").evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
+  await engine.getByRole("button", { name: "Search engine：Baidu", exact: true }).click();
+  const input = page.getByRole("searchbox", { name: "Search any topic", exact: true }); await input.fill("Engine fixture"); await input.press("Enter");
   await expect.poll(async () => (await readFixtureSnapshots(page))[0]).toMatchObject({ language: "en-US", engine: "baidu" });
-  await emitFixtureEvents(page, 0, events.map((_event, index) => index));
-  await page.evaluate(() => window.__WAYFINDER_E2E__.close(0));
-  await page.locator(`.react-flow__node[data-id="${READY_NODE_ID}"]`).click();
-  const firstCard = page.getByRole("list", { name: "Node resources" }).getByRole("listitem").first();
-  await expect(firstCard.getByRole("definition").filter({ hasText: "Baidu" })).toHaveCount(1);
-  await globalEngine.selectOption("google");
-  await expect(page.getByRole("combobox", { name: "Language", exact: true })).toHaveValue("en-US");
-  await expect(page.locator("html")).toHaveAttribute("lang", "en-US");
-  await expect(firstCard.getByRole("definition").filter({ hasText: "Baidu" })).toHaveCount(1);
-  const nodeEngine = page.getByRole("combobox", { name: "Node search engine", exact: true });
-  await expect(nodeEngine).toHaveValue("google");
-  await nodeEngine.selectOption("baidu");
-  expect(await readFixtureSnapshots(page)).toHaveLength(1);
-  await expect(page.getByRole("complementary", { name: "Search graphs", exact: true }).getByRole("status")).toHaveText("Saved in this browser");
-
-  await page.reload();
-  await expect(globalEngine).toHaveValue("google");
-  await page.locator(`.react-flow__node[data-id="${READY_NODE_ID}"]`).click();
-  await expect(nodeEngine).toHaveValue("baidu");
-  await expect(firstCard.getByRole("definition").filter({ hasText: "Baidu" })).toHaveCount(1);
+  await emitFixtureEvents(page, 0, events.map((_event, index) => index)); await page.evaluate(() => window.__WAYFINDER_E2E__.close(0));
+  await page.locator(`[data-ink-node="${READY_NODE_ID}"]`).getByRole("heading").click();
+  const firstCard = page.locator(".ink-resources [data-ink-resource]").first(); await expect(firstCard.getByText("Baidu", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Close resources", exact: true }).click();
+  await openInkPaneMenu(page); await expect(page.getByRole("menu").getByRole("note")).toHaveText("Baidu does not guarantee regional targeting."); await page.getByRole("menuitemradio", { name: "Google", exact: true }).click();
+  await page.locator(`[data-ink-node="${READY_NODE_ID}"]`).getByRole("heading").click(); await expect(firstCard.getByText("Baidu", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Close resources", exact: true }).click();
+  await page.locator(`[data-ink-node="${READY_NODE_ID}"]`).getByRole("heading").click({ button: "right" });
+  await page.getByRole("menuitemradio", { name: "Baidu", exact: true }).click();
+  const graph = (await readStoredWorkspace(page))?.documents[0]; expect(graph?.engine).toBe("google"); expect(graph?.nodes.find(node => node.id === READY_NODE_ID)?.engine).toBe("baidu");
+  await page.reload(); await page.getByRole("button", { name: "开始探索", exact: true }).click();
+  const restored = (await readStoredWorkspace(page))?.documents[0]; expect(restored?.engine).toBe("google"); expect(restored?.nodes.find(node => node.id === READY_NODE_ID)?.engine).toBe("baidu");
+  await page.locator(`[data-ink-node="${READY_NODE_ID}"]`).getByRole("heading").click(); await expect(page.locator(".ink-resources").getByText("百度", { exact: true })).toHaveCount(3);
   expect(await readFixtureSnapshots(page)).toHaveLength(0);
 });
 
-
-/** 缺少显式引擎的人工图撤销后恢复语言默认，不能泄漏空页偏好。 */
-test("手动图引擎选择撤销后全局与节点均恢复语言默认", async ({ page }) => {
-  await installBrowserFixture(page, createJourneyEvents());
-  await page.goto("/");
-  const sidebar = page.getByRole("complementary", { name: "搜索图记录" });
-  await expect(sidebar.getByRole("status")).toHaveText("已保存到本浏览器");
-  await page.getByRole("textbox", { name: "新节点标题", exact: true }).fill("未选引擎节点");
-  await page.getByRole("button", { name: "新建节点", exact: true }).click();
-  const globalEngine = page.getByRole("combobox", { name: "搜索引擎", exact: true });
-  const nodeEngine = page.getByRole("combobox", { name: "节点搜索引擎", exact: true });
-  await expect(globalEngine).toHaveValue("baidu");
-  await expect(nodeEngine).toHaveValue("baidu");
-  await globalEngine.selectOption("google");
-  await expect(nodeEngine).toHaveValue("google");
-  await page.getByRole("button", { name: "撤销", exact: true }).click();
-  await expect(globalEngine).toHaveValue("baidu");
-  await expect(nodeEngine).toHaveValue("baidu");
+/** 无显式偏好的人工图撤销后回语言默认，不能泄漏空页选择。 */
+test("正式入口人工图引擎撤销后全图与节点恢复语言默认", async ({ page }) => {
+  await openInkWorkspace(page);
+  await openInkPaneMenu(page); await expect(page.getByRole("menuitemradio", { name: "百度", exact: true })).toHaveAttribute("aria-checked", "true");
+  await page.getByRole("menuitemradio", { name: "Google", exact: true }).click();
+  await openInkNodeMenu(page); await expect(page.getByRole("menuitemradio", { name: "Google", exact: true })).toHaveAttribute("aria-checked", "true");
+  await page.getByRole("menu", { name: "图操作菜单", exact: true }).press("Escape"); await undoInkEvent(page, "搜索引擎");
+  await openInkPaneMenu(page); await expect(page.getByRole("menuitemradio", { name: "百度", exact: true })).toHaveAttribute("aria-checked", "true");
+  await page.getByRole("menu", { name: "图操作菜单", exact: true }).press("Escape");
+  await openInkNodeMenu(page); await expect(page.getByRole("menuitemradio", { name: "百度", exact: true })).toHaveAttribute("aria-checked", "true");
   expect(await readFixtureSnapshots(page)).toHaveLength(0);
 });
 
-/** 重搜全链路仍用同一可控 NDJSON 流，旧工作图只在明确应用时更新。 */
-test("重搜预览支持弃用取消失败、追加和替换，完整旧图可撤销并刷新恢复", async ({ page }) => {
-  const events = createJourneyEvents();
-  const indexes = events.map((_event, index) => index);
-  const completeIndex = events.findIndex(event => event.type === "complete");
-  await installBrowserFixture(page, events);
-  await page.goto("/");
-  const sidebar = page.getByRole("complementary", { name: "搜索图记录" });
-  await expect(sidebar.getByRole("status")).toHaveText("已保存到本浏览器");
-  const working = page.locator(".graph-section");
-  const preview = page.getByRole("region", { name: "重搜预览", exact: true });
-  const addNode = async (title: string): Promise<void> => {
-    await page.getByRole("textbox", { name: "新节点标题", exact: true }).fill(title);
-    await page.getByRole("button", { name: "新建节点", exact: true }).click();
-  };
-  const addUrl = async (url: string): Promise<void> => {
-    await working.getByRole("textbox", { name: "资源 URL", exact: true }).fill(url);
-    await working.getByRole("button", { name: "添加资源", exact: true }).click();
-  };
-  const researchNode = async (index: number): Promise<void> => {
-    await working.getByRole("button", { name: "重新搜索此节点", exact: true }).click();
+/** 新界面按规格隔离工作图；取消/失败/弃用不变，明确应用才追加或替换，撤销恢复完整旧图。 */
+test("正式入口重搜取消失败弃用连续追加、替换及撤销刷新保留旧图", async ({ page }) => {
+  const original = await openInkWorkspace(page), nodeId = "workspace-node-0";
+  const preview = page.getByRole("dialog", { name: "重搜预览", exact: true });
+  const startNode = async (index: number): Promise<void> => {
+    await openInkNodeMenu(page, nodeId); await page.getByRole("menuitem", { name: "重新搜索此节点", exact: true }).click();
     await expect.poll(async () => (await readFixtureSnapshots(page)).length).toBe(index + 1);
   };
   const finish = async (index: number): Promise<void> => {
-    await emitFixtureEvents(page, index, indexes);
+    const events = createInkMotionEvents(); await emitFixtureEvents(page, index, events.map((_event, position) => position));
     await page.evaluate(target => window.__WAYFINDER_E2E__.close(target), index);
-    await expect(preview.getByRole("button", { name: "应用替换", exact: true })).toBeVisible();
+    await expect(preview.getByRole("button", { name: "应用替换", exact: true })).toBeEnabled();
   };
-  await addNode("重搜主题");
-  const targetNode = working.locator(".react-flow__node").filter({ has: page.getByRole("heading", { name: "重搜主题", exact: true }) });
-  const targetId = await targetNode.getAttribute("data-id");
-  await addUrl("https://original.example.com/");
-  await working.getByRole("combobox", { name: "节点搜索引擎", exact: true }).selectOption("google");
-  await addNode("保留节点");
-  const otherNode = working.locator(".react-flow__node").filter({ has: page.getByRole("heading", { name: "保留节点", exact: true }) });
-  await addUrl("https://keep.example.com/");
-  await targetNode.click();
-  const oldCards = working.getByRole("list", { name: "节点资源" }).getByRole("listitem");
-
-  await researchNode(0);
-  await expect.poll(async () => (await readFixtureSnapshots(page))[0]).toMatchObject({ query: "重搜主题", engine: "google", language: "zh-CN", nodeSearch: { node: { id: targetId, title: "重搜主题", description: "" }, analysis: null } });
-  await expect(oldCards).toHaveCount(1);
-  await preview.getByRole("button", { name: "取消重搜", exact: true }).click();
+  await startNode(0); await preview.getByRole("button", { name: "取消重搜", exact: true }).click();
   await expect.poll(async () => (await readFixtureSnapshots(page))[0]).toMatchObject({ aborted: true, cancelled: true });
-  await expect(preview).toHaveCount(0);
-  await researchNode(1);
-  await page.evaluate(() => window.__WAYFINDER_E2E__.fail(1));
-  await expect(preview.getByRole("alert")).toContainText("当前图保持不变");
-  await expect(oldCards).toHaveCount(1);
-  await preview.getByRole("button", { name: "弃用新结果", exact: true }).click();
-
-  await researchNode(2);
-  await emitFixtureEvents(page, 2, [completeIndex], 0);
-  await expect(preview.getByRole("button", { name: "取消重搜", exact: true })).toBeVisible();
-  await finish(2);
-  await expect(oldCards).toHaveCount(1);
-  // 即使绕过原生长度限制，完整输入校验也应保留已就绪的旧预览，而不是取消后才拒绝。
-  const topicField = page.getByRole("textbox", { name: "搜索主题", exact: true });
-  await topicField.evaluate(element => element.removeAttribute("maxlength"));
-  await topicField.fill("长".repeat(2001));
-  await page.getByRole("button", { name: "重新搜索全图", exact: true }).click();
-  await expect(page.getByRole("alert").filter({ hasText: "搜索主题须为 1 至 2000 个字符" })).toBeVisible();
-  await expect(preview.getByRole("button", { name: "应用替换", exact: true })).toBeVisible();
-  expect(await readFixtureSnapshots(page)).toHaveLength(3);
-  expect((await readFixtureSnapshots(page))[2]?.aborted).toBe(false);
-  await topicField.fill("");
-  await topicField.evaluate(element => element.setAttribute("maxlength", "2000"));
-  const duplicateIds = await page.locator("[id]").evaluateAll(elements => {
-    const ids = elements.map(element => element.id);
-    return ids.filter((id, index) => ids.indexOf(id) !== index);
-  });
-  expect(duplicateIds).toEqual([]);
-  await preview.getByRole("button", { name: "弃用新结果", exact: true }).click();
-  await expect(oldCards).toHaveCount(1);
-
-  await researchNode(3);
-  await finish(3);
-  await preview.getByRole("button", { name: "追加到此节点", exact: true }).click();
-  await working.getByRole("button", { name: "显示更多（2）", exact: true }).click();
-  await expect(oldCards).toHaveCount(5);
-  await researchNode(4);
-  await finish(4);
-  await preview.getByRole("button", { name: "追加到此节点", exact: true }).click();
-  await expect(oldCards).toHaveCount(9);
-  await oldCards.first().getByRole("button", { name: "编辑资源", exact: true }).click();
-  await oldCards.first().getByRole("textbox", { name: "资源标题", exact: true }).fill("人工改写的旧资源");
-  await oldCards.first().getByRole("button", { name: "保存资源", exact: true }).click();
-  await researchNode(5);
-  await finish(5);
-  // 预览之后又在其他节点加入候选 URL，应用时必须重新去重。
-  await otherNode.click();
-  await addUrl("https://node-5.example.com/resource-0");
-  await preview.getByRole("button", { name: "应用替换", exact: true }).click();
-  await targetNode.click();
-  await expect(oldCards).toHaveCount(3);
-  await expect(working.getByRole("heading", { name: "人工改写的旧资源", exact: true })).toHaveCount(0);
-  await expect(oldCards.getByRole("heading", { level: 3 })).toHaveText(["Node result 5-1", "Node result 5-2", "Node result 5-3"]);
-  await expect(page.getByRole("definition").filter({ hasText: "已完成" })).toHaveCount(1);
-
-  const edgeEditor = page.locator(".workspace-edge-editor");
-  await edgeEditor.locator("summary").click();
-  await edgeEditor.getByRole("button", { name: "添加连线", exact: true }).click();
-  await expect(working.locator(".react-flow__edge")).toHaveCount(1);
-  const position = await targetNode.evaluate(element => getComputedStyle(element).transform);
-  await sidebar.getByRole("button", { name: "重命名", exact: true }).click();
-  await sidebar.getByRole("textbox", { name: "记录名称" }).fill("完整重搜主题");
-  await sidebar.getByRole("button", { name: "保存名称" }).click();
-  await expect(page.getByRole("button", { name: "重新搜索全图", exact: true })).toBeDisabled();
-  expect(await readFixtureSnapshots(page)).toHaveLength(6);
-  await page.getByRole("textbox", { name: "搜索主题", exact: true }).fill("明确填写的全图主题");
-  await page.getByRole("button", { name: "重新搜索全图", exact: true }).click();
-  await expect.poll(async () => (await readFixtureSnapshots(page)).length).toBe(7);
-  expect((await readFixtureSnapshots(page))[6]?.nodeSearch).toBeUndefined();
-  expect((await readFixtureSnapshots(page))[6]?.query).toBe("明确填写的全图主题");
-  await expect(working.locator(".react-flow__node")).toHaveCount(2);
-  await finish(6);
-  await expect(preview.getByRole("button", { name: "追加到此节点", exact: true })).toHaveCount(0);
-  await expect(preview.locator(".react-flow__node")).toHaveCount(4);
-  await preview.locator(`.react-flow__node[data-id="${READY_NODE_ID}"]`).click();
-  expect(await page.locator("[id]").evaluateAll(elements => {
-    const ids = elements.map(element => element.id);
-    return ids.filter((id, index) => ids.indexOf(id) !== index);
-  })).toEqual([]);
-  await preview.getByRole("button", { name: "应用替换", exact: true }).click();
-  await expect(working.locator(".react-flow__node")).toHaveCount(4);
-  await expect(targetNode).toHaveCount(0);
-  await page.getByRole("button", { name: "撤销", exact: true }).click();
-  await expect(working.locator(".react-flow__node")).toHaveCount(2);
-  await expect(working.locator(".react-flow__edge")).toHaveCount(1);
-  await expect(targetNode).toHaveCSS("transform", position);
-  await targetNode.click();
-  await expect(oldCards).toHaveCount(3);
-  await expect(working.getByRole("combobox", { name: "节点搜索引擎", exact: true })).toHaveValue("google");
-  await expect(sidebar.getByRole("status")).toHaveText("已保存到本浏览器");
-  await page.reload();
-  await expect(working.locator(".react-flow__node")).toHaveCount(2);
-  await expect(working.locator(".react-flow__edge")).toHaveCount(1);
-  await expect(targetNode).toHaveCSS("transform", position);
-  await targetNode.click();
-  await expect(oldCards).toHaveCount(3);
-  expect(await readFixtureSnapshots(page)).toHaveLength(0);
+  await startNode(1); await page.evaluate(() => window.__WAYFINDER_E2E__.fail(1));
+  await expect(preview.getByRole("alert")).toContainText("当前图保持不变"); await preview.getByRole("button", { name: "弃用新结果", exact: true }).click();
+  await startNode(2); await finish(2); await preview.getByRole("button", { name: "弃用新结果", exact: true }).click();
+  expect((await readStoredWorkspace(page))?.documents[0]).toEqual(original);
+  for (const index of [3, 4]) { await startNode(index); await finish(index); await preview.getByRole("button", { name: "追加到此节点", exact: true }).click(); }
+  await expect.poll(async () => (await readStoredWorkspace(page))?.documents[0]?.nodes[0]?.resources.length).toBe(12);
+  await startNode(5); await finish(5); await preview.getByRole("button", { name: "应用替换", exact: true }).click();
+  await expect.poll(async () => (await readStoredWorkspace(page))?.documents[0]?.nodes[0]?.resources.length).toBe(4);
+  expect((await readStoredWorkspace(page))?.documents[0]?.nodes.slice(1)).toEqual(original.nodes.slice(1));
+  await openInkPaneMenu(page); await page.getByRole("menuitem", { name: "重新搜索全图", exact: true }).click();
+  const form = page.getByRole("dialog", { name: "重新搜索全图", exact: true });
+  await form.getByRole("textbox", { name: "搜索主题", exact: true }).fill("长".repeat(2000));
+  await form.getByRole("textbox", { name: "搜索主题", exact: true }).evaluate(element => element.removeAttribute("maxlength"));
+  await form.getByRole("textbox", { name: "搜索主题", exact: true }).fill("长".repeat(2001));
+  await form.getByRole("button", { name: "重新搜索全图", exact: true }).click();
+  await expect(page.getByRole("alert")).toContainText("搜索主题须为 1 至 2000 个字符"); expect(await readFixtureSnapshots(page)).toHaveLength(6);
+  await openInkPaneMenu(page); await page.getByRole("menuitem", { name: "重新搜索全图", exact: true }).click();
+  await form.getByRole("textbox", { name: "搜索主题", exact: true }).fill("明确填写的全图主题");
+  await form.getByRole("button", { name: "重新搜索全图", exact: true }).click();
+  await expect.poll(async () => (await readFixtureSnapshots(page))[6]).toMatchObject({ query: "明确填写的全图主题" }); expect((await readFixtureSnapshots(page))[6]?.nodeSearch).toBeUndefined();
+  await finish(6); await expect(preview.getByRole("button", { name: "追加到此节点", exact: true })).toHaveCount(0);
+  expect(await page.locator("[id]").evaluateAll(elements => { const ids = elements.map(element => element.id); return ids.filter((id, index) => ids.indexOf(id) !== index); })).toEqual([]);
+  const beforeReplace = (await readStoredWorkspace(page))?.documents[0];
+  await preview.getByRole("button", { name: "应用替换", exact: true }).click(); await expect(page.locator("[data-ink-node]")).toHaveCount(4);
+  await undoInkEvent(page, "应用全图结果");
+  const afterUndo = (await readStoredWorkspace(page))?.documents[0]; expect(afterUndo?.nodes).toEqual(beforeReplace?.nodes); expect(afterUndo?.edges).toEqual(beforeReplace?.edges); expect(afterUndo?.positions).toEqual(beforeReplace?.positions);
+  await page.reload(); await page.getByRole("button", { name: "开始探索", exact: true }).click();
+  expect((await readStoredWorkspace(page))?.documents[0]?.nodes).toEqual(beforeReplace?.nodes); await expect(page.locator("[data-ink-node]")).toHaveCount(3); expect(await readFixtureSnapshots(page)).toHaveLength(0);
 });
 
-/** 删除目标或离开所属记录立即中止临时请求，不把晚到结果写入新记录。 */
-test("重搜期间删除目标或切换记录会取消请求且不复活旧节点", async ({ page }) => {
-  await installBrowserFixture(page, createJourneyEvents());
-  await page.goto("/");
-  const sidebar = page.getByRole("complementary", { name: "搜索图记录" });
-  await expect(sidebar.getByRole("status")).toHaveText("已保存到本浏览器");
-  await page.getByRole("textbox", { name: "新节点标题", exact: true }).fill("取消目标");
-  await page.getByRole("button", { name: "新建节点", exact: true }).click();
-  await sidebar.getByRole("button", { name: "重命名", exact: true }).click();
-  await sidebar.getByRole("textbox", { name: "记录名称" }).fill("原图");
-  await sidebar.getByRole("button", { name: "保存名称" }).click();
-  const working = page.locator(".graph-section");
-  const preview = page.getByRole("region", { name: "重搜预览", exact: true });
-  await working.getByRole("button", { name: "重新搜索此节点", exact: true }).click();
+/** 覆盖层下不能删除节点；新版由历史删图/切图清理请求，目标失效的纯竞态保留在API集成测试。 */
+test("正式入口重搜期间删除图或切换记录会取消且不复活旧内容", async ({ page }) => {
+  const other = createWaterDocuments()[1]; if (other === undefined) throw new Error("缺少第二记录");
+  const original = await openInkWorkspace(page, false, [other]);
+  await openInkNodeMenu(page); await page.getByRole("menuitem", { name: "重新搜索此节点", exact: true }).click();
   await expect.poll(async () => (await readFixtureSnapshots(page)).length).toBe(1);
-  await working.getByRole("button", { name: "删除节点", exact: true }).click();
-  await expect(preview).toHaveCount(0);
+  await openInkHistory(page); await page.getByRole("button", { name: other.title, exact: true }).click();
   await expect.poll(async () => (await readFixtureSnapshots(page))[0]).toMatchObject({ aborted: true, cancelled: true });
-  await expect(working.locator(".react-flow__node")).toHaveCount(0);
-  await page.getByRole("button", { name: "撤销", exact: true }).click();
-  await expect(working.locator(".react-flow__node")).toHaveCount(1);
-  await working.getByRole("button", { name: "重新搜索此节点", exact: true }).click();
+  await openInkHistory(page); await page.getByRole("button", { name: original.title, exact: true }).click();
+  await openInkNodeMenu(page); await page.getByRole("menuitem", { name: "重新搜索此节点", exact: true }).click();
   await expect.poll(async () => (await readFixtureSnapshots(page)).length).toBe(2);
-  await sidebar.getByRole("button", { name: "新建搜索", exact: true }).click();
-  await expect(preview).toHaveCount(0);
+  await openInkHistory(page); await page.getByRole("button", { name: `删除记录：${original.title}`, exact: true }).click();
   await expect.poll(async () => (await readFixtureSnapshots(page))[1]).toMatchObject({ aborted: true, cancelled: true });
-  await page.getByRole("textbox", { name: "新节点标题", exact: true }).fill("别的图");
-  await page.getByRole("button", { name: "新建节点", exact: true }).click();
-  await expect(working.locator(".react-flow__node")).toHaveCount(1);
-  await expect(working.getByRole("heading", { name: "别的图", exact: true })).toHaveCount(2);
-  await sidebar.getByRole("button", { name: "原图", exact: true }).click();
-  await expect(working.getByRole("heading", { name: "取消目标", exact: true })).toHaveCount(2);
-  await expect(working.getByRole("list", { name: "节点资源" })).toHaveCount(0);
+  await page.getByRole("region", { name: "搜索历史", exact: true }).press("Escape");
+  await expect.poll(async () => (await readStoredWorkspace(page))?.documents.map(document => document.id)).toEqual([other.id]);
+  expect((await readStoredWorkspace(page))?.documents[0]?.nodes).toEqual(other.nodes);
   expect(await readFixtureSnapshots(page)).toHaveLength(2);
+});
+
+/**
+ * 原生拖拽在画布空白释放代表取消；旧面板的DataTransfer晚到另一个同ID图也不得排序。
+ * 晚到drop仅回放浏览器事件，不注入Store；两图刻意复用Node/Resource ID以检查所属图隔离。
+ */
+test("正式入口资源取消拖拽和跨图旧拖放不修改内容", async ({ page }) => {
+  const other = EditableGraphSchema.parse({ ...createInkWorkspaceDocument(), id: "ink-resource-other", title: "另一资源图" });
+  const original = await openInkWorkspace(page, false, [other]);
+  await page.locator('[data-ink-node="workspace-node-0"]').getByRole("heading").click();
+  const cards = page.locator(".ink-resources [data-ink-resource]");
+  await expect(cards.first()).toHaveAttribute("draggable", "true");
+  const sourceId = await cards.first().getAttribute("data-ink-resource");
+  if (sourceId === null) throw new Error("没有真实资源拖拽标识");
+  const retained = await page.evaluateHandle(() => {
+    const state: { sourceId: string | null; starts: number; ends: number } = { sourceId: null, starts: 0, ends: 0 };
+    document.addEventListener("dragstart", event => {
+      state.sourceId = event.target instanceof Element ? event.target.closest<HTMLElement>("[data-ink-resource]")?.dataset.inkResource ?? null : null;
+      state.starts++;
+    }, true);
+    document.addEventListener("dragend", () => { state.ends++; }, true);
+    return state;
+  });
+  const from = await cards.first().locator(".ink-resources__open").boundingBox();
+  if (from === null) throw new Error("资源拖拽起点不可见");
+  await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
+  await page.mouse.down(); await page.mouse.move(from.x - 120, from.y + 12, { steps: 8 });
+  await expect.poll(() => retained.evaluate(state => state.starts)).toBe(1);
+  expect(await retained.evaluate(state => state.sourceId)).toBe(sourceId);
+  await page.keyboard.press("Escape"); await page.mouse.up();
+  await expect.poll(() => retained.evaluate(state => state.ends)).toBe(1);
+  expect((await readStoredWorkspace(page))?.documents.find(document => document.id === original.id)?.nodes).toEqual(original.nodes);
+  expect(await page.evaluate(() => window.__WAYFINDER_E2E__.openCalls())).toEqual([]);
+  await openInkUndo(page); await expect(page.getByRole("region", { name: "撤销记录", exact: true }).locator("[data-ink-undo-event]")).toHaveCount(0);
+  await page.getByRole("region", { name: "撤销记录", exact: true }).press("Escape");
+  await openInkHistory(page); await page.getByRole("button", { name: other.title, exact: true }).click();
+  await page.locator('[data-ink-node="workspace-node-0"]').getByRole("heading").click();
+  await cards.nth(1).evaluate((element, state) => {
+    if (state.sourceId === null) throw new Error("没有保留真实拖拽标识");
+    // 原生拖动结束后数据可能已不可读；回放相同非空输入，避免空 payload（载荷）使隔离断言空通过。
+    const transfer = new DataTransfer();
+    transfer.setData("text/plain", state.sourceId);
+    if (transfer.getData("text/plain") !== state.sourceId) throw new Error("迟到拖放缺少真实资源身份");
+    element.dispatchEvent(new DragEvent("drop", { bubbles: true, cancelable: true, dataTransfer: transfer }));
+  }, retained);
+  expect((await readStoredWorkspace(page))?.documents.find(document => document.id === other.id)?.nodes).toEqual(other.nodes);
+  await openInkUndo(page); await expect(page.getByRole("region", { name: "撤销记录", exact: true }).locator("[data-ink-undo-event]")).toHaveCount(0);
+  await retained.dispose(); expect(await readFixtureSnapshots(page)).toHaveLength(0);
 });

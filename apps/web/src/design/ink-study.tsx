@@ -1,10 +1,9 @@
 /**
- * 页面职责：独立承载墨迹揭字视觉试验，复用项目现有 React 与 Vite。
+ * 页面职责：承载 WayFinder 正式前端“墨迹漫游”，复用项目现有 React 与 Vite。
  * 复用边界：新界面直接使用既有搜索协调器和状态层，不跳转旧展示页，不复制后端协议。
  */
-import { lazy, StrictMode, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import type { XYPosition } from "@xyflow/react";
-import { createRoot } from "react-dom/client";
 import { resolveSearchEngine, SearchEngineSchema, type SearchEngine, type SearchLanguage } from "@wayfinder/contracts";
 
 import { resolveEntryLanguage } from "../i18n/entry-language.js";
@@ -12,7 +11,7 @@ import { getMessages } from "../i18n/messages.js";
 import { createInkReveal, type InkRevealController, type InkTransferEvent } from "./ink-reveal.js";
 import { InkSearchHistory } from "./ink-search-history.js";
 import type { InkScene } from "./ink-graph-motion.js";
-import { startOmniboxSubmission, type InvalidOmniboxInputReason } from "../components/Omnibox/Omnibox.js";
+import { startOmniboxSubmission, type InvalidOmniboxInputReason } from "../lib/omnibox-submission.js";
 import { requestSafeUrlOpen } from "../lib/url.js";
 import { useStore } from "zustand";
 import type { StreamingSearch } from "../api/search.js";
@@ -24,7 +23,7 @@ import type { InkActionTarget } from "./ink-workspace-actions.js";
 import { InkNotice } from "./ink-notice.js";
 import { selectCurrentGraph, workspaceStore } from "../stores/workspace-store.js";
 import { moveNode } from "../stores/workspace-edits.js";
-import { initializeWorkspacePersistence, workspacePersistenceStore } from "../stores/workspace-persistence.js";
+import { workspacePersistenceStore } from "../stores/workspace-persistence.js";
 import "./ink-study.css";
 import "./ink-workspace.css";
 
@@ -44,7 +43,7 @@ const EMPTY_LABELS: Readonly<Record<string, GraphNodeData>> = {};
 const EMPTY_NODES = [] as const;
 const EMPTY_EDGES = [] as const;
 
-function InkStudy() {
+export default function InkApp() {
   const stage = useRef<HTMLElement>(null);
   const heading = useRef<HTMLHeadingElement>(null);
   const canvas = useRef<HTMLCanvasElement>(null);
@@ -637,6 +636,8 @@ function InkStudy() {
               }}>
               <span>{messages.searchEngine.labels[option]}</span><span aria-hidden="true">{engine === option ? "✓" : ""}</span>
             </button>)}
+            {/* 沿用原引擎选择的地区说明，不能因替换展示而暗示百度支持指定国家定位。 */}
+            <p className="ink-engine-note" role="note">{messages.searchEngine.baiduRegionNotice}</p>
           </div> : null}
         </div>
         <div className="ink-study__search-status" data-ink-control>
@@ -671,7 +672,7 @@ function InkStudy() {
           </Suspense>
         </div> : null}
         {resourcesMounted ? <Suspense fallback={null}><InkResources graphId={currentDocument?.id ?? null}
-          node={resourceNode} language={renderLanguage} visible={resourcesVisible} onClose={closeResources}
+          node={resourceNode} language={renderLanguage} visible={resourcesVisible} editable={canEdit} onClose={closeResources}
           onResourceContext={(resourceId, clientPoint) => {
             if (resourceNode !== null) void showActions({ kind: "resource", graphId: currentDocument?.id ?? null,
               nodeId: resourceNode.id, resourceId, clientPoint });
@@ -750,9 +751,3 @@ function InkStudy() {
     </main>
   );
 }
-
-const root = document.getElementById("root");
-if (root === null) throw new Error("墨迹试验页面缺少 React 根容器");
-// 沿用原入口的读取顺序；失败由新界面显示并允许重试，不能以空状态覆盖旧记录。
-await initializeWorkspacePersistence();
-createRoot(root).render(<StrictMode><InkStudy /></StrictMode>);

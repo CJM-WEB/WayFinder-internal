@@ -7,7 +7,8 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 
-import { Omnibox, startOmniboxSubmission } from "./Omnibox.js";
+import { Omnibox } from "./Omnibox.js";
+import { startOmniboxSubmission } from "../../lib/omnibox-submission.js";
 
 describe("Omnibox", () => {
   it("提交去除首尾空白后的非空 Query，且只启动一次搜索", async () => {
