@@ -21,6 +21,8 @@ export default defineConfig({
   outputDir: "../../test-results/wayfinder-web",
   use: {
     ...devices["Desktop Chrome"],
+    // 持续集成使用软件渲染，降低物理像素密度以保留实时采帧；本地沿用桌面原始密度复核画质。
+    ...(process.env.CI ? { deviceScaleFactor: 0.25 } : {}),
     baseURL: E2E_ORIGIN,
     screenshot: "only-on-failure",
     trace: "retain-on-failure",

@@ -196,8 +196,12 @@ async function inkPigmentCenter(page: Page): Promise<Readonly<{ count: number; x
       if (context === null) { resolve(null); return; }
       context.drawImage(source, 0, 0);
       const pixels = context.getImageData(0, 0, copy.width, copy.height).data;
+      // 按页面上每四个 CSS 像素取色；直接跨四个缓冲像素会让同一墨团的样本数随设备密度改变。
+      const bounds = source.getBoundingClientRect();
+      const stepX = Math.max(1, Math.round(4 * copy.width / bounds.width));
+      const stepY = Math.max(1, Math.round(4 * copy.height / bounds.height));
       let count = 0, sumX = 0, sumY = 0;
-      for (let y = 0; y < copy.height; y += 4) for (let x = 0; x < copy.width; x += 4) {
+      for (let y = 0; y < copy.height; y += stepY) for (let x = 0; x < copy.width; x += stepX) {
         const offset = (y * copy.width + x) * 4;
         const red = pixels[offset] ?? 0, green = pixels[offset + 1] ?? 0, blue = pixels[offset + 2] ?? 0;
         if (Math.max(red, green, blue) - Math.min(red, green, blue) < 35) continue;
@@ -1929,11 +1933,23 @@ test("历史与撤销面板连接两个按钮并随共同箭头完整滑出，�
       const observer = new MutationObserver(() => {
         if (dock.dataset.expanded !== String(expanded)) return;
         observer.disconnect();
-        const started = performance.now();
-        const frame = (): void => {
-          const at = performance.now() - started;
+        // 间距由 CSS 动画时间线驱动。脚本排队会推迟回调执行，不能用回调执行时刻计算位移速度。
+        const transition = dock.getAnimations().find(animation => animation instanceof CSSTransition && animation.transitionProperty === "column-gap");
+        const timing = transition?.effect?.getTiming(), started = document.timeline.currentTime;
+        if (transition === undefined || timing?.duration !== 420 || timing.easing !== "cubic-bezier(0.6, 0, 0.4, 1)" || typeof started !== "number") {
+          window.clearTimeout(timeout);
+          reject(new Error("缺少按钮间距的 420 毫秒 S 形过渡"));
+          return;
+        }
+        const frame = (rafAt: number): void => {
+          const at = transition.currentTime;
+          if (typeof at !== "number") {
+            window.clearTimeout(timeout);
+            reject(new Error("无法读取按钮间距的动画时间"));
+            return;
+          }
           frames.push(read(at));
-          if (at < 550) raf = requestAnimationFrame(frame);
+          if (rafAt - started < 550) raf = requestAnimationFrame(frame);
           else { window.clearTimeout(timeout); resolve(frames); }
         };
         raf = requestAnimationFrame(frame);
@@ -1954,6 +1970,7 @@ test("历史与撤销面板连接两个按钮并随共同箭头完整滑出，�
       if (previous === undefined) continue;
       const change = frame.gap - previous.gap;
       expect(expanded ? change : -change).toBeGreaterThanOrEqual(-.05);
+      expect(frame.at).toBeGreaterThanOrEqual(previous.at);
       // 按真实帧间隔限制位移，允许低帧率仍按同一 S 曲线推进，拒绝间距突然跳到终值。
       expect(Math.abs(change)).toBeLessThanOrEqual((frame.at - previous.at) / 420 * 12 * 3 + .15);
     }
@@ -3038,22 +3055,29 @@ liquidInkTest("液体墨团持续变化但文字布局不漂移，拖动后落�
   if (saved === undefined) throw new Error("拖动缺少真实保存文档");
   await expectSavedInkPosition(page, saved.id, dragging);
   await expect.poll(async () => (await inkPigmentPerNode(page)).find(node => node.id === READY_NODE_ID)?.count ?? 0).toBeGreaterThan(20);
-  await page.evaluate(() => new Promise<void>(resolve => {
-    let frames = 0;
-    const next = (): void => { if (++frames >= 12) resolve(); else requestAnimationFrame(next); };
-    requestAnimationFrame(next);
-  }));
-  const settledFrame = await captureInkRaster(page, testInfo.outputPath("ink-liquid-drag-settled.png"));
   const topBody = (frame: InkRaster) => [...frame.bodies].filter(body => body.count >= 300).sort((a, b) => a.y - b.y)[0];
-  const initialBody = topBody(after), followingBody = topBody(followingFrame), settledBody = topBody(settledFrame);
-  if (initialBody === undefined || followingBody === undefined || settledBody === undefined) throw new Error("拖动质心缺少可见墨团");
+  const initialBody = topBody(after), followingBody = topBody(followingFrame);
+  if (initialBody === undefined || followingBody === undefined) throw new Error("拖动质心缺少可见墨团");
   const width = page.viewportSize()?.width;
   if (width === undefined) throw new Error("缺少拖动视口尺寸");
   const domShift = (movedHeading.x - heading.x) / width;
   const followingDeficit = domShift - followingBody.x + initialBody.x;
+  // 在较快的渲染器上，松手后第十二帧仍可能是尾迹形变的中段。用实际标题位移推算
+  // 目标质心，要求连续三次合成画面的主体回到两个采样像素以内，避免把途经目标当成落定。
+  let settledFrame = followingFrame;
+  const settling: Array<ReturnType<typeof topBody>> = [];
+  await expect.poll(async () => {
+    settledFrame = await captureInkRaster(page, testInfo.outputPath("ink-liquid-drag-settled.png"));
+    settling.push(topBody(settledFrame));
+    return settling.length >= 3 && settling.slice(-3).every(body => body !== undefined
+      && Math.abs(body.x - initialBody.x - domShift) < 2 / 320
+      && Math.abs(body.y - initialBody.y) < 2 / 180);
+  }, { timeout: 4000, intervals: [100, 200, 300] }).toBe(true);
+  const settledBody = topBody(settledFrame);
+  if (settledBody === undefined) throw new Error("松手后缺少可见墨团");
   const settledDeficit = domShift - settledBody.x + initialBody.x;
   await writeFile(testInfo.outputPath("ink-liquid-drag-centroids.json"), JSON.stringify({
-    before: after.bodies, following: followingFrame.bodies, settled: settledFrame.bodies, target: dragging,
+    before: after.bodies, following: followingFrame.bodies, settling, settled: settledFrame.bodies, target: dragging,
     domShift, followingDeficit, settledDeficit,
   }, null, 2));
   // 指针与文字先走到目的地，颜料质心少走一段；随后颜料继续同向追近，而非让文字一起滞后。
