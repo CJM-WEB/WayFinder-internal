@@ -70,6 +70,30 @@ describe("本地搜索图持久化", () => {
     stop();
   });
 
+  it("正式入口读取重试只恢复内容与撤销，旧选择须主动恢复且不覆盖旧库", async () => {
+    const original = createWorkspaceStore();
+    original.getState().addGraph(document);
+    original.getState().renameGraph(document.id, "修改标题");
+    const saved = structuredClone(snapshot(original));
+    const store = createWorkspaceStore(), feedback = createFeedback();
+    const save = vi.fn(async () => {});
+    const stop = await initializeWorkspacePersistence(store, {
+      load: vi.fn().mockRejectedValueOnce(new Error("读取失败")).mockResolvedValue(saved), save,
+    }, feedback, { restoreSelection: false });
+    expect(feedback.getState().error).toBe("load");
+    await feedback.getState().retry();
+    expect(feedback.getState().status).toBe("ready");
+    expect(store.getState().currentId).toBeNull();
+    expect(store.getState().documents).toEqual(original.getState().documents);
+    expect(store.getState().histories).toEqual(original.getState().histories);
+    expect(save).not.toHaveBeenCalled();
+    store.getState().selectGraph(document.id);
+    expect(selectCurrentGraph(store.getState())?.title).toBe("修改标题");
+    store.getState().undo();
+    expect(selectCurrentGraph(store.getState())?.title).toBe(document.title);
+    stop();
+  });
+
   it("多个变更按顺序保存，前一事务未完成时不报告最新状态已保存", async () => {
     const store = createWorkspaceStore();
     let release: (() => void) | undefined;

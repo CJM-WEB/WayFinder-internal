@@ -88,6 +88,7 @@ export async function initializeWorkspacePersistence(
   store = workspaceStore,
   storage = browserWorkspaceStorage,
   feedback: StoreApi<WorkspacePersistenceState> = workspacePersistenceStore,
+  options: Readonly<{ restoreSelection?: boolean }> = {},
 ): Promise<() => void> {
   let stopped = false;
   let unsubscribe: (() => void) | undefined;
@@ -116,7 +117,11 @@ export async function initializeWorkspacePersistence(
     try {
       const snapshot = parseSnapshot(await storage.load());
       if (stopped) return;
-      if (snapshot !== null) store.getState().restoreDocuments(snapshot.documents, snapshot.currentId, snapshot.histories);
+      if (snapshot !== null) {
+        store.getState().restoreDocuments(snapshot.documents, snapshot.currentId, snapshot.histories);
+        // 正式入口只恢复内容，旧选择不能在首次读取或失败重试后自动展示；订阅前清选也不写回旧库。
+        if (options.restoreSelection === false) store.getState().selectGraph(null);
+      }
       unsubscribe = store.subscribe((next, previous) => {
         if (next.documents !== previous.documents || next.currentId !== previous.currentId || next.histories !== previous.histories) void save();
       });

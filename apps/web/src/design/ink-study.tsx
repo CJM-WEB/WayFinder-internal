@@ -123,7 +123,7 @@ export default function InkApp() {
   const displayedPositions = useMemo(() => ({ ...currentDocument?.positions,
     ...(currentDraft?.runId === currentDocument?.lastRunId ? currentDraft?.positions : {}),
   }), [currentDocument?.positions, currentDocument?.lastRunId, currentDraft]);
-  // 首页只隐藏图层；选中身份不随展示层退出而丢失，新建才清空 currentId。
+  // 首页隐藏图层；每次开始探索清空选择，历史图仅在主动选择记录后展示。
   const searchState = !entered ? "input" : pendingSearch ? "loading"
     : currentDocument !== null && (displayedNodes.length > 0 ||
       // 已交付后被编辑/撤销为空仍是工作图，不能复活runtime，也不能把重做入口锁在输入态。
@@ -475,16 +475,16 @@ export default function InkApp() {
     return () => motion.removeEventListener("change", finishWithoutMotion);
   }, [phase]);
 
-  const beginExploring = async (): Promise<void> => {
+  const beginExploring = (): void => {
     if (phase !== "intro") return;
-    const intent = historySelectionIntent.current;
-    if (currentDocument !== null) {
-      try { await import("./ink-graph.js"); }
-      catch { setFeedback("graph_failure"); return; }
-    }
-    if (intent !== historySelectionIntent.current) return;
     const shell = searchShell.current;
     if (shell === null) return;
+    // 入口只重置当前浏览意图，不删除文档、人工布局或撤销历史；旧图由历史入口主动恢复。
+    resetSearch();
+    ++historySelectionIntent.current;
+    setShowEmptyRecord(false);
+    workspaceStore.getState().selectGraph(null);
+    if (searchInput.current !== null) searchInput.current.value = "";
     // 将自适应文案宽度冻结为当前像素宽，再过渡到百分比宽度，避免 auto 无法平滑插值。
     shell.style.setProperty("--ink-entry-width", `${shell.getBoundingClientRect().width}px`);
     void shell.offsetWidth;
@@ -589,7 +589,7 @@ export default function InkApp() {
           <div className="ink-study__search-input-shell">
             <button type="button" className="ink-study__pill ink-study__explore" ref={exploreButton}
               inert={phase !== "intro"} aria-hidden={phase !== "intro"}
-              onClick={() => { void beginExploring(); }}>
+              onClick={beginExploring}>
               {messages.inkStudy.explore} <span aria-hidden="true">↗</span>
             </button>
             <input type="search" className="ink-study__search-input" ref={searchInput}

@@ -39,7 +39,8 @@ if (h2Evaluation !== null) {
     import("./design/ink-study.js"),
     import("./stores/workspace-persistence.js"),
   ]);
-  await initializeWorkspacePersistence();
+  // 保留默认依赖与存储格式；首次读取和后续重试均只恢复历史内容，选择留给用户。
+  await initializeWorkspacePersistence(undefined, undefined, undefined, { restoreSelection: false });
   page = <InkApp />;
 }
 

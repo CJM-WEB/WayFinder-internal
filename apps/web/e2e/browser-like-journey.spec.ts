@@ -1034,6 +1034,16 @@ function expectWaterContinuity(evidence: WaterEvidence): void {
   }
 }
 
+/** 重入先验证空白输入，再以真实历史选择恢复；不让通用入口帮助函数掩盖默认行为。 */
+async function restoreInkHistoryFromInput(page: Page, title: string): Promise<void> {
+  const input = page.getByRole("searchbox", { name: "搜索任意主题", exact: true });
+  await expect(page.locator(".ink-study__stage")).toHaveAttribute("data-search-state", "input");
+  await expect(input).toHaveValue("");
+  await expect(input).toBeFocused();
+  await expect(page.locator("[data-ink-node]")).toHaveCount(0);
+  await selectWaterHistory(page, title);
+}
+
 async function selectWaterHistory(page: Page, title: string): Promise<void> {
   const toggle = page.getByRole("button", { name: "搜索历史", exact: true });
   if (await toggle.getAttribute("aria-expanded") !== "true") await toggle.press("Enter");
@@ -1116,11 +1126,13 @@ test("真实时间首页与异ID历史切换连续绘制且不重置画布和上
   if (first === undefined || second === undefined) throw new Error("缺少异 ID 历史固定样例");
   const probe = await observeWaterMotion(page, testInfo, "water-scene-continuity");
   await page.getByRole("button", { name: "开始探索", exact: true }).click();
+  await restoreInkHistoryFromInput(page, first.title);
   await expectWaterReady(page, first);
   await expect(page.locator("[data-ink-node]:visible")).toHaveCount(first.nodes.length);
   await page.getByRole("button", { name: "返回首页", exact: true }).click();
   await expect(page.getByRole("button", { name: "开始探索", exact: true })).toBeFocused();
   await page.getByRole("button", { name: "开始探索", exact: true }).click();
+  await restoreInkHistoryFromInput(page, first.title);
   await expectWaterReady(page, first);
   await selectWaterHistory(page, second.title);
   await expectWaterReady(page, second);
@@ -1137,6 +1149,7 @@ test("真实时间异ID历史先搬源文字再换目标，快速连续切图仅
   const first = documents[0], second = documents[1], third = documents[2];
   if (first === undefined || second === undefined || third === undefined) throw new Error("缺少连续切换固定样例");
   await page.getByRole("button", { name: "开始探索", exact: true }).click();
+  await restoreInkHistoryFromInput(page, first.title);
   await expectWaterReady(page, first);
   const probe = await observeWaterMotion(page, testInfo, "water-history-labels");
   await selectWaterHistory(page, second.title);
@@ -1216,6 +1229,7 @@ hoverInkTest("真实时间hover拨散当前节点颜料后自然聚回，不改�
   const document = documents[0], active = document?.nodes[0], control = document?.nodes[2];
   if (document === undefined || active === undefined || control === undefined) throw new Error("缺少局部水波固定样例");
   await page.getByRole("button", { name: "开始探索", exact: true }).click();
+  await restoreInkHistoryFromInput(page, document.title);
   await expectWaterReady(page, document);
   const before = await readStoredWorkspace(page);
   const positions = await Promise.all(document.nodes.map(async node => ({ id: node.id, position: await readInkPosition(page, node.id) })));
@@ -1339,6 +1353,7 @@ test("真实时间曲线拖动文字连线跟手，首页流体尾迹连续收�
   const document = documents[0], active = document?.nodes[0];
   if (document === undefined || active === undefined) throw new Error("缺少连续拖动固定样例");
   await page.getByRole("button", { name: "开始探索", exact: true }).click();
+  await restoreInkHistoryFromInput(page, document.title);
   await expectWaterReady(page, document);
   const positions = await Promise.all(document.nodes.map(async node => ({ id: node.id, position: await readInkPosition(page, node.id) })));
   const drag = await observeWaterMotion(page, testInfo, "water-continuous-drag");
@@ -1582,6 +1597,7 @@ async function openInkWorkspace(page: Page, withInk = false, additionalDocuments
   await prepareWaterPage(page, [document, ...additionalDocuments], withInk);
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.getByRole("button", { name: "开始探索", exact: true }).click();
+  await restoreInkHistoryFromInput(page, document.title);
   await expect(page.locator(".graph-canvas--ink")).toHaveAttribute("data-ink-content-state", "ready");
   return document;
 }
@@ -1751,6 +1767,7 @@ test("墨迹撤销队列隐藏已撤销事件，刷新重开恢复且移动不�
 
   await page.reload();
   await page.getByRole("button", { name: "开始探索", exact: true }).click();
+  await restoreInkHistoryFromInput(page, document.title);
   await openInkUndo(page);
   await expect(panel.locator("[data-ink-undo-event]")).toHaveCount(1);
   await expect(later.locator("time")).toHaveAttribute("datetime", occurredAt ?? "");
@@ -1768,6 +1785,7 @@ test("墨迹撤销队列隐藏已撤销事件，刷新重开恢复且移动不�
   await expect(panel.getByRole("button", { name: "重做", exact: true })).toBeEnabled();
   await page.reload();
   await page.getByRole("button", { name: "开始探索", exact: true }).click();
+  await restoreInkHistoryFromInput(page, document.title);
   await openInkUndo(page);
   await panel.getByRole("button", { name: "重做", exact: true }).click();
   await expect(panel.locator("[data-ink-undo-event]")).toHaveCount(2);
@@ -1795,7 +1813,7 @@ test("墨迹撤销队列隐藏已撤销事件，刷新重开恢复且移动不�
   await openInkHistory(reopened);
   const reopenedHistory = reopened.getByRole("region", { name: "搜索历史", exact: true });
   await expect(reopenedHistory.getByRole("status")).toHaveText("已保存到本浏览器");
-  await reopenedHistory.press("Escape");
+  await reopenedHistory.getByRole("button", { name: document.title, exact: true }).click();
   await expect(reopened.getByRole("heading", { name: "持久最终名", exact: true })).toBeVisible();
   await openInkUndo(reopened);
   const reopenedUndo = reopened.getByRole("region", { name: "撤销记录", exact: true });
@@ -2391,14 +2409,14 @@ test("冷加载期间取消会撤销合法搜索意图，恢复后无效输入�
   }
 });
 
-test("左箭头原路返回并保留跨语言的输入和引擎选择", async ({ page }) => {
+test("左箭头原路返回后重入空输入并保留跨语言与引擎选择", async ({ page }) => {
   await installBrowserFixture(page, createJourneyEvents());
   await page.goto("/");
   const canvas = await page.locator(".ink-study__canvas").elementHandle();
   await page.getByRole("button", { name: "开始探索", exact: true }).click();
   const input = page.getByRole("searchbox", { name: "搜索任意主题", exact: true });
   await expect(input).toBeFocused();
-  await input.fill("保留我的输入");
+  await input.fill("返回后应清空的输入");
   await page.getByRole("button", { name: "语言", exact: true }).click();
   await page.getByRole("button", { name: "English", exact: true }).click();
   await page.getByRole("button", { name: "Search engine：Google", exact: true }).click();
@@ -2420,7 +2438,8 @@ test("左箭头原路返回并保留跨语言的输入和引擎选择", async ({
   }).toBeLessThan(1);
   expect(await canvas?.evaluate(element => element.isConnected)).toBe(true);
   await start.click();
-  await expect(page.getByRole("searchbox", { name: "Search any topic", exact: true })).toHaveValue("保留我的输入");
+  await expect(page.getByRole("searchbox", { name: "Search any topic", exact: true })).toHaveValue("");
+  await expect(page.getByRole("searchbox", { name: "Search any topic", exact: true })).toBeFocused();
   await expect(page.getByRole("button", { name: "Search engine：Baidu", exact: true })).toBeVisible();
   expect(await readFixtureSnapshots(page)).toHaveLength(0);
 });
@@ -2594,6 +2613,7 @@ test("历史信息条重命名保留原查询，悬浮推动邻行，删除与�
   })).toEqual({ rows: 1, focused: true, statuses: 1, status: "已保存到本浏览器", queries: 2 });
   await page.reload();
   await page.getByRole("button", { name: "开始探索", exact: true }).click();
+  await restoreInkHistoryFromInput(page, SECOND_QUERY);
   await expect(page.locator(".ink-study__stage")).toHaveAttribute("data-search-state", "graph");
   await expect(page.locator("[data-ink-node]:visible")).toHaveCount(4);
   await toggle.click();
@@ -2674,6 +2694,47 @@ test("历史读取失败时禁用新建并保留原存储错误反馈", async ({
   expect(await readFixtureSnapshots(page)).toHaveLength(0);
 });
 
+/** 首次读取失败后重试仍只恢复资料，不用旧 currentId 抢走用户已经进入的空输入。 */
+test("历史首次读取失败后重试仍为空输入，主动恢复保留编辑布局与撤销且零搜索", async ({ page }) => {
+  const document = await openInkWorkspace(page);
+  const nodeId = "workspace-node-0";
+  const moved = await dragInkNode(page, 45, 25, nodeId);
+  await expectSavedInkPosition(page, document.id, moved, nodeId);
+  await openInkNodeMenu(page, nodeId);
+  await page.getByRole("menuitem", { name: "编辑节点", exact: true }).click();
+  const form = page.getByRole("dialog", { name: "编辑节点", exact: true });
+  await form.getByRole("textbox", { name: "节点标题", exact: true }).fill("读取重试后保留的标题");
+  await form.getByRole("button", { name: "保存节点", exact: true }).click();
+  await expect.poll(async () => (await readStoredWorkspace(page))?.documents[0]?.nodes[0]?.title).toBe("读取重试后保留的标题");
+  await page.addInitScript(() => {
+    const originalOpen = indexedDB.open.bind(indexedDB);
+    let failNext = true;
+    // 只故障注入第一次读取；后续重试走同一浏览器的真实数据库，不伪造恢复结果。
+    Object.defineProperty(indexedDB, "open", { configurable: true, value: (name: string, version?: number): IDBOpenDBRequest => {
+      if (failNext) { failNext = false; throw new Error("固定的首次读取失败"); }
+      return originalOpen(name, version);
+    } });
+  });
+  await page.reload();
+  await page.getByRole("button", { name: "开始探索", exact: true }).click();
+  const input = page.getByRole("searchbox", { name: "搜索任意主题", exact: true });
+  await expect(input).toHaveValue(""); await expect(input).toBeFocused();
+  await openInkHistory(page);
+  const panel = page.getByRole("region", { name: "搜索历史", exact: true });
+  await expect(panel.getByRole("alert")).toContainText("无法读取本地记录");
+  await panel.getByRole("button", { name: "重试保存或读取", exact: true }).click();
+  await expect(panel.getByRole("alert")).toHaveCount(0);
+  await expect(panel.getByRole("status")).toHaveText("已保存到本浏览器");
+  await expect(panel.getByRole("button", { name: document.title, exact: true })).toBeVisible();
+  await panel.press("Escape");
+  await restoreInkHistoryFromInput(page, document.title);
+  await expect(page.locator(`[data-ink-node="${nodeId}"] h3`)).toHaveText("读取重试后保留的标题");
+  await expectInkPosition(page, moved, nodeId);
+  await openInkUndo(page);
+  await expect(page.getByRole("region", { name: "撤销记录", exact: true }).locator("[data-ink-undo-event]")).toHaveCount(1);
+  expect(await readFixtureSnapshots(page)).toHaveLength(0);
+});
+
 test("历史打开时返回首页会取消本页搜索但保留真实记录", async ({ page }) => {
   await installBrowserFixture(page, createJourneyEvents());
   await page.emulateMedia({ reducedMotion: "reduce" });
@@ -2690,7 +2751,10 @@ test("历史打开时返回首页会取消本页搜索但保留真实记录", as
   await expect(start).toBeFocused();
   await expect.poll(async () => (await readFixtureSnapshots(page))[0]?.aborted).toBe(true);
   await start.click();
-  await expect(input).toHaveValue("保留未完成记录");
+  await expect(input).toHaveValue("");
+  await expect(input).toBeFocused();
+  await expect(page.locator(".ink-study__stage")).toHaveAttribute("data-search-state", "input");
+  await expect(page.locator("[data-ink-node]")).toHaveCount(0);
   await page.getByRole("button", { name: "搜索历史", exact: true }).click();
   await expect(page.getByRole("region", { name: "搜索历史", exact: true })
     .getByRole("heading", { name: "保留未完成记录", exact: true })).toBeVisible();
@@ -2929,10 +2993,10 @@ loadingInkTest("有效搜索将三组件融合为中心停止圆，墨迹保持�
 });
 
 /**
- * 已有图的聚合和恢复复用同一画布与真实文档；视觉退场不能清空选择、改写布局或重新请求。
+ * 已有图退场保留真实文档；重入先显示空输入，再由历史恢复原图和坐标，不重新请求。
  * 时钟只控制抽样时刻，PNG 全部来自真实 WebGL 合成结果，不把静态截图加工成动效。
  */
-test("已有图回首页聚合再分裂恢复，新建与快速逆转不丢原图坐标", async ({ page }, testInfo) => {
+test("已有图回首页聚合并重入空输入，历史恢复与快速逆转不丢原图坐标", async ({ page }, testInfo) => {
   const events = createInkMotionEvents();
   await installBrowserFixture(page, events);
   await page.emulateMedia({ reducedMotion: "reduce" });
@@ -2973,6 +3037,8 @@ test("已有图回首页聚合再分裂恢复，新建与快速逆转不丢原�
   await expect(page.locator("[data-ink-node]")).toHaveCount(0);
   expect((await readStoredWorkspace(page))?.currentId).toBe(document.id);
   await start.click();
+  await page.clock.fastForward(1000);
+  await restoreInkHistoryFromInput(page, document.title);
   await advanceInkTransferStart(page, testInfo, "ink-first-restore");
   for (const [elapsed, advance] of [[0, 0], [160, 160], [480, 320], [1000, 520]] as const) {
     if (advance > 0) await page.clock.fastForward(advance);
@@ -3015,6 +3081,8 @@ test("已有图回首页聚合再分裂恢复，新建与快速逆转不丢原�
   await page.getByRole("button", { name: "返回首页", exact: true }).click();
   await page.clock.fastForward(1000);
   await start.click();
+  await page.clock.fastForward(1000);
+  await restoreInkHistoryFromInput(page, document.title);
   await advanceInkTransferStart(page, testInfo, "ink-final-restore");
   await page.clock.fastForward(1000);
   await expect(page.locator("[data-ink-node]:visible")).toHaveCount(4);
@@ -3307,6 +3375,7 @@ test("WebGL不可用时真实图仍以可读DOM降级呈现", async ({ page }, t
     const first = documents[0], second = documents[1];
     if (first === undefined || second === undefined) throw new Error("缺少 contextloss 固定样例");
     await live.getByRole("button", { name: "开始探索", exact: true }).click();
+    await restoreInkHistoryFromInput(live, first.title);
     await expectWaterReady(live, first);
     await live.getByRole("button", { name: "搜索历史", exact: true }).click();
     const hiddenTargets = await live.addStyleTag({ content: `article[data-ink-node^="${second.id}-"] { width: 0 !important; height: 0 !important; }` });
@@ -3363,8 +3432,8 @@ test("图模块加载失败明确恢复输入且不发API请求", async ({ page 
   expect(await canvas?.evaluate(element => element.isConnected)).toBe(true);
 });
 
-/** 返回保留所选草图；显式新建才清理旧图和计时器，迟到事件不得进入新记录。 */
-test("返回恢复所选草图而新建清理旧图及计时器，新运行忽略旧complete", async ({ page }) => {
+/** 返回重入先显示空输入；主动恢复草图及后续新建均不能让旧计时器或迟到事件污染新记录。 */
+test("返回重入空输入并主动恢复草图，新建清理计时器且忽略旧complete", async ({ page }) => {
   const events = createInkMotionEvents();
   const planIndexes = events.flatMap((event, index) => event.type === "query.analysis" || event.type === "graph.plan" ? [index] : []);
   const complete = events.findIndex(event => event.type === "complete");
@@ -3384,6 +3453,10 @@ test("返回恢复所选草图而新建清理旧图及计时器，新运行忽�
   await expect(page.locator("[data-ink-node]")).toHaveCount(4);
   await page.clock.fastForward(1200);
   expect(await visibleInkNodeIds(page)).toEqual([READY_NODE_ID]);
+  // 未 complete 的节点只保存本页临时位置；退出取消后主动恢复同一草图仍需承接它。
+  const movedDraft = await dragInkNode(page, 65, 30);
+  // d3-drag 松手后以零延时清理点击抑制；暂停时钟须推进清理，下一次真实返回点击才能生效。
+  await page.clock.runFor(16);
   await page.getByRole("button", { name: "返回首页", exact: true }).click();
   // 保留真实退场过程，未出生节点和未断开的正式边不能因 active=false 被突然全部揭示。
   await page.clock.fastForward(160);
@@ -3399,8 +3472,10 @@ test("返回恢复所选草图而新建清理旧图及计时器，新运行忽�
   await expect.poll(async () => (await readFixtureSnapshots(page))[0]).toMatchObject({ aborted: true, cancelled: true });
 
   await start.click();
+  await restoreInkHistoryFromInput(page, "旧图的延迟节点");
   await expect(page.locator(".ink-study__stage")).toHaveAttribute("data-search-state", "graph");
   await expect.poll(() => visibleInkNodeIds(page)).toHaveLength(4);
+  await expectInkPosition(page, movedDraft);
   expect(await readFixtureSnapshots(page)).toHaveLength(1);
   await page.getByRole("button", { name: "搜索历史", exact: true }).click();
   await page.getByRole("region", { name: "搜索历史", exact: true })
@@ -3477,8 +3552,8 @@ test("历史标题恢复两张真实图且独立保存拖动位置，切图不�
   await page.screenshot({ path: testInfo.outputPath("ink-history-restored-layout.png"), animations: "disabled" });
 });
 
-/** 草图位置必须在 complete 时交给同一文档，再经过首页与 IndexedDB 恢复仍保持。 */
-test("运行中独立拖动的节点在完成后承接，返回重入及刷新保留坐标", async ({ page }, testInfo) => {
+/** 重入/刷新默认空输入；主动恢复保留真实完成图坐标，后续搜索必须创建独立记录。 */
+test("运行中拖动完成后重入空输入，历史及刷新保留坐标且新搜索独立", async ({ page }, testInfo) => {
   const events = createInkMotionEvents();
   const complete = events.findIndex(event => event.type === "complete");
   await installBrowserFixture(page, events);
@@ -3504,18 +3579,41 @@ test("运行中独立拖动的节点在完成后承接，返回重入及刷新�
   await page.getByRole("button", { name: "返回首页", exact: true }).click();
   await expect(page.locator("[data-ink-node]")).toHaveCount(0);
   await page.getByRole("button", { name: "开始探索", exact: true }).click();
+  await expect(input).toHaveValue("");
+  await expect(input).toBeFocused();
+  await expect(page.locator("[data-ink-node]")).toHaveCount(0);
+  expect(await readFixtureSnapshots(page)).toHaveLength(1);
+  await page.screenshot({ path: testInfo.outputPath("ink-reentry-empty-input.png"), animations: "disabled" });
+  await restoreInkHistoryFromInput(page, graph.title);
   await expect(page.locator(".ink-study__stage")).toHaveAttribute("data-search-state", "graph");
   await expectInkPosition(page, moved);
   expect(await readFixtureSnapshots(page)).toHaveLength(1);
   await page.reload();
   await expect(page.getByRole("button", { name: "开始探索", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "开始探索", exact: true }).click();
+  await restoreInkHistoryFromInput(page, graph.title);
   await expect(page.locator("[data-ink-node]:visible")).toHaveCount(4);
   await expectInkPosition(page, moved);
   await expectInkPosition(page, otherPosition, "python-installation");
   expect((await readStoredWorkspace(page))?.currentId).toBe(graph.id);
   expect(await readFixtureSnapshots(page)).toHaveLength(0);
   await page.screenshot({ path: testInfo.outputPath("ink-runtime-drag-refresh.png"), animations: "disabled" });
+
+  // 从首页的空输入直接开始下一次搜索：保留旧图及人工坐标，分配独立文档身份。
+  const original = (await readStoredWorkspace(page))?.documents.find(document => document.id === graph.id);
+  if (original === undefined) throw new Error("缺少待保留的原图");
+  await page.getByRole("button", { name: "返回首页", exact: true }).click();
+  await page.getByRole("button", { name: "开始探索", exact: true }).click();
+  await expect(input).toHaveValue(""); await expect(input).toBeFocused();
+  await input.fill("重入后创建独立搜索图"); await input.press("Enter");
+  await expect.poll(async () => (await readFixtureSnapshots(page)).length).toBe(1);
+  await emitFixtureEvents(page, 0, events.map((_, index) => index));
+  await page.evaluate(() => window.__WAYFINDER_E2E__.close(0));
+  await expect.poll(async () => (await readStoredWorkspace(page))?.documents.length).toBe(2);
+  const saved = await readStoredWorkspace(page);
+  expect(saved?.documents.find(document => document.id === graph.id)).toEqual(original);
+  expect(saved?.currentId).not.toBe(graph.id);
+  expect(saved?.documents.find(document => document.id === saved.currentId)?.query).toBe("重入后创建独立搜索图");
 });
 
 /** 完整页面就是图的裁切边界；节点接近左边缘时，文字与墨团不得被旧的内缩图框提前裁掉。 */
@@ -3632,6 +3730,7 @@ test("九节点手动历史通过原生存储恢复且每个节点都有墨团",
   await seedStoredWorkspace(page, [document, emptyDocument]);
   await page.reload();
   await page.getByRole("button", { name: "开始探索", exact: true }).click();
+  await restoreInkHistoryFromInput(page, document.title);
   await expect(page.locator(".ink-study__stage")).toHaveAttribute("data-search-state", "graph");
   await expect(page.locator("[data-ink-node]:visible")).toHaveCount(9);
   for (const node of nodes) {
@@ -3893,6 +3992,7 @@ test("正式入口历史切换改名删除恢复及后台完成不抢选择", as
   await expect(secondCanvas).toHaveAttribute("data-ink-content-state", "ready");
   const before = await readInkPosition(page);
   await page.reload(); await page.getByRole("button", { name: "开始探索", exact: true }).click();
+  await restoreInkHistoryFromInput(page, SECOND_QUERY);
   await expect(secondCanvas).toHaveAttribute("data-ink-content-state", "ready");
   await expectInkPosition(page, before); expect(await readFixtureSnapshots(page)).toHaveLength(0);
   await page.locator(`[data-ink-node="${READY_NODE_ID}"]`).getByRole("heading").click();
@@ -3908,6 +4008,7 @@ test("正式入口历史切换改名删除恢复及后台完成不抢选择", as
   const searches: string[] = [];
   reopened.on("request", request => { if (new URL(request.url()).pathname === "/api/search") searches.push(request.url()); });
   await reopened.goto("/"); await reopened.getByRole("button", { name: "开始探索", exact: true }).click();
+  await restoreInkHistoryFromInput(reopened, "Python 资料");
   await expect(reopened.locator("[data-ink-node]")).toHaveCount(4);
   await reopened.getByRole("button", { name: "搜索历史", exact: true }).click();
   await expect(reopened.getByRole("button", { name: "Python 资料", exact: true })).toBeVisible();
@@ -3990,7 +4091,10 @@ test("正式入口手动资源超过六条可编辑取消草稿、拖拽、撤�
   await expect(cards).toHaveCount(6); await undoInkEvent(page, "删除资源");
   await page.locator(`[data-ink-node="${firstId}"]`).getByRole("heading").click();
   await page.getByRole("button", { name: "显示更多（4）", exact: true }).click(); await expect(cards).toHaveCount(7);
+  const savedTitle = (await readStoredWorkspace(page))?.documents.find(document => document.nodes.some(node => node.id === firstId))?.title;
+  if (savedTitle === undefined) throw new Error("缺少待恢复人工图标题");
   await page.reload(); await page.getByRole("button", { name: "开始探索", exact: true }).click();
+  await restoreInkHistoryFromInput(page, savedTitle);
   await expect(page.locator("[data-ink-node]")).toHaveCount(2);
   await page.locator(`[data-ink-node="${firstId}"]`).getByRole("heading").click();
   await page.getByRole("button", { name: "显示更多（4）", exact: true }).click();
@@ -4068,6 +4172,7 @@ test("正式入口移动不入撤销、连线编辑与布局持久化保持原�
   await first.press("Delete"); await expect(page.locator("[data-ink-node]")).toHaveCount(3);
   await expectSavedInkPosition(page, graphId, keyboardAfter, firstId);
   await page.reload(); await page.getByRole("button", { name: "开始探索", exact: true }).click();
+  await restoreInkHistoryFromInput(page, "布局图");
   await expectInkPosition(page, keyboardAfter, firstId); await expect(page.locator(".react-flow__edge")).toHaveCount(2);
   expect(await readFixtureSnapshots(page)).toHaveLength(0); expect(pageErrors).toEqual([]); expect(warnings).toEqual([]);
 });
@@ -4095,6 +4200,7 @@ test("正式入口引擎独立覆盖与节点偏好恢复且旧来源不变", as
   await page.getByRole("menuitemradio", { name: "Baidu", exact: true }).click();
   const graph = (await readStoredWorkspace(page))?.documents[0]; expect(graph?.engine).toBe("google"); expect(graph?.nodes.find(node => node.id === READY_NODE_ID)?.engine).toBe("baidu");
   await page.reload(); await page.getByRole("button", { name: "开始探索", exact: true }).click();
+  await restoreInkHistoryFromInput(page, "Engine fixture");
   const restored = (await readStoredWorkspace(page))?.documents[0]; expect(restored?.engine).toBe("google"); expect(restored?.nodes.find(node => node.id === READY_NODE_ID)?.engine).toBe("baidu");
   await page.locator(`[data-ink-node="${READY_NODE_ID}"]`).getByRole("heading").click(); await expect(page.locator(".ink-resources").getByText("百度", { exact: true })).toHaveCount(3);
   expect(await readFixtureSnapshots(page)).toHaveLength(0);
@@ -4155,6 +4261,7 @@ test("正式入口重搜取消失败弃用连续追加、替换及撤销刷新�
   await undoInkEvent(page, "应用全图结果");
   const afterUndo = (await readStoredWorkspace(page))?.documents[0]; expect(afterUndo?.nodes).toEqual(beforeReplace?.nodes); expect(afterUndo?.edges).toEqual(beforeReplace?.edges); expect(afterUndo?.positions).toEqual(beforeReplace?.positions);
   await page.reload(); await page.getByRole("button", { name: "开始探索", exact: true }).click();
+  await restoreInkHistoryFromInput(page, original.title);
   expect((await readStoredWorkspace(page))?.documents[0]?.nodes).toEqual(beforeReplace?.nodes); await expect(page.locator("[data-ink-node]")).toHaveCount(3); expect(await readFixtureSnapshots(page)).toHaveLength(0);
 });
 
