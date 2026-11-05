@@ -1,0 +1,22 @@
+/* 连接点只覆盖已就绪、可编辑节点；保持 article 固定尺寸和 React Flow 自身定位变换。 */
+.graph-canvas--ink .ink-graph-node .ink-graph-node__handle {
+  border: 1px solid #ffffffb3;
+  border-radius: 999px;
+  background: #f3f3f17a;
+  box-shadow: 0 2px 8px #11111112;
+  backdrop-filter: blur(6px);
+  scale: 0.8;
+  cursor: crosshair;
+  transition: opacity 220ms var(--ink-slide-ease), scale 220ms var(--ink-slide-ease), background-color 220ms var(--ink-slide-ease);
+}
+.graph-canvas--ink .ink-graph-node__handle--main { width: 22px; height: 8px; }
+.graph-canvas--ink .ink-graph-node__handle--related { width: 8px; height: 22px; }
+.graph-canvas--ink .react-flow__node:is(:hover, :focus-within, .selected) .ink-graph-node[data-ink-connectable="true"] .ink-graph-node__handle {
+  opacity: 1;
+  pointer-events: auto;
+  scale: 1;
+}
+.graph-canvas--ink .ink-graph-node[data-ink-connectable="true"] .ink-graph-node__handle:hover { background: #f3f3f1c7; }
+@media (prefers-reduced-motion: reduce) {
+  .graph-canvas--ink .ink-graph-node .ink-graph-node__handle { transition: none; }
+}

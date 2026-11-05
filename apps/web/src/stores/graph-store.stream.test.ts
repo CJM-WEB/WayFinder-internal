@@ -99,6 +99,47 @@ const compactCompleteEvent = () => {
 };
 
 describe("Graph store StreamEvent Reducer", () => {
+  it("真实完成归属只由已接受complete设置，finishRun不伪造或抹去已交付标志", () => {
+    const store = createActiveStore();
+    store.getState().applyStreamEvent(eventOfType("graph.plan"));
+    expect(store.getState().hasCompleted).toBe(false);
+    store.getState().applyStreamEvent(eventOfType("complete"));
+    expect(store.getState().hasCompleted).toBe(true);
+    store.getState().finishRun();
+    expect(store.getState().hasCompleted).toBe(true);
+    store.getState().startRun({ runId: "下一次", query: "新查询", language: "zh-CN" });
+    expect(store.getState().hasCompleted).toBe(false);
+    store.getState().reset();
+    expect(store.getState().hasCompleted).toBe(false);
+  });
+
+  it("取消后的迟到complete、旧Run及内外身份不一致的complete均不能伪造完成", () => {
+    const store = createActiveStore();
+    const complete = eventOfType("complete");
+    store.getState().applyStreamEvent(eventOfType("graph.plan"));
+    store.getState().finishRun();
+    const cancelled = store.getState();
+    store.getState().applyStreamEvent(complete);
+    expect(store.getState()).toBe(cancelled);
+    expect(store.getState().hasCompleted).toBe(false);
+    store.getState().startRun({ runId: "新运行", query: "新查询", language: "zh-CN" });
+    const started = store.getState();
+    store.getState().applyStreamEvent(complete);
+    store.getState().applyStreamEvent({ ...complete, runId: "新运行" });
+    expect(store.getState()).toBe(started);
+    expect(store.getState().hasCompleted).toBe(false);
+  });
+
+  it("Run失败保留草图但不标作已完成，后续真实完整结果仍受封闭门禁限制", () => {
+    const store = createActiveStore();
+    store.getState().applyStreamEvent(eventOfType("graph.plan"));
+    store.getState().applyStreamEvent(runFailedEvent);
+    const failed = store.getState();
+    expect(failed.hasCompleted).toBe(false);
+    store.getState().applyStreamEvent(replaceEnvelope(eventOfType("complete"), { sequence: runFailedEvent.sequence + 1 }));
+    expect(store.getState()).toBe(failed);
+  });
+
   it.each(["graph", "compact"] as const)(
     "query.analysis 忠实保存 %s 展示模式且不选择 Node",
     presentationMode => {

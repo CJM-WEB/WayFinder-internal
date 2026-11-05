@@ -9,42 +9,7 @@ import type {
   CandidateSearchHit,
   NormalizedSearchHit,
 } from "@wayfinder/contracts";
-
-/** V0 只移除已经明确确认的精确小写 Tracking 参数（追踪参数）。 */
-const TRACKING_QUERY_PARAMETERS = [
-  "utm_source",
-  "utm_medium",
-  "utm_campaign",
-  "utm_term",
-  "utm_content",
-  "gclid",
-] as const;
-
-/**
- * 使用平台原生 URL 实现确定性规范化。
- * 原生实现会统一主机大小写、默认端口与点路径；尾斜杠仍保留为不同页面语义。
- */
-function canonicalizeUrl(input: string): URL | null {
-  let parsedUrl: URL;
-
-  try {
-    parsedUrl = new URL(input);
-  } catch {
-    return null;
-  }
-
-  if (parsedUrl.protocol !== "http:" && parsedUrl.protocol !== "https:") {
-    return null;
-  }
-
-  for (const parameter of TRACKING_QUERY_PARAMETERS) {
-    parsedUrl.searchParams.delete(parameter);
-  }
-  parsedUrl.hash = "";
-  parsedUrl.searchParams.sort();
-
-  return parsedUrl;
-}
+import { canonicalizeHttpUrl } from "@wayfinder/contracts";
 
 /**
  * 显式投影业务允许字段，同时重新派生 canonicalUrl 与 domain。
@@ -56,6 +21,7 @@ function projectCandidate(
 ): CandidateSearchHit {
   return {
     provider: hit.provider,
+    ...(hit.engine === undefined ? {} : { engine: hit.engine }),
     query: hit.query,
     title: hit.title,
     url: hit.url,
@@ -85,7 +51,7 @@ export function canonicalizeAndDeduplicateCandidates(
   const seenCanonicalUrls = new Set<string>();
 
   for (const hit of hits) {
-    const canonicalUrl = canonicalizeUrl(hit.url);
+    const canonicalUrl = canonicalizeHttpUrl(hit.url);
     if (canonicalUrl === null) {
       continue;
     }

@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { z } from "zod";
 
 import {
+  EditableGraphSchema,
   GraphPlanSchema,
   H2EvaluationArtifactSchema,
   QueryAnalysisSchema,
@@ -73,6 +74,11 @@ const jsonSchemaRoots = [
     schemaName: "H2EvaluationArtifactSchema",
     fileName: "h2-evaluation-artifact.schema.json",
     schema: H2EvaluationArtifactSchema,
+  },
+  {
+    schemaName: "EditableGraphSchema",
+    fileName: "editable-graph.schema.json",
+    schema: EditableGraphSchema,
   },
 ] as const satisfies readonly JsonSchemaRoot[];
 

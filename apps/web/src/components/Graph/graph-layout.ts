@@ -9,6 +9,7 @@
 import { Graph, layout } from "@dagrejs/dagre";
 import type { EdgeLabel, GraphLabel, NodeLabel } from "@dagrejs/dagre";
 import type {
+  EditableNode,
   GraphEdge,
   NodeType,
   SearchLanguage,
@@ -19,6 +20,7 @@ import type { Edge, Node, XYPosition } from "@xyflow/react";
 
 import type { GraphStoreNode } from "../../stores/graph-store.js";
 import { getMessages } from "../../i18n/messages.js";
+import { buildGraphNodeData } from "./graph-labels.js";
 
 export const GRAPH_NODE_WIDTH = 240;
 export const GRAPH_NODE_HEIGHT = 112;
@@ -27,10 +29,13 @@ const RELATED_HORIZONTAL_GAP = 88;
 const RELATED_VERTICAL_GAP = 32;
 const NODE_COLLISION_GAP = 16;
 
+export type GraphDisplayNode = GraphStoreNode | EditableNode;
+
 export type GraphNodeData = {
   title: string;
+  description?: string;
   nodeType: NodeType;
-  status: StreamNodeStatus;
+  status: StreamNodeStatus | EditableNode["status"];
   resourceCount: number;
   language: SearchLanguage;
 };
@@ -57,7 +62,7 @@ const toTopLeftPosition = (node: NodeLabel): XYPosition => ({
  * 主节点坐标也必须保持不变。
  */
 const layoutMainNodes = (
-  nodes: readonly GraphStoreNode[],
+  nodes: readonly GraphDisplayNode[],
   edges: readonly GraphEdge[],
 ): Map<string, XYPosition> => {
   const mainNodes = nodes.filter(node => node.nodeType !== "related");
@@ -162,7 +167,7 @@ const avoidNodeOverlap = (
  * 缺少合法锚点时确定性降级到主图右侧的独立列，但不篡改 Contract Edge。
  */
 const layoutRelatedNodes = (
-  nodes: readonly GraphStoreNode[],
+  nodes: readonly GraphDisplayNode[],
   edges: readonly GraphEdge[],
   mainPositions: ReadonlyMap<string, XYPosition>,
 ): Map<string, XYPosition> => {
@@ -248,9 +253,10 @@ const toFlowEdge = (
 
 /** 将当前 Store 快照转换为 React Flow 可直接渲染的完整元素集合。 */
 export const buildGraphFlowElements = (
-  nodes: readonly GraphStoreNode[],
+  nodes: readonly GraphDisplayNode[],
   edges: readonly GraphEdge[],
   language: SearchLanguage = "zh-CN",
+  savedPositions: Readonly<Record<string, XYPosition>> = {},
 ): GraphFlowElements => {
   const mainPositions = layoutMainNodes(nodes, edges);
   const relatedPositions = layoutRelatedNodes(nodes, edges, mainPositions);
@@ -261,7 +267,9 @@ export const buildGraphFlowElements = (
     nodes: nodes.map(node => ({
       id: node.id,
       type: "wayfinder",
-      position: positions.get(node.id) ?? { x: 0, y: 0 },
+      // 节点使用固定尺寸；受控拖动生成新位置对象时仍保留已知测量，避免反复丢失初始化状态。
+      measured: { width: GRAPH_NODE_WIDTH, height: GRAPH_NODE_HEIGHT },
+      position: savedPositions[node.id] ?? positions.get(node.id) ?? { x: 0, y: 0 },
       sourcePosition: Position.Bottom,
       targetPosition: Position.Top,
       ariaLabel: messages.nodeAria(
@@ -269,13 +277,7 @@ export const buildGraphFlowElements = (
         messages.statusLabels[node.status],
       ),
       className: `graph-node graph-node--${node.nodeType} graph-node--${node.status}`,
-      data: {
-        title: node.title,
-        nodeType: node.nodeType,
-        status: node.status,
-        resourceCount: "resources" in node ? node.resources.length : 0,
-        language,
-      },
+      data: buildGraphNodeData(node, language),
     })),
     edges: edges.map(edge => toFlowEdge(edge, language)),
   };

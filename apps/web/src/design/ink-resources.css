@@ -1,0 +1,98 @@
+/* 呈现边界：资源条覆盖图谱，不修改画布宽度、节点坐标或视口。 */
+.ink-resources {
+  position: absolute;
+  z-index: 3;
+  top: 76px;
+  right: 22px;
+  bottom: 66px;
+  width: min(390px, calc(100% - 44px));
+  color: #252522;
+  pointer-events: none;
+}
+.ink-resources__scroll {
+  max-height: 100%;
+  padding: 2px 2px 18px;
+  overflow: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  pointer-events: auto;
+}
+.ink-resources[inert] .ink-resources__scroll { pointer-events: none; }
+.ink-resources__item {
+  transform: translateX(calc(100% + 48px));
+  opacity: 0;
+  transition: transform 560ms var(--ink-slide-ease), opacity 560ms var(--ink-slide-ease);
+  transition-delay: var(--ink-resource-exit-delay, 0ms);
+}
+.ink-resources:is([data-phase="entering"], [data-phase="visible"]) .ink-resources__item {
+  transform: translateX(0);
+  opacity: 1;
+  transition-delay: var(--ink-resource-delay, 0ms);
+}
+/* Show More 新挂载的条目也从右侧进入；保留旧条及展开状态，不重播整组资源。 */
+@starting-style {
+  .ink-resources:is([data-phase="entering"], [data-phase="visible"]) .ink-resources__item { transform: translateX(calc(100% + 48px)); opacity: 0; }
+}
+.ink-resources__header, .ink-resources__card, .ink-resources__empty, .ink-resources__more, .ink-resources__notice {
+  border: 1px solid #ffffffb0;
+  border-radius: 20px;
+  background: var(--ink-history-glass);
+  box-shadow: 0 8px 28px #11111107;
+  backdrop-filter: blur(14px);
+}
+.ink-resources__header { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; padding: 20px; margin-bottom: 10px; }
+.ink-resources__header p { margin: 0 0 7px; color: #64645f; font-size: 10px; letter-spacing: 0.12em; }
+.ink-resources__header h2 { margin: 0; font-size: clamp(18px, 1.6vw, 24px); font-weight: 500; line-height: 1.35; overflow-wrap: anywhere; }
+.ink-resources button { color: inherit; font: inherit; cursor: pointer; }
+.ink-resources button:disabled { cursor: default; }
+.ink-resources__close { align-self: start; border: 0; border-radius: 50%; width: 30px; height: 30px; background: #ffffff70; font-size: 24px !important; line-height: 1; }
+.ink-resources__status { grid-column: 1 / -1; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px; color: #5b5b56; font-size: 11px; }
+.ink-resources__list { display: flex; flex-direction: column; gap: 10px; }
+.ink-resources__card { overflow: hidden; }
+/* 排序复用浏览器原生拖拽；视觉仍使用同一资源条，不引入另一套编辑卡片。 */
+.ink-resources__card[draggable="true"] { cursor: grab; }
+.ink-resources__open-area { position: relative; padding: 18px 18px 10px; }
+.ink-resources__open { position: absolute; inset: 0; width: 100%; border: 0; border-radius: 20px 20px 0 0; background: transparent; }
+.ink-resources__open:focus-visible, .ink-resources__details-toggle:focus-visible { outline-offset: -3px; }
+.ink-resources__open-area[data-invalid="true"] { opacity: 0.6; }
+.ink-resources__card-top { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: baseline; gap: 10px; }
+.ink-resources__rank { color: #74746e; font-size: 10px; }
+.ink-resources__title { margin: 0; font-size: 15px; font-weight: 500; line-height: 1.45; overflow-wrap: anywhere; }
+.ink-resources__card-top > span:last-child { color: #686862; font-size: 13px; }
+.ink-resources__meta { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 7px 12px; margin-top: 10px; color: #62625c; font-size: 10px; line-height: 1.5; overflow-wrap: anywhere; }
+.ink-resources__details-toggle { display: flex; width: 100%; align-items: center; justify-content: space-between; padding: 4px 18px 12px; border: 0; text-align: left; background: transparent; color: #64645e !important; font-size: 10px !important; }
+/* 详情占据真实布局高度，因此展开会推开下一条；没有绝对定位的悬浮说明遮住资源。 */
+.ink-resources__details { display: grid; grid-template-rows: 0fr; opacity: 0; transition: grid-template-rows 420ms var(--ink-slide-ease), opacity 420ms var(--ink-slide-ease); }
+.ink-resources__card[data-details-open="true"] .ink-resources__details { grid-template-rows: 1fr; opacity: 1; }
+.ink-resources__details-inner { min-height: 0; overflow: hidden; padding-inline: 18px; }
+.ink-resources__details section { margin-bottom: 13px; }
+.ink-resources__details h4 { margin: 0 0 5px; font-size: 10px; font-weight: 500; color: #55554f; }
+.ink-resources__details p { margin: 0; color: #393935; font-size: 12px; line-height: 1.65; overflow-wrap: anywhere; }
+.ink-resources__details .ink-resources__source-type { margin-bottom: 16px; color: #696963; font-size: 10px; }
+.ink-resources__more { display: flex; width: 100%; justify-content: space-between; gap: 12px; margin-top: 10px; padding: 14px 18px; font-size: 11px !important; }
+.ink-resources__empty { padding: 20px; font-size: 12px; line-height: 1.7; }
+.ink-resources__invalid { margin: 0; padding: 0 18px 15px; color: #765344; font-size: 11px; line-height: 1.5; }
+/* 顶部提示随真实状态存在；状态解除才收回，内容在 S 退场结束前仍保留。 */
+.ink-resources__notice-motion { display: grid; grid-template-rows: 1fr; opacity: 1; transform: translateY(0); transition: grid-template-rows 560ms var(--ink-slide-ease), opacity 560ms var(--ink-slide-ease), transform 560ms var(--ink-slide-ease); }
+.ink-resources__notice-motion[data-present="false"] { grid-template-rows: 0fr; opacity: 0; transform: translateY(-20px); }
+.ink-resources:is([data-phase="preparing"], [data-phase="leaving"]) .ink-resources__notice-motion { opacity: 0; transform: translateY(-20px); }
+.ink-resources__notice { min-height: 0; overflow: hidden; margin-bottom: 10px; padding: 16px 18px; }
+.ink-resources__notice-motion[data-present="false"] .ink-resources__notice { padding-block: 0; border-block-width: 0; margin-bottom: 0; transition: padding 560ms var(--ink-slide-ease), margin 560ms var(--ink-slide-ease), border-width 560ms var(--ink-slide-ease); }
+.ink-resources__notice h3 { margin: 0 0 7px; font-size: 12px; font-weight: 500; }
+.ink-resources__notice ul { margin: 0; padding-left: 15px; color: #615144; font-size: 11px; line-height: 1.65; }
+.ink-resources__notice[data-kind="error"] ul { color: #75473e; }
+@starting-style { .ink-resources__notice-motion[data-present="true"] { grid-template-rows: 0fr; opacity: 0; transform: translateY(-20px); } }
+@media (max-width: 600px) {
+  .ink-resources { top: 68px; right: 12px; bottom: 64px; width: calc(100% - 24px); }
+  .ink-resources__header { padding: 16px 18px; }
+}
+@media (pointer: coarse) {
+  .ink-resources__close { width: 44px; height: 44px; }
+  .ink-resources__details-toggle { min-height: 44px; }
+  .ink-resources__more { min-height: 44px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ink-resources__item, .ink-resources__details, .ink-resources__notice-motion,
+  .ink-resources__notice-motion[data-present="false"] .ink-resources__notice { transition: none; }
+}

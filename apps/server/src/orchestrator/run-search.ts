@@ -285,6 +285,8 @@ export function createRunSearchHandler(
               onPlanningStageFailed: recorder.recordPlanningStageFailed,
             }),
         language: input.language,
+        ...(input.engine === undefined ? {} : { engine: input.engine }),
+        ...(input.nodeSearch === undefined ? {} : { nodeSearch: input.nodeSearch }),
       });
       observeSafely(() => recorder?.recordPlan(plan));
 
@@ -322,6 +324,7 @@ export function createRunSearchHandler(
               ? {}
               : { observeRanking: recorder.recordRanking }),
             language: input.language,
+            ...(input.engine === undefined ? {} : { engine: input.engine }),
           },
           providers,
           runScope,

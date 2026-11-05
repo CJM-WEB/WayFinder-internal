@@ -22,6 +22,7 @@ import type {
   ResourceCandidate,
   ResultGraphNode,
   SearchCapability,
+  SearchEngine,
   SearchLanguage,
 } from "./index.js";
 
@@ -142,6 +143,7 @@ describe("WAY-24 Provider Search 边界", () => {
   it("冻结 NormalizedSearchHit 与 opaque metadata", () => {
     expectTypeOf<NormalizedSearchHit>().toEqualTypeOf<{
       provider: string;
+      engine?: SearchEngine;
       query: string;
       title: string;
       url: string;
@@ -173,6 +175,7 @@ describe("WAY-24 Extract 与 Candidate 边界", () => {
       Pick<
         NormalizedSearchHit,
         | "provider"
+        | "engine"
         | "query"
         | "title"
         | "url"

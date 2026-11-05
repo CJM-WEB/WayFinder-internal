@@ -14,6 +14,7 @@ import {
   type QueryAnalysis,
   type ResultGraphNode,
   type SearchLanguage,
+  type SearchEngine,
   type StreamEventPayload,
 } from "@wayfinder/contracts";
 
@@ -109,6 +110,7 @@ export type ProcessNodeContext = Readonly<{
   /** 匿名排序观测是旁路能力，失败不得改变 Node 结果。 */
   observeRanking?: (observation: RankingObservation) => void;
   language: SearchLanguage;
+  engine?: SearchEngine;
 }>;
 
 /**
@@ -194,6 +196,7 @@ export async function processNode(
       searchProvider: context.searchProvider,
       signal,
       language: context.language,
+      ...(context.engine === undefined ? {} : { engine: context.engine }),
     });
     appendUniqueWarnings(warnings, searchOutcome.warnings);
 

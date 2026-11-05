@@ -1,3 +1,7 @@
+/*
+ * 样式职责：仅供 H1/H2 内部评估保留原实验展示条件。
+ * 加载边界：由评估入口按需加载，正式墨迹产品不会加载这份样式。
+ */
 :root {
   color: #15271f;
   background: #f4f8f4;
@@ -467,17 +471,6 @@ input {
 }
 
 /* Compact 仍渲染完整 Product Graph，只收紧首屏高度，不截断 Node 或 Edge。 */
-.graph-section--compact .graph-canvas,
-.graph-section--compact .resource-panel {
-  height: clamp(340px, calc(100vh - 350px), 460px);
-  min-height: 340px;
-}
-
-.graph-section--compact .graph-empty {
-  min-height: 340px;
-}
-
-/* Graph 与 Resource Panel 共享结果页高度；画布保持可缩放，面板独立滚动。 */
 .graph-workspace {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(300px, 360px);
@@ -976,17 +969,6 @@ input {
     height: calc(100vh - 280px);
   }
 
-  .graph-section--compact .graph-canvas,
-  .graph-section--compact .graph-empty {
-    height: 380px;
-    min-height: 320px;
-  }
-
-  .graph-section--compact .resource-panel {
-    height: auto;
-    min-height: 320px;
-  }
-
   .h1-evaluation__conditions {
     width: 100%;
   }
@@ -1030,3 +1012,6 @@ input {
     border-left: 0;
   }
 }
+
+
+@media (max-width: 1100px) { .omnibox__controls { flex-wrap: wrap; } }

@@ -10,6 +10,7 @@ import {
 } from "@wayfinder/contracts";
 import { describe, expect, it, vi } from "vitest";
 
+import { WEB_WAIT_TIMEOUT_MS } from "../../test-timing.js";
 import { pythonResultGraphFixture } from "../fixtures/python-result-graph.js";
 import type { ReadSearchEventStreamOptions } from "../lib/stream.js";
 import { createGraphStore } from "../stores/graph-store.js";
@@ -169,7 +170,7 @@ describe("Query 取消协调器", () => {
     });
 
     const validRun = search({ query: "有效查询", language: "zh-CN" });
-    await vi.waitFor(() => expect(activeSignal).toBeDefined());
+    await vi.waitFor(() => expect(activeSignal).toBeDefined(), WEB_WAIT_TIMEOUT_MS);
     const beforeInvalid = store.getState();
 
     await expect(
@@ -224,10 +225,10 @@ describe("Query 取消协调器", () => {
     });
 
     const runA = search({ query: "fetch A", language: "zh-CN" });
-    await vi.waitFor(() => expect(signals).toHaveLength(1));
+    await vi.waitFor(() => expect(signals).toHaveLength(1), WEB_WAIT_TIMEOUT_MS);
 
     const runB = search({ query: "fetch B", language: "zh-CN" });
-    await vi.waitFor(() => expect(signals).toHaveLength(2));
+    await vi.waitFor(() => expect(signals).toHaveLength(2), WEB_WAIT_TIMEOUT_MS);
 
     expect(signals[0]?.aborted).toBe(true);
     expect(signals[1]?.aborted).toBe(false);
@@ -350,4 +351,27 @@ describe("Query 取消协调器", () => {
       nodes: [],
     });
   });
+});
+
+it("完成回调只交付当前运行真正接纳的结果，忽略旧身份和重复终态", async () => {
+  const store = createGraphStore();
+  const onStart = vi.fn();
+  const onComplete = vi.fn();
+  const search = createStartStreamingSearch({
+    store,
+    createRunId: () => "当前运行",
+    onStart,
+    onComplete,
+    fetchImplementation: async () => response,
+    readStreamImplementation: async options => {
+      options.onEvent(eventForRun(eventOfType("complete"), "过期运行"));
+      expect(onComplete).not.toHaveBeenCalled();
+      options.onEvent(eventForRun(eventOfType("complete"), "当前运行"));
+      options.onEvent(eventForRun(eventOfType("complete"), "当前运行"));
+    },
+  });
+  await search({ query: "Python", language: "zh-CN" });
+  expect(onStart).toHaveBeenCalledExactlyOnceWith({ runId: "当前运行", query: "Python", language: "zh-CN" });
+  expect(onComplete).toHaveBeenCalledTimes(1);
+  expect(onComplete.mock.calls[0]?.[0]).toMatchObject({ runId: "当前运行" });
 });

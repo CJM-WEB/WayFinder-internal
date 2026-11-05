@@ -6,19 +6,16 @@
  * 才允许打开已重新校验的 HTTP(S) URL。
  */
 import type {
+  EditableNode,
+  EditableResource,
   Resource,
   SearchLanguage,
   StreamNodeStatus,
 } from "@wayfinder/contracts";
 import { useState } from "react";
-import { useStore } from "zustand";
 
 import { getMessages, type Messages } from "../../i18n/messages.js";
-import {
-  graphStore,
-  selectSelectedNode,
-  type GraphStoreNode,
-} from "../../stores/graph-store.js";
+import type { GraphStoreNode } from "../../stores/graph-store.js";
 import {
   requestSafeUrlOpen,
   resolveSafeHttpUrl,
@@ -35,9 +32,9 @@ type SelectedPanelModel = {
   language: SearchLanguage;
   nodeId: string;
   nodeTitle: string;
-  nodeStatus: StreamNodeStatus;
+  nodeStatus: StreamNodeStatus | EditableNode["status"];
   nodeStatusLabel: string;
-  resources: readonly Resource[];
+  resources: readonly (Resource | EditableResource)[];
   outcomeNotice: OutcomeNotice | null;
   emptyMessage: string | null;
 };
@@ -57,7 +54,7 @@ export type ResourcePanelModel =
  * Warning 与 Error 只暴露公共 Contract 的安全语义，底层 Provider 诊断不得进入 UI。
  */
 const buildOutcomeNotice = (
-  node: GraphStoreNode,
+  node: GraphStoreNode | EditableNode,
   messages: Messages["resourcePanel"],
 ): OutcomeNotice | null => {
   if (node.status === "partial") {
@@ -68,7 +65,7 @@ const buildOutcomeNotice = (
     };
   }
 
-  if (node.status === "failed") {
+  if (node.status === "failed" && node.error !== undefined) {
     return {
       kind: "error",
       title: messages.failedTitle,
@@ -84,7 +81,7 @@ const buildOutcomeNotice = (
  * failed Node 按 Contract 必须保留空数组，面板仍展示状态而不是把选择误判为空。
  */
 export const buildResourcePanelModel = (
-  node: GraphStoreNode | null,
+  node: GraphStoreNode | EditableNode | null,
   language: SearchLanguage = "zh-CN",
 ): ResourcePanelModel => {
   const messages = getMessages(language);
@@ -98,7 +95,9 @@ export const buildResourcePanelModel = (
   const emptyMessage =
     resources.length > 0 || outcomeNotice?.kind === "error"
       ? null
-      : messages.resourcePanel.processing;
+      : node.status === "empty" || node.status === "edited"
+        ? messages.resourcePanel.emptyNode
+        : messages.resourcePanel.processing;
 
   return {
     kind: "selected",
@@ -125,9 +124,9 @@ const DEFAULT_VISIBLE_RESOURCE_COUNT = 3;
 
 /** 纯函数冻结默认 Top 3 与本地展开语义；返回值始终保持 retained 排序。 */
 export function selectVisibleResources(
-  resources: readonly Resource[],
+  resources: readonly (Resource | EditableResource)[],
   expanded: boolean,
-): readonly Resource[] {
+): readonly (Resource | EditableResource)[] {
   return expanded
     ? resources
     : resources.slice(0, DEFAULT_VISIBLE_RESOURCE_COUNT);
@@ -136,25 +135,29 @@ export function selectVisibleResources(
 function SelectedResourcePanel({
   model,
   openResource,
+  idPrefix,
 }: {
   model: SelectedPanelModel;
+  idPrefix: string;
   openResource: BrowserUrlOpener;
 }) {
   const [expanded, setExpanded] = useState(false);
   const messages = getMessages(model.language).resourcePanel;
+  const editorMessages = getMessages(model.language).editor;
+  const engineMessages = getMessages(model.language).searchEngine;
   const visibleResources = selectVisibleResources(model.resources, expanded);
   const hiddenResourceCount = model.resources.length - visibleResources.length;
 
   return (
     <aside
       className="resource-panel"
-      aria-labelledby="resource-panel-title"
+      aria-labelledby={`${idPrefix}resource-panel-title`}
       aria-live="polite"
     >
       <header className="resource-panel__header">
         <p className="resource-panel__eyebrow">{messages.selectedNode}</p>
         <div className="resource-panel__title-row">
-          <h2 id="resource-panel-title">{model.nodeTitle}</h2>
+          <h2 id={`${idPrefix}resource-panel-title`}>{model.nodeTitle}</h2>
           <span
             className={`resource-panel__status resource-panel__status--${model.nodeStatus}`}
           >
@@ -206,23 +209,27 @@ function SelectedResourcePanel({
                   </header>
 
                   <dl className="resource-card__meta">
+                    {"origin" in resource && resource.origin === "manual" ? null : <div>
+                      <dt>{engineMessages.sourceLabel}</dt>
+                      <dd>{"engine" in resource && resource.engine !== undefined ? engineMessages.labels[resource.engine] : engineMessages.unknownSource}</dd>
+                    </div>}
                     <div>
                       <dt>{messages.domain}</dt>
                       <dd>{resource.domain}</dd>
                     </div>
                     <div>
                       <dt>{messages.sourceType}</dt>
-                      <dd>{formatSourceType(resource.sourceType)}</dd>
+                      <dd>{"origin" in resource && resource.origin === "manual" ? editorMessages.manualSource : formatSourceType(resource.sourceType)}</dd>
                     </div>
                   </dl>
 
-                  <section aria-labelledby={`${resource.id}-summary`}>
-                    <h4 id={`${resource.id}-summary`}>{messages.aiSummary}</h4>
+                  <section aria-labelledby={`${idPrefix}${resource.id}-summary`}>
+                    <h4 id={`${idPrefix}${resource.id}-summary`}>{messages.aiSummary}</h4>
                     <p>{resource.summary}</p>
                   </section>
 
-                  <section aria-labelledby={`${resource.id}-why-selected`}>
-                    <h4 id={`${resource.id}-why-selected`}>
+                  <section aria-labelledby={`${idPrefix}${resource.id}-why-selected`}>
+                    <h4 id={`${idPrefix}${resource.id}-why-selected`}>
                       {messages.whySelected}
                     </h4>
                     <p>{resource.whySelected}</p>
@@ -266,8 +273,10 @@ function SelectedResourcePanel({
 export function ResourcePanelView({
   model,
   openResource = openBrowserTab,
+  idPrefix = "",
 }: {
   model: ResourcePanelModel;
+  idPrefix?: string;
   openResource?: BrowserUrlOpener;
 }) {
   if (model.kind === "unselected") {
@@ -289,17 +298,7 @@ export function ResourcePanelView({
       key={model.nodeId}
       model={model}
       openResource={openResource}
-    />
-  );
-}
-
-/** 容器组件只负责订阅当前选择，避免展示层直接依赖 Store 动作。 */
-export function ResourcePanel({ language }: { language: SearchLanguage }) {
-  const selectedNode = useStore(graphStore, selectSelectedNode);
-
-  return (
-    <ResourcePanelView
-      model={buildResourcePanelModel(selectedNode, language)}
+      idPrefix={idPrefix}
     />
   );
 }

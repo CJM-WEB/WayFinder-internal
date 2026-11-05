@@ -11,6 +11,7 @@ import {
 } from "@wayfinder/contracts";
 import { describe, expect, it, vi } from "vitest";
 
+import { WEB_WAIT_TIMEOUT_MS } from "../test-timing.js";
 import { createStartStreamingSearch } from "./api/search.js";
 import { pythonResultGraphFixture } from "./fixtures/python-result-graph.js";
 import { createGraphStore } from "./stores/graph-store.js";
@@ -164,7 +165,7 @@ describe("NDJSON Reader + Store 客户端回归矩阵", () => {
       ),
     );
 
-    await vi.waitFor(() => expect(store.getState().lastSequence).toBe(4));
+    await vi.waitFor(() => expect(store.getState().lastSequence).toBe(4), WEB_WAIT_TIMEOUT_MS);
     expect(
       store.getState().nodes.find(node => node.id === untouchedNode.id)?.status,
     ).toBe("planned");
@@ -208,8 +209,9 @@ describe("NDJSON Reader + Store 客户端回归矩阵", () => {
     streamController?.enqueue(
       encoder.encode(toNdjson([eventOfType("graph.plan")])),
     );
-    await vi.waitFor(() =>
-      expect(store.getState().nodes.length).toBeGreaterThan(0),
+    await vi.waitFor(
+      () => expect(store.getState().nodes.length).toBeGreaterThan(0),
+      WEB_WAIT_TIMEOUT_MS,
     );
     streamController?.error(disconnectError);
 
@@ -246,7 +248,7 @@ describe("NDJSON Reader + Store 客户端回归矩阵", () => {
     });
 
     const runA = search({ query: "first query", language: "zh-CN" });
-    await vi.waitFor(() => expect(signals).toHaveLength(1));
+    await vi.waitFor(() => expect(signals).toHaveLength(1), WEB_WAIT_TIMEOUT_MS);
     const runB = search({ query: "second query", language: "zh-CN" });
     await runB;
 

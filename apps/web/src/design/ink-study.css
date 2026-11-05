@@ -1,0 +1,634 @@
+/* 页面边界：样式只服务独立效果入口，不导入或覆盖工作区的全局样式。 */
+:root {
+  font-family: Arial, "Helvetica Neue", "PingFang SC", "Microsoft YaHei", sans-serif;
+  color: #111;
+  background: #131313;
+  font-synthesis: none;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; }
+button, a { -webkit-tap-highlight-color: transparent; }
+a { color: inherit; text-decoration: none; }
+button, select { font: inherit; }
+button, a, select { touch-action: manipulation; }
+a:focus-visible, button:focus-visible, .ink-study__contact:focus-visible {
+  outline: 2px solid #145cf4;
+  outline-offset: 5px;
+}
+
+/* 构图阶段：轻微黑色外框、大留白及垂直居中的单一品牌字。 */
+.ink-study { min-height: 100svh; padding: 14px; }
+.ink-study__stage {
+  --ink-wordmark-size: clamp(40px, 14.2vw, 380px);
+  --ink-slide-ease: cubic-bezier(0.6, 0, 0.4, 1);
+  --ink-brand-shift: 0px;
+  --ink-corner-top: 25px;
+  --ink-corner-inset: 25px;
+  --ink-pill-height: 26px;
+  --ink-search-height: clamp(48px, 8.5svh, 72px);
+  --ink-history-duration: 940ms;
+  --ink-history-glass: #c8c8c280;
+  position: relative;
+  isolation: isolate;
+  min-height: calc(100svh - 28px);
+  overflow: clip;
+  border-radius: 28px;
+  background: #f3f3f1;
+}
+.ink-study__wordmark {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 100%;
+  margin: 0;
+  transform: translateY(calc(-50% + var(--ink-brand-shift)));
+  color: #080808;
+  font-family: "Arial Black", "Helvetica Neue", Arial, sans-serif;
+  font-weight: 900;
+  font-size: var(--ink-wordmark-size);
+  letter-spacing: -0.079em;
+  line-height: 1;
+  text-align: center;
+  white-space: nowrap;
+  user-select: none;
+  pointer-events: none;
+  transition: transform 720ms var(--ink-slide-ease);
+}
+.ink-study__canvas {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: block;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+/* 品牌小字与标题共用尺寸基准，在不同屏宽下保持稳定留白与疏朗字距。 */
+.ink-study__tagline {
+  position: absolute;
+  z-index: 2;
+  top: calc(50% + var(--ink-wordmark-size) / 2 + 18px);
+  left: 50%;
+  margin: 0;
+  transform: translate(-50%, var(--ink-brand-shift));
+  color: #595955;
+  font-size: clamp(9px, 0.82vw, 12px);
+  font-weight: 400;
+  letter-spacing: 0.34em;
+  line-height: 1.5;
+  white-space: nowrap;
+  pointer-events: none;
+  transition: transform 720ms var(--ink-slide-ease);
+}
+
+/* 交互层：角落入口共用胶囊外观，绘图层不会遮挡操作与展开内容。 */
+.ink-study__intro, .ink-study__back, .ink-study__language, .ink-study__contact-area { position: absolute; z-index: 2; }
+.ink-study__back, .ink-study__language, .ink-study__contact-area { z-index: 5; }
+.ink-study__intro {
+  top: var(--ink-corner-top);
+  left: var(--ink-corner-inset);
+  transition: transform 520ms var(--ink-slide-ease) 360ms, opacity 520ms var(--ink-slide-ease) 360ms;
+}
+.ink-study__intro p { margin: 0; }
+.ink-study__statement { font-size: 12px; line-height: 1.4; white-space: pre-line; }
+.ink-study__pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 18px;
+  min-height: var(--ink-pill-height);
+  padding: 0 12px;
+  border: 1px solid #111;
+  border-radius: 30px;
+  background: #111;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: color 160ms var(--ink-slide-ease), background-color 160ms var(--ink-slide-ease);
+}
+.ink-study__pill:hover { background: #f3f3f1; color: #111; }
+/* 变形主体一直是同一个黑色胶囊；像素圆角按短边封顶，宽度收缩时不会变成椭圆。 */
+.ink-study__search-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+  transition: transform var(--ink-history-duration) var(--ink-slide-ease);
+}
+.ink-study__stage[data-history-open="true"] .ink-study__search-layer { transform: translateY(-100svh); }
+.ink-study__search {
+  position: absolute;
+  z-index: 3;
+  display: flex;
+  top: calc(var(--ink-corner-top) + 48px);
+  left: var(--ink-corner-inset);
+  width: var(--ink-entry-width, max-content);
+  height: var(--ink-pill-height);
+  margin: 0;
+  pointer-events: auto;
+  transition: top 600ms var(--ink-slide-ease), left 600ms var(--ink-slide-ease),
+    width 600ms var(--ink-slide-ease), height 600ms var(--ink-slide-ease),
+    transform 420ms var(--ink-slide-ease), opacity 420ms var(--ink-slide-ease);
+}
+.ink-study__search-input-shell {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid #111;
+  border-radius: 999px;
+  background: #111;
+}
+.ink-study__explore {
+  height: 100%;
+  min-height: 0;
+  border: 0;
+  white-space: nowrap;
+  transition: opacity 180ms var(--ink-slide-ease), color 160ms var(--ink-slide-ease), background-color 160ms var(--ink-slide-ease);
+}
+.ink-study__search-input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  padding: 0 clamp(16px, 2.2vw, 30px);
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: #fff;
+  font: inherit;
+  font-size: clamp(12px, 1.1vw, 16px);
+  opacity: 0;
+  transition: opacity 420ms var(--ink-slide-ease);
+}
+.ink-study__search-input::placeholder { color: #b6b6b0; }
+.ink-study__search-input-shell:focus-within { outline: 2px solid #999993; outline-offset: 4px; }
+.ink-study__search-submit {
+  flex: none;
+  justify-content: center;
+  width: 0;
+  height: 100%;
+  min-height: 0;
+  margin-left: 0;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  border-radius: 999px;
+  font-size: clamp(12px, 1.1vw, 16px);
+  white-space: nowrap;
+  opacity: 0;
+  transition: width 420ms var(--ink-slide-ease), margin-left 420ms var(--ink-slide-ease),
+    opacity 420ms var(--ink-slide-ease);
+}
+.ink-study__search-submit svg { display: block; flex: none; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.ink-study__search-submit:disabled { cursor: default; }
+.ink-study__search-feedback {
+  max-width: min(80vw, 360px);
+  margin: 14px 0 0;
+  color: #805249;
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: center;
+  white-space: normal;
+}
+/* 位移包含半个标题字号，超宽矮窗中仍让整行文字越过底部边界。 */
+.ink-study__stage[data-layer="explore"] { --ink-brand-shift: calc(50svh + var(--ink-wordmark-size) / 2 + 32px); }
+.ink-study__stage[data-layer="explore"] .ink-study__search {
+  top: 44%;
+  left: 13%;
+  width: 74%;
+  height: var(--ink-search-height);
+}
+.ink-study__stage[data-layer="explore"] .ink-study__explore { opacity: 0; pointer-events: none; }
+.ink-study__stage[data-search-ready="true"] .ink-study__search-input { opacity: 1; }
+.ink-study__stage[data-search-ready="true"] .ink-study__search-submit {
+  width: var(--ink-search-height);
+  margin-left: clamp(10px, 1.6vw, 20px);
+  opacity: 1;
+}
+/* 引擎入口从输入框下方中央分离，位移继续使用同一 S 曲线；弹层复用语言菜单外观。 */
+.ink-study__engine {
+  position: absolute;
+  z-index: 2;
+  top: calc(44% + var(--ink-search-height) + 18px);
+  left: 50%;
+  transform: translate(-50%, calc(-100% - 18px)) scaleX(0.65);
+  opacity: 0;
+  pointer-events: none;
+  white-space: nowrap;
+  text-align: center;
+  transition: top 680ms var(--ink-slide-ease), transform 520ms var(--ink-slide-ease) 160ms, opacity 520ms var(--ink-slide-ease) 160ms;
+}
+.ink-study__stage[data-search-ready="true"] .ink-study__engine {
+  transform: translate(-50%, 0) scaleX(1);
+  opacity: 1;
+  pointer-events: auto;
+}
+.ink-study__engine .ink-study__engine-options {
+  z-index: 1;
+  top: calc(var(--ink-pill-height) + 9px);
+  left: 50%;
+  right: auto;
+  transform: translateX(-50%);
+  text-align: left;
+}
+.ink-study__run-status, .ink-study__storage-error {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 12px;
+  margin-top: 14px;
+  color: #595955;
+  font-size: 11px;
+}
+.ink-study__storage-error { max-width: min(80vw, 360px); white-space: normal; }
+/* 两段位移共用先加速后减速的 S 曲线；入场稍晚起步，在文案离开后接替同一锚点。 */
+.ink-study__back {
+  top: var(--ink-corner-top);
+  left: var(--ink-corner-inset);
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  min-height: 40px;
+  padding: 0;
+  border-radius: 50%;
+  transform: translateX(calc(-100% - 40px));
+  opacity: 0;
+  pointer-events: none;
+  transition: transform 640ms var(--ink-slide-ease), opacity 640ms var(--ink-slide-ease);
+}
+.ink-study__back svg { display: block; fill: none; stroke: currentColor; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
+.ink-study__stage[data-layer="explore"] .ink-study__intro {
+  transform: translateX(calc(-100% - 40px));
+  opacity: 0;
+  transition-delay: 0s;
+}
+.ink-study__stage[data-layer="explore"] .ink-study__back {
+  transform: translateX(0);
+  opacity: 1;
+  pointer-events: auto;
+  transition-delay: 240ms;
+}
+
+/* 抽屉与输入组并行使用同一 S 时间线；关闭时触发器留在底边，内容移出并失去焦点能力。 */
+.ink-study__history-drawer {
+  position: absolute;
+  z-index: 4;
+  top: 100%;
+  left: 14.7%;
+  width: 70.6%;
+  height: 90.5%;
+  visibility: hidden;
+  pointer-events: none;
+  transition: top var(--ink-history-duration) var(--ink-slide-ease), visibility 0s var(--ink-history-duration);
+}
+.ink-study__stage[data-search-ready="true"] .ink-study__history-drawer {
+  visibility: visible;
+  pointer-events: auto;
+  transition-delay: 0s;
+}
+.ink-study__stage[data-history-open="true"] .ink-study__history-drawer { top: 9.5%; }
+.ink-study__history-toggle {
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  justify-content: center;
+  width: 40px;
+  height: 34px;
+  min-height: 34px;
+  padding: 0;
+  border: 1px solid #ffffffa6;
+  border-bottom: 0;
+  border-radius: 18px 18px 0 0;
+  background: var(--ink-history-glass);
+  color: #111;
+  backdrop-filter: blur(14px);
+  transform: translateX(-50%);
+  opacity: 0;
+  transition: width 420ms var(--ink-slide-ease),
+    opacity 180ms var(--ink-slide-ease), color 160ms var(--ink-slide-ease), background-color 160ms var(--ink-slide-ease);
+}
+.ink-study__stage[data-search-ready="true"] .ink-study__history-toggle { opacity: 1; }
+.ink-study__history-toggle svg {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition: opacity 180ms var(--ink-slide-ease);
+}
+.ink-study__history-toggle[aria-expanded="true"] svg { transform: translate(-50%, -50%) rotate(180deg); }
+.ink-study__history-toggle span { opacity: 0; white-space: nowrap; transition: opacity 240ms var(--ink-slide-ease); }
+.ink-study__history-toggle:is(:hover, :focus-visible) { width: 114px; background: var(--ink-history-glass); color: #111; }
+.ink-study__history-toggle:is(:hover, :focus-visible) svg { opacity: 0; }
+.ink-study__history-toggle:is(:hover, :focus-visible) span { opacity: 1; }
+.ink-study__history-panel {
+  height: 100%;
+  padding: clamp(22px, 3.6vw, 44px) clamp(18px, 3.2vw, 40px) 80px;
+  overflow: auto;
+  border: 1px solid #ffffffa6;
+  border-top: 0;
+  border-radius: 28px 28px 0 0;
+  background: var(--ink-history-glass);
+  box-shadow: 0 12px 42px #1111110c;
+  backdrop-filter: blur(14px);
+}
+.ink-study__history-panel:focus { outline: none; }
+.ink-study__history-header { display: flex; align-items: center; justify-content: space-between; gap: 20px; margin-bottom: 24px; }
+.ink-study__history-header > div { display: flex; align-items: center; gap: 12px; }
+.ink-study__history-header h2 { margin: 0; font-size: 18px; font-weight: 500; letter-spacing: 0.12em; }
+.ink-study__history-header span { color: #62625d; font-size: 11px; }
+.ink-study__history-header > button { flex: none; gap: 7px; }
+.ink-study__history-header svg, .ink-study__history-actions svg {
+  flex: none; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round;
+}
+.ink-study__history-empty { margin: 36px 0; color: #62625d; font-size: 12px; line-height: 1.6; }
+.ink-study__history-list { display: grid; gap: 12px; margin: 0; padding: 3px 5px; list-style: none; }
+/* 纵向通过真实内边距扩张推动后续条目，横向仅轻微伸展；命中区域始终覆盖原位置。 */
+.ink-study__history-record {
+  padding: 17px 20px;
+  border: 1px solid #ffffff80;
+  border-radius: 20px;
+  background: #ffffff45;
+  transform: scaleX(1);
+  transition: padding 360ms var(--ink-slide-ease), transform 360ms var(--ink-slide-ease),
+    background-color 360ms var(--ink-slide-ease), box-shadow 360ms var(--ink-slide-ease);
+}
+.ink-study__history-record:is(:hover, :focus-within) {
+  padding-block: 23px;
+  transform: scaleX(1.012);
+  background: #ffffff70;
+  box-shadow: 0 6px 18px #11111108;
+}
+.ink-study__history-record form { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin: 0; }
+.ink-study__history-list h3 {
+  flex: 1; min-width: 0; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 14px; font-weight: 500; line-height: 1.5;
+}
+.ink-study__history-title {
+  display: block; width: 100%; padding: 8px 0; border: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  background: transparent; color: inherit; text-align: left; font: inherit; cursor: pointer;
+}
+.ink-study__history-title[aria-current="true"] { font-weight: 600; }
+.ink-study__history-actions { display: flex; flex: none; align-items: center; gap: 8px; }
+.ink-study__history-actions button { gap: 6px; }
+.ink-study__history-title-input {
+  flex: 1; min-width: 0; width: 100%; padding: 6px 10px;
+  border: 1px solid #aaa; border-radius: 14px; outline-offset: 3px;
+  background: #ffffffa6; color: #111; font: inherit; font-size: 14px;
+}
+.ink-study__history-panel button:disabled { opacity: 0.45; cursor: default; }
+.ink-study__history-storage-status { margin: 20px 5px 0; color: #62625d; font-size: 10px; }
+
+/* 搜索融合：原胶囊收拢到中央，提交与引擎并入，停止图标最后浮现；真实计划到达后整体缩隐。 */
+.ink-study__search {
+  opacity: 1;
+  transform: scale(1);
+  transition: top 680ms var(--ink-slide-ease), left 680ms var(--ink-slide-ease),
+    width 680ms var(--ink-slide-ease), height 680ms var(--ink-slide-ease),
+    transform 520ms var(--ink-slide-ease), opacity 520ms var(--ink-slide-ease);
+}
+.ink-study__search-input-shell { transition: border-radius 680ms var(--ink-slide-ease); }
+.ink-study__search-stop {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  opacity: 0;
+  pointer-events: none;
+  transform: scale(0.7);
+  transition: opacity 420ms var(--ink-slide-ease), transform 420ms var(--ink-slide-ease);
+}
+.ink-study__search-stop svg { display: block; fill: currentColor; }
+.ink-study__stage:is([data-search-state="loading"], [data-search-state="graph"]) .ink-study__search {
+  top: calc(50% - var(--ink-search-height) / 2);
+  left: calc(50% - var(--ink-search-height) / 2);
+  width: var(--ink-search-height);
+  height: var(--ink-search-height);
+}
+.ink-study__stage:is([data-search-state="loading"], [data-search-state="graph"]) .ink-study__search-input { opacity: 0; }
+.ink-study__stage:is([data-search-state="loading"], [data-search-state="graph"]) .ink-study__search-submit {
+  width: 0; margin-left: 0; opacity: 0;
+}
+.ink-study__stage:is([data-search-state="loading"], [data-search-state="graph"]) .ink-study__engine {
+  top: calc(50% - var(--ink-pill-height) / 2);
+  transform: translate(-50%, 0) scale(0.25);
+  opacity: 0;
+  pointer-events: none;
+  transition: top 680ms var(--ink-slide-ease), transform 680ms var(--ink-slide-ease), opacity 680ms var(--ink-slide-ease);
+}
+.ink-study__stage[data-search-state="loading"] .ink-study__search-stop {
+  opacity: 1; transform: scale(1); pointer-events: auto; transition-delay: 260ms;
+}
+.ink-study__stage[data-search-state="graph"] .ink-study__search { transform: scale(0); opacity: 0; pointer-events: none; }
+.ink-study__search-status {
+  position: absolute;
+  bottom: 72px;
+  left: 50%;
+  width: max-content;
+  max-width: min(80vw, 420px);
+  transform: translateX(-50%);
+  text-align: center;
+  pointer-events: auto;
+}
+.ink-study__search-status .ink-study__run-status { margin: 0; font-size: 10px; }
+.ink-study__search-status .ink-study__search-feedback { margin: 8px auto 0; }
+.ink-study__search-status .ink-study__storage-error { margin: 8px auto 0; }
+
+/* 墨迹图仍是原 React Flow：完整图先布局，GPU 根据固定节点盒读取同一屏幕坐标。 */
+.ink-study__graph {
+  position: absolute; z-index: 2; inset: 0; outline: none;
+  opacity: 1;
+  transition: opacity 260ms var(--ink-slide-ease);
+}
+.ink-study__graph[data-returning="true"] { opacity: 0; pointer-events: none; }
+.ink-study__graph .graph-canvas--ink { position: relative; width: 100%; height: 100%; background: transparent; }
+/* 画布始终连续绘制；只在真实布局/墨团搬动期间管理文字、正式边与控件的显隐。 */
+.graph-canvas--ink .react-flow {
+  --xy-background-color: transparent;
+  --xy-edge-stroke: #77776f;
+  --xy-edge-stroke-width: 1.2;
+  --xy-edge-label-background-color: #f3f3f1;
+  --xy-edge-label-color: #62625d;
+}
+.graph-canvas--ink .react-flow__node { width: 240px; height: 112px; border: 0; background: transparent; box-shadow: none; }
+.graph-canvas--ink .ink-graph-node--hidden { visibility: hidden; pointer-events: none; }
+.ink-graph-node { width: 240px; height: 112px; color: #fff; text-align: left; }
+.ink-graph-node .react-flow__handle { opacity: 0; pointer-events: none; }
+.ink-graph-node__content {
+  height: 100%;
+  padding: 8px 16px;
+  border-radius: 30px;
+  opacity: 0;
+  transform: scale(0.85);
+  translate: var(--ink-transfer-x, 0px) var(--ink-transfer-y, 0px);
+  scale: var(--ink-transfer-scale, 1);
+  text-shadow: 0 1px 5px #0007;
+  transition: opacity 560ms var(--ink-slide-ease), transform 560ms var(--ink-slide-ease), outline-color 560ms var(--ink-slide-ease);
+}
+.ink-graph-node--visible .ink-graph-node__content { opacity: 1; transform: scale(1); }
+.graph-canvas--ink:is([data-ink-content-state="measuring"], [data-ink-content-state="moving"]) .ink-graph-node__content { opacity: 0; }
+.graph-canvas--ink[data-ink-content-state="moving"] .react-flow__node[data-ink-label-source="true"] .ink-graph-node__content {
+  opacity: var(--ink-transfer-opacity, 1);
+  transform: scale(1);
+  transition-duration: 120ms, 120ms, 120ms;
+}
+.ink-study__graph[data-resuming="true"] .graph-canvas--ink[data-ink-content-state="ready"] .ink-graph-node__content {
+  transition-duration: 220ms, 220ms, 220ms;
+}
+.graph-canvas--ink .react-flow__edge, .graph-canvas--ink .react-flow__controls { transition: opacity 220ms var(--ink-slide-ease); }
+.graph-canvas--ink:is([data-ink-content-state="measuring"], [data-ink-content-state="moving"]) :is(.react-flow__edge, .react-flow__controls) {
+  opacity: 0;
+  pointer-events: none;
+}
+.ink-graph-node__eyebrow { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 9px; letter-spacing: 0.05em; }
+.ink-graph-node h3, .ink-graph-node p { display: -webkit-box; -webkit-box-orient: vertical; overflow: hidden; }
+.ink-graph-node h3 { -webkit-line-clamp: 2; margin: 5px 0 0; font-size: 15px; font-weight: 600; line-height: 1.12; }
+.ink-graph-node p { -webkit-line-clamp: 2; margin: 4px 0 0; font-size: 10px; line-height: 1.25; opacity: 0.88; }
+.ink-graph-node__detail { display: block; margin-top: 3px; font-size: 9px; line-height: 1.2; opacity: 0.85; }
+.graph-canvas--ink .react-flow__node:is(.selected, :focus-visible) .ink-graph-node__content {
+  outline: 1px solid #ffffffb3; outline-offset: 6px;
+}
+.ink-study__stage:not([data-ink-renderer="active"]) .ink-graph-node__content {
+  background: linear-gradient(135deg, #332a79, #923359 70%, #a9502c);
+  box-shadow: 0 12px 24px #11111115;
+}
+.graph-canvas--ink .react-flow__edge { animation: ink-edge-in 560ms var(--ink-slide-ease) both; }
+/* 此图曾减弱动态并已全显时，恢复系统偏好也不能重启已挂载边的透明度动画。 */
+.graph-canvas--ink[data-reveal-settled="true"] .react-flow__edge { animation: none; }
+.graph-canvas--ink .graph-edge--related .react-flow__edge-path { stroke-dasharray: 4 6; stroke: #a0a097; }
+.graph-canvas--ink .react-flow__edge-text { font-size: 9px; }
+.graph-canvas--ink .react-flow__edge-textbg { fill: #f3f3f1; fill-opacity: 0.85; }
+.graph-canvas--ink .react-flow__controls { overflow: hidden; display: flex; border-radius: 24px; box-shadow: none; }
+.graph-canvas--ink .react-flow__controls-button { width: 28px; height: 28px; padding: 8px; border: 0; background: #111; color: #fff; fill: #fff; transition: background-color 180ms var(--ink-slide-ease); }
+.graph-canvas--ink .react-flow__controls-button:hover { background: #555; }
+.graph-canvas--ink .graph-edit-notice:empty { display: none; }
+@keyframes ink-edge-in { from { opacity: 0; } to { opacity: 1; } }
+.ink-study__language { top: var(--ink-corner-top); right: var(--ink-corner-inset); }
+.ink-study__chevron {
+  display: block;
+  flex: none;
+  transform: translateY(-0.5px);
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition: transform 180ms var(--ink-slide-ease);
+}
+.ink-study__language [aria-expanded="true"], .ink-study__engine [aria-expanded="true"] { background: #fff; color: #111; }
+.ink-study__language [aria-expanded="true"] .ink-study__chevron,
+.ink-study__engine [aria-expanded="true"] .ink-study__chevron { transform: translateY(-0.5px) rotate(180deg); }
+.ink-study__language-options {
+  position: absolute;
+  top: calc(100% + 9px);
+  right: 0;
+  width: 148px;
+  padding: 6px;
+  border: 1px solid #e2e2de;
+  border-radius: 22px;
+  background: #fff;
+  box-shadow: 0 8px 24px #11111112;
+}
+.ink-study__language-options button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  min-height: 34px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 18px;
+  background: transparent;
+  color: #595955;
+  font-size: 11px;
+  cursor: pointer;
+}
+.ink-study__language-options button:hover { background: #f0f0ed; color: #111; }
+.ink-study__language-options button[aria-pressed="true"] { background: #111; color: #fff; }
+
+/* 联系胶囊向左伸长，右侧锚点固定；邮箱在收起时不占宽，聚焦与悬浮使用相同状态。 */
+.ink-study__contact-area { right: var(--ink-corner-inset); bottom: var(--ink-corner-top); }
+.ink-study__contact { gap: 0; }
+.ink-study__contact-email {
+  max-width: 0;
+  margin-left: 0;
+  overflow: hidden;
+  opacity: 0;
+  white-space: nowrap;
+  transition: max-width 420ms var(--ink-slide-ease),
+    margin-left 420ms var(--ink-slide-ease), opacity 220ms var(--ink-slide-ease);
+}
+.ink-study__contact:is(:hover, :focus-visible) { background: #fff; color: #111; }
+.ink-study__contact:is(:hover, :focus-visible) .ink-study__contact-email {
+  max-width: 220px;
+  margin-left: 18px;
+  opacity: 1;
+}
+.ink-study__contact-feedback {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 10px);
+  padding: 7px 10px;
+  border: 1px solid #e2e2de;
+  border-radius: 12px;
+  background: #fff;
+  color: #595955;
+  font-size: 10px;
+  font-weight: 400;
+  white-space: nowrap;
+  pointer-events: none;
+}
+/* 空态仅移除视觉占位，保留状态区，让下一次复制结果仍可被播报。 */
+.ink-study__contact-feedback:empty { opacity: 0; padding: 0; border-width: 0; }
+
+/* 触屏与减弱动态：角落控件不与主字重叠，实际图形暂停由渲染器同步处理。 */
+@media (max-width: 600px) {
+  .ink-study { padding: 9px; }
+  .ink-study__stage {
+    --ink-corner-top: 22px;
+    --ink-corner-inset: 19px;
+    --ink-pill-height: 34px;
+    min-height: calc(100svh - 18px);
+    border-radius: 22px;
+  }
+  .ink-study__stage[data-layer="explore"][data-search-state="input"] .ink-study__search { left: 7%; width: 86%; }
+  .ink-study__history-drawer { left: 7%; width: 86%; }
+  .ink-study__history-header { flex-wrap: wrap; gap: 12px; }
+  .ink-study__history-record { padding-inline: 14px; }
+  .ink-study__history-record form { flex-wrap: wrap; gap: 12px; }
+  .ink-study__history-list h3, .ink-study__history-title-input { flex-basis: 100%; }
+  .ink-study__history-actions { margin-left: auto; }
+}
+@media (pointer: coarse) {
+  .ink-study__stage { --ink-pill-height: 44px; }
+  .ink-study__language-options button { min-height: 44px; }
+  .ink-study__back { width: 44px; height: 44px; }
+  .ink-study__history-toggle { height: 44px; min-height: 44px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ink-study__pill, .ink-study__intro, .ink-study__back, .ink-study__chevron, .ink-study__contact-email,
+  .ink-study__wordmark, .ink-study__tagline, .ink-study__search, .ink-study__search-input,
+  .ink-study__search-submit, .ink-study__engine, .ink-study__search-layer, .ink-study__history-drawer,
+  .ink-study__history-toggle, .ink-study__history-toggle svg, .ink-study__history-toggle span,
+  .ink-study__history-record, .ink-study__search-stop, .ink-study__search-input-shell,
+  .ink-study__graph, .ink-graph-node__content, .graph-canvas--ink .react-flow__controls-button { transition: none; }
+  .ink-study__graph[data-resuming="true"] .graph-canvas--ink .ink-graph-node__content,
+  .graph-canvas--ink .react-flow__edge, .graph-canvas--ink .react-flow__controls { transition: none; }
+  .graph-canvas--ink .react-flow__edge { animation: none; }
+}
