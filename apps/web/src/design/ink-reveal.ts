@@ -4,7 +4,7 @@
  * 设计边界：所有颜色、笔触、液滴和文字遮罩均在本地生成，不加载录屏、图片或网络素材。
  * 生命周期：暂停时停止逐帧绘制；卸载时释放对象而不主动丢失上下文，兼容 React StrictMode。
  */
-import { INK_NODE_FORM, INK_SCENE_TRANSITION, inkEase, type InkScene } from "./ink-graph-motion.js";
+import { INK_NODE_FORM, INK_SCENE_TRANSITION, inkEase, inkSceneKey, type InkScene } from "./ink-graph-motion.js";
 import { followInkTrail, pairInkNodes, type InkNodeTransferPair } from "./ink-transfer.js";
 import { inkMaterialHome, inkMaterialRadius, pushInkMaterial, stepInkMaterial, type InkMaterialOffset } from "./ink-material.js";
 
@@ -314,13 +314,6 @@ type SceneMorph = {
 type DragPosition = { point: NodePosition; tail: TrailPoint[]; offsets: InkMaterialOffset[];
   points: readonly MaterialPoint[]; lastTarget: TrailPoint; drag: number; amount: number };
 
-/** 这里只识别视觉实体与时钟变化；资源状态更新不能重启过渡。 */
-function sceneKey(scene: InkScene): string {
-  if (scene.kind!=="graph") return scene.kind==="pointer" ? "pointer" : `loading:${scene.startedAt}`;
-  return JSON.stringify([scene.kind,scene.graphId,scene.startedAt,scene.resume,scene.nodes.map(node => [node.id,node.bornAt,node.seed]),
-    scene.branches.map(branch => [branch.id,branch.source,branch.target,branch.startAt,branch.arriveAt,branch.detachAt])]);
-}
-
 function mixPoint(from: TrailPoint, to: TrailPoint, amount: number): TrailPoint {
   return { x: from.x+(to.x-from.x)*amount,y: from.y+(to.y-from.y)*amount };
 }
@@ -454,7 +447,7 @@ export function createInkReveal(
   let activePointer: TrailPoint | null = null;
   let textStrength = 0;
   let scene: InkScene = { kind: "pointer" };
-  let currentSceneKey = sceneKey(scene);
+  let currentSceneKey = inkSceneKey(scene);
   let sceneEnteredAt = performance.now();
   let sceneGeneration = 0;
   let graphSettled = false;
@@ -1072,7 +1065,7 @@ export function createInkReveal(
   return {
     refreshTextPosition: draw,
     setScene(next) {
-      const nextKey = sceneKey(next);
+      const nextKey = inkSceneKey(next);
       const changed = currentSceneKey!==nextKey;
       if (changed) {
         const reform = next.kind==="graph" && (next.resume===true || (scene.kind==="graph" && scene.startedAt===next.startedAt));

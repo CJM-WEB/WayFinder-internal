@@ -21,6 +21,17 @@ export type InkScene = Readonly<{ kind: "pointer" }>
   // 恢复只分裂已有墨团，不重播旧搜索的传播时间表或改变真实图状态。
   | Readonly<{ kind: "graph"; startedAt: number; resume?: boolean; graphId?: string } & InkGraphMotion>;
 
+/** 页面交互门禁和渲染器共用场景标识；等价计划不会启动过渡，也不会发出完成事件。 */
+export function inkSceneKey(scene: InkScene): string {
+  if (scene.kind === "pointer") return "pointer";
+  if (scene.kind === "loading") return `loading:${scene.startedAt}`;
+  return JSON.stringify([
+    scene.kind, scene.graphId, scene.startedAt, scene.resume,
+    scene.nodes.map(node => [node.id, node.bornAt, node.seed]),
+    scene.branches.map(branch => [branch.id, branch.source, branch.target, branch.startAt, branch.arriveAt, branch.detachAt]),
+  ]);
+}
+
 /** 与 CSS 的 cubic-bezier(0.6, 0, 0.4, 1) 共用 S 曲线，GPU 飞行与 DOM 过渡同速。 */
 export function inkEase(value: number): number {
   if (value <= 0) return 0;

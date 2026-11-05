@@ -10,7 +10,7 @@ import { resolveEntryLanguage } from "../i18n/entry-language.js";
 import { getMessages } from "../i18n/messages.js";
 import { createInkReveal, type InkRevealController, type InkTransferEvent } from "./ink-reveal.js";
 import { InkSearchHistory } from "./ink-search-history.js";
-import type { InkScene } from "./ink-graph-motion.js";
+import { inkSceneKey, type InkScene } from "./ink-graph-motion.js";
 import { startOmniboxSubmission, type InvalidOmniboxInputReason } from "../lib/omnibox-submission.js";
 import { requestSafeUrlOpen } from "../lib/url.js";
 import { useStore } from "zustand";
@@ -265,9 +265,8 @@ export default function InkApp() {
   }, []);
 
   const setInkScene = useCallback((scene: InkScene): void => {
-    const previous = visualScene.current;
-    const changed = scene.kind !== previous.kind || (scene.kind === "graph" && previous.kind === "graph" &&
-      (scene.graphId !== previous.graphId || scene.startedAt !== previous.startedAt || scene.nodes !== previous.nodes || scene.branches !== previous.branches));
+    // 改型可能只重建计划数组。渲染器认可的场景变化才需要等待文字交接。
+    const changed = inkSceneKey(scene) !== inkSceneKey(visualScene.current);
     visualScene.current = scene;
     targetLabels.current = nodeLabels;
     if (scene.kind !== "graph") {

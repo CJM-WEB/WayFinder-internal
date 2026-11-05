@@ -1607,6 +1607,16 @@ async function openInkNodeMenu(page: Page, nodeId = "workspace-node-0"): Promise
   await expect(page.locator('.ink-workspace-menu[role="menu"]')).toBeVisible();
 }
 
+/** 选择路径四分之一处并核对真实命中 ID，避免交叉连线时编辑上层另一条边。 */
+async function openInkEdgeMenu(page: Page, edgeId: string): Promise<void> {
+  const point = await page.locator(`.react-flow__edge[data-id="${edgeId}"] .react-flow__edge-path`).evaluate(element => {
+    const path = element as SVGPathElement, mid = path.getPointAtLength(path.getTotalLength() / 4);
+    const screen = new DOMPoint(mid.x, mid.y).matrixTransform(path.getScreenCTM() ?? undefined); return { x: screen.x, y: screen.y };
+  });
+  expect(await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.closest(".react-flow__edge")?.getAttribute("data-id"), point)).toBe(edgeId);
+  await page.mouse.click(point.x, point.y, { button: "right" });
+}
+
 async function openInkUndo(page: Page): Promise<void> {
   await page.locator(".ink-study__history-dock").hover();
   await page.getByRole("button", { name: "撤销", exact: true }).click();
@@ -4151,22 +4161,13 @@ test("正式入口移动不入撤销、连线编辑与布局持久化保持原�
   await expect(page.locator(".react-flow__edge")).toHaveCount(2);
   const edgeId = (await readStoredWorkspace(page))?.documents.find(document => document.id === graphId)?.edges[0]?.id;
   if (edgeId === undefined) throw new Error("没有已保存连线");
-  const edgeMenu = async (): Promise<void> => {
-    const point = await page.locator(`.react-flow__edge[data-id="${edgeId}"] .react-flow__edge-path`).evaluate(element => {
-      const path = element as SVGPathElement, mid = path.getPointAtLength(path.getTotalLength() / 4);
-      const screen = new DOMPoint(mid.x, mid.y).matrixTransform(path.getScreenCTM() ?? undefined); return { x: screen.x, y: screen.y };
-    });
-    // 选择路径四分之一处并核对真实命中ID，避免交叉连线时编辑上层另一条边。
-    expect(await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.closest(".react-flow__edge")?.getAttribute("data-id"), point)).toBe(edgeId);
-    await page.mouse.click(point.x, point.y, { button: "right" });
-  };
-  await edgeMenu(); await page.getByRole("menuitemradio", { name: "相关", exact: true }).click();
+  await openInkEdgeMenu(page, edgeId); await page.getByRole("menuitemradio", { name: "相关", exact: true }).click();
   await expect(page.locator(".graph-edge--related")).toHaveCount(2);
-  await edgeMenu(); await page.getByRole("menuitemradio", { name: "推荐下一步", exact: true }).click();
+  await openInkEdgeMenu(page, edgeId); await page.getByRole("menuitemradio", { name: "推荐下一步", exact: true }).click();
   await expect(page.locator(".graph-edge--recommended")).toHaveCount(1);
   await connect(secondId, firstId); await expect(page.getByRole("alert")).toContainText("推荐下一步不能形成环");
   await expect(page.locator(".react-flow__edge")).toHaveCount(2);
-  await edgeMenu(); await page.getByRole("menuitem", { name: "删除连线", exact: true }).click();
+  await openInkEdgeMenu(page, edgeId); await page.getByRole("menuitem", { name: "删除连线", exact: true }).click();
   await expect(page.locator(".react-flow__edge")).toHaveCount(1); await undoInkEvent(page, "删除连线");
   await expect(page.locator(".react-flow__edge")).toHaveCount(2);
   await first.press("Delete"); await expect(page.locator("[data-ink-node]")).toHaveCount(3);
@@ -4175,6 +4176,47 @@ test("正式入口移动不入撤销、连线编辑与布局持久化保持原�
   await restoreInkHistoryFromInput(page, "布局图");
   await expectInkPosition(page, keyboardAfter, firstId); await expect(page.locator(".react-flow__edge")).toHaveCount(2);
   expect(await readFixtureSnapshots(page)).toHaveLength(0); expect(pageErrors).toEqual([]); expect(warnings).toEqual([]);
+});
+
+/** 两个按顺序摆放的主节点改型后传播计划等价，实际 WebGL 画布应保持可操作。 */
+test("真实WebGL历史图双向切换连线类型后仍可编辑和撤销", async ({ page }) => {
+  const document = createWaterDocuments()[1];
+  const edge = document?.edges[0];
+  if (document === undefined || edge === undefined) throw new Error("缺少双节点连线固定样例");
+  await prepareWaterPage(page, [document]);
+  await page.getByRole("button", { name: "开始探索", exact: true }).click();
+  await restoreInkHistoryFromInput(page, document.title);
+  await expectWaterReady(page, document);
+
+  const canvas = page.locator(".graph-canvas--ink");
+  const expectEdgeType = async (type: typeof edge.type): Promise<void> => {
+    const renderedClass = type === "related_to" ? "graph-edge--related" : "graph-edge--recommended";
+    await expect(canvas.locator(`.react-flow__edge[data-id="${edge.id}"].${renderedClass}`)).toHaveCount(1);
+    await expect.poll(async () => (await readStoredWorkspace(page))?.documents.find(item => item.id === document.id)?.edges)
+      .toEqual([{ ...edge, type }]);
+    // 数据已经保存，动画计划却没有变化。直接读取交互门禁，避免用超时等待掩盖永久 moving。
+    expect(await canvas.evaluate(element => ({ state: element.getAttribute("data-ink-content-state"),
+      inert: element.closest("[inert]") !== null }))).toEqual({ state: "ready", inert: false });
+  };
+  const menu = page.getByRole("menu", { name: "图操作菜单", exact: true });
+  await openInkEdgeMenu(page, edge.id);
+  await menu.getByRole("menuitemradio", { name: "相关", exact: true }).click();
+  await expectEdgeType("related_to");
+  await openInkEdgeMenu(page, edge.id);
+  await menu.getByRole("menuitemradio", { name: "推荐下一步", exact: true }).click();
+  await expectEdgeType("recommended_next");
+  await openInkEdgeMenu(page, edge.id);
+  await expect(menu.getByRole("menuitemradio", { name: "推荐下一步", exact: true })).toHaveAttribute("aria-checked", "true");
+  await menu.press("Escape");
+
+  await undoInkEvent(page, "保存连线");
+  await expectEdgeType("related_to");
+  await redoInkEvent(page);
+  await expectEdgeType("recommended_next");
+  for (const [nodeId, position] of Object.entries(document.positions)) await expectInkPosition(page, position, nodeId);
+  expect((await readStoredWorkspace(page))?.documents.find(item => item.id === document.id)?.positions).toEqual(document.positions);
+  await expect(page.locator(".ink-study__stage")).toHaveAttribute("data-ink-renderer", "active");
+  expect(await readFixtureSnapshots(page)).toHaveLength(0);
 });
 
 /** 引擎选择仅改后续请求，资源实际来源与人工编辑的节点偏好分别持久保存。 */
