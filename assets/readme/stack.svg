@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="286" height="24" viewBox="0 0 286 24" role="img" aria-labelledby="title">
+  <title id="title">React, Vite, TypeScript, Node.js</title>
+  <!-- 两版 README 共用的技术栈徽章。使用统一高度和间距，在窄屏上可整体缩放。 -->
+  <g fill="#fff" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="12" font-weight="600" text-anchor="middle">
+    <rect y="1" width="60" height="22" rx="4" fill="#0E7490" />
+    <text x="30" y="16">React</text>
+    <rect x="66" y="1" width="48" height="22" rx="4" fill="#6D28D9" />
+    <text x="90" y="16">Vite</text>
+    <rect x="120" y="1" width="88" height="22" rx="4" fill="#1D4ED8" />
+    <text x="164" y="16">TypeScript</text>
+    <rect x="214" y="1" width="72" height="22" rx="4" fill="#166534" />
+    <text x="250" y="16">Node.js</text>
+  </g>
+</svg>
