@@ -49,6 +49,8 @@ Set up a local copy using [macOS Terminal](#macos-terminal) or [Windows PowerShe
 
 ### Search and browse
 
+首次搜索前请展开底部箭头，进入 **Settings（设置）**，分别保存 DeepSeek 和 SerpAPI 的自带 **API key（API 密钥）**；作者开放体验时，也可选择 **Author trial（作者体验）** 并验证 **Invitation code（邀请码）**。服务端环境文件中的 Key 不会自动填入浏览器，详见[凭据与部署说明（简体中文）](./apps/server/EXPERIENCE.md)。
+
 1. Select **Start exploring** and enter a keyword or question. Use the menu below the search box to switch between **Google** and **Baidu**. Press **Enter** to search.
 2. Scroll to zoom or drag the blank canvas to pan. Select a node to see its resources on the right. Hover over a resource or use **Show details** to inspect it, then click its title to open the original page.
 

@@ -3,13 +3,16 @@ import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { SEARCH_CREDENTIALS_HEADER } from "@wayfinder/contracts";
+import { SEARCH_CREDENTIALS_HEADER, type ProviderSearchRequest } from "@wayfinder/contracts";
 import type { FastifyInstance } from "fastify";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { createDeferred } from "../../../../tests/support/test-infrastructure.mjs";
 import { buildServer } from "../app.js";
 import { parseServerConfig } from "../config.js";
+import { createConcurrencyLimitedProviders, createProviderConcurrencyQueues } from "../orchestrator/provider-concurrency.js";
 import { sendCredentialsAccessError } from "../routes/experience.js";
+import { callAuthorizedLLM } from "./authorized-llm-call.js";
 import { createExperienceCookie, CredentialsAccessError } from "./experience-authorization.js";
 import { readExperienceConfig, updateExperienceConfig } from "./experience-config.js";
 import { prepareSearchCredentialScope, type SearchCredentialScope } from "./search-credentials.js";
@@ -56,6 +59,57 @@ afterEach(async () => {
 });
 
 describe("搜索请求凭据范围", () => {
+  it.each(["serpapi", "deepseek"] as const)("真实Cookie取得%s资格后排队，改码使实际出队零作者调用且不误伤自带请求", async service => {
+    const { send, captured, configPath, cookie } = await fixture();
+    expect((await send(own)).statusCode).toBe(204);
+    expect((await send({ deepseek: { source: "author" }, serpapi: { source: "author" } }, { cookie })).statusCode).toBe(204);
+    const ownScope = captured[0], authorScope = captured[1];
+    if (ownScope === undefined || authorScope === undefined) throw new Error("缺少真实校验后的假凭据范围");
+    const queues = createProviderConcurrencyQueues({ search: 1, llm: 1 });
+    const blocking = createDeferred<void>();
+    const calls: string[] = [];
+    const input = { system: "固定假指令", user: "固定假查询", schemaName: "test", schema: {} };
+    const request: ProviderSearchRequest = { kind: "node", nodeId: "fake-node", query: "固定假查询", maxResults: 1, capability: "general", freshnessSensitive: false, language: "zh-CN" };
+    const wrap = (scope: SearchCredentialScope, label: string) => createConcurrencyLimitedProviders({
+      concurrency: { search: 1, llm: 1 }, queues,
+      searchProvider: { id: label, capabilities: ["general"], search: async (_request, signal) => {
+        // 与生产相同：资格复核位于共享许可内部，真实调用计数只在通过检查后增加。
+        await scope.assertService("serpapi", signal);
+        calls.push(label);
+        if (label === "own") await blocking.promise;
+        await scope.assertService("serpapi", signal);
+        return [];
+      } },
+      llmProvider: { id: label, structured: (structuredInput, options) => callAuthorizedLLM({
+        id: label, structured: async () => {
+          calls.push(label);
+          if (label === "own") await blocking.promise;
+          return {};
+        },
+      }, structuredInput, options, signal => scope.assertService("deepseek", signal)) },
+    });
+    const ownProvider = wrap(ownScope, "own"), authorProvider = wrap(authorScope, "author");
+    const run = (provider: ReturnType<typeof wrap>, scope: SearchCredentialScope) => service === "serpapi"
+      ? provider.searchProvider.search(request, scope.signal)
+      : provider.llmProvider.structured(input, { signal: scope.signal, timeoutMs: 30_000 });
+    const active = run(ownProvider, ownScope);
+    await vi.waitFor(() => expect(calls).toEqual(["own"]));
+    const queued = run(authorProvider, authorScope);
+    // 先安装拒绝断言，确保出队中止不会成为未处理的 Promise（异步结果）拒绝。
+    const denied = expect(queued).rejects.toMatchObject({ code: "EXPERIENCE_REVOKED", service });
+    const queue = service === "serpapi" ? queues.search : queues.llm;
+    await vi.waitFor(() => expect(queue.pendingCount).toBe(1));
+    const nextOwn = run(ownProvider, ownScope);
+    expect(queue.pendingCount).toBe(2);
+    await updateExperienceConfig(configPath, { inviteCode: "fake-after-queue" });
+    blocking.resolve();
+    await Promise.all([active, denied, nextOwn]);
+    expect(calls).toEqual(["own", "own"]);
+    expect(authorScope.signal.aborted).toBe(true);
+    expect(ownScope.signal.aborted).toBe(false);
+    expect((await send({ deepseek: { source: "author" }, serpapi: { source: "author" } }, { cookie })).statusCode).toBe(403);
+  });
+
   it("缺失、非法和重复头均在进入运行前固定拒绝，不回显原始Key", async () => {
     const { send, server, captured } = await fixture();
     expect((await send(undefined)).json()).toEqual({ code: "CREDENTIALS_REQUIRED" });

@@ -12,15 +12,16 @@ import {
   type ProviderSearchRequest, type SearchCredentials, type StreamEvent,
 } from "@wayfinder/contracts";
 import type { FastifyInstance } from "fastify";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createDeferred } from "../../../../tests/support/test-infrastructure.mjs";
 import { GraphOutlineSchema } from "../ai/graph-outline.js";
 import { SearchPlanBundleSchema } from "../ai/search-plan-generator.js";
 import { parseServerConfig } from "../config.js";
+import { RunLogRecordSchema } from "../observability/run-log.js";
 import { buildProductionServer } from "../production-server.js";
 import { SerpApiBingSearchProvider } from "../search/providers/serpapi-bing.js";
-import { updateExperienceConfig } from "./experience-config.js";
+import { readExperienceConfig, updateExperienceConfig } from "./experience-config.js";
 import type { EffectiveProviderKeys } from "./search-credentials.js";
 
 const QUERY = "TypeScript compiler guide";
@@ -55,8 +56,10 @@ type SearchCall = { key: string | null; query: string };
 type SearchRequestCall = { key: string; query: string; kind: ProviderSearchRequest["kind"] };
 type FixtureOptions = {
   local?: boolean;
+  runLogging?: boolean;
   beforeLlm?: (call: LlmCall) => Promise<void>;
   beforeFetchResponse?: (call: SearchCall) => Promise<void>;
+  fetchResponse?: (call: SearchCall) => Promise<Response | undefined>;
 };
 
 const directories: string[] = [];
@@ -103,6 +106,7 @@ async function fixture(options: FixtureOptions = {}) {
     LLM_PROVIDER: "deepseek", LLM_MODEL: "deepseek-flash",
     LLM_API_KEY: AUTHOR_KEYS.llmApiKey, SERPAPI_API_KEY: AUTHOR_KEYS.serpApiKey,
     EXPERIENCE_CONFIG_PATH: configPath, PUBLIC_ORIGIN: options.local ? "" : ORIGIN,
+    RUN_LOGGING: options.runLogging ? "true" : "false",
   });
   const server = await buildProductionServer({
     config, repositoryRoot: root, webAssetsDirectory,
@@ -117,6 +121,8 @@ async function fixture(options: FixtureOptions = {}) {
             const call = { key: url.searchParams.get("api_key"), query: url.searchParams.get("q") ?? "" };
             calls.search.push(call);
             await options.beforeFetchResponse?.(call);
+            const override = await options.fetchResponse?.(call);
+            if (override !== undefined) return override;
             return new Response(JSON.stringify({
               search_metadata: { status: "Success" },
               organic_results: [{ position: 1, title: QUERY, link: `https://docs.example.com/${call.query === BROAD_QUERY ? "ecosystem" : "compiler"}`, snippet: "Learn TypeScript compiler options with practical examples." }],
@@ -162,10 +168,100 @@ async function fixture(options: FixtureOptions = {}) {
     if (typeof cookie !== "string") throw new Error("预期已签发假体验 Cookie");
     return cookie.split(";")[0] ?? "";
   };
-  return { server, configPath, calls, search, grant };
+  return { server, configPath, root, calls, search, grant };
+}
+
+/** 用真正回环 HTTP 观察撤销后的物理断流；所有访问均为临时本机服务。 */
+async function startAuthorStream(server: FastifyInstance) {
+  const address = await server.listen({ port: 0, host: "127.0.0.1" });
+  const grant = await fetch(`${address}/api/experience`, {
+    method: "POST", headers: { origin: address, "content-type": "application/json" }, body: JSON.stringify({ inviteCode: INVITE }),
+  });
+  expect(grant.status).toBe(200);
+  const header = grant.headers.get("set-cookie");
+  if (header === null) throw new Error("预期真实HTTP授权返回专用Cookie");
+  const cookie = header.split(";")[0] ?? "";
+  await grant.body?.cancel();
+  const response = await fetch(`${address}/api/search`, {
+    method: "POST", headers: { origin: address, cookie, [SEARCH_CREDENTIALS_HEADER]: JSON.stringify(AUTHOR_CREDENTIALS), "content-type": "application/json" },
+    body: JSON.stringify(payload("bounded-retry-revocation")),
+  });
+  expect(response.status).toBe(200);
+  if (response.body === null) throw new Error("预期提供真实搜索流");
+  const reader = response.body.getReader();
+  const received = (async () => {
+    let text = "", terminated = false;
+    const decoder = new TextDecoder();
+    try {
+      for (;;) {
+        const next = await reader.read();
+        if (next.done) break;
+        text += decoder.decode(next.value, { stream: true });
+      }
+    } catch {
+      // 断流是待验证的取消结论，不把它当作完整或成功响应。
+      terminated = true;
+    } finally { reader.releaseLock(); }
+    return { text, terminated };
+  })();
+  return { received };
 }
 
 describe("生产搜索的请求凭据接线", () => {
+  it.each(["改码", "A→B→A"])("真实SerpAPI唯一重试前%s，旧Cookie不得发出第二次HTTP", async change => {
+    const firstAttempt = createDeferred<void>();
+    const responseGate = createDeferred<Response>();
+    const { server, configPath, calls } = await fixture({ local: true, fetchResponse: async () => {
+      firstAttempt.resolve();
+      return responseGate.promise;
+    } });
+    const { received } = await startAuthorStream(server);
+    await firstAttempt.promise;
+    await updateExperienceConfig(configPath, { inviteCode: "fake-retry-next" });
+    if (change === "A→B→A") await updateExperienceConfig(configPath, { inviteCode: INVITE });
+    // 503 在原有规则下允许唯一重试；资格检查必须先于该次真实HTTP及尝试遥测。
+    responseGate.resolve(new Response("fake-upstream-private-response", { status: 503 }));
+    const result = await received;
+    expect(result.terminated).toBe(true);
+    expect(events(result.text).some(event => event.type === "complete")).toBe(false);
+    expect(calls.search).toHaveLength(1);
+    expect(calls.requests.map(call => call.kind)).toEqual(["broad_discovery"]);
+    expect(calls.llm.map(call => call.stage)).toEqual(["planner"]);
+    expect(result.text).not.toContain("fake-upstream-private-response");
+  });
+
+  it("真实业务日志在自带、作者冷/热缓存及失败路径均无凭据或授权材料", async () => {
+    let privateFailureBody = "";
+    const { root, configPath, search, grant } = await fixture({ runLogging: true,
+      fetchResponse: async call => call.key === OWN_B.serpApiKey ? new Response(privateFailureBody, { status: 401 }) : undefined,
+    });
+    const cookie = await grant();
+    const current = await readExperienceConfig(configPath);
+    if (current === null) throw new Error("缺少临时假配置");
+    const secrets = [...Object.values(AUTHOR_KEYS), ...Object.values(OWN_A), ...Object.values(OWN_B),
+      INVITE, cookie, cookie.split("=")[1] ?? "", current.signingSecret];
+    privateFailureBody = JSON.stringify({ apiKey: OWN_B.serpApiKey, inviteCode: INVITE, cookie, signingSecret: current.signingSecret });
+    assertCompleted((await search("own-log", credentials(OWN_A))).body);
+    assertCompleted((await search("author-cold-log", AUTHOR_CREDENTIALS, cookie)).body);
+    assertCompleted((await search("author-hot-log", AUTHOR_CREDENTIALS, cookie)).body);
+    const failed = await search("failed-own-log", credentials(OWN_B));
+    expect(events(failed.body).some(event => event.type === "run.failed")).toBe(true);
+    const directory = path.join(root, "data", "runs");
+    await vi.waitFor(async () => {
+      const names = await fs.readdir(directory);
+      expect(names).toHaveLength(4);
+      const raw = await Promise.all(names.map(name => fs.readFile(path.join(directory, name), "utf8")));
+      const records = raw.map(text => RunLogRecordSchema.parse(JSON.parse(text) as unknown));
+      expect(records.filter(record => record.outcome === "complete")).toHaveLength(3);
+      expect(records.some(record => record.outcome === "failed")).toBe(true);
+      expect(records.some(record => record.cache.search.hitCount === 2 && record.counts.searchHttpAttempts === 0)).toBe(true);
+      for (const text of raw) {
+        for (const secret of secrets) expect(text).not.toContain(secret);
+        expect(text).not.toMatch(/"(?:apiKey|llmApiKey|serpApiKey|inviteCode|signingSecret|cookie|authorization)"/i);
+      }
+    }, { timeout: 3_000 });
+  });
+
   it("缺失、非法、重复凭据头及跨源请求在流式200和Provider工厂前拒绝", async () => {
     const { server, calls } = await fixture();
     const valid = credentialHeaders(credentials(OWN_A));
