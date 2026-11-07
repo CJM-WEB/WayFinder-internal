@@ -10,6 +10,85 @@
 import { z } from "zod";
 
 /**
+ * D9 凭据传输与搜索内容分离：此头仅供浏览器向同源后端提交本次凭据选择。
+ * 不得写入 URL、图内容、Prompt（提示词）或日志；体验授权另走专用安全通道。
+ */
+export const SEARCH_CREDENTIALS_HEADER = "x-wayfinder-credentials";
+
+/** 长度仅用于限制不可信输入的处理开销，不代表用户次数、时长或服务额度限制。 */
+export const MAX_API_KEY_LENGTH = 4096;
+export const MAX_INVITE_CODE_LENGTH = 4096;
+
+export const CredentialServiceSchema = z.enum(["deepseek", "serpapi"]);
+export type CredentialService = z.infer<typeof CredentialServiceSchema>;
+
+/**
+ * Key（密钥）必须能安全序列化到 HTTP 头；先拒绝控制字符和非 ASCII，再裁剪首尾空格。
+ * 不先 trim（裁剪），避免换行等非法输入被静默改成合法 Key；保存不代表上游已验证有效。
+ */
+export const ApiKeySchema = z.string()
+  .max(MAX_API_KEY_LENGTH)
+  .regex(/^[\x20-\x7E]+$/)
+  .trim()
+  .min(1);
+export type ApiKey = z.infer<typeof ApiKeySchema>;
+
+/**
+ * 每项服务显式选择来源；缺失或未知值不能默认使用作者凭据。
+ * author（作者）分支不接受 Key 或前端已验证标记，真正资格必须由服务端核对。
+ */
+export const ServiceCredentialsSchema = z.discriminatedUnion("source", [
+  z.strictObject({ source: z.literal("own"), apiKey: ApiKeySchema }),
+  z.strictObject({ source: z.literal("author") }),
+]);
+export type ServiceCredentials = z.infer<typeof ServiceCredentialsSchema>;
+
+export const SearchCredentialsSchema = z.strictObject({
+  deepseek: ServiceCredentialsSchema,
+  serpapi: ServiceCredentialsSchema,
+});
+export type SearchCredentials = z.infer<typeof SearchCredentialsSchema>;
+
+/** 公告允许作者主动公开邀请码；此响应不额外暴露独立邀请码、校验材料或部署秘密。 */
+export const SettingsPublicResponseSchema = z.strictObject({
+  announcement: z.string(),
+  experienceAvailable: z.boolean(),
+});
+export type SettingsPublicResponse = z.infer<typeof SettingsPublicResponseSchema>;
+
+/** 邀请码支持非控制字符 Unicode；和 Key 一样先校验原始输入，再裁剪首尾空白。 */
+export const ExperienceInviteRequestSchema = z.strictObject({
+  inviteCode: z.string()
+    .max(MAX_INVITE_CODE_LENGTH)
+    .regex(/^\P{Cc}+$/u)
+    .trim()
+    .min(1),
+});
+export type ExperienceInviteRequest = z.infer<typeof ExperienceInviteRequestSchema>;
+
+/** 布尔值只反馈当前资格状态，不是浏览器自行提交即可获得授权的凭证。 */
+export const ExperienceStatusResponseSchema = z.strictObject({
+  authorized: z.boolean(),
+});
+export type ExperienceStatusResponse = z.infer<typeof ExperienceStatusResponseSchema>;
+
+/** 前置错误发生在流式成功响应之前，不扩充图搜索的 AppError 或伪造节点终态。 */
+export const CredentialsErrorCodeSchema = z.enum([
+  "CREDENTIALS_REQUIRED",
+  "INVITE_CODE_INVALID",
+  "EXPERIENCE_REVOKED",
+  "EXPERIENCE_UNAVAILABLE",
+  "CREDENTIALS_INVALID",
+]);
+export type CredentialsErrorCode = z.infer<typeof CredentialsErrorCodeSchema>;
+
+export const CredentialsErrorResponseSchema = z.strictObject({
+  code: CredentialsErrorCodeSchema,
+  service: CredentialServiceSchema.optional(),
+});
+export type CredentialsErrorResponse = z.infer<typeof CredentialsErrorResponseSchema>;
+
+/**
  * Search Language（搜索语言）同时约束 UI、LLM 输出与 Provider 地区语境。
  * 使用明确 Locale，避免模糊 `en` 或运行时 Locale 猜测造成跨层漂移。
  */

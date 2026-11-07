@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "announcement": {
+      "type": "string"
+    },
+    "experienceAvailable": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "announcement",
+    "experienceAvailable"
+  ],
+  "additionalProperties": false
+}

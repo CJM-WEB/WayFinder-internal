@@ -38,6 +38,8 @@ const EnvironmentInputSchema = z
     LLM_MODEL: z.literal("deepseek-flash"),
     LLM_API_KEY: z.string().trim().min(1),
     SERPAPI_API_KEY: z.string().trim().min(1),
+    // 空值保持体验关闭；路径内容只由授权模块读取，永不送到前端。
+    EXPERIENCE_CONFIG_PATH: z.string().trim().default(""),
     SEARCH_TIMEOUT_MS: boundedInteger(16_000, RUN_DEADLINE_MS),
     PLANNER_TIMEOUT_MS: boundedInteger(
       MAX_LLM_CALL_TIMEOUT_MS,
@@ -74,6 +76,7 @@ const EnvironmentSchema = EnvironmentInputSchema
     llmModel: environment.LLM_MODEL,
     llmApiKey: environment.LLM_API_KEY,
     serpApiKey: environment.SERPAPI_API_KEY,
+    experienceConfigPath: environment.EXPERIENCE_CONFIG_PATH || null,
     timeouts: {
       searchMs: environment.SEARCH_TIMEOUT_MS,
       plannerMs: environment.PLANNER_TIMEOUT_MS,

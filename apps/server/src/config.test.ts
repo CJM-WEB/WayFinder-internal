@@ -51,6 +51,7 @@ describe("parseServerConfig", () => {
       llmModel: "deepseek-flash",
       llmApiKey: "test-llm-key",
       serpApiKey: "test-serpapi-key",
+      experienceConfigPath: null,
       timeouts: {
         searchMs: 16_000,
         plannerMs: 30_000,
