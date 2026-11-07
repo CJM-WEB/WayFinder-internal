@@ -13,6 +13,7 @@ import { TextDecoder } from "node:util";
 import {
   calculateSearchPlanMaxResults,
   GraphPlanSchema,
+  SEARCH_CREDENTIALS_HEADER,
   StreamEventSchema,
 } from "../../../packages/contracts/dist/index.js";
 import { parseServerConfig } from "../dist/config.js";
@@ -220,7 +221,14 @@ try {
 
   const response = await fetchFromLoopback(`${address}/api/search`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      Origin: address,
+      [SEARCH_CREDENTIALS_HEADER]: JSON.stringify({
+        deepseek: { source: "own", apiKey: "fake-smoke-llm-key" },
+        serpapi: { source: "own", apiKey: "fake-smoke-search-key" },
+      }),
+    },
     body: JSON.stringify({
       runId: "run-production-smoke",
       query: "TypeScript compiler guide",

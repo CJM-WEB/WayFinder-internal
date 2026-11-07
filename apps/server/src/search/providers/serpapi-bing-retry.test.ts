@@ -7,6 +7,8 @@
 import type { ProviderSearchRequest } from "@wayfinder/contracts";
 import { describe, expect, it, vi } from "vitest";
 
+import { createDeferred } from "../../../../../tests/support/test-infrastructure.mjs";
+
 import {
   SerpApiBingProviderError,
   SerpApiBingSearchProvider,
@@ -91,6 +93,67 @@ function waitUntilAborted(init?: RequestInit): Promise<Response> {
 }
 
 describe("SerpApiBingSearchProvider 有界重试", () => {
+  it("首次真实HTTP前拒绝授权时原样传播，不计HTTP尝试也不重试", async () => {
+    const reason = Object.assign(new Error("fake-author-revoked"), { code: "ECONNRESET" });
+    const fetchImplementation = vi.fn<typeof fetch>();
+    const onAttempt = vi.fn();
+    const beforeAttempt = vi.fn(async () => { throw reason; });
+    const provider = new SerpApiBingSearchProvider({
+      apiKey: "fake-key", searchTimeoutMs: 1_000, fetchImplementation, onAttempt, beforeAttempt,
+    });
+    await expect(provider.search(SEARCH_REQUEST, createRunSignal())).rejects.toBe(reason);
+    expect(beforeAttempt).toHaveBeenCalledTimes(1);
+    expect(onAttempt).not.toHaveBeenCalled();
+    expect(fetchImplementation).not.toHaveBeenCalled();
+  });
+
+  it("唯一重试前再次验证资格，撤销后不发第二次HTTP或伪造遥测", async () => {
+    const reason = new Error("fake-author-revoked-before-retry");
+    const beforeAttempt = vi.fn<(signal: AbortSignal) => Promise<void>>()
+      .mockResolvedValueOnce(undefined).mockRejectedValueOnce(reason);
+    const fetchImplementation = vi.fn<typeof fetch>().mockRejectedValueOnce(createFetchNetworkError("ECONNRESET"));
+    const onAttempt = vi.fn();
+    const signal = createRunSignal();
+    const provider = new SerpApiBingSearchProvider({
+      apiKey: "fake-key", searchTimeoutMs: 1_000, fetchImplementation, beforeAttempt, onAttempt,
+    });
+    await expect(provider.search(SEARCH_REQUEST, signal)).rejects.toBe(reason);
+    expect(beforeAttempt.mock.calls.map(([received]) => received)).toEqual([signal, signal]);
+    expect(fetchImplementation).toHaveBeenCalledTimes(1);
+    expect(onAttempt.mock.calls).toEqual([[{ operation: "search", attempt: 1 }]]);
+  });
+
+  it("授权等待期间原Run取消立即结束，不等待忽略Signal的校验或增加HTTP尝试", async () => {
+    const pending = createDeferred<void>();
+    const beforeAttempt = vi.fn(() => pending.promise);
+    const fetchImplementation = vi.fn<typeof fetch>();
+    const controller = new AbortController();
+    const reason = new Error("fake-run-deadline");
+    const provider = new SerpApiBingSearchProvider({
+      apiKey: "fake-key", searchTimeoutMs: 1_000, fetchImplementation, beforeAttempt,
+    });
+    const search = provider.search(SEARCH_REQUEST, controller.signal);
+    controller.abort(reason);
+    await expect(search).rejects.toBe(reason);
+    pending.resolve();
+    expect(fetchImplementation).not.toHaveBeenCalled();
+  });
+
+  it("授权返回后复核同一Signal，已取消时不发HTTP", async () => {
+    const controller = new AbortController();
+    const reason = new Error("fake-run-cancelled");
+    const fetchImplementation = vi.fn<typeof fetch>();
+    const provider = new SerpApiBingSearchProvider({
+      apiKey: "fake-key", searchTimeoutMs: 1_000, fetchImplementation,
+      beforeAttempt: async signal => {
+        expect(signal).toBe(controller.signal);
+        controller.abort(reason);
+      },
+    });
+    await expect(provider.search(SEARCH_REQUEST, controller.signal)).rejects.toBe(reason);
+    expect(fetchImplementation).not.toHaveBeenCalled();
+  });
+
   it("观察器只记录每次真实 HTTP 尝试的操作与序号", async () => {
     const attempts: Array<{ operation: "search"; attempt: 1 | 2 }> = [];
     const fetchImplementation = vi

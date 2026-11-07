@@ -19,6 +19,19 @@ afterEach(async () => {
 });
 
 describe("生产服务的作者体验授权", () => {
+  it("生产启动拒绝把体验签名配置放进公开Asset目录，即使文件尚未创建", async () => {
+    const root = await fs.mkdtemp(path.join(tmpdir(), "wayfinder-experience-public-path-"));
+    directories.push(root);
+    const webAssetsDirectory = path.join(root, "web");
+    await fs.mkdir(path.join(webAssetsDirectory, "assets"), { recursive: true });
+    await fs.writeFile(path.join(webAssetsDirectory, "index.html"), '<div id="root"></div>');
+    const config = parseServerConfig({
+      LLM_PROVIDER: "deepseek", LLM_MODEL: "deepseek-flash", LLM_API_KEY: "fake-llm", SERPAPI_API_KEY: "fake-search",
+      EXPERIENCE_CONFIG_PATH: path.join(webAssetsDirectory, "assets", "experience.json"),
+    });
+    await expect(buildProductionServer({ config, repositoryRoot: root, webAssetsDirectory })).rejects.toThrow("公开静态目录之外");
+  });
+
   it("通过专用Cookie恢复资格；公告更新不撤销，改码后无需重启或刷新即失效", async () => {
     const root = await fs.mkdtemp(path.join(tmpdir(), "wayfinder-experience-production-"));
     directories.push(root);

@@ -17,7 +17,10 @@ import {
   type StreamEvent,
   type StreamEventPayload,
 } from "@wayfinder/contracts";
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+
+import { CredentialsAccessError } from "../settings/experience-authorization.js";
+import { sendCredentialsAccessError } from "./experience.js";
 
 import {
   createRunEventWriter,
@@ -34,6 +37,11 @@ export type SearchStreamHandlerInput = Readonly<{
 export type SearchStreamHandler = (
   input: SearchStreamHandlerInput,
 ) => Promise<void>;
+
+/** 生产请求先完成凭据解析；普通函数形式保留确定性传输层测试接缝。 */
+export type PreparedSearchHandler = Readonly<{
+  prepare: (request: FastifyRequest, signal: AbortSignal) => Promise<SearchStreamHandler>;
+}>;
 
 const NDJSON_HEADERS = {
   "Content-Type": "application/x-ndjson; charset=utf-8",
@@ -68,9 +76,19 @@ export async function writeNdjsonEvent(
 /** 注册单一路由；真实 Handler 的组合属于完整 Orchestrator Composition Root。 */
 export function registerSearchRoute(
   server: FastifyInstance,
-  handleSearch: SearchStreamHandler,
+  handleSearch: SearchStreamHandler | PreparedSearchHandler,
 ): void {
-  server.post("/api/search", async (request, reply) => {
+  // 生产凭据入口连框架解析错误也只输出固定投影；静态传输层测试保持原有接口。
+  const options = typeof handleSearch === "function" ? {} : {
+    errorHandler: (error: unknown, _request: FastifyRequest, reply: FastifyReply) => {
+      const rawStatus = typeof error === "object" && error !== null && "statusCode" in error ? error.statusCode : 500;
+      const status = typeof rawStatus === "number" && rawStatus >= 400 && rawStatus < 500 ? rawStatus : 500;
+      return sendCredentialsAccessError(reply, new CredentialsAccessError(
+        status < 500 ? "CREDENTIALS_INVALID" : "EXPERIENCE_UNAVAILABLE",
+      ), status);
+    },
+  };
+  server.post("/api/search", options, async (request, reply) => {
     const parsedRequest = SearchRequestSchema.safeParse(request.body);
     if (!parsedRequest.success) {
       // Run 尚未开始，不能用 run.failed 伪装 HTTP 输入错误，也不扩张公共 Error Contract。
@@ -91,13 +109,16 @@ export function registerSearchRoute(
       }
     };
 
-    // 只有合法请求才接管底层响应；从此刻开始 Route 必须自行关闭所有错误路径。
-    reply.hijack();
     let eventWriter: RunEventWriter | undefined;
 
     try {
       reply.raw.once("close", onClose);
       reply.raw.once("error", onError);
+      // 凭据准备可能读取动态配置；断连和前置错误不得先发送流式200或启动Provider。
+      const preparedHandler = typeof handleSearch === "function" ? handleSearch
+        : await handleSearch.prepare(request, controller.signal);
+      if (controller.signal.aborted || reply.raw.destroyed || reply.raw.closed) return;
+      reply.hijack();
       // Node 自行选择 Transfer-Encoding，禁止固定 Content-Length。
       reply.raw.writeHead(200, NDJSON_HEADERS);
       reply.raw.flushHeaders();
@@ -118,7 +139,7 @@ export function registerSearchRoute(
           writeNdjsonEvent(reply.raw, controller.signal, event),
       });
 
-      await handleSearch({
+      await preparedHandler({
         input: parsedRequest.data,
         signal: controller.signal,
         emit: eventWriter.emit,
@@ -130,6 +151,14 @@ export function registerSearchRoute(
         reply.raw.end();
       }
     } catch (error: unknown) {
+      if (!reply.raw.headersSent && !reply.raw.destroyed && !controller.signal.aborted) {
+        if (error instanceof CredentialsAccessError) {
+          await sendCredentialsAccessError(reply, error);
+        } else {
+          await reply.code(500).send();
+        }
+        return;
+      }
       // 200 Header 已发送，不能再交回 Fastify 拼接 JSON，也不能擅自生成 run.failed。
       if (!controller.signal.aborted) {
         controller.abort(error);

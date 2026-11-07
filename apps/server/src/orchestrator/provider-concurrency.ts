@@ -22,6 +22,14 @@ export type ProviderConcurrencyLimits = Readonly<{
   llm: number;
 }>;
 
+type Limit = ReturnType<typeof pLimit>;
+
+/** 队列独立于请求范围 Provider；所有凭据包装器复用进程级许可，不新增并发预算。 */
+export type ProviderConcurrencyQueues = Readonly<{
+  search: Limit;
+  llm: Limit;
+}>;
+
 export type ConcurrencyLimitedProviders = Readonly<{
   searchProvider: SearchProvider;
   llmProvider: LLMProvider;
@@ -31,11 +39,10 @@ export type CreateConcurrencyLimitedProvidersInput = Readonly<{
   searchProvider: SearchProvider;
   llmProvider: LLMProvider;
   concurrency: ProviderConcurrencyLimits;
+  queues?: ProviderConcurrencyQueues;
   /** 仅用于确定性验证队列等待；生产默认使用单调时钟。 */
   now?: () => number;
 }>;
-
-type Limit = ReturnType<typeof pLimit>;
 
 function assertConcurrencyLimit(
   label: "Search" | "LLM",
@@ -80,7 +87,7 @@ function readQueuedLlmTimeoutMs(
 function runLimited<T>(
   limit: Limit,
   signal: AbortSignal,
-  operation: () => Promise<T>,
+  operation: (() => Promise<T>) | undefined,
 ): Promise<T> {
   signal.throwIfAborted();
   /**
@@ -88,22 +95,33 @@ function runLimited<T>(
    * 调用方 Context，并发 Run 的日志观察值可能串账。snapshot 不承载业务数据，只保证
    * 所有 AsyncLocalStorage（异步本地存储）在真实 Provider 调用时恢复到入队来源。
    */
-  const runInCallerContext = AsyncLocalStorage.snapshot();
-  const scheduled = limit(() =>
-    runInCallerContext(async () => {
+  let runInCallerContext: ReturnType<typeof AsyncLocalStorage.snapshot> | undefined = AsyncLocalStorage.snapshot();
+  const releasePendingReferences = (): void => {
+    // 被取消任务仍可能暂留 p-limit 队列；显式释放动态 Adapter / Key 和日志上下文，不能清掉其他人的队列。
+    operation = undefined;
+    runInCallerContext = undefined;
+  };
+  const scheduled = limit(() => {
+    const run = runInCallerContext;
+    const invoke = operation;
+    releasePendingReferences();
+    signal.throwIfAborted();
+    if (run === undefined || invoke === undefined) throw new Error("Provider 排队任务已释放");
+    return run(async () => {
       signal.throwIfAborted();
-      const result = await operation();
+      const result = await invoke();
       // 防御忽略 Signal 的 Provider：取消后的迟到成功不能穿过装饰器。
       signal.throwIfAborted();
       return result;
-    }),
-  );
+    });
+  });
 
   return new Promise<T>((resolve, reject) => {
     let settled = false;
 
     const cleanup = (): void => {
       signal.removeEventListener("abort", onAbort);
+      releasePendingReferences();
     };
     const rejectOnce = (reason: unknown): void => {
       if (settled) {
@@ -148,33 +166,38 @@ function runLimited<T>(
 }
 
 /**
- * 创建进程级共享的两层并发装饰器。单次 Adapter 逻辑调用（含其内部有界重试）只占
- * 一个槽位；本模块不读取 Provider 私有字段、不创建第二个 Timer。LLM 只收窄调用方
- * 已有阶段预算，排队耗尽时使用与 SDK Timeout 相同的脱敏错误语义。
+ * 创建进程级共享的两个许可队列；固定批准上限，不读取 Provider 私有字段或增加 Timer（计时器）。
+ * 单次 Adapter（适配层）逻辑调用含内部有界重试，只占一个槽位。
  */
-export function createConcurrencyLimitedProviders(
-  input: CreateConcurrencyLimitedProvidersInput,
-): ConcurrencyLimitedProviders {
+export function createProviderConcurrencyQueues(
+  concurrency: ProviderConcurrencyLimits,
+): ProviderConcurrencyQueues {
   assertConcurrencyLimit(
     "Search",
-    input.concurrency.search,
+    concurrency.search,
     MAX_SEARCH_CONCURRENCY,
   );
   assertConcurrencyLimit(
     "LLM",
-    input.concurrency.llm,
+    concurrency.llm,
     MAX_LLM_CONCURRENCY,
   );
 
-  const searchLimit = pLimit(input.concurrency.search);
-  const llmLimit = pLimit(input.concurrency.llm);
+  return Object.freeze({ search: pLimit(concurrency.search), llm: pLimit(concurrency.llm) });
+}
+
+/** 动态凭据只重建包装器；注入队列时仍保留原排队取消、日志上下文与 LLM 扣时规则。 */
+export function createConcurrencyLimitedProviders(
+  input: CreateConcurrencyLimitedProvidersInput,
+): ConcurrencyLimitedProviders {
+  const queues = input.queues ?? createProviderConcurrencyQueues(input.concurrency);
   const now = input.now ?? (() => performance.now());
 
   const searchProvider: SearchProvider = {
     id: input.searchProvider.id,
     capabilities: [...input.searchProvider.capabilities],
     search: (request, signal) =>
-      runLimited(searchLimit, signal, () =>
+      runLimited(queues.search, signal, () =>
         input.searchProvider.search(request, signal),
       ),
   };
@@ -187,7 +210,7 @@ export function createConcurrencyLimitedProviders(
       assertBoundedLLMTimeout(options.timeoutMs);
       const deadlineAt = readFiniteNow(now) + options.timeoutMs;
 
-      return runLimited(llmLimit, options.signal, () => {
+      return runLimited(queues.llm, options.signal, () => {
         const timeoutMs = readQueuedLlmTimeoutMs(
           deadlineAt,
           options.timeoutMs,

@@ -70,6 +70,39 @@ function createServer(handleSearch: SearchStreamHandler): FastifyInstance {
   return server;
 }
 
+it("凭据准备期间客户端断连，不发送流式200或启动迟到的处理器", async () => {
+  const server = Fastify({ logger: false });
+  const entered = createDeferred<AbortSignal>();
+  const release = createDeferred<void>();
+  const finished = createDeferred<void>();
+  let handled = 0;
+  registerSearchRoute(server, { prepare: async (_request, signal) => {
+    entered.resolve(signal);
+    await release.promise;
+    finished.resolve();
+    return async () => { handled += 1; };
+  } });
+  const address = await server.listen({ host: "127.0.0.1", port: 0 });
+  const opened = openSearchRequest(address);
+  // 主动断连会拒绝客户端响应Promise；先接管拒绝，避免把预期取消变成未处理异常。
+  const response = opened.response.catch(() => undefined);
+  try {
+    const signal = await entered.promise;
+    const aborted = new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }));
+    opened.request.destroy();
+    await aborted;
+    release.resolve();
+    await finished.promise;
+    await response;
+    expect(signal.aborted).toBe(true);
+    expect(handled).toBe(0);
+  } finally {
+    release.resolve();
+    opened.request.destroy();
+    await server.close();
+  }
+});
+
 function parseNdjson(body: string): StreamEvent[] {
   expect(body.endsWith("\n")).toBe(true);
   expect(body).not.toContain("data:");
