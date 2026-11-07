@@ -13,6 +13,7 @@ import { createLocalRunLogSink } from "./observability/local-run-log-writer.js";
 import { createConcurrencyLimitedProviders } from "./orchestrator/provider-concurrency.js";
 import { createRunSearchHandler } from "./orchestrator/run-search.js";
 import { registerSearchRoute } from "./routes/search.js";
+import { registerExperienceRoutes } from "./routes/experience.js";
 import { createMemoryCachedSearchProvider } from "./search/memory-cached-provider.js";
 import type { SearchProvider } from "./search/provider.js";
 import { SerpApiBingSearchProvider } from "./search/providers/serpapi-bing.js";
@@ -65,6 +66,11 @@ export async function buildProductionServer(
       })
     : undefined;
   const server = buildServer();
+
+  registerExperienceRoutes(server, {
+    configPath: input.config.experienceConfigPath,
+    publicOrigin: input.config.publicOrigin,
+  });
 
   registerSearchRoute(
     server,
