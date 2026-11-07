@@ -1,3 +1,4 @@
+import { prepareTestCredentials, testCredentials } from "../testing/test-credentials.js";
 /**
  * 测试职责：冻结 Query（查询）取消协调器的 ID、Signal（中止信号）、
  * Store（状态仓库）所有权与错误边界。
@@ -119,6 +120,7 @@ describe("Query 取消协调器", () => {
       },
     );
     const search = createStartStreamingSearch({
+      prepareCredentials: prepareTestCredentials,
       store,
       createRunId,
       fetchImplementation,
@@ -138,8 +140,11 @@ describe("Query 取消协调器", () => {
       headers: {
         Accept: "application/x-ndjson",
         "Content-Type": "application/json",
+        "x-wayfinder-credentials": JSON.stringify(testCredentials),
       },
       body: JSON.stringify(postedBody),
+      credentials: "same-origin",
+      cache: "no-store",
       signal: fetchSignal,
     });
     expect(store.getState()).toMatchObject({
@@ -157,6 +162,7 @@ describe("Query 取消协调器", () => {
     let activeSignal: AbortSignal | undefined;
     const createRunId = vi.fn(() => "run-valid");
     const search = createStartStreamingSearch({
+      prepareCredentials: prepareTestCredentials,
       store,
       createRunId,
       fetchImplementation: async (_input, init) => {
@@ -202,6 +208,7 @@ describe("Query 取消协调器", () => {
     const runIds = ["run-fetch-a", "run-fetch-b"];
     let runIdIndex = 0;
     const search = createStartStreamingSearch({
+      prepareCredentials: prepareTestCredentials,
       store,
       createRunId: () => runIds[runIdIndex++] ?? "unexpected-run",
       fetchImplementation: async (_input, init) => {
@@ -240,9 +247,8 @@ describe("Query 取消协调器", () => {
 
     pendingFetchA.resolve(response);
     await expect(runA).resolves.toBeUndefined();
-    const readerA = readerOptions.find(options => options.signal === signals[0]);
-    expect(readerA?.signal).toBe(signals[0]);
-    expect(readerA?.signal?.aborted).toBe(true);
+    // 迟到响应在解析错误体或流之前就被拦截，旧请求不能触发配置提示或新的Reader。
+    expect(readerOptions.find(options => options.signal === signals[0])).toBeUndefined();
     expect(store.getState()).toMatchObject({
       activeRunId: "run-fetch-b",
       isSearching: true,
@@ -261,6 +267,7 @@ describe("Query 取消协调器", () => {
     const readers: ReadSearchEventStreamOptions[] = [];
     let runIdIndex = 0;
     const search = createStartStreamingSearch({
+      prepareCredentials: prepareTestCredentials,
       store,
       createRunId: () => runIds[runIdIndex++] ?? "unexpected-run",
       fetchImplementation: async () => response,
@@ -335,6 +342,7 @@ describe("Query 取消协调器", () => {
   ])("%s 保持原始错误上抛并关闭当前 Run", async (_label, failure) => {
     const store = createGraphStore();
     const search = createStartStreamingSearch({
+      prepareCredentials: prepareTestCredentials,
       store,
       createRunId: () => "run-failed",
       fetchImplementation: async () => {
@@ -358,6 +366,7 @@ it("完成回调只交付当前运行真正接纳的结果，忽略旧身份和�
   const onStart = vi.fn();
   const onComplete = vi.fn();
   const search = createStartStreamingSearch({
+      prepareCredentials: prepareTestCredentials,
     store,
     createRunId: () => "当前运行",
     onStart,
@@ -374,4 +383,63 @@ it("完成回调只交付当前运行真正接纳的结果，忽略旧身份和�
   expect(onStart).toHaveBeenCalledExactlyOnceWith({ runId: "当前运行", query: "Python", language: "zh-CN" });
   expect(onComplete).toHaveBeenCalledTimes(1);
   expect(onComplete.mock.calls[0]?.[0]).toMatchObject({ runId: "当前运行" });
+});
+
+it("配置检查失败不分配身份、不取消旧Run，也不清空已有Graph", async () => {
+  const store = createGraphStore();
+  const gate = createDeferred();
+  const failure = new Error("脱敏配置错误");
+  const createRunId = vi.fn(() => "保留运行");
+  let signal: AbortSignal | undefined;
+  let configured = true;
+  const search = createStartStreamingSearch({
+    store, createRunId,
+    prepareCredentials: async () => { if (!configured) throw failure; return testCredentials; },
+    fetchImplementation: async (_input, init) => { signal = init?.signal ?? undefined; return response; },
+    readStreamImplementation: async () => gate.promise,
+  });
+  const first = search({ query: "旧查询", language: "zh-CN" });
+  await vi.waitFor(() => expect(signal).toBeDefined());
+  store.getState().setGraph(pythonResultGraphFixture.graph);
+  const previous = store.getState();
+  configured = false;
+  const onStart = vi.fn();
+  await expect(search({ query: "仍留在输入框的新查询", language: "zh-CN" }, { onStart })).rejects.toBe(failure);
+  expect(createRunId).toHaveBeenCalledTimes(1);
+  expect(signal?.aborted).toBe(false);
+  expect(store.getState()).toBe(previous);
+  expect(onStart).not.toHaveBeenCalled();
+  search.cancelPending();
+  expect(signal?.aborted).toBe(false);
+  gate.resolve();
+  await first;
+});
+
+it("替换或取消的待检查意图即使迟到成功也不能创建Run", async () => {
+  const store = createGraphStore();
+  const checks = [createValueDeferred<typeof testCredentials>(), createValueDeferred<typeof testCredentials>(), createValueDeferred<typeof testCredentials>()];
+  let next = 0;
+  const createRunId = vi.fn(() => "唯一许可运行");
+  const started = vi.fn();
+  const fetchImplementation = vi.fn(async () => response);
+  const search = createStartStreamingSearch({
+    store, createRunId, fetchImplementation,
+    prepareCredentials: () => checks[next++]!.promise,
+    readStreamImplementation: async () => {},
+  });
+  const first = search({ query: "过期意图", language: "zh-CN" }, { onStart: started });
+  const second = search({ query: "最新意图", language: "zh-CN" }, { onStart: started });
+  expect(createRunId).not.toHaveBeenCalled();
+  checks[1]!.resolve(testCredentials);
+  await second;
+  checks[0]!.resolve(testCredentials);
+  await first;
+  const third = search({ query: "已取消意图", language: "zh-CN" }, { onStart: started });
+  search.cancel();
+  checks[2]!.resolve(testCredentials);
+  await third;
+  expect(createRunId).toHaveBeenCalledOnce();
+  expect(fetchImplementation).toHaveBeenCalledOnce();
+  expect(started).toHaveBeenCalledExactlyOnceWith("唯一许可运行");
+  expect(store.getState().query).toBe("最新意图");
 });

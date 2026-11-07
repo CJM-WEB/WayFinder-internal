@@ -45,6 +45,8 @@ export default function InkResearchPreview({ language, active = true, suspended 
   const surface = useRef<HTMLDivElement>(null);
   const previousFocus = useRef<HTMLElement | null>(null);
   const idPrefix = `ink-research-${useId().replaceAll(":", "")}-`;
+  // 页面卸载时也释放纯人工图的待检查意图和运行，不依赖前台搜索是否曾加载取消回调。
+  useEffect(() => () => researchStore.getState().cancel(), []);
   const notice = useMemo(() => !active || suspended || inputError === null ? null
     : { message: inputError === "target" ? getMessages(language).research.missingTarget : getMessages(language).research.invalidInput },
   [active,suspended,inputError,language]);
@@ -59,6 +61,8 @@ export default function InkResearchPreview({ language, active = true, suspended 
   }, [requested]);
   useLayoutEffect(() => { onVisibilityChange?.(valid); }, [valid,onVisibilityChange]);
   useEffect(() => {
+    // 纯人工图首次重搜可能仍停在资格检查，尚无preview可供下面的身份门禁识别。
+    if (!active) researchStore.getState().cancelPending();
     // 目标失效时取消；精确核对当前对象，旧 effect 不能误取消后来建立的新预览。
     if ((preview !== null && !valid && researchStore.getState().preview === preview) ||
       (!active && inputError !== null && researchStore.getState().inputError === inputError)) researchStore.getState().cancel();

@@ -3,10 +3,10 @@
  * Browser-like 主旅程，并确定性证明旧 Run 取消和过期事件隔离。
  *
  * 测试边界：
- * - Fixture 仅替换浏览器的 `/api/search` fetch，应用仍走真实 Search Coordinator、NDJSON Reader、
+ * - Fixture 只替换搜索与三条设置接口的 fetch，应用仍走真实 Search Coordinator、NDJSON Reader、
  *   Graph Store、React / React Flow 与 Resource Panel；
  * - Stream 由测试显式分段放行，不依赖 sleep、随机时序、Secret 或真实 Provider；
- * - 非 `/api/search` 的 JavaScript fetch 一律拒绝，Resource Open 只记录安全打开意图。
+ * - 未声明的 JavaScript fetch 一律拒绝，Resource Open 只记录安全打开意图。
  */
 import {
   EditableGraphSchema,
@@ -19,7 +19,7 @@ import {
   type StreamEvent,
 } from "@wayfinder/contracts";
 import { copyFile, open, readFile, writeFile } from "node:fs/promises";
-import { expect, test, type CDPSession, type Page, type TestInfo } from "@playwright/test";
+import { expect, test, type CDPSession, type Locator, type Page, type TestInfo } from "@playwright/test";
 
 import { WEB_WAIT_TIMEOUT_MS } from "../test-timing.js";
 import { createPythonMockStream } from "../src/testing/python-mock-stream.js";
@@ -55,6 +55,8 @@ type BrowserFixtureHarness = Readonly<{
   fail: (runIndex: number) => void;
   snapshots: () => readonly BrowserFixtureSnapshot[];
   openCalls: () => readonly BrowserOpenCall[];
+  setExperienceAccess: (authorized: boolean) => void;
+  experienceRequests: () => readonly string[];
 }>;
 
 declare global {
@@ -222,8 +224,18 @@ async function inkPigmentCenter(page: Page): Promise<Readonly<{ count: number; x
 async function installBrowserFixture(
   page: Page,
   eventTemplates: readonly StreamEvent[],
+  seedCredentials = true,
 ): Promise<void> {
-  await page.addInitScript((templates: readonly StreamEvent[]) => {
+  await page.addInitScript(({ templates, seedCredentials }: { templates: readonly StreamEvent[]; seedCredentials: boolean }) => {
+    // 原旅程以已配置的合法假Key作为搜索前置条件；不覆盖刷新后保存的数据，新缺配置用例可关闭。
+    if (seedCredentials && window.localStorage.getItem("wayfinder.credentials.v1") === null) {
+      window.localStorage.setItem("wayfinder.credentials.v1", JSON.stringify({
+        deepseek: { source: "own", apiKey: "fake-browser-llm" },
+        serpapi: { source: "own", apiKey: "fake-browser-search" },
+      }));
+    }
+    let experienceAuthorized = false;
+    const experienceRequests: string[] = [];
     type BrowserRun = {
       runId: string;
       query: string;
@@ -334,6 +346,8 @@ async function installBrowserFixture(
           cancelled: run.cancelled,
         })),
       openCalls: () => structuredClone(openCalls),
+      setExperienceAccess: authorized => { experienceAuthorized = authorized; },
+      experienceRequests: () => [...experienceRequests],
     };
 
     window.fetch = async (
@@ -343,6 +357,21 @@ async function installBrowserFixture(
       const requestUrl =
         input instanceof Request ? input.url : input.toString();
       const url = new URL(requestUrl, window.location.href);
+      // 只声明设置的三条HTTP替身；不开放任意网络或真实Provider，原搜索流断言继续执行。
+      if (url.origin === window.location.origin && ["/api/settings", "/api/experience", "/api/experience/status"].includes(url.pathname)) {
+        experienceRequests.push(url.pathname);
+        const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), {
+          status, headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+        });
+        if (url.pathname === "/api/settings") return json({ announcement: "作者公告\n<script>仅为公告文字</script>", experienceAvailable: true });
+        if (url.pathname === "/api/experience/status") return json({ authorized: experienceAuthorized });
+        const body: unknown = typeof init?.body === "string" ? JSON.parse(init.body) as unknown : null;
+        if (typeof body !== "object" || body === null || !("inviteCode" in body) || body.inviteCode !== "fixture-invite") {
+          return json({ code: "INVITE_CODE_INVALID" }, 403);
+        }
+        experienceAuthorized = true;
+        return json({ authorized: true });
+      }
       if (
         url.origin !== window.location.origin ||
         url.pathname !== "/api/search"
@@ -437,7 +466,7 @@ async function installBrowserFixture(
       ]);
       return null;
     }) as typeof window.open;
-  }, eventTemplates);
+  }, { templates: eventTemplates, seedCredentials });
 }
 
 const readFixtureSnapshots = (page: Page) =>
@@ -663,8 +692,8 @@ function createWaterDocuments(): readonly EditableGraph[] {
 }
 
 /** 先在独立测试上下文准备历史，再以真实时间恢复首页；不安装或推进虚拟时钟。 */
-async function prepareWaterPage(page: Page, documents = createWaterDocuments(), requireRenderer = true): Promise<readonly EditableGraph[]> {
-  await installBrowserFixture(page, createInkMotionEvents());
+async function prepareWaterPage(page: Page, documents = createWaterDocuments(), requireRenderer = true, seedCredentials = true): Promise<readonly EditableGraph[]> {
+  await installBrowserFixture(page, createInkMotionEvents(), seedCredentials);
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.goto("/");
   await page.getByRole("button", { name: "开始探索", exact: true }).click();
@@ -1583,7 +1612,7 @@ function createInkWorkspaceDocument(): EditableGraph {
   });
 }
 
-async function openInkWorkspace(page: Page, withInk = false, additionalDocuments: readonly EditableGraph[] = []): Promise<EditableGraph> {
+async function openInkWorkspace(page: Page, withInk = false, additionalDocuments: readonly EditableGraph[] = [], seedCredentials = true): Promise<EditableGraph> {
   const document = createInkWorkspaceDocument();
   // 流体本身由独立GPU旅程验证；其余功能同时覆盖真实无WebGL降级路径，避免重复采样Shader。
   if (!withInk) await page.addInitScript(() => {
@@ -1594,7 +1623,7 @@ async function openInkWorkspace(page: Page, withInk = false, additionalDocuments
       },
     });
   });
-  await prepareWaterPage(page, [document, ...additionalDocuments], withInk);
+  await prepareWaterPage(page, [document, ...additionalDocuments], withInk, seedCredentials);
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.getByRole("button", { name: "开始探索", exact: true }).click();
   await restoreInkHistoryFromInput(page, document.title);
@@ -1860,7 +1889,7 @@ test("两类历史逐条S曲线上滑且撤销行退场消失，底部胶囊分�
     const history = await historyButton.boundingBox(), undo = await undoButton.boundingBox();
     return history === null || undo === null ? 0 : undo.x - history.x - history.width;
   }).toBeGreaterThan(10);
-  await expect(dock).toHaveCSS("width", "188px");
+  await expect(dock).toHaveCSS("width", "262px");
   const historyBounds = await historyButton.boundingBox(), undoBounds = await undoButton.boundingBox();
   if (historyBounds === null || undoBounds === null) throw new Error("缺少展开胶囊");
   // 从两按钮间的透明留白穿过，命中桥保持展开，不抖动收回。
@@ -1955,14 +1984,14 @@ test("两类历史逐条S曲线上滑且撤销行退场消失，底部胶囊分�
   await expect(panel.locator("[data-ink-undo-event]").first()).toHaveCSS("--ink-history-delay", "0ms");
   await expect(panel.locator("[data-ink-undo-event]").first()).toHaveCSS("translate", "none");
   await dock.hover();
-  await expect(dock).toHaveCSS("width", "188px");
+  await expect(dock).toHaveCSS("width", "262px");
   await page.screenshot({ path: testInfo.outputPath("ink-history-pills-and-undo.png"), animations: "disabled" });
   await writeFile(testInfo.outputPath("ink-history-motion.json"), JSON.stringify({ historyFrames, undoFrames, leave }, null, 2));
   expect(await readFixtureSnapshots(page)).toHaveLength(0);
 });
 
 /** 连体背景跟随父抽屉完整下滑；逐 RAF 排除 360ms 内层淡出掩盖半程运动的回归。 */
-test("历史与撤销面板连接两个按钮并随共同箭头完整滑出，关闭期间不提前淡出", async ({ page }, testInfo) => {
+test("历史与撤销面板连接三个按钮并随共同箭头完整滑出，关闭期间不提前淡出", async ({ page }, testInfo) => {
   await openInkWorkspace(page);
   await openInkNodeMenu(page);
   await page.getByRole("menuitem", { name: "编辑节点", exact: true }).click();
@@ -2050,7 +2079,7 @@ test("历史与撤销面板连接两个按钮并随共同箭头完整滑出，�
     await page.mouse.move(0, 0);
     await expect(dock).toHaveCSS("width", "40px");
     const split = await sampleSplit(true);
-    await expect(dock).toHaveCSS("width", "188px");
+    await expect(dock).toHaveCSS("width", "262px");
     const connection = await dock.evaluate((element, kind) => {
       const panel = element.parentElement?.querySelector(kind === "history" ? "#ink-search-history" : "#ink-undo-history");
       const history = element.querySelector(".ink-study__history-toggle"), undo = element.querySelector(".ink-study__undo-toggle");
@@ -4372,4 +4401,167 @@ test("正式入口资源取消拖拽和跨图旧拖放不修改内容", async ({
   expect((await readStoredWorkspace(page))?.documents.find(document => document.id === other.id)?.nodes).toEqual(other.nodes);
   await openInkUndo(page); await expect(page.getByRole("region", { name: "撤销记录", exact: true }).locator("[data-ink-undo-event]")).toHaveCount(0);
   await retained.dispose(); expect(await readFixtureSnapshots(page)).toHaveLength(0);
+});
+
+/** 设置回归只用显式假凭据；原始查询、图与撤销仍走现有入口，保存不触发搜索。 */
+async function openInkSettings(page: Page): Promise<Locator> {
+  await page.locator(".ink-study__history-dock").hover();
+  await page.getByRole("button", { name: "设置", exact: true }).click();
+  const panel = page.getByRole("region", { name: "设置", exact: true });
+  await expect(panel).toBeVisible();
+  return panel;
+}
+
+test("凭据设置缺配置保留输入、首页隔离、独立保存和刷新恢复", async ({ page }) => {
+  await installBrowserFixture(page, createJourneyEvents(), false);
+  await openInkProduct(page);
+  const input = page.getByRole("searchbox", { name: "搜索任意主题", exact: true });
+  await input.fill("配置之后仍保留的输入");
+  await input.press("Enter");
+  await expect(page.getByRole("alert")).toContainText("请先配置 API Key");
+  await expect(input).toHaveValue("配置之后仍保留的输入");
+  expect(await readFixtureSnapshots(page)).toHaveLength(0);
+  await page.getByRole("button", { name: "返回首页", exact: true }).click();
+  await expect(page.getByRole("button", { name: "开始探索", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "打开设置", exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "开始探索", exact: true }).click();
+  await expect(page.getByRole("button", { name: "打开设置", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "打开设置", exact: true }).click();
+  const panel = page.getByRole("region", { name: "设置", exact: true });
+  const llm = panel.getByRole("form", { name: "DeepSeek 设置", exact: true });
+  const search = panel.getByRole("form", { name: "SerpAPI 设置", exact: true });
+  await llm.getByLabel("DeepSeek API Key", { exact: true }).fill("fake-personal-llm-persisted");
+  await llm.getByRole("button", { name: "保存设置", exact: true }).click();
+  await search.getByLabel("SerpAPI API Key", { exact: true }).fill("fake-personal-search-persisted");
+  await search.getByRole("button", { name: "保存设置", exact: true }).click();
+  expect(await readFixtureSnapshots(page)).toHaveLength(0);
+  expect(await page.evaluate(() => window.__WAYFINDER_E2E__.experienceRequests())).toEqual([]);
+  await panel.getByRole("button", { name: "收起面板", exact: true }).click();
+  await expect(page.getByRole("button", { name: "打开设置", exact: true })).toHaveCount(0);
+  await page.reload();
+  await page.getByRole("button", { name: "开始探索", exact: true }).click();
+  await openInkSettings(page);
+  await expect(llm.getByLabel("DeepSeek API Key", { exact: true })).toHaveValue("fake-personal-llm-persisted");
+  await expect(search.getByLabel("SerpAPI API Key", { exact: true })).toHaveValue("fake-personal-search-persisted");
+  await expect(llm.getByLabel("DeepSeek API Key", { exact: true })).toHaveAttribute("type", "password");
+  await llm.getByLabel("DeepSeek API Key", { exact: true }).fill("fake-unsaved-draft");
+  await panel.getByRole("button", { name: "收起面板", exact: true }).click();
+  await openInkSettings(page);
+  await expect(llm.getByLabel("DeepSeek API Key", { exact: true })).toHaveValue("fake-personal-llm-persisted");
+  await llm.getByRole("button", { name: "清除", exact: true }).click();
+  await llm.getByRole("button", { name: "保存设置", exact: true }).click();
+  await panel.getByRole("button", { name: "收起面板", exact: true }).click();
+  await input.fill("清除Key后的查询"); await input.press("Enter");
+  await expect(page.getByRole("alert")).toContainText("DeepSeek");
+  expect(await readFixtureSnapshots(page)).toHaveLength(0);
+});
+
+test("凭据设置体验确认隔离草稿、公告纯文本、共用资格和撤销提示", async ({ page }) => {
+  await installBrowserFixture(page, createJourneyEvents());
+  await openInkProduct(page);
+  const panel = await openInkSettings(page);
+  const llm = panel.getByRole("form", { name: "DeepSeek 设置", exact: true });
+  const search = panel.getByRole("form", { name: "SerpAPI 设置", exact: true });
+  await llm.getByRole("button", { name: "显示", exact: true }).click();
+  await llm.getByLabel("DeepSeek API Key", { exact: true }).fill("未保存的非法草稿");
+  await llm.getByRole("button", { name: "体验 APIKEY", exact: true }).click();
+  const trial = page.getByRole("dialog", { name: "使用作者 APIKEY 体验", exact: true });
+  await expect(trial.getByLabel("邀请码", { exact: true })).toBeEnabled();
+  await expect(trial.locator(".ink-settings__announcement")).toContainText("<script>仅为公告文字</script>");
+  await expect(trial.locator("script")).toHaveCount(0);
+  await expect(trial.getByText("使用作者APIKEY之后额度共享，费用全由作者承担，但也可能出现额度不足导致搜索失败", { exact: true })).toBeVisible();
+  expect(await trial.evaluate(element => {
+    const announcement = element.querySelector(".ink-settings__announcement"), input = element.querySelector("input");
+    return announcement !== null && input !== null && (announcement.compareDocumentPosition(input) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+  })).toBe(true);
+  await trial.getByLabel("邀请码", { exact: true }).fill("invalid-fixture-code");
+  await trial.getByRole("button", { name: "确认使用", exact: true }).click();
+  await expect(trial.getByRole("alert")).toContainText("邀请码无效");
+  await trial.getByRole("button", { name: "取消", exact: true }).click();
+  await expect(llm.getByRole("button", { name: "自己的 API Key", exact: true })).toHaveAttribute("aria-pressed", "true");
+  await llm.getByRole("button", { name: "体验 APIKEY", exact: true }).click();
+  await expect(trial.getByLabel("邀请码", { exact: true })).toBeEnabled();
+  await trial.getByLabel("邀请码", { exact: true }).fill("fixture-invite");
+  await trial.getByRole("button", { name: "确认使用", exact: true }).click();
+  await expect(llm.getByRole("button", { name: "体验 APIKEY", exact: true })).toHaveAttribute("aria-pressed", "true");
+  await expect(llm.getByLabel("DeepSeek API Key", { exact: true })).toHaveValue("fake-browser-llm");
+  await expect(llm.getByLabel("DeepSeek API Key", { exact: true })).toHaveAttribute("type", "password");
+  const verifications = await page.evaluate(() => window.__WAYFINDER_E2E__.experienceRequests().filter(path => path === "/api/experience").length);
+  await search.getByRole("button", { name: "体验 APIKEY", exact: true }).click();
+  await expect(trial.getByText("本浏览器已有有效体验资格，无需再次输入邀请码。", { exact: true })).toBeVisible();
+  await expect(trial.getByLabel("邀请码", { exact: true })).toHaveCount(0);
+  await trial.getByRole("button", { name: "确认使用", exact: true }).click();
+  await expect(search.getByRole("button", { name: "体验 APIKEY", exact: true })).toHaveAttribute("aria-pressed", "true");
+  expect(await page.evaluate(() => window.__WAYFINDER_E2E__.experienceRequests().filter(path => path === "/api/experience").length)).toBe(verifications);
+  expect(await page.evaluate(() => JSON.parse(window.localStorage.getItem("wayfinder.credentials.v1") ?? "null") as unknown)).toEqual({
+    deepseek: { source: "author", apiKey: "fake-browser-llm" }, serpapi: { source: "author", apiKey: "fake-browser-search" },
+  });
+  await panel.getByRole("button", { name: "收起面板", exact: true }).click();
+  await page.evaluate(() => window.__WAYFINDER_E2E__.setExperienceAccess(false));
+  const input = page.getByRole("searchbox", { name: "搜索任意主题", exact: true });
+  await input.fill("撤销体验仍保留的查询"); await input.press("Enter");
+  await expect(page.getByRole("alert")).toContainText("体验资格已失效");
+  await expect(input).toHaveValue("撤销体验仍保留的查询");
+  expect(await readFixtureSnapshots(page)).toHaveLength(0);
+});
+
+test("凭据设置缺配置的节点和人工全图重搜不改旧图，主题跨设置保留", async ({ page }) => {
+  const original = await openInkWorkspace(page, false, [], false);
+  await openInkNodeMenu(page); await page.getByRole("menuitem", { name: "重新搜索此节点", exact: true }).click();
+  await expect(page.getByRole("alert")).toContainText("请先配置 API Key");
+  expect(await readFixtureSnapshots(page)).toHaveLength(0);
+  expect((await readStoredWorkspace(page))?.documents[0]).toEqual(original);
+  await openInkPaneMenu(page); await page.getByRole("menuitem", { name: "重新搜索全图", exact: true }).click();
+  const form = page.getByRole("dialog", { name: "重新搜索全图", exact: true });
+  await form.getByRole("textbox", { name: "搜索主题", exact: true }).fill("配置后保留的人工主题");
+  await form.getByRole("button", { name: "重新搜索全图", exact: true }).click();
+  await expect(form.getByRole("textbox", { name: "搜索主题", exact: true })).toHaveValue("配置后保留的人工主题");
+  await page.getByRole("button", { name: "打开设置", exact: true }).click();
+  const settings = page.getByRole("region", { name: "设置", exact: true });
+  await settings.getByRole("button", { name: "收起面板", exact: true }).click();
+  await expect(form.getByRole("textbox", { name: "搜索主题", exact: true })).toHaveValue("配置后保留的人工主题");
+  // 直接从底部设置入口打开也保留草稿，而非仅为错误提示按钮特殊处理。
+  await openInkSettings(page); await settings.getByRole("button", { name: "收起面板", exact: true }).click();
+  await expect(form.getByRole("textbox", { name: "搜索主题", exact: true })).toHaveValue("配置后保留的人工主题");
+  expect(await readFixtureSnapshots(page)).toHaveLength(0);
+  expect((await readStoredWorkspace(page))?.documents[0]).toEqual(original);
+});
+
+test.describe("凭据设置触屏入口", () => {
+  test.use({ hasTouch: true, viewport: { width: 375, height: 780 } });
+  test("凭据设置触屏先展开三入口再选择，三个胶囊同底线且面板互斥", async ({ page }) => {
+    await installBrowserFixture(page, createJourneyEvents());
+    await openInkProduct(page);
+    const dock = page.locator(".ink-study__history-dock");
+    await page.getByRole("button", { name: "搜索历史", exact: true }).tap();
+    await expect(dock).toHaveAttribute("data-expanded", "true");
+    await expect(page.getByRole("button", { name: "搜索历史", exact: true })).toHaveAttribute("aria-expanded", "false");
+    await page.getByRole("button", { name: "设置", exact: true }).tap();
+    const settings = page.getByRole("region", { name: "设置", exact: true });
+    await expect(settings).toBeVisible();
+    const bottoms = await dock.locator("button").evaluateAll(buttons => buttons.map(button => button.getBoundingClientRect().bottom));
+    expect(Math.max(...bottoms) - Math.min(...bottoms)).toBeLessThan(1);
+    await expect(page.getByRole("region", { name: "搜索历史", exact: true })).toHaveCount(0);
+    // 下半部分服务在滚动后打开体验层，公告、输入及操作仍处于真实触屏可视范围。
+    const serpapi = settings.getByRole("form", { name: "SerpAPI 设置", exact: true });
+    const experience = serpapi.getByRole("button", { name: "体验 APIKEY", exact: true });
+    await experience.scrollIntoViewIfNeeded();
+    await experience.tap();
+    const trial = page.getByRole("dialog", { name: "使用作者 APIKEY 体验", exact: true });
+    await expect(trial.locator(".ink-settings__announcement")).toBeInViewport({ ratio: 1 });
+    const invite = trial.getByLabel("邀请码", { exact: true });
+    await expect(invite).toBeInViewport({ ratio: 1 });
+    await invite.fill("fixture-invite");
+    await expect(trial.getByRole("button", { name: "确认使用", exact: true })).toBeInViewport({ ratio: 1 });
+    await expect(trial.getByRole("button", { name: "确认使用", exact: true })).toBeEnabled();
+    await trial.getByRole("button", { name: "取消", exact: true }).tap();
+    await expect(trial).toHaveCount(0);
+    expect(await page.evaluate(() => JSON.parse(window.localStorage.getItem("wayfinder.credentials.v1") ?? "null") as unknown)).toEqual({
+      deepseek: { source: "own", apiKey: "fake-browser-llm" }, serpapi: { source: "own", apiKey: "fake-browser-search" },
+    });
+    await page.getByRole("button", { name: "撤销", exact: true }).tap();
+    await expect(page.getByRole("region", { name: "撤销记录", exact: true })).toBeVisible();
+    await expect(page.getByRole("region", { name: "设置", exact: true })).toHaveCount(0);
+    expect(await readFixtureSnapshots(page)).toHaveLength(0);
+  });
 });

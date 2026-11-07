@@ -1,11 +1,14 @@
+import { prepareTestCredentials } from "../testing/test-credentials.js";
 /** 测试职责：重搜使用临时 Run；取消、失败和应用前的新编辑都不能破坏当前图。 */
 import { ResultGraphSchema, StreamEventSchema, type ResultGraph } from "@wayfinder/contracts";
 import { expect, it, vi } from "vitest";
 import { pythonResultGraphFixture } from "../fixtures/python-result-graph.js";
 import type { ReadSearchEventStreamOptions } from "../lib/stream.js";
+import { createGraphStore } from "../stores/graph-store.js";
 import { addNode, addResource, deleteNode, deleteResource, updateNode, updateResource } from "../stores/workspace-edits.js";
 import { createEmptyGraph, createWorkspaceStore, fromResultGraph, selectCurrentGraph, selectWorkspaceHistory } from "../stores/workspace-store.js";
 import { createResearchStore } from "./research.js";
+import { createStartStreamingSearch } from "./search.js";
 
 function nodeResult(runId: string, nodeId = "节点"): ResultGraph {
   const node = pythonResultGraphFixture.graph.nodes.find(item => item.status === "ready");
@@ -34,6 +37,7 @@ it("节点重搜使用当前标题与原语境，预览完成前后都不改旧�
   const previous = selectCurrentGraph(workspace.getState());
   let posted: unknown;
   const store = createResearchStore(workspace, {
+    prepareCredentials: prepareTestCredentials,
     createRunId: () => "运行",
     fetchImplementation: async (_input, init) => { posted = JSON.parse(String(init?.body)); return new Response(""); },
     readStreamImplementation: async options => { await options.onEvent(complete(nodeResult("运行"))); },
@@ -63,6 +67,7 @@ it("真实全图应用明确拥有未变化的节点与资源字段，选择性�
     nodes: pythonResultGraphFixture.graph.nodes.map(current => current.id === node.id ? { ...current, title: "B",
       resources: current.resources.map(item => item.id === resource.id ? { ...item, summary: "说明B" } : item) } : current) } };
   const research = createResearchStore(workspace, {
+    prepareCredentials: prepareTestCredentials,
     createRunId: () => result.runId, fetchImplementation: async () => new Response(""),
     readStreamImplementation: async options => { await options.onEvent(complete(result)); },
   }, vi.fn());
@@ -87,6 +92,7 @@ it("真实节点替换完全拥有资源集合，但不拥有节点标题与说�
   if (edited === null) throw new Error("缺少编辑图");
   workspace.getState().replaceGraph(deleteResource(edited, "节点", "旧资源"));
   const research = createResearchStore(workspace, {
+    prepareCredentials: prepareTestCredentials,
     createRunId: () => "替换", fetchImplementation: async () => new Response(""),
     readStreamImplementation: async options => { await options.onEvent(complete(nodeResult("替换"))); },
   }, vi.fn());
@@ -109,6 +115,7 @@ it("取消真实触发Signal，旧Reader即使伪装当前Run也不能写临时�
   const release: (() => void)[] = [];
   let index = 0;
   const store = createResearchStore(workspace, {
+    prepareCredentials: prepareTestCredentials,
     createRunId: () => `运行${++index}`,
     fetchImplementation: async () => new Response(""),
     readStreamImplementation: options => {
@@ -117,11 +124,11 @@ it("取消真实触发Signal，旧Reader即使伪装当前Run也不能写临时�
     },
   }, vi.fn());
   const first = store.getState().start("图", "节点");
-  await Promise.resolve();
+  await vi.waitFor(() => expect(readers).toHaveLength(1));
   store.getState().cancel();
   expect(readers[0]?.signal?.aborted).toBe(true);
   const second = store.getState().start("图", "节点");
-  await Promise.resolve();
+  await vi.waitFor(() => expect(readers).toHaveLength(2));
   await readers[0]?.onEvent(complete(nodeResult("运行2")));
   expect(store.getState().runStore.getState().isSearching).toBe(true);
   expect(store.getState().preview?.status).toBe("searching");
@@ -140,6 +147,7 @@ it("失败或提前结束不伪造预览结果，旧图保持完整且不暴露�
   const workspace = workspaceFixture();
   const previous = selectCurrentGraph(workspace.getState());
   const store = createResearchStore(workspace, {
+    prepareCredentials: prepareTestCredentials,
     fetchImplementation: async () => { throw new Error("不能进入界面的内部诊断"); },
   }, vi.fn());
   await store.getState().start("图", "节点");
@@ -153,6 +161,7 @@ it("失败或提前结束不伪造预览结果，旧图保持完整且不暴露�
 it("预览后编辑造成重复或删除目标时不覆盖旧内容，也不写入另一张图", async () => {
   const workspace = workspaceFixture();
   const store = createResearchStore(workspace, {
+    prepareCredentials: prepareTestCredentials,
     createRunId: () => "运行",
     fetchImplementation: async () => new Response(""),
     readStreamImplementation: async options => { await options.onEvent(complete(nodeResult("运行"))); },
@@ -179,7 +188,8 @@ it("预览后编辑造成重复或删除目标时不覆盖旧内容，也不写�
 it("手动图全图重搜必须显式填写主题，取消后不写入原图查询", async () => {
   const workspace = workspaceFixture();
   const fetchImplementation = vi.fn(async () => new Response(""));
-  const store = createResearchStore(workspace, { fetchImplementation, readStreamImplementation: async () => {} }, vi.fn());
+  const store = createResearchStore(workspace, {
+    prepareCredentials: prepareTestCredentials, fetchImplementation, readStreamImplementation: async () => {} }, vi.fn());
   const original = selectCurrentGraph(workspace.getState());
   await store.getState().start("图");
   expect(fetchImplementation).not.toHaveBeenCalled();
@@ -200,6 +210,7 @@ it("无效长主题或目标不能取消正在运行的旧请求，也不生成�
   let reader: ReadSearchEventStreamOptions | undefined;
   let release: (() => void) | undefined;
   const store = createResearchStore(workspace, {
+    prepareCredentials: prepareTestCredentials,
     createRunId, fetchImplementation,
     readStreamImplementation: options => {
       reader = options;
@@ -207,7 +218,7 @@ it("无效长主题或目标不能取消正在运行的旧请求，也不生成�
     },
   }, cancelForeground);
   const pending = store.getState().start("图", "节点");
-  await Promise.resolve();
+  await vi.waitFor(() => expect(reader).toBeDefined());
   const activePreview = store.getState().preview;
   await store.getState().start("图", undefined, "长".repeat(2001));
   expect(store.getState().preview).toBe(activePreview);
@@ -231,6 +242,7 @@ it("ready预览面对无效完整输入仍保留结果和旧Signal，不能被�
   const fetchImplementation = vi.fn(async () => new Response(""));
   let signal: AbortSignal | undefined;
   const store = createResearchStore(workspace, {
+    prepareCredentials: prepareTestCredentials,
     createRunId: () => "有效运行", fetchImplementation,
     readStreamImplementation: async options => {
       signal = options.signal;
@@ -250,4 +262,80 @@ it("ready预览面对无效完整输入仍保留结果和旧Signal，不能被�
   expect(signal?.aborted).toBe(false);
   expect(fetchImplementation).toHaveBeenCalledTimes(1);
   expect(cancelForeground).toHaveBeenCalledTimes(1);
+});
+
+it("缺失配置不清空ready预览、旧图与人工主题，不取消前台", async () => {
+  const workspace = workspaceFixture();
+  const cancelForeground = vi.fn();
+  let configured = true;
+  const fetchImplementation = vi.fn(async () => new Response(""));
+  const store = createResearchStore(workspace, {
+    prepareCredentials: async () => { if (!configured) throw new Error("配置不可用"); return prepareTestCredentials(); },
+    createRunId: () => "已就绪", fetchImplementation,
+    readStreamImplementation: async options => { options.onEvent(complete(nodeResult("已就绪"))); },
+  }, cancelForeground);
+  await store.getState().start("图", "节点");
+  const preview = store.getState().preview;
+  const previous = selectCurrentGraph(workspace.getState());
+  configured = false;
+  const started = vi.fn();
+  await store.getState().start("图", undefined, "保留人工主题", started);
+  expect(started).not.toHaveBeenCalled();
+  expect(store.getState().preview).toBe(preview);
+  expect(selectCurrentGraph(workspace.getState())).toBe(previous);
+  expect(cancelForeground).toHaveBeenCalledOnce();
+  expect(fetchImplementation).toHaveBeenCalledOnce();
+});
+
+it.each(["取消", "切图再返回", "删除节点"])("待检查重搜遇到%s后不能在迟到成功时启动", async change => {
+  const workspace = workspaceFixture();
+  let permit: (() => void) | undefined;
+  const gate = new Promise<void>(resolve => { permit = resolve; });
+  const createRunId = vi.fn(() => "不应创建");
+  const fetchImplementation = vi.fn(async () => new Response(""));
+  const cancelForeground = vi.fn();
+  const store = createResearchStore(workspace, {
+    prepareCredentials: async () => { await gate; return prepareTestCredentials(); },
+    createRunId, fetchImplementation,
+  }, cancelForeground);
+  const pending = store.getState().start("图", "节点");
+  if (change === "取消") store.getState().cancelPending();
+  else if (change === "切图再返回") {
+    workspace.getState().addGraph(createEmptyGraph("另图", "另一图", "zh-CN"));
+    workspace.getState().selectGraph("图");
+  } else {
+    const graph = selectCurrentGraph(workspace.getState());
+    if (graph === null) throw new Error("缺少目标图");
+    workspace.getState().replaceGraph(deleteNode(graph, "节点"));
+  }
+  permit?.();
+  await pending;
+  expect(createRunId).not.toHaveBeenCalled();
+  expect(fetchImplementation).not.toHaveBeenCalled();
+  expect(cancelForeground).not.toHaveBeenCalled();
+  expect(store.getState().preview).toBeNull();
+});
+
+it("新的重搜意图只取消前台待检查意图，不把迟到前台请求当成最新运行", async () => {
+  const workspace = workspaceFixture();
+  let permit: (() => void) | undefined;
+  const gate = new Promise<void>(resolve => { permit = resolve; });
+  const foregroundFetch = vi.fn(async () => new Response(""));
+  const foreground = createStartStreamingSearch({
+    store: createGraphStore(),
+    prepareCredentials: async () => { await gate; return prepareTestCredentials(); },
+    fetchImplementation: foregroundFetch,
+    readStreamImplementation: async () => {},
+  });
+  const researchFetch = vi.fn(async () => new Response(""));
+  const research = createResearchStore(workspace, {
+    prepareCredentials: prepareTestCredentials, fetchImplementation: researchFetch,
+    readStreamImplementation: async () => {},
+  }, foreground.cancel, foreground.cancelPending);
+  const pending = foreground({ query: "过期前台意图", language: "zh-CN" });
+  await research.getState().start("图", "节点");
+  permit?.();
+  await pending;
+  expect(foregroundFetch).not.toHaveBeenCalled();
+  expect(researchFetch).toHaveBeenCalledOnce();
 });

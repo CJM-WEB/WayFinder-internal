@@ -1,3 +1,4 @@
+import { prepareTestCredentials } from "./testing/test-credentials.js";
 /**
  * 集成测试职责：通过真实 Search Coordinator、NDJSON Reader 与 Graph Store，冻结客户端
  * happy、乱序/重复、断连、替换取消与迟到响应边界。
@@ -104,6 +105,7 @@ describe("NDJSON Reader + Store 客户端回归矩阵", () => {
       responseFromEvents(baseEvents, [1, 13, 97, 521]),
     );
     const search = createStartStreamingSearch({
+      prepareCredentials: prepareTestCredentials,
       store,
       fetchImplementation,
       createRunId: () => RUN_ID,
@@ -135,6 +137,7 @@ describe("NDJSON Reader + Store 客户端回归矩阵", () => {
       { status: 200 },
     );
     const search = createStartStreamingSearch({
+      prepareCredentials: prepareTestCredentials,
       store,
       fetchImplementation: async () => response,
       createRunId: () => RUN_ID,
@@ -200,6 +203,7 @@ describe("NDJSON Reader + Store 客户端回归矩阵", () => {
       { status: 200 },
     );
     const search = createStartStreamingSearch({
+      prepareCredentials: prepareTestCredentials,
       store,
       fetchImplementation: async () => response,
       createRunId: () => RUN_ID,
@@ -242,6 +246,7 @@ describe("NDJSON Reader + Store 客户端回归矩阵", () => {
       },
     );
     const search = createStartStreamingSearch({
+      prepareCredentials: prepareTestCredentials,
       store,
       fetchImplementation,
       createRunId: () => runIds[runIndex++] ?? "unexpected-run",

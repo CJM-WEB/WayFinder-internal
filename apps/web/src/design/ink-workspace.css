@@ -41,13 +41,13 @@
 .ink-workspace-notice[data-open="true"] { opacity: 1; transform: translate(-50%, 0); pointer-events: auto; }
 .ink-workspace-notice .ink-study__pill { flex: none; }
 
-/* 透明父层只连接命中区域；边框、背景分别属于两个胶囊，穿过中间留白也不会闪回箭头。 */
+/* 透明父层连接三个胶囊的命中区域，穿过中间留白也不会闪回箭头。 */
 .ink-study__history-dock { position: absolute; z-index: 1; bottom: 100%; left: 50%; display: flex; gap: 0; width: 40px; height: 34px;
   transform: translateX(-50%); background: transparent; opacity: 0;
-  transition: width 420ms var(--ink-slide-ease), gap 420ms var(--ink-slide-ease), opacity 180ms var(--ink-slide-ease); }
+  transition: width 420ms var(--ink-slide-ease), gap 420ms var(--ink-slide-ease), transform 420ms var(--ink-slide-ease), opacity 180ms var(--ink-slide-ease); }
 .ink-study__stage[data-search-ready="true"] .ink-study__history-dock { opacity: 1; }
-/* 总宽 188 与主按钮 114 同步扩张，主按钮右端始终停在原箭头右端，直接点按不会落到间隔或撤销上。 */
-.ink-study__history-dock[data-expanded="true"] { width: 188px; gap: 12px; }
+/* 新增62px设置及12px间距；平衡37px补偿保持主按钮右端不动，直接点按仍落在历史按钮。 */
+.ink-study__history-dock[data-expanded="true"] { width: 262px; gap: 12px; transform: translateX(calc(-50% + 37px)); }
 .ink-study__history-dock .ink-study__history-toggle { position: relative; inset: auto; left: auto; flex: none; width: 40px; height: 100%; min-height: 0;
   transform: none; border: 1px solid #ffffffa6; border-bottom: 0; border-radius: 18px 18px 0 0;
   background: var(--ink-history-glass); backdrop-filter: blur(14px); opacity: 1;
@@ -59,11 +59,12 @@
 .ink-study__history-dock .ink-study__history-toggle svg { transition: opacity 420ms var(--ink-slide-ease), transform 420ms var(--ink-slide-ease); }
 .ink-study__history-dock[data-panel-open="true"] .ink-study__history-toggle svg { transform: translate(-50%, -50%) rotate(180deg); }
 /* 两个分支始终共用面板顶边；新分支从主按钮右沿随宽度与间距一起长出，不额外平移或上浮。 */
-.ink-study__history-dock .ink-study__undo-toggle { flex: none; justify-content: center; width: 0; min-width: 0; min-height: 0; height: 100%; padding: 0;
+.ink-study__history-dock .ink-study__undo-toggle, .ink-study__history-dock .ink-study__settings-toggle { flex: none; justify-content: center; width: 0; min-width: 0; min-height: 0; height: 100%; padding: 0;
   overflow: hidden; border: 1px solid #ffffffa6; border-bottom: 0; border-radius: 18px 18px 0 0; color: #22221e; backdrop-filter: blur(14px);
   background: var(--ink-history-glass); opacity: 0; pointer-events: none; white-space: nowrap;
   transition: width 420ms var(--ink-slide-ease), opacity 420ms var(--ink-slide-ease), background-color 240ms var(--ink-slide-ease); }
-.ink-study__history-dock[data-expanded="true"] .ink-study__undo-toggle { width: 62px; opacity: 1; pointer-events: auto; }
+.ink-study__history-dock[data-expanded="true"] .ink-study__undo-toggle,
+.ink-study__history-dock[data-expanded="true"] .ink-study__settings-toggle { width: 62px; opacity: 1; pointer-events: auto; }
 .ink-study__history-dock .ink-study__pill:hover { background: var(--ink-history-glass); color: #111; }
 /* 退场继续持有连接柄的可见性，按钮和面板随父层完成同一条下滑时间线。 */
 .ink-study__history-drawer:not([data-present-panel="none"]) .ink-study__history-dock { opacity: 1; }
@@ -71,7 +72,8 @@
 .ink-study__history-drawer > .ink-study__history-panel { position: absolute; inset: 0; opacity: 0; visibility: hidden;
   transform: none; transition: opacity 360ms var(--ink-slide-ease), visibility 0s 360ms; }
 .ink-study__history-drawer[data-present-panel="history"] > #ink-search-history,
-.ink-study__history-drawer[data-present-panel="undo"] > #ink-undo-history { opacity: 1; visibility: visible; transition-delay: 0s; }
+.ink-study__history-drawer[data-present-panel="undo"] > #ink-undo-history,
+.ink-study__history-drawer[data-present-panel="settings"] > #ink-settings { opacity: 1; visibility: visible; transition-delay: 0s; }
 .ink-study__history-drawer[data-present-panel="none"] > .ink-study__history-panel { visibility: hidden; transition: none; }
 /* 两类历史共用逐条向上入场；仅 backwards 填充等待段，结束后释放 translate 供悬浮与退场使用。 */
 .ink-study__history-drawer[data-present-panel="history"] > #ink-search-history .ink-history-entry:not([data-leaving="true"]),
@@ -102,12 +104,18 @@
 .ink-undo-event .ink-undo-event__reason { margin-top: 7px; color: #6c6454; }
 
 @media (max-width: 620px) {
+  /* 三入口在窄屏避开顶部语言与返回控件，抽屉同步缩高，底部内容仍可完整滚动到达。 */
+  .ink-study__stage { --ink-history-open-top: calc(var(--ink-corner-top) + var(--ink-pill-height) + 52px); }
+  .ink-study__history-drawer { height: calc(100% - var(--ink-history-open-top)); }
+  .ink-study__stage[data-history-open="true"] .ink-study__history-drawer { top: var(--ink-history-open-top); }
   .ink-study__history-dock { height: 44px; }
   .ink-undo-event { padding-inline: 14px; }
   .ink-undo-event__content { gap: 10px; }
   .ink-undo-actions { flex-basis: 100%; }
   .ink-workspace-notice { top: 78px; flex-wrap: wrap; }
 }
+/* 极窄触屏先展开再选择，稍减平衡位移，确保第三个入口不超出320px视口。 */
+@media (max-width: 360px) { .ink-study__history-dock[data-expanded="true"] { transform: translateX(calc(-50% + 17px)); } }
 @media (prefers-reduced-motion: reduce) {
   .ink-workspace-menu, .ink-workspace-form, .ink-workspace-notice,
   .ink-study__history-dock, .ink-study__history-dock .ink-study__pill, .ink-undo-event,

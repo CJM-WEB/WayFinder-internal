@@ -26,7 +26,7 @@ type Dialog = Readonly<{
 }>;
 type Props = Readonly<{
   target: InkActionTarget | null; language: SearchLanguage; enabled: boolean; allowCreate: boolean;
-  active: boolean; onClose: () => void;
+  active: boolean; suspended?: boolean; onClose: () => void;
 }>;
 
 /** 空白处的世界坐标只用于新节点；既有人工坐标永远优先于菜单打开时的测量。 */
@@ -45,7 +45,8 @@ function assertTargetExists(graph: EditableGraph, target: InkActionTarget): void
   }
 }
 
-export default function InkWorkspaceActions({ target, language, enabled, allowCreate, active, onClose }: Props) {
+export default function InkWorkspaceActions({ target, language, enabled, allowCreate, active, suspended = false, onClose }: Props) {
+  const interactive = active && !suspended;
   const messages = getMessages(language);
   const currentId = useStore(workspaceStore, state => state.currentId);
   const documents = useStore(workspaceStore, state => state.documents);
@@ -69,6 +70,11 @@ export default function InkWorkspaceActions({ target, language, enabled, allowCr
     if (dialog !== null && dialog.owner.graphId !== currentId) setDialog(null);
   }, [active, currentId, dialog?.owner.graphId, onClose, edit.clearProblem]);
   useEffect(() => { if (target === null && dialog === null) edit.clearProblem(); }, [target, dialog, edit.clearProblem]);
+  useEffect(() => {
+    if (dialog?.kind !== "graph.search" || !interactive) return;
+    // 关闭主题表单撤销仍待配置检查的意图，不能在迟到成功后偷偷启动搜索。
+    return () => researchStore.getState().cancelPending();
+  }, [dialog, interactive]);
 
   useLayoutEffect(() => {
     const element = menuRef.current;
@@ -80,14 +86,14 @@ export default function InkWorkspaceActions({ target, language, enabled, allowCr
     if (menu.open) element.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus({ preventScroll: true });
   }, [held, menu.open]);
   useLayoutEffect(() => {
-    if (form.open) formRef.current?.querySelector<HTMLInputElement>("input")?.focus({ preventScroll: true });
-  }, [form.open]);
+    if (form.open && interactive) formRef.current?.querySelector<HTMLInputElement>("input")?.focus({ preventScroll: true });
+  }, [form.open, interactive]);
   useEffect(() => {
-    if (!menu.open && !form.open) return;
+    if (!interactive || (!menu.open && !form.open)) return;
     const outside = (event: PointerEvent): void => {
       if (!(event.target instanceof Node)) return;
-      // 提示中的恢复按钮必须完整接收 pointerup/click，不能在 pointerdown 时先被卸载。
-      if (event.target instanceof Element && event.target.closest(".ink-workspace-notice") !== null) return;
+      // 提示按钮与设置入口须完整接收click；设置只挂起表单，不能先在pointerdown丢弃主题。
+      if (event.target instanceof Element && event.target.closest(".ink-workspace-notice,.ink-study__history-dock") !== null) return;
       if (menu.open && !menuRef.current?.contains(event.target)) onClose();
       if (form.open && !formRef.current?.contains(event.target)) setDialog(null);
     };
@@ -98,7 +104,7 @@ export default function InkWorkspaceActions({ target, language, enabled, allowCr
     };
     document.addEventListener("pointerdown", outside); document.addEventListener("keydown", escape);
     return () => { document.removeEventListener("pointerdown", outside); document.removeEventListener("keydown", escape); };
-  }, [menu.open, form.open, onClose]);
+  }, [menu.open, form.open, onClose, interactive]);
 
   const commit = (owner: InkActionTarget, operation: (document: EditableGraph) => EditableGraph, preserveLayout = false): boolean => edit.commit(document => {
     if (!enabled || workspaceStore.getState().currentId !== owner.graphId || document.id !== owner.graphId) throw new Error("编辑目标已失效");
@@ -123,7 +129,7 @@ export default function InkWorkspaceActions({ target, language, enabled, allowCr
   };
   const save = (event: FormEvent): void => {
     event.preventDefault();
-    if (dialog === null || !active) return;
+    if (dialog === null || !interactive) return;
     const owner = dialog.owner;
     let success = false;
     if (dialog.kind === "node.add") {
@@ -142,7 +148,11 @@ export default function InkWorkspaceActions({ target, language, enabled, allowCr
       });
     } else if (dialog.kind === "graph.search") {
       if (enabled && graph?.id === owner.graphId && fields.title.trim()) {
-        void researchStore.getState().start(graph.id, undefined, fields.title.trim()); success = true;
+        const submitted = dialog;
+        // 缺少凭据时保留人工主题；真正开始后才关闭仍属于本次提交的表单。
+        void researchStore.getState().start(graph.id, undefined, fields.title.trim(), () => {
+          setDialog(current => current === submitted ? null : current);
+        });
       }
     } else if ("nodeId" in owner) {
       const nodeId = owner.nodeId;
@@ -174,7 +184,7 @@ export default function InkWorkspaceActions({ target, language, enabled, allowCr
 
   return <>
     {held === null ? null : <div className="ink-workspace-menu" ref={menuRef} role="menu" aria-label={messages.inkStudy.actionMenu}
-      data-open={active && menu.open} inert={!active || !menu.open} aria-hidden={!active || !menu.open} data-ink-control data-ink-overlay
+      data-open={interactive && menu.open} inert={!interactive || !menu.open} aria-hidden={!interactive || !menu.open} data-ink-control data-ink-overlay
       onContextMenu={event => event.preventDefault()} onKeyDown={event => {
         if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); onClose(); setDialog(null); return; }
         if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
@@ -225,7 +235,7 @@ export default function InkWorkspaceActions({ target, language, enabled, allowCr
         ? <p className="ink-engine-note" role="note">{messages.searchEngine.baiduRegionNotice}</p> : null}
     </div>}
     {form.value === null ? null : <section className="ink-workspace-form" ref={formRef} role="dialog" aria-label={formTitle}
-      data-open={active && form.open} inert={!active || !form.open} aria-hidden={!active || !form.open} data-ink-overlay data-ink-control
+      data-open={interactive && form.open} inert={!interactive || !form.open} aria-hidden={!interactive || !form.open} data-ink-overlay data-ink-control
       onKeyDown={event => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); setDialog(null); onClose(); } }}>
       <header><h2>{formTitle}</h2><button className="ink-workspace-close" aria-label={messages.inkStudy.closePanel} onClick={() => setDialog(null)}>×</button></header>
       <form onSubmit={save}>
