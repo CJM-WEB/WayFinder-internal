@@ -201,6 +201,7 @@ export function InkSettingsPanel({ open, presented, language, onClose }: Props) 
           type="password" autoComplete="off" spellCheck={false} maxLength={MAX_INVITE_CODE_LENGTH} value={inviteCode}
           disabled={busy || !available} onChange={event => setInviteCode(event.target.value)} /></label>}
         <p className="ink-settings__warning">{text.sharedWarning}</p>
+        <p className="ink-settings__warning">{text.privacyWarning}</p>
         {busy ? <p role="status">{text.loading}</p> : null}
         {trialError === null ? null : <p role="alert" className="ink-settings__error">{trialError}</p>}
         <div className="ink-settings__actions">

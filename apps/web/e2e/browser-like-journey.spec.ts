@@ -4470,6 +4470,7 @@ test("凭据设置体验确认隔离草稿、公告纯文本、共用资格和�
   await expect(trial.locator(".ink-settings__announcement")).toContainText("<script>仅为公告文字</script>");
   await expect(trial.locator("script")).toHaveCount(0);
   await expect(trial.getByText("使用作者APIKEY之后额度共享，费用全由作者承担，但也可能出现额度不足导致搜索失败", { exact: true })).toBeVisible();
+  await expect(trial.getByText("使用作者体验 APIKEY 期间，请尽量避免搜索涉及个人隐私或敏感信息的内容，以降低相关内容向作者或其他相关开发者暴露的风险。", { exact: true })).toBeVisible();
   expect(await trial.evaluate(element => {
     const announcement = element.querySelector(".ink-settings__announcement"), input = element.querySelector("input");
     return announcement !== null && input !== null && (announcement.compareDocumentPosition(input) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
