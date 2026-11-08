@@ -17,6 +17,11 @@ type Preferences = ReturnType<typeof credentialSettingsStore.getState>["preferen
 type Props = Readonly<{ open: boolean; presented: boolean; language: SearchLanguage; onClose: (restoreFocus: boolean) => void }>;
 const SERVICES = ["deepseek", "serpapi"] as const;
 const SERVICE_NAMES: Readonly<Record<CredentialService, string>> = { deepseek: "DeepSeek", serpapi: "SerpAPI" };
+/** 获取入口只使用固定官网地址；新页隔离来源，不携带当前设置或浏览器页面地址。 */
+const KEY_PORTALS: Readonly<Record<CredentialService, string>> = {
+  deepseek: "https://platform.deepseek.com/",
+  serpapi: "https://serpapi.com/",
+};
 
 export function InkSettingsPanel({ open, presented, language, onClose }: Props) {
   const settings = useStore(credentialSettingsStore, state => state);
@@ -164,6 +169,9 @@ export function InkSettingsPanel({ open, presented, language, onClose }: Props) 
             const apiKey = event.target.value;
             setDraft(previous => ({ ...previous, [service]: { ...previous[service], apiKey } })); setSaved(null);
           }} /></label>
+        <a className="ink-settings__get-key" href={KEY_PORTALS[service]} target="_blank" rel="noopener noreferrer">
+          {text.getKey[service]}
+        </a>
         <div className="ink-settings__actions">
           <button type="button" className="ink-study__pill" disabled={draft[service].source !== "own"}
             onClick={() => setVisible(previous => ({ ...previous, [service]: !previous[service] }))}>{visible[service] ? text.hide : text.show}</button>

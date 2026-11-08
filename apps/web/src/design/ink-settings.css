@@ -13,6 +13,8 @@
 .ink-settings input { box-sizing: border-box; width: 100%; min-width: 0; padding: 12px 14px; border: 1px solid #ffffffb3;
   border-radius: 16px; background: #ffffff78; color: #1b1b19; font: inherit; font-size: 13px; line-height: 1.5; outline-offset: 3px; }
 .ink-settings .ink-study__pill { min-height: 32px; padding-inline: 14px; }
+.ink-settings__get-key { display: inline-block; margin-bottom: 14px; color: #55554c; font-size: 11px;
+  line-height: 1.6; text-decoration: underline; text-underline-offset: 3px; }
 .ink-settings__service > p { margin-bottom: 0; color: #55554c; font-size: 11px; }
 .ink-settings__error { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; color: #74604c; font-size: 12px; line-height: 1.6; }
 .ink-settings__trial { position: absolute; z-index: 4; inset: 0; display: grid; place-items: center; padding: 20px;
