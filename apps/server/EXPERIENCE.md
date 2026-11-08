@@ -49,7 +49,7 @@ WAY-124 已注册 `GET /api/settings`（公开公告）、`POST /api/experience`
 
 服务端用独立 HMAC-SHA256（基于散列的消息认证码）签发绑定当前代际的资格，放入 `__Host-wayfinder_experience` Cookie（浏览器凭证），具有 HttpOnly（脚本不可读）、Secure（仅安全连接）、SameSite=Strict（严格同站）、`Path=/`，不设置 Domain（域）。邀请码及签名材料不放入响应正文。浏览器最长保留 400 天是浏览器持久化边界，不是服务端邀请码天数期限；查询仍有效的资格时续存。失败不清除原有 Cookie，仍有效的原资格不因输错新码而丢失。正式部署、生产浏览器及 Safari 使用 HTTPS；本地 HTTP 仅适用于支持安全 Cookie 回环例外的浏览器，不降低 Cookie 属性。
 
-正式部署设置 `PUBLIC_ORIGIN`（可信公开来源），例如 `https://wayfinder.example`。仅接受 HTTPS 纯 Origin（来源），或本地开发的 HTTP 规范回环来源；可带末尾 `/`，不能携带账号、路径、查询或片段。反向代理应保留匹配该站点的 `Host`（主机）头；代码不信任任意 `X-Forwarded-*`。未设置时只接纳明确的 `localhost`、规范 `127/8` 或 `[::1]` 回环地址，且 Origin 与 Host 对应的 HTTP 来源必须精确一致，不放行不同端口、不同协议或不同回环主机名。本地页面经保留前端 Host 的 Vite 同源代理调用 API；其他代理拓扑应明确配置 `PUBLIC_ORIGIN`，不放宽来源规则。
+正式部署设置 `PUBLIC_ORIGIN`（可信公开来源），例如 `https://wayfinder.example`。仅接受 HTTPS 纯 Origin（来源），或本地开发的 HTTP 规范回环来源；可带末尾 `/`，不能携带账号、路径、查询或片段。反向代理应保留匹配该站点的 `Host`（主机）头；代码不信任任意 `X-Forwarded-*`。未设置时只接纳明确的 `localhost`、规范 `127/8` 或 `[::1]` 回环地址，且 Origin 与 Host 对应的 HTTP 来源必须精确一致，不放行不同端口、不同协议或不同回环主机名。本地 Vite 的 `/api` 必须使用显式代理对象并设置 `changeOrigin: false`，保留浏览器原 Host / Origin；字符串简写默认改写 Host，会导致开发页面的授权及搜索 POST 被拒绝。其他代理拓扑应明确配置 `PUBLIC_ORIGIN`，不放宽来源规则。
 
 三路校验 Host；声明了 Origin 时要求其匹配可信站点，POST 必须有 Origin。`Sec-Fetch-Site`（请求站点关系）明确为 cross-site（跨站）或 same-site（同站但不同源）均拒绝。签发和续存前再次读取当前配置，防止校验中途改码仍发出旧资格。浏览器提交自己的 Key 使用 `x-wayfinder-credentials` 请求头，不混入搜索内容；其结构由公共 `SearchCredentialsSchema` 唯一定义。
 

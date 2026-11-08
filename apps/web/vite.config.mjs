@@ -23,7 +23,9 @@ export default defineConfig({
   // 开发预览使用 .env.example 中约定的本地 API 端口；生产仍由原 Fastify 同源提供。
   server: {
     proxy: {
-      "/api": "http://127.0.0.1:3000",
+      // 字符串简写会默认启用 changeOrigin，改写 Host 后与浏览器 Origin 不符，导致授权被拒绝。
+      // 显式保留原 Host / Origin，让后端继续执行精确同源校验，不通过放宽校验修复代理。
+      "/api": { target: "http://127.0.0.1:3000", changeOrigin: false },
     },
   },
   // 沿用 Vite 默认 index.html 单入口；墨迹漫游即正式产品，不再打包重复的试验页面。
