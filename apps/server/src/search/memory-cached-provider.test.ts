@@ -6,11 +6,14 @@
  */
 import type { NormalizedSearchHit, ProviderSearchRequest } from "@wayfinder/contracts";
 import { describe, expect, it, vi } from "vitest";
+import { LRUCache } from "lru-cache";
 
 import {
   createMemoryCachedSearchProvider,
   createSearchCacheKey,
+  createSearchResultCache,
   SEARCH_CACHE_MAX_ENTRY_SIZE_BYTES,
+  SEARCH_CACHE_MAX_SIZE_BYTES,
   SEARCH_CACHE_TTL_MS,
   type SearchProviderCacheObservation,
 } from "./memory-cached-provider.js";
@@ -54,6 +57,69 @@ function createProvider(input?: {
 }
 
 describe("MemoryCachedSearchProvider", () => {
+  it("同代际包装器共用有界池，跨代际和缺省命名空间互不命中", async () => {
+    const sharedCache = createSearchResultCache();
+    const namespace = "11111111-1111-4111-8111-111111111111";
+    const nextNamespace = "22222222-2222-4222-8222-222222222222";
+    const search = vi.fn<SearchProvider["search"]>(async request => [createHit(request.query)]);
+    const first = createMemoryCachedSearchProvider(createProvider({ search }), { sharedCache, namespace });
+    const second = createMemoryCachedSearchProvider(createProvider({ search }), { sharedCache, namespace });
+    const changed = createMemoryCachedSearchProvider(createProvider({ search }), { sharedCache, namespace: nextNamespace });
+    const legacy = createMemoryCachedSearchProvider(createProvider({ search }), { sharedCache });
+    const signal = new AbortController().signal;
+    await first.search(BASE_REQUEST, signal);
+    await second.search(BASE_REQUEST, signal);
+    expect(search).toHaveBeenCalledTimes(1);
+    await changed.search(BASE_REQUEST, signal);
+    await legacy.search(BASE_REQUEST, signal);
+    expect(search).toHaveBeenCalledTimes(3);
+    expect(sharedCache.has(createSearchCacheKey("test-provider", BASE_REQUEST))).toBe(true);
+    for (const key of sharedCache.keys()) {
+      expect(key).toMatch(/^search-v1:[a-f0-9]{64}$/);
+      expect(key).not.toContain(namespace);
+      expect(key).not.toContain(BASE_REQUEST.query);
+    }
+  });
+
+  it("共享池跨代际仍只有4MiB总预算，旧代际按同一LRU规则淘汰", async () => {
+    const sharedCache = createSearchResultCache();
+    const search = vi.fn<SearchProvider["search"]>(async request => [{ ...createHit(request.query), snippet: "x".repeat(500_000) }]);
+    const signal = new AbortController().signal;
+    for (let generation = 0; generation < 12; generation += 1) {
+      const namespace = `${String(generation).padStart(8, "0")}-1111-4111-8111-111111111111`;
+      await createMemoryCachedSearchProvider(createProvider({ search }), { sharedCache, namespace }).search(BASE_REQUEST, signal);
+      expect(sharedCache.calculatedSize).toBeLessThanOrEqual(SEARCH_CACHE_MAX_SIZE_BYTES);
+    }
+    expect(sharedCache.size).toBeGreaterThan(0);
+    expect(sharedCache.size).toBeLessThan(12);
+    const first = createMemoryCachedSearchProvider(createProvider({ search }), {
+      sharedCache, namespace: "00000000-1111-4111-8111-111111111111",
+    });
+    await first.search(BASE_REQUEST, signal);
+    expect(search).toHaveBeenCalledTimes(13);
+  });
+
+  it("不同请求的缺省缓存不共享，自带凭据无需跨请求注册表", async () => {
+    const search = vi.fn<SearchProvider["search"]>(async request => [createHit(request.query)]);
+    const first = createMemoryCachedSearchProvider(createProvider({ search }));
+    const second = createMemoryCachedSearchProvider(createProvider({ search }));
+    const signal = new AbortController().signal;
+    await first.search(BASE_REQUEST, signal);
+    await first.search(BASE_REQUEST, signal);
+    await second.search(BASE_REQUEST, signal);
+    expect(search).toHaveBeenCalledTimes(2);
+  });
+
+  it("拒绝把Key或Cookie当命名空间，也不接受扩张预算的共享池", () => {
+    for (const namespace of ["fake-api-key", "cookie=fake", "author:11111111-1111-4111-8111-111111111111"]) {
+      expect(() => createMemoryCachedSearchProvider(createProvider(), { namespace })).toThrow("服务端授权代际 UUID");
+    }
+    const sharedCache = new LRUCache<string, { expiresAtMs: number; value: readonly NormalizedSearchHit[] }>({
+      max: 256, maxSize: SEARCH_CACHE_MAX_SIZE_BYTES * 2, maxEntrySize: SEARCH_CACHE_MAX_ENTRY_SIZE_BYTES,
+    });
+    expect(() => createMemoryCachedSearchProvider(createProvider(), { sharedCache })).toThrow("已批准的有界字节预算");
+  });
+
   it("为稳定 Search Key 复用结果，并隔离调用方对返回值的修改", async () => {
     const search = vi.fn<SearchProvider["search"]>(async request => [
       createHit(request.query),

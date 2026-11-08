@@ -16,6 +16,7 @@
     "eval:quality": "pnpm --filter @wayfinder/server --fail-if-no-match run eval:quality",
     "eval:reranker-golden": "pnpm --filter @wayfinder/server --fail-if-no-match run eval:reranker-golden",
     "eval:single-node-smoke": "pnpm --filter @wayfinder/server --fail-if-no-match run eval:single-node-smoke",
+    "experience:configure": "pnpm --filter @wayfinder/server --fail-if-no-match run experience:configure",
     "lint": "eslint eslint.config.mjs tests --max-warnings=0 && pnpm --filter @wayfinder/contracts --fail-if-no-match run lint && pnpm --filter @wayfinder/web --fail-if-no-match run lint && pnpm --filter @wayfinder/server --fail-if-no-match run lint",
     "schema:check": "pnpm --filter @wayfinder/contracts --fail-if-no-match run schema:check",
     "schema:generate": "pnpm --filter @wayfinder/contracts --fail-if-no-match run schema:generate",

@@ -8,6 +8,8 @@
  */
 import type {
   AppErrorCode,
+  CredentialService,
+  CredentialsErrorCode,
   EditableNode,
   GraphEdge,
   NodeType,
@@ -19,6 +21,14 @@ import type {
 } from "@wayfinder/contracts";
 
 export type Messages = Readonly<{
+  settings: Readonly<{
+    title: string; own: string; experience: string; key: string; save: string; saved: string;
+    show: string; hide: string; clear: string; cancel: string; confirm: string; announcement: string;
+    invite: string; experienceTitle: string; sharedWarning: string; privacyWarning: string; loading: string; authorized: string;
+    unavailable: string; readFailure: string; saveFailure: string; retry: string; open: string;
+    ownHint: string; getKey: Readonly<Record<CredentialService, string>>;
+    problems: Readonly<Record<CredentialsErrorCode, string>>;
+  }>;
   inkStudy: Readonly<{
     statement: string; tagline: string; explore: string; contact: string; stageAria: string; pageTitle: string;
     emailCopied: string; emailCopyFailed: string;
@@ -140,6 +150,17 @@ export type Messages = Readonly<{
  */
 export const MESSAGES: Record<SearchLanguage, Messages> = {
   "zh-CN": {
+    settings: {
+      title: "设置", own: "自己的 API Key", experience: "体验 APIKEY", key: "API Key", save: "保存设置", saved: "已保存到本浏览器",
+      show: "显示", hide: "隐藏", clear: "清除", cancel: "取消", confirm: "确认使用", announcement: "作者公告",
+      invite: "邀请码", experienceTitle: "使用作者 APIKEY 体验", loading: "正在读取体验信息…", authorized: "本浏览器已有有效体验资格，无需再次输入邀请码。",
+      sharedWarning: "使用作者APIKEY之后额度共享，费用全由作者承担，但也可能出现额度不足导致搜索失败",
+      privacyWarning: "使用作者体验 APIKEY 期间，请尽量避免搜索涉及个人隐私或敏感信息的内容，以降低相关内容向作者或其他相关开发者暴露的风险。",
+      unavailable: "作者体验暂不可用。", readFailure: "设置读取失败，请重试；当前不会覆盖旧设置。", saveFailure: "设置保存失败，请重试。", retry: "重试读取", open: "打开设置",
+      ownHint: "Key 长期保存在当前浏览器；搜索时发送到本应用后端代调用，服务端不持久保存；保存不会发起付费测试。",
+      getKey: { deepseek: "获取DeepSeek API KEY", serpapi: "获取SerpAPI KEY" },
+      problems: { CREDENTIALS_REQUIRED: "请先配置 API Key。", CREDENTIALS_INVALID: "凭据配置无效，请检查设置。", INVITE_CODE_INVALID: "邀请码无效，请检查后重试。", EXPERIENCE_REVOKED: "体验资格已失效，请输入当前邀请码。", EXPERIENCE_UNAVAILABLE: "作者体验暂不可用，请稍后重试。" },
+    },
     inkStudy: {
       statement: "让每个好奇，\n都有去处。", tagline: "打造属于自己的互联网", explore: "开始探索", contact: "联系作者",
       emailCopied: "邮箱已复制", emailCopyFailed: "复制失败，请手动复制邮箱",
@@ -305,6 +326,17 @@ export const MESSAGES: Record<SearchLanguage, Messages> = {
     },
   },
   "en-US": {
+    settings: {
+      title: "Settings", own: "Your API key", experience: "Author trial", key: "API key", save: "Save settings", saved: "Saved in this browser",
+      show: "Show", hide: "Hide", clear: "Clear", cancel: "Cancel", confirm: "Confirm trial", announcement: "Author announcement",
+      invite: "Invitation code", experienceTitle: "Try the author's API keys", loading: "Loading trial information…", authorized: "This browser has valid trial access. You do not need to enter the invitation code again.",
+      sharedWarning: "The author's API quota is shared and all costs are paid by the author. Searches may fail if the quota runs out.",
+      privacyWarning: "While using the author's trial API keys, avoid searching for personal or sensitive information to reduce the risk of exposing it to the author or other developers involved in the service.",
+      unavailable: "The author's trial is unavailable.", readFailure: "Settings could not be read. Retry before replacing existing settings.", saveFailure: "Settings could not be saved. Please retry.", retry: "Retry loading", open: "Open settings",
+      ownHint: "Keys are saved in this browser long term and sent to this app’s backend for searches. The server does not persist them. Saving does not run a paid test.",
+      getKey: { deepseek: "Get a DeepSeek API key", serpapi: "Get a SerpAPI key" },
+      problems: { CREDENTIALS_REQUIRED: "Configure your API keys first.", CREDENTIALS_INVALID: "The credential settings are invalid. Check your settings.", INVITE_CODE_INVALID: "The invitation code is invalid. Check it and retry.", EXPERIENCE_REVOKED: "Trial access has expired. Enter the current invitation code.", EXPERIENCE_UNAVAILABLE: "The author's trial is unavailable. Please retry later." },
+    },
     inkStudy: {
       statement: "Every curiosity,\na place to go.", tagline: "BUILD YOUR OWN INTERNET", explore: "Start exploring", contact: "Contact author",
       emailCopied: "Email copied", emailCopyFailed: "Could not copy. Please copy the email manually.",

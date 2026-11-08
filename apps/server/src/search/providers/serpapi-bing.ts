@@ -83,6 +83,8 @@ export type SerpApiBingSearchProviderOptions = {
   searchTimeoutMs: number;
   searchRetryTimeoutMs?: number;
   fetchImplementation?: typeof fetch;
+  /** 每次真实尝试前复核作者资格；拒绝按原对象传播，不规范化为 Provider 故障。 */
+  beforeAttempt?: (signal: AbortSignal) => Promise<void>;
   /** 只记录脱敏的实际 HTTP 尝试序号；不得传递 Query、URL、Header 或响应。 */
   onAttempt?: (observation: SerpApiBingAttemptObservation) => void;
 };
@@ -118,6 +120,7 @@ export class SerpApiBingSearchProvider implements SearchProvider {
   private readonly onAttempt:
     | ((observation: SerpApiBingAttemptObservation) => void)
     | undefined;
+  private readonly beforeAttempt: SerpApiBingSearchProviderOptions["beforeAttempt"];
 
   public constructor(options: SerpApiBingSearchProviderOptions) {
     const apiKey = options.apiKey.trim();
@@ -135,6 +138,7 @@ export class SerpApiBingSearchProvider implements SearchProvider {
     );
     this.fetchImplementation = options.fetchImplementation ?? fetch;
     this.onAttempt = options.onAttempt;
+    this.beforeAttempt = options.beforeAttempt;
   }
 
   public async search(
@@ -207,6 +211,17 @@ export class SerpApiBingSearchProvider implements SearchProvider {
     callerSignal: AbortSignal,
     attempt: 1 | 2,
   ): Promise<AttemptOutcome> {
+    callerSignal.throwIfAborted();
+    if (this.beforeAttempt !== undefined) {
+      // 授权等待受原 Run Signal 约束；位于 HTTP 错误分类外，撤销不能触发重试或吞掉原 reason。
+      try {
+        await awaitWithAbortSignal(this.beforeAttempt(callerSignal), callerSignal);
+      } catch (error: unknown) {
+        callerSignal.throwIfAborted();
+        throw error;
+      }
+      callerSignal.throwIfAborted();
+    }
     const timeoutSignal = AbortSignal.timeout(timeoutMs);
     const requestSignal = AbortSignal.any([callerSignal, timeoutSignal]);
 

@@ -16,6 +16,7 @@ import type {
 } from "@wayfinder/contracts";
 import { resolveSearchEngine } from "@wayfinder/contracts";
 import { LRUCache } from "lru-cache";
+import { z } from "zod";
 
 import { observeCurrentRun } from "../observability/run-log-context.js";
 import type { SearchProvider } from "./provider.js";
@@ -35,6 +36,10 @@ export type MemoryCachedSearchProviderOptions = Readonly<{
   /** 默认读取墙钟；测试可注入单调推进的确定性时间。 */
   nowMs?: () => number;
   searchMaxEntries?: number;
+  /** 只由组合根注入；跨授权代际仍共用同一有界池，不能为每位用户建立长期注册表。 */
+  sharedCache?: SearchResultCache;
+  /** 仅接受作者授权代际 UUID，不接收 Key（密钥）、邀请码或 Cookie（浏览器凭证）。 */
+  namespace?: string;
   /** 回调只接收脱敏计数；其异常不得改变 Search 结果。 */
   onObservation?: (observation: SearchProviderCacheObservation) => void;
 }>;
@@ -43,6 +48,26 @@ type CacheEntry<T> = Readonly<{
   expiresAtMs: number;
   value: T;
 }>;
+
+export type SearchResultCache = LRUCache<string, CacheEntry<readonly NormalizedSearchHit[]>>;
+
+/** 创建固定字节预算的缓存池；条目数测试接缝不改变总字节和单项上限。 */
+export function createSearchResultCache(searchMaxEntries?: number): SearchResultCache {
+  return new LRUCache<string, CacheEntry<readonly NormalizedSearchHit[]>>({
+    max: resolveMaxEntries("Search", searchMaxEntries, DEFAULT_SEARCH_CACHE_MAX_ENTRIES),
+    maxSize: SEARCH_CACHE_MAX_SIZE_BYTES,
+    maxEntrySize: SEARCH_CACHE_MAX_ENTRY_SIZE_BYTES,
+  });
+}
+
+/** 不信任任意手工构造的 LRU 配置，防止注入时静默扩张共享内存预算。 */
+function assertSharedCacheBudget(cache: SearchResultCache): void {
+  if (cache.maxSize !== SEARCH_CACHE_MAX_SIZE_BYTES ||
+    cache.maxEntrySize !== SEARCH_CACHE_MAX_ENTRY_SIZE_BYTES ||
+    !Number.isSafeInteger(cache.max) || cache.max < 1) {
+    throw new TypeError("共享 Search Cache 必须使用已批准的有界字节预算");
+  }
+}
 
 /** 固定字段顺序避免对象插入顺序影响 Key；nodeId 只标识 Graph，不改变检索语义。 */
 export function createSearchCacheKey(
@@ -133,7 +158,7 @@ function emitObservation(
 }
 
 function readSearchEntry(
-  cache: LRUCache<string, CacheEntry<readonly NormalizedSearchHit[]>>,
+  cache: SearchResultCache,
   key: string,
   nowMs: () => number,
 ): NormalizedSearchHit[] | null {
@@ -163,21 +188,17 @@ export function createMemoryCachedSearchProvider(
   options: MemoryCachedSearchProviderOptions = {},
 ): SearchProvider {
   const nowMs = options.nowMs ?? Date.now;
-  const searchCache = new LRUCache<
-    string,
-    CacheEntry<readonly NormalizedSearchHit[]>
-  >({
-    max: resolveMaxEntries(
-      "Search",
-      options.searchMaxEntries,
-      DEFAULT_SEARCH_CACHE_MAX_ENTRIES,
-    ),
-    maxSize: SEARCH_CACHE_MAX_SIZE_BYTES,
-    maxEntrySize: SEARCH_CACHE_MAX_ENTRY_SIZE_BYTES,
-  });
+  if (options.namespace !== undefined && !z.uuid().safeParse(options.namespace).success) {
+    throw new TypeError("Search Cache 命名空间必须是服务端授权代际 UUID");
+  }
+  const searchCache = options.sharedCache ?? createSearchResultCache(options.searchMaxEntries);
+  assertSharedCacheBudget(searchCache);
   const search: SearchProvider["search"] = async (request, signal) => {
     signal.throwIfAborted();
-    const key = createSearchCacheKey(provider.id, request);
+    const baseKey = createSearchCacheKey(provider.id, request);
+    // 缺省严格保留旧 Key；代际进入摘要而非明文，防止跨代际命中但不另建缓存池。
+    const key = options.namespace === undefined ? baseKey
+      : createHashedKey("search-v1", [options.namespace, baseKey]);
     const cached = readSearchEntry(searchCache, key, nowMs);
     if (cached !== null) {
       emitObservation(options.onObservation, {

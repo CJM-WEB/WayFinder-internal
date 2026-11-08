@@ -25,25 +25,28 @@ type ResearchState = {
   runStore: ReturnType<typeof createGraphStore>;
   inputError: "query" | "target" | null;
   preview: ResearchPreview | null;
-  start: (graphId: string, nodeId?: string, topic?: string) => Promise<void>;
+  start: (graphId: string, nodeId?: string, topic?: string, onStart?: () => void) => Promise<void>;
   cancel: () => void;
+  cancelPending: () => void;
   dismiss: () => void;
   apply: (mode: "append" | "replace") => void;
 };
-type ResearchDependencies = Pick<SearchCoordinatorDependencies, "fetchImplementation" | "readStreamImplementation" | "createRunId">;
+type ResearchDependencies = Pick<SearchCoordinatorDependencies, "fetchImplementation" | "readStreamImplementation" | "createRunId" | "prepareCredentials">;
 
 export function createResearchStore(
   workspace: StoreApi<WorkspaceStoreState> = workspaceStore,
   dependencies: ResearchDependencies = {},
   cancelForeground: () => void = () => startWorkspaceSearch.cancel(),
+  cancelForegroundPending: () => void = () => startWorkspaceSearch.cancelPending(),
 ) {
   let owner: ResearchPreview | null = null;
+  let pendingTarget: { controller: AbortController; graphId: string; nodeId?: string } | null = null;
   const temporaryRun = createGraphStore();
   const store = createStore<ResearchState>(() => ({
     runStore: temporaryRun,
     inputError: null,
     preview: null,
-    start: async (graphId, nodeId, topic): Promise<void> => {
+    start: async (graphId, nodeId, topic, onStart): Promise<void> => {
       const graph = workspace.getState().documents.find(document => document.id === graphId);
       const node = nodeId === undefined ? undefined : graph?.nodes.find(item => item.id === nodeId);
       if (graph === undefined || workspace.getState().currentId !== graphId || (nodeId !== undefined && node === undefined)) {
@@ -62,8 +65,11 @@ export function createResearchStore(
         store.setState({ inputError: "query" });
         return;
       }
-      store.getState().cancel();
-      cancelForeground();
+      cancelForegroundPending();
+      // 尚未获得配置许可时，仅替换待检查意图，旧运行与预览保持原状。
+      pendingTarget?.controller.abort(new DOMException("重搜意图已替换", "AbortError"));
+      const intent = { controller: new AbortController(), graphId, ...(nodeId === undefined ? {} : { nodeId }) };
+      pendingTarget = intent;
       const context: ResearchPreview = {
         graphId, nodeId: nodeId ?? null, runId: null,
         query: parsed.data.query,
@@ -71,22 +77,38 @@ export function createResearchStore(
         engine: resolveSearchEngine(graph.language, node?.engine ?? graph.engine),
         status: "searching", result: null,
       };
-      owner = context;
-      store.setState({ preview: { ...context } });
       try {
-        await search(parsed.data);
+        await search(parsed.data, {
+          signal: intent.controller.signal,
+          onStart: runId => {
+            // 此回调与真正Run创建同步发生；取消旧前台和清空旧预览只能在此之后。
+            pendingTarget = null;
+            cancelForeground();
+            context.runId = runId;
+            owner = context;
+            store.setState({ preview: { ...context }, inputError: null });
+            onStart?.();
+          },
+        });
       } catch {
         // 原始 Provider / 网络异常不进入界面或本地记录，只保留可理解的失败状态。
         if (owner === context && store.getState().preview?.status === "searching") store.setState({ preview: { ...context, status: "failed" } });
+      } finally {
+        if (pendingTarget === intent) pendingTarget = null;
       }
       if (owner === context && store.getState().preview?.status === "searching") {
         store.setState({ preview: { ...context, status: "failed" } });
       }
     },
     cancel: () => {
+      store.getState().cancelPending();
       owner = null;
       search.cancel();
       store.setState({ preview: null, inputError: null });
+    },
+    cancelPending: () => {
+      pendingTarget?.controller.abort(new DOMException("取消重搜意图", "AbortError"));
+      pendingTarget = null;
     },
     dismiss: () => store.getState().cancel(),
     apply: mode => {
@@ -125,12 +147,6 @@ export function createResearchStore(
   const search = createStartStreamingSearch({
     ...dependencies,
     store: temporaryRun,
-    onStart: request => {
-      if (owner !== null) {
-        owner.runId = request.runId;
-        store.setState({ preview: { ...owner } });
-      }
-    },
     onComplete: result => {
       const context = owner;
       if (context === null || result.runId !== context.runId) return;
@@ -144,6 +160,16 @@ export function createResearchStore(
         store.setState({ preview: { ...context, status: "failed" } });
       }
     },
+  });
+  // 切图后再切回也不能复活迟到检查；仅实体失效时撤销，不把普通图编辑误判成取消。
+  workspace.subscribe(state => {
+    if (pendingTarget === null) return;
+    const target = state.documents.find(document => document.id === pendingTarget?.graphId);
+    if (state.currentId !== pendingTarget.graphId || target === undefined ||
+        (pendingTarget.nodeId !== undefined && !target.nodes.some(node => node.id === pendingTarget?.nodeId))) {
+      pendingTarget.controller.abort(new DOMException("重搜目标已失效", "AbortError"));
+      pendingTarget = null;
+    }
   });
   return store;
 }

@@ -10,12 +10,17 @@ import { fileURLToPath } from "node:url";
 import { z } from "zod";
 
 import {
+  CredentialsErrorResponseSchema,
   EditableGraphSchema,
+  ExperienceInviteRequestSchema,
+  ExperienceStatusResponseSchema,
   GraphPlanSchema,
   H2EvaluationArtifactSchema,
   QueryAnalysisSchema,
   ResultGraphSchema,
+  SearchCredentialsSchema,
   SearchRequestSchema,
+  SettingsPublicResponseSchema,
   StreamEventSchema,
 } from "../src/index.ts";
 
@@ -79,6 +84,31 @@ const jsonSchemaRoots = [
     schemaName: "EditableGraphSchema",
     fileName: "editable-graph.schema.json",
     schema: EditableGraphSchema,
+  },
+  {
+    schemaName: "SearchCredentialsSchema",
+    fileName: "search-credentials.schema.json",
+    schema: SearchCredentialsSchema,
+  },
+  {
+    schemaName: "SettingsPublicResponseSchema",
+    fileName: "settings-public-response.schema.json",
+    schema: SettingsPublicResponseSchema,
+  },
+  {
+    schemaName: "ExperienceInviteRequestSchema",
+    fileName: "experience-invite-request.schema.json",
+    schema: ExperienceInviteRequestSchema,
+  },
+  {
+    schemaName: "ExperienceStatusResponseSchema",
+    fileName: "experience-status-response.schema.json",
+    schema: ExperienceStatusResponseSchema,
+  },
+  {
+    schemaName: "CredentialsErrorResponseSchema",
+    fileName: "credentials-error-response.schema.json",
+    schema: CredentialsErrorResponseSchema,
   },
 ] as const satisfies readonly JsonSchemaRoot[];
 

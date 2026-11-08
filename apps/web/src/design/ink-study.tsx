@@ -15,6 +15,8 @@ import { startOmniboxSubmission, type InvalidOmniboxInputReason } from "../lib/o
 import { requestSafeUrlOpen } from "../lib/url.js";
 import { useStore } from "zustand";
 import type { StreamingSearch } from "../api/search.js";
+import { CredentialsConfigurationError } from "../api/credentials.js";
+import { credentialSettingsStore } from "../stores/credential-settings.js";
 import { graphStore } from "../stores/graph-store.js";
 import { buildGraphNodeData } from "../components/Graph/graph-labels.js";
 import type { GraphNodeData } from "../components/Graph/graph-layout.js";
@@ -64,6 +66,8 @@ export default function InkApp() {
   const latestSearchIntent = useRef(0);
   const ownedRun = useRef<string | null>(null);
   const searchCoordinator = useRef<StreamingSearch | null>(null);
+  const pendingCredentials = useRef<AbortController | null>(null);
+  const cancelResearch = useRef<(() => void) | null>(null);
   const runtime = useStore(graphStore, state => state);
   const currentDocument = useStore(workspaceStore, selectCurrentGraph);
   const documents = useStore(workspaceStore, state => state.documents);
@@ -91,6 +95,8 @@ export default function InkApp() {
   const ready = phase === "ready";
   const [historyOpen, setHistoryOpen] = useState(false);
   const [undoOpen, setUndoOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const credentialProblem = useStore(credentialSettingsStore, state => state.notice);
   const [resourcesMounted, setResourcesMounted] = useState(false);
   const [actionsMounted, setActionsMounted] = useState(false);
   const [researchOpen, setResearchOpen] = useState(false);
@@ -124,13 +130,13 @@ export default function InkApp() {
     ...(currentDraft?.runId === currentDocument?.lastRunId ? currentDraft?.positions : {}),
   }), [currentDocument?.positions, currentDocument?.lastRunId, currentDraft]);
   // 首页隐藏图层；每次开始探索清空选择，历史图仅在主动选择记录后展示。
-  const searchState = !entered ? "input" : pendingSearch ? "loading"
+  const searchState = !entered ? "input" : pendingSearch && currentDocument === null ? "loading"
     : currentDocument !== null && (displayedNodes.length > 0 ||
       // 已交付后被编辑/撤销为空仍是工作图，不能复活runtime，也不能把重做入口锁在输入态。
       (!(isCurrentRun && runtime.isSearching) && (showEmptyRecord || currentDocument.lastRunId === null || !isCurrentRun || runtime.hasCompleted))) ? "graph"
     : isCurrentRun && runtime.isSearching ? "loading" : "input";
   const acceptsInput = ready && searchState === "input";
-  const drawerOpen = historyOpen || undoOpen;
+  const drawerOpen = historyOpen || undoOpen || settingsOpen;
   const movingGraph = labelTransfer?.graphId === currentDocument?.id && labelTransfer?.moving === true;
   const canEdit = ready && searchState === "graph" && !showsDraft && !pendingSearch &&
     !(isCurrentRun && runtime.isSearching) && !storageBlocked && !movingGraph && !drawerOpen && !researchOpen;
@@ -201,34 +207,46 @@ export default function InkApp() {
       const submission = startOmniboxSubmission(searchInput.current?.value ?? "", async input => {
         // 仅真实搜索才加载既有协调器及其图布局依赖；后来的提交或卸载可撤销尚未发出的请求。
         const intent = ++latestSearchIntent.current;
-        loadingStartedAt.current = performance.now();
+        pendingCredentials.current?.abort();
+        const credentialIntent = new AbortController();
+        pendingCredentials.current = credentialIntent;
+        // 准备中仍可取消；在资格获准前不清旧图、预览、Run所有权或已输入查询。
         setPendingSearch(true);
-        setHasSearched(false);
-        setShowEmptyRecord(false);
         setOpenControl(null);
         // 图模块同样在发请求前预加载；网络或 CSS 加载失败沿提交错误路径恢复输入，避免计划到达后整页空白。
-        const [{ startWorkspaceSearch }] = await Promise.all([
-          import("../api/workspace-search.js"), import("./ink-graph.js"),
-        ]);
-        // 非法输入或 Direct 只改变反馈，不能取消之前已经确认的有效搜索意图。
-        if (latestSearchIntent.current !== intent) return;
-        searchCoordinator.current = startWorkspaceSearch;
-        setPendingSearch(false);
-        setHasSearched(true);
-        const completion = startWorkspaceSearch(input);
-        ownedRun.current = graphStore.getState().activeRunId;
-        setAnimateRunId(ownedRun.current);
-        return completion;
+        try {
+          const [{ startWorkspaceSearch }, { researchStore }] = await Promise.all([
+            import("../api/workspace-search.js"), import("../api/research.js"), import("./ink-graph.js"),
+          ]);
+          // 非法输入或 Direct 只改变反馈，不能取消之前已经确认的有效搜索意图。
+          if (latestSearchIntent.current !== intent || credentialIntent.signal.aborted) return;
+          searchCoordinator.current = startWorkspaceSearch;
+          cancelResearch.current = () => researchStore.getState().cancel();
+          researchStore.getState().cancelPending();
+          await startWorkspaceSearch(input, { signal: credentialIntent.signal, onStart: runId => {
+            if (latestSearchIntent.current !== intent) return;
+            pendingCredentials.current = null;
+            researchStore.getState().cancel();
+            loadingStartedAt.current = performance.now();
+            setPendingSearch(false); setHasSearched(true); setShowEmptyRecord(false);
+            ownedRun.current = runId; setAnimateRunId(runId);
+          } });
+        } finally {
+          if (latestSearchIntent.current === intent) {
+            setPendingSearch(false);
+            if (pendingCredentials.current === credentialIntent) pendingCredentials.current = null;
+          }
+        }
       }, url => requestSafeUrlOpen(url, (safeUrl, target, features) => window.open(safeUrl, target, features)), language, engine);
       if (submission.kind === "invalid") { setFeedback(submission.reason); return; }
       setFeedback(null);
       if (submission.kind === "direct" && searchInput.current !== null) searchInput.current.value = submission.url;
       if (submission.kind === "ai_search") {
         if (searchInput.current !== null) searchInput.current.value = submission.query;
-        void submission.completion.catch(() => {
+        void submission.completion.catch((error: unknown) => {
           if (latestSubmission.current === submissionNumber) {
             setPendingSearch(false);
-            setFeedback("search_failure");
+            if (!(error instanceof CredentialsConfigurationError)) setFeedback("search_failure");
           }
         });
       }
@@ -371,16 +389,26 @@ export default function InkApp() {
 
   const openHistory = useCallback((): void => {
     setOpenControl(null);
-    setUndoOpen(false);
+    setUndoOpen(false); setSettingsOpen(false);
     closeActions();
     setHistoryOpen(true);
   }, [closeActions]);
   const openUndo = useCallback((): void => {
-    setOpenControl(null); setHistoryOpen(false); closeActions(); setUndoOpen(true);
+    setOpenControl(null); setHistoryOpen(false); setSettingsOpen(false); closeActions(); setUndoOpen(true);
   }, [closeActions]);
   const closeUndo = useCallback((restoreFocus: boolean): void => {
     restoreSearchFocus.current = restoreFocus; setUndoOpen(false);
   }, []);
+  const openSettings = useCallback((): void => {
+    setOpenControl(null); setHistoryOpen(false); setUndoOpen(false); closeActions(); setSettingsOpen(true);
+  }, [closeActions]);
+  const closeSettings = useCallback((restoreFocus: boolean): void => {
+    restoreSearchFocus.current = restoreFocus; setSettingsOpen(false);
+  }, []);
+  const credentialNotice = useMemo(() => credentialProblem === null || settingsOpen || !entered || !ready ? null : {
+    message: `${credentialProblem.service === undefined ? "" : credentialProblem.service === "deepseek" ? "DeepSeek: " : "SerpAPI: "}${messages.settings.problems[credentialProblem.code]}`,
+    action: <button type="button" className="ink-study__pill" onClick={openSettings}>{messages.settings.open}</button>,
+  }, [credentialProblem, settingsOpen, entered, ready, messages.settings, openSettings]);
 
   useEffect(() => {
     if (!drawerOpen && ready && restoreSearchFocus.current) {
@@ -395,13 +423,15 @@ export default function InkApp() {
   const resetSearch = (): void => {
     ++latestSubmission.current;
     ++latestSearchIntent.current;
+    pendingCredentials.current?.abort(); pendingCredentials.current = null;
     if (ownedRun.current !== null && graphStore.getState().activeRunId === ownedRun.current) searchCoordinator.current?.cancel();
+    cancelResearch.current?.();
     ownedRun.current = null;
     setPendingSearch(false);
     setFeedback(null);
     setHasSearched(false);
     setAnimateRunId(null);
-    setUndoOpen(false); closeActions();
+    setUndoOpen(false); setSettingsOpen(false); closeActions();
   };
 
   const stopSearch = (): void => {
@@ -450,6 +480,7 @@ export default function InkApp() {
       // 选择历史撤销尚未发出的新查询；已经运行的旧图仍可在后台完成自己的保存。
       ++latestSubmission.current;
       ++latestSearchIntent.current;
+      pendingCredentials.current?.abort(); pendingCredentials.current = null;
       setPendingSearch(false);
       workspaceStore.getState().selectGraph(graphId);
       setShowEmptyRecord(true);
@@ -531,6 +562,7 @@ export default function InkApp() {
       ink.current = null;
       ++latestSubmission.current;
       ++latestSearchIntent.current;
+      pendingCredentials.current?.abort(); pendingCredentials.current = null;
       ++historySelectionIntent.current;
       // 只取消本页发起且仍拥有的请求，沿用协调器的 AbortSignal 和迟到事件门禁。
       if (ownedRun.current !== null && graphStore.getState().activeRunId === ownedRun.current) searchCoordinator.current?.cancel();
@@ -677,10 +709,11 @@ export default function InkApp() {
               nodeId: resourceNode.id, resourceId, clientPoint });
           }} /></Suspense> : null}
         {actionsMounted ? <Suspense fallback={null}><InkWorkspaceActions target={actionTarget} language={renderLanguage}
-          enabled={canEdit} allowCreate={canCreate} active={entered && !drawerOpen && !researchOpen} onClose={closeActions} />
+          enabled={canEdit} allowCreate={canCreate} active={entered && (!drawerOpen || settingsOpen) && !researchOpen}
+          suspended={settingsOpen} onClose={closeActions} />
           <InkResearchPreview language={renderLanguage} active={entered} suspended={drawerOpen} onVisibilityChange={setResearchOpen} />
         </Suspense> : null}
-        <InkNotice notice={graphNotice} />
+        <InkNotice notice={credentialNotice ?? graphNotice} />
 
         <button type="button" className="ink-study__pill ink-study__back" onClick={returnHome}
           inert={!entered} aria-hidden={!entered} aria-label={messages.inkStudy.backHome}>
@@ -692,6 +725,7 @@ export default function InkApp() {
         <InkSearchHistory open={historyOpen} available={ready} language={renderLanguage}
           undoOpen={undoOpen} undoDisabled={storageBlocked || showsDraft || pendingSearch || movingGraph || researchOpen || (isCurrentRun && runtime.isSearching)}
           onOpenUndo={openUndo} onCloseUndo={closeUndo}
+          settingsOpen={settingsOpen} onOpenSettings={openSettings} onCloseSettings={closeSettings}
           onOpen={openHistory} onClose={closeHistory} onNewSearch={newSearch} onSelectGraph={restoreHistory} />
 
         {/* 披露面板使用普通按钮与自然 Tab 顺序，避免模拟系统下拉框或改变语言协议。 */}

@@ -3,6 +3,8 @@
  * 本文件直接验证 LLM 排队扣时与取消，真实 Node 并行接线由
  * start-node-jobs.test.ts 联合验证。
  */
+import { AsyncLocalStorage } from "node:async_hooks";
+
 import type { NormalizedSearchHit, ProviderSearchRequest } from "@wayfinder/contracts";
 import { describe, expect, it, vi } from "vitest";
 
@@ -17,7 +19,7 @@ import {
   type StructuredLLMInput,
 } from "../ai/llm-provider.js";
 import type { SearchProvider } from "../search/provider.js";
-import { createConcurrencyLimitedProviders } from "./provider-concurrency.js";
+import { createConcurrencyLimitedProviders, createProviderConcurrencyQueues } from "./provider-concurrency.js";
 
 const REQUEST: ProviderSearchRequest = {
   kind: "node",
@@ -90,6 +92,81 @@ function createActivityGate<T>(): ActivityGate<T> {
 }
 
 describe("createConcurrencyLimitedProviders", () => {
+  it("不同请求包装器共享同一进程队列，总活跃调用仍为 Search 6 / LLM 3", async () => {
+    const queues = createProviderConcurrencyQueues({ search: 6, llm: 3 });
+    const searchGate = createActivityGate<NormalizedSearchHit[]>();
+    const llmGate = createActivityGate<unknown>();
+    const wrappers = ["first-request", "second-request"].map(id => createConcurrencyLimitedProviders({
+      searchProvider: { id, capabilities: ["general"], search: () => searchGate.run() },
+      llmProvider: { id, structured: () => llmGate.run() },
+      concurrency: { search: 6, llm: 3 }, queues,
+    }));
+    const signal = new AbortController().signal;
+    const searches = Array.from({ length: 7 }, (_, index) => wrappers[index % 2]!.searchProvider.search(REQUEST, signal));
+    const llmCalls = Array.from({ length: 4 }, (_, index) => wrappers[index % 2]!.llmProvider.structured(STRUCTURED_INPUT, { signal, timeoutMs: 1_000 }));
+    await vi.waitFor(() => expect([searchGate.calls(), llmGate.calls()]).toEqual([6, 3]));
+    expect([queues.search.pendingCount, queues.llm.pendingCount]).toEqual([1, 1]);
+    searchGate.releaseOne([]);
+    llmGate.releaseOne({});
+    await vi.waitFor(() => expect([searchGate.calls(), llmGate.calls()]).toEqual([7, 4]));
+    searchGate.releaseAll([]);
+    llmGate.releaseAll({});
+    await Promise.all([...searches, ...llmCalls]);
+    expect([searchGate.peak(), llmGate.peak()]).toEqual([6, 3]);
+  });
+
+  it("跨包装器排队仍恢复各自异步上下文，并扣除相同全局队列的等待预算", async () => {
+    const queues = createProviderConcurrencyQueues({ search: 1, llm: 1 });
+    const context = new AsyncLocalStorage<string>();
+    const clock = createFixedClock(0);
+    const active = createDeferred<unknown>();
+    const received: Array<{ context: string | undefined; timeoutMs: number }> = [];
+    const make = (first: boolean) => createConcurrencyLimitedProviders({
+      searchProvider: UNUSED_SEARCH_PROVIDER,
+      llmProvider: { id: first ? "first" : "second", structured: async (_input, options) => {
+        received.push({ context: context.getStore(), timeoutMs: options.timeoutMs });
+        return first ? active.promise : {};
+      } },
+      concurrency: { search: 1, llm: 1 }, queues, now: clock.now,
+    });
+    const first = make(true);
+    const second = make(false);
+    const signal = new AbortController().signal;
+    const running = context.run("first", () => first.llmProvider.structured(STRUCTURED_INPUT, { signal, timeoutMs: 1_000 }));
+    await vi.waitFor(() => expect(received).toHaveLength(1));
+    const queued = context.run("second", () => second.llmProvider.structured(STRUCTURED_INPUT, { signal, timeoutMs: 1_000 }));
+    clock.advanceBy(400);
+    active.resolve({});
+    await Promise.all([running, queued]);
+    expect(received).toEqual([{ context: "first", timeoutMs: 1_000 }, { context: "second", timeoutMs: 600 }]);
+  });
+
+  it("共享队列取消只释放该待执行操作，不调用旧 Adapter 或清空后续请求", async () => {
+    const queues = createProviderConcurrencyQueues({ search: 1, llm: 1 });
+    const active = createDeferred<NormalizedSearchHit[]>();
+    const calls: string[] = [];
+    const make = (id: string, running = false) => createConcurrencyLimitedProviders({
+      searchProvider: { id, capabilities: ["general"], search: async () => {
+        calls.push(id);
+        return running ? active.promise : [];
+      } },
+      llmProvider: { id, structured: async () => ({}) },
+      concurrency: { search: 1, llm: 1 }, queues,
+    });
+    const signal = new AbortController().signal;
+    const running = make("running", true).searchProvider.search(REQUEST, signal);
+    await vi.waitFor(() => expect(calls).toEqual(["running"]));
+    const controller = new AbortController();
+    const cancelled = make("cancelled").searchProvider.search(REQUEST, controller.signal);
+    const reason = new Error("fake-author-revoked");
+    controller.abort(reason);
+    await expect(cancelled).rejects.toBe(reason);
+    const next = make("next").searchProvider.search(REQUEST, signal);
+    active.resolve([]);
+    await Promise.all([running, next]);
+    expect(calls).toEqual(["running", "next"]);
+  });
+
   it("向 Search 与 LLM 原始 Provider 保持同一 Run Signal", async () => {
     const receivedSearchSignals: AbortSignal[] = [];
     const receivedLlmSignals: AbortSignal[] = [];

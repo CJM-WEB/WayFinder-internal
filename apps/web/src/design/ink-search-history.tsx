@@ -10,6 +10,7 @@ import { getMessages } from "../i18n/messages.js";
 import { workspaceStore } from "../stores/workspace-store.js";
 import { workspacePersistenceStore } from "../stores/workspace-persistence.js";
 import { InkUndoPanel } from "./ink-undo-panel.js";
+import { InkSettingsPanel } from "./ink-settings.js";
 import { useInkPresence } from "./ink-presence.js";
 
 type Props = Readonly<{
@@ -22,6 +23,7 @@ type Props = Readonly<{
   onSelectGraph: (graphId: string) => Promise<void>;
   undoOpen: boolean; undoDisabled: boolean;
   onOpenUndo: () => void; onCloseUndo: (restoreFocus: boolean) => void;
+  settingsOpen: boolean; onOpenSettings: () => void; onCloseSettings: (restoreFocus: boolean) => void;
 }>;
 
 /** 每条记录只维护名称草稿；保存与删除仍走已有操作，存储读取失败时禁用写入。 */
@@ -84,7 +86,7 @@ function HistoryRecord({ id, title, language, disabled, onDelete, onSelect, sele
 }
 
 export function InkSearchHistory({ open, available, language, onOpen, onClose, onNewSearch, onSelectGraph,
-  undoOpen, undoDisabled, onOpenUndo, onCloseUndo }: Props) {
+  undoOpen, undoDisabled, onOpenUndo, onCloseUndo, settingsOpen, onOpenSettings, onCloseSettings }: Props) {
   const drawer = useRef<HTMLDivElement>(null);
   const panel = useRef<HTMLElement>(null);
   const toggle = useRef<HTMLButtonElement>(null);
@@ -97,10 +99,12 @@ export function InkSearchHistory({ open, available, language, onOpen, onClose, o
     const milliseconds = Number.parseFloat(duration) * (duration.endsWith("ms") ? 1 : 1000);
     setDrawerDuration(Number.isFinite(milliseconds) ? milliseconds : 0);
   }, []);
-  const present = useInkPresence(open ? "history" : undoOpen ? "undo" : null, drawerDuration);
+  const present = useInkPresence(open ? "history" : undoOpen ? "undo" : settingsOpen ? "settings" : null, drawerDuration);
   const [dockHovered, setDockHovered] = useState(false);
   const [dockFocused, setDockFocused] = useState(false);
-  const dockExpanded = dockHovered || dockFocused;
+  const [touchExpanded, setTouchExpanded] = useState(false);
+  const expandTouchOnly = useRef(false);
+  const dockExpanded = dockHovered || dockFocused || touchExpanded;
   const documents = useStore(workspaceStore, state => state.documents);
   const currentId = useStore(workspaceStore, state => state.currentId);
   const persistence = useStore(workspacePersistenceStore, state => state);
@@ -134,29 +138,49 @@ export function InkSearchHistory({ open, available, language, onOpen, onClose, o
     };
   }, [open, onClose]);
 
+  useEffect(() => {
+    if (!touchExpanded) return;
+    const collapse = (event: Event): void => {
+      if (event.target instanceof Node && !drawer.current?.contains(event.target)) setTouchExpanded(false);
+    };
+    document.addEventListener("pointerdown", collapse);
+    return () => document.removeEventListener("pointerdown", collapse);
+  }, [touchExpanded]);
+
   return (
     <div className="ink-study__history-drawer" ref={drawer} data-present-panel={present.value ?? "none"}
       data-ink-control data-ink-overlay inert={!available} aria-hidden={!available}>
       {/* 触发器与内容是同级，关闭抽屉时仍可从底边或键盘打开。 */}
       <div className="ink-study__history-dock" data-expanded={dockExpanded} data-panel-open={present.value !== null}
         onMouseEnter={() => setDockHovered(true)} onMouseLeave={() => setDockHovered(false)}
-        onPointerDownCapture={() => setDockFocused(false)}
+        onPointerDownCapture={event => {
+          setDockFocused(false);
+          // 触屏没有悬浮：首次点箭头只展开三个选项，第二次明确选择，不误开历史。
+          expandTouchOnly.current = event.pointerType === "touch" && !dockExpanded;
+          if (event.pointerType === "touch") setTouchExpanded(true);
+        }}
         onFocusCapture={event => setDockFocused(event.target.matches(":focus-visible"))} onBlur={event => {
-          // 两个胶囊之间保留父层命中桥；键盘在按钮间移动时也不提前收拢。
+          // 三个胶囊之间保留父层命中桥；键盘在按钮间移动时也不提前收拢。
           if (!event.currentTarget.contains(event.relatedTarget)) setDockFocused(false);
         }} onClick={event => {
           // 透明圆角/间隔只补主入口的命中，子按钮事件仍由各自处理，不能误触撤销入口。
-          if (event.target === event.currentTarget) { if (open) onClose(true); else onOpen(); }
+          if (event.target === event.currentTarget && !expandTouchOnly.current) { if (open) onClose(true); else onOpen(); }
         }}>
       <button type="button" className="ink-study__pill ink-study__history-toggle" ref={toggle}
         aria-label={messages.inkStudy.searchHistory} aria-expanded={open} aria-controls="ink-search-history"
-        onClick={() => open ? onClose(true) : onOpen()}>
+        onClick={() => {
+          if (expandTouchOnly.current) { expandTouchOnly.current = false; return; }
+          if (open) onClose(true); else onOpen();
+        }}>
         <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20V5m-6 6 6-6 6 6" /></svg>
         <span aria-hidden="true">{messages.inkStudy.searchHistory}</span>
       </button>
       <button type="button" className="ink-study__pill ink-study__undo-toggle" inert={!dockExpanded}
         aria-label={messages.editor.undo} aria-expanded={undoOpen} aria-controls="ink-undo-history"
         onClick={() => undoOpen ? onCloseUndo(true) : onOpenUndo()}>{messages.editor.undo}</button>
+      <button type="button" className="ink-study__pill ink-study__settings-toggle" inert={!dockExpanded}
+        aria-label={messages.settings.title} aria-expanded={settingsOpen} aria-controls="ink-settings"
+        onClick={() => settingsOpen ? onCloseSettings(true) : onOpenSettings()}>{messages.settings.title}</button>
       </div>
       <section className="ink-study__history-panel" id="ink-search-history" ref={panel} tabIndex={-1}
         data-active={open}
@@ -188,6 +212,7 @@ export function InkSearchHistory({ open, available, language, onOpen, onClose, o
       </section>
       <InkUndoPanel open={undoOpen} presented={present.value === "undo"} available={available}
         disabled={undoDisabled} language={language} onClose={onCloseUndo} />
+      <InkSettingsPanel open={settingsOpen} presented={present.value === "settings"} language={language} onClose={onCloseSettings} />
     </div>
   );
 }

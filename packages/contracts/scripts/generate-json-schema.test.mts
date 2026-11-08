@@ -26,6 +26,11 @@ const expectedFileNames = [
   "result-graph.schema.json",
   "h2-evaluation-artifact.schema.json",
   "editable-graph.schema.json",
+  "search-credentials.schema.json",
+  "settings-public-response.schema.json",
+  "experience-invite-request.schema.json",
+  "experience-status-response.schema.json",
+  "credentials-error-response.schema.json",
 ] as const;
 
 const temporaryDirectories: string[] = [];
@@ -137,6 +142,24 @@ describe("JSON Schema 纯生成", () => {
   it("不可表达类型失败时报告根 Schema 名称", () => {
     expect(() => renderJsonSchema("UnrepresentableSchema", z.date()))
       .toThrow(/UnrepresentableSchema/);
+  });
+
+  it("D9 生成物保留显式来源、严格字段和独立前置错误", () => {
+    const credentials = parseArtifact("search-credentials.schema.json");
+    expect(credentials).toMatchObject({
+      additionalProperties: false,
+      required: ["deepseek", "serpapi"],
+    });
+    expect(containsRecord(credentials, record => record.const === "author")).toBe(true);
+    expect(containsRecord(credentials, record => record.pattern === "^[\\x20-\\x7E]+$" && record.maxLength === 4096)).toBe(true);
+    expect(parseArtifact("experience-invite-request.schema.json")).toMatchObject({
+      additionalProperties: false,
+      properties: { inviteCode: { minLength: 1, maxLength: 4096 } },
+    });
+    expect(parseArtifact("credentials-error-response.schema.json")).toMatchObject({
+      additionalProperties: false,
+      required: ["code"],
+    });
   });
 });
 

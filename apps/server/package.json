@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "build": "pnpm --filter @wayfinder/contracts --fail-if-no-match run build && tsc --project tsconfig.build.json && node --input-type=module --eval \"await import('./dist/index.js')\"",
+    "experience:configure": "pnpm run build && node --env-file-if-exists=../../.env dist/settings/configure-experience.js",
     "eval:golden": "pnpm run build && node dist/eval/run-planner-golden.js",
     "eval:h2-baseline": "pnpm run build && node dist/eval/run-h2-retrieval-baseline.js",
     "eval:quality": "pnpm run build && node dist/eval/run-quality-eval.js",

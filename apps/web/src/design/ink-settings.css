@@ -1,0 +1,33 @@
+/* 设置与历史共用抽屉背景和退场；表单只负责自身布局，不改变画布或引入第二条抽屉动画。 */
+.ink-settings { box-sizing: border-box; overflow: hidden; padding: 0; }
+/* 仅表单内容滚动；体验层留在抽屉可视区域，避免玻璃背景形成包含块后随 SerpAPI 滚动而被裁切。 */
+.ink-settings__content { box-sizing: border-box; height: 100%; overflow-y: auto;
+  padding: clamp(22px, 3.6vw, 44px) clamp(18px, 3.2vw, 40px) 80px; }
+.ink-settings__hint { color: #66665e; font-size: 12px; line-height: 1.65; }
+.ink-settings__services { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+.ink-settings__service { min-width: 0; padding: 20px; border: 1px solid #ffffffb3; border-radius: 24px; background: #ffffff45; }
+.ink-settings h3 { margin: 0 0 15px; color: #33332e; font-size: 15px; font-weight: 500; }
+.ink-settings__choices, .ink-settings__actions { display: flex; flex-wrap: wrap; gap: 9px; }
+.ink-settings__choices .ink-study__pill[aria-pressed="false"] { background: #ffffff85; color: #4c4c44; border-color: #ffffffb3; }
+.ink-settings label { display: grid; gap: 9px; margin: 19px 0 12px; color: #64645e; font-size: 11px; }
+.ink-settings input { box-sizing: border-box; width: 100%; min-width: 0; padding: 12px 14px; border: 1px solid #ffffffb3;
+  border-radius: 16px; background: #ffffff78; color: #1b1b19; font: inherit; font-size: 13px; line-height: 1.5; outline-offset: 3px; }
+.ink-settings .ink-study__pill { min-height: 32px; padding-inline: 14px; }
+.ink-settings__get-key { display: inline-block; margin-bottom: 14px; color: #55554c; font-size: 11px;
+  line-height: 1.6; text-decoration: underline; text-underline-offset: 3px; }
+.ink-settings__service > p { margin-bottom: 0; color: #55554c; font-size: 11px; }
+.ink-settings__error { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; color: #74604c; font-size: 12px; line-height: 1.6; }
+.ink-settings__trial { position: absolute; z-index: 4; inset: 0; display: grid; place-items: center; padding: 20px;
+  border-radius: inherit; background: #ecece7b8; backdrop-filter: blur(12px); opacity: 0; pointer-events: none;
+  transition: opacity 360ms var(--ink-slide-ease); }
+.ink-settings__trial[data-open="true"] { opacity: 1; pointer-events: auto; }
+.ink-settings__trial-surface { box-sizing: border-box; width: min(100%, 480px); max-height: 100%; overflow-y: auto;
+  padding: 24px; border: 1px solid #ffffffd0; border-radius: 26px; background: var(--ink-history-glass); outline-offset: 3px; }
+.ink-settings__announcement h4 { margin: 0 0 8px; color: #62625b; font-size: 11px; font-weight: 500; }
+.ink-settings__announcement p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; color: #34342e; font-size: 13px; line-height: 1.7; }
+.ink-settings__warning { color: #68604d; font-size: 12px; line-height: 1.7; }
+@media (max-width: 620px) {
+  .ink-settings__services { grid-template-columns: 1fr; }
+  .ink-settings__service { padding: 17px; }
+}
+@media (prefers-reduced-motion: reduce) { .ink-settings__trial { transition: none; } }

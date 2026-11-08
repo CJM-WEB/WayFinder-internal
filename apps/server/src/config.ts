@@ -10,6 +10,7 @@
 import { z } from "zod";
 
 import { MAX_LLM_CALL_TIMEOUT_MS } from "./ai/llm-provider.js";
+import { normalizePublicOrigin } from "./settings/request-origin.js";
 
 export const RUN_DEADLINE_MS = 40_000 as const;
 export const MAX_SEARCH_CONCURRENCY = 6 as const;
@@ -38,6 +39,10 @@ const EnvironmentInputSchema = z
     LLM_MODEL: z.literal("deepseek-flash"),
     LLM_API_KEY: z.string().trim().min(1),
     SERPAPI_API_KEY: z.string().trim().min(1),
+    // 空值保持体验关闭；路径内容只由授权模块读取，永不送到前端。
+    EXPERIENCE_CONFIG_PATH: z.string().trim().default(""),
+    // 只信任显式站点；空值保留严格回环开发模式，不推断 X-Forwarded-*。
+    PUBLIC_ORIGIN: z.string().default("").refine(value => value === "" || normalizePublicOrigin(value) !== null),
     SEARCH_TIMEOUT_MS: boundedInteger(16_000, RUN_DEADLINE_MS),
     PLANNER_TIMEOUT_MS: boundedInteger(
       MAX_LLM_CALL_TIMEOUT_MS,
@@ -74,6 +79,8 @@ const EnvironmentSchema = EnvironmentInputSchema
     llmModel: environment.LLM_MODEL,
     llmApiKey: environment.LLM_API_KEY,
     serpApiKey: environment.SERPAPI_API_KEY,
+    experienceConfigPath: environment.EXPERIENCE_CONFIG_PATH || null,
+    publicOrigin: environment.PUBLIC_ORIGIN === "" ? null : normalizePublicOrigin(environment.PUBLIC_ORIGIN),
     timeouts: {
       searchMs: environment.SEARCH_TIMEOUT_MS,
       plannerMs: environment.PLANNER_TIMEOUT_MS,

@@ -51,6 +51,8 @@ describe("parseServerConfig", () => {
       llmModel: "deepseek-flash",
       llmApiKey: "test-llm-key",
       serpApiKey: "test-serpapi-key",
+      experienceConfigPath: null,
+      publicOrigin: null,
       timeouts: {
         searchMs: 16_000,
         plannerMs: 30_000,
@@ -79,6 +81,20 @@ describe("parseServerConfig", () => {
       RUN_LOGGING: "TRUE",
     });
     expect(error.fields).toContain("RUN_LOGGING");
+  });
+
+  it("可信站点只接受 HTTPS 或规范 HTTP 回环纯 Origin，不接受转发或路径猜测", () => {
+    for (const [input, expected] of [
+      ["https://wayfinder.example/", "https://wayfinder.example"],
+      ["http://localhost:5173", "http://localhost:5173"],
+      ["http://127.0.0.1:3000/", "http://127.0.0.1:3000"],
+      ["http://[::1]:3000", "http://[::1]:3000"],
+    ]) expect(parseServerConfig({ ...REQUIRED_ENVIRONMENT, PUBLIC_ORIGIN: input }).publicOrigin).toBe(expected);
+    for (const PUBLIC_ORIGIN of [
+      "http://wayfinder.example", "https://name:secret@wayfinder.example", "https://wayfinder.example/path",
+      "https://wayfinder.example?query", "https://wayfinder.example#hash", "https://wayfinder.example\n",
+      "http://localhost.evil", "http://127.1", "http://2130706433", "https://wayfinder.example\\path",
+    ]) expect(expectConfigError({ ...REQUIRED_ENVIRONMENT, PUBLIC_ORIGIN }).fields).toContain("PUBLIC_ORIGIN");
   });
 
   it("要求 .env.example 与运行时白名单完全一致且 Secret 示例为空", () => {
