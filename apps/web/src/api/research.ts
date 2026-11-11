@@ -10,6 +10,7 @@ import { startWorkspaceSearch } from "./workspace-search.js";
 import { createGraphStore } from "../stores/graph-store.js";
 import { fromResultGraph, workspaceStore, type WorkspaceStoreState } from "../stores/workspace-store.js";
 import { applyGraphSearchResult, applyNodeSearchResult } from "../stores/workspace-research.js";
+import { accountStore } from "../stores/account.js";
 
 export type ResearchPreview = {
   graphId: string;
@@ -175,3 +176,8 @@ export function createResearchStore(
 }
 
 export const researchStore = createResearchStore();
+
+/** 已加载的预览在身份变化时立即撤销；未加载的预览不应成为首页依赖。 */
+accountStore.subscribe((next, previous) => {
+  if (next.epoch !== previous.epoch) { researchStore.getState().cancelPending(); researchStore.getState().dismiss(); }
+});

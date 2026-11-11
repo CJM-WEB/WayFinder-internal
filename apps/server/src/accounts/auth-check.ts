@@ -5,12 +5,20 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import process from "node:process";
+import { promises as fs } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 
 import type { AccountAction } from "@wayfinder/contracts";
 import { createAccountAuth } from "./auth.js";
 import { AccountDatabase, databaseConfigFromUrl, databaseOperation } from "./database.js";
 import { buildServer } from "../app.js";
 import { registerAccountRoutes } from "../routes/account.js";
+import { registerExperienceRoutes, sendCredentialsAccessError } from "../routes/experience.js";
+import { updateExperienceConfig } from "../settings/experience-config.js";
+import { CredentialsAccessError } from "../settings/experience-authorization.js";
+import { prepareSearchCredentialScope, type SearchCredentialScope } from "../settings/search-credentials.js";
+import { parseServerConfig } from "../config.js";
 
 let database: AccountDatabase | undefined;
 let stage = "配置";
@@ -104,24 +112,60 @@ try {
     stage = "真实认证与HTTP路由接线";
     const server = buildServer();
     registerAccountRoutes(server, { auth, publicOrigin: origin });
+    const directory = await fs.mkdtemp(path.join(tmpdir(), "wayfinder-auth-gate-"));
+    const configPath = path.join(directory, "experience.json");
+    await updateExperienceConfig(configPath, { inviteCode: "fixture-invite" });
+    registerExperienceRoutes(server, { auth, publicOrigin: origin, configPath });
+    const config = parseServerConfig({ LLM_PROVIDER: "deepseek", LLM_MODEL: "deepseek-flash",
+      LLM_API_KEY: "fixture-author-llm", SERPAPI_API_KEY: "fixture-author-search", PUBLIC_ORIGIN: origin,
+      EXPERIENCE_CONFIG_PATH: configPath });
+    let scope: SearchCredentialScope | undefined;
+    server.post("/fixture-author", async (request, reply) => {
+      try { scope = await prepareSearchCredentialScope(request, config, new AbortController().signal, auth); return reply.code(204).send(); }
+      catch (error: unknown) {
+        if (error instanceof CredentialsAccessError) return sendCredentialsAccessError(reply, error);
+        throw error;
+      }
+    });
     const httpHeaders = { host: "fixture.example", origin, cookie: cookieOf(afterReset.cookies) };
     try {
       const session = await server.inject({ url: "/api/account", headers: httpHeaders });
       assert.equal(session.statusCode, 200);
       assert.deepEqual(session.json(), afterReset.body);
       assert(!session.body.includes("token") && !session.body.includes("sessionId"));
+      stage = "真实会话与作者双门禁";
+      const trial = { method: "POST" as const, url: "/api/experience", payload: { inviteCode: "fixture-invite" } };
+      assert.equal((await server.inject({ ...trial, headers: { host: "fixture.example", origin } })).statusCode, 401);
+      const grant = await server.inject({ ...trial, headers: httpHeaders });
+      assert.equal(grant.statusCode, 200);
+      const grantHeader = grant.headers["set-cookie"];
+      const trialCookie = cookieOf(Array.isArray(grantHeader) ? grantHeader : [String(grantHeader)]);
+      const selected = JSON.stringify({ deepseek: { source: "author" }, serpapi: { source: "author" } });
+      assert.equal((await server.inject({ method: "POST", url: "/fixture-author", headers: {
+        ...httpHeaders, cookie: `${httpHeaders.cookie}; ${trialCookie}`, "x-wayfinder-credentials": selected,
+      } })).statusCode, 204);
+      assert(scope);
       const logout = await server.inject({ method: "POST", url: "/api/account", headers: httpHeaders,
         payload: { action: "logout" } });
       assert.equal(logout.statusCode, 200);
       assert.deepEqual((await server.inject({ url: "/api/account", headers: httpHeaders })).json(), { account: null });
-    } finally { await server.close(); }
+      await assert.rejects(scope.assertService("deepseek", new AbortController().signal), { code: "ACCOUNT_REQUIRED" });
+      assert.equal(scope.signal.aborted, true);
+      assert.deepEqual((await server.inject({ url: "/api/experience/status", headers: {
+        ...httpHeaders, cookie: `${httpHeaders.cookie}; ${trialCookie}`,
+      } })).json(), { authorized: false });
+      const newLogin = await action({ action: "login", email, password: "fixture-password-replaced" });
+      assert.deepEqual((await server.inject({ url: "/api/experience/status", headers: {
+        ...httpHeaders, cookie: `${cookieOf(newLogin.cookies)}; ${trialCookie}`,
+      } })).json(), { authorized: false });
+    } finally { await server.close(); await fs.rm(directory, { recursive: true, force: true }); }
   } finally {
     for (const email of emails) {
       await db.query(operation(), "DELETE FROM verification WHERE identifier LIKE ?", [`%${email}`]);
       await db.query(operation(), "DELETE FROM `user` WHERE email = ?", [email]);
     }
   }
-  console.info("MySQL 真实认证：迁移/注册验证/密码登录退出/重置撤销/并发单次/过期限次/限速/假邮件失败/取消通过");
+  console.info("MySQL 真实认证：迁移/注册验证/密码会话/重置撤销/验证码边界/限速/假邮件失败/取消/作者登录双门禁通过");
 } catch {
   console.error(`MySQL 账号隔离验证失败：${stage}；未输出原始异常、邮箱、Cookie 或验证码`);
   process.exitCode = 1;

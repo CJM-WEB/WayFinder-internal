@@ -1,6 +1,6 @@
 /**
  * 回归职责：加载真实 Vite 配置，经过真实开发代理验证本地体验授权与同源边界。
- * 安全边界：后端仅注册配置 / 授权路由，全部使用临时假邀请码；不加载环境文件或调用搜索服务。
+ * 安全边界：后端仅注册配置 / 授权路由，身份接缝只识别测试假会话；不加载环境文件或调用搜索服务。
  * 负对照保留旧字符串代理的实际语义，不能在重定向测试目标时顺带修复 changeOrigin（改写来源主机）。
  */
 import { promises as fs } from "node:fs";
@@ -19,6 +19,7 @@ import { updateExperienceConfig } from "../../../server/src/settings/experience-
 const WEB_ROOT = fileURLToPath(new URL("../../", import.meta.url));
 const CONFIG_FILE = fileURLToPath(new URL("../../vite.config.mjs", import.meta.url));
 const INVITE = "fixture-development-proxy-code";
+const ACCOUNT_COOKIE = "fixture_account_session=fixture-proxy-session";
 type ObservedRequest = { host: string | undefined; origin: string | undefined; url: string };
 type ProxyFixture = { origin: string; upstream: string; requests: ObservedRequest[] };
 
@@ -42,7 +43,10 @@ async function withDevelopmentProxy(legacy: boolean, verify: (fixture: ProxyFixt
       // 只观察公开来源和路由，不记录 Cookie（浏览器凭证）、邀请码或请求正文。
       requests.push({ host: request.headers.host, origin: request.headers.origin, url: request.url });
     });
-    registerExperienceRoutes(backend, { configPath, publicOrigin: null });
+    registerExperienceRoutes(backend, { configPath, publicOrigin: null, auth: {
+      getIdentity: async headers => (headers.get("cookie") ?? "").split(";").map(part => part.trim()).includes(ACCOUNT_COOKIE)
+        ? { userId: "fixture-proxy-user", sessionId: "fixture-proxy-session", email: "fixture@example.test" } : null,
+    } });
     const upstream = await backend.listen({ host: "127.0.0.1", port: 0 });
     const loaded = await loadConfigFromFile({ command: "serve", mode: "test" }, CONFIG_FILE, WEB_ROOT, "silent");
     if (loaded === null) throw new Error("无法读取真实 Vite 开发配置");
@@ -87,7 +91,10 @@ describe("开发代理的体验授权回归", () => {
       const client = new URL(listeningOrigin);
       client.hostname = hostname;
       const origin = client.origin;
-      const granted = await postInvite(origin, INVITE);
+      const guest = await postInvite(origin, INVITE);
+      expect(guest.status).toBe(401);
+      expect(CredentialsErrorResponseSchema.parse(await guest.json())).toEqual({ code: "ACCOUNT_REQUIRED" });
+      const granted = await postInvite(origin, INVITE, origin, ACCOUNT_COOKIE);
       expect(granted.status).toBe(200);
       expect(ExperienceStatusResponseSchema.parse(await granted.json())).toEqual({ authorized: true });
       expect(granted.headers.get("cache-control")).toBe("no-store");
@@ -98,7 +105,7 @@ describe("开发代理的体验授权回归", () => {
       expect(cookieHeader).toContain("Secure");
       expect(cookieHeader).toContain("SameSite=Strict");
       expect(cookieHeader).not.toContain("Domain=");
-      const cookie = cookieHeader.split(";")[0] ?? "";
+      const cookie = `${ACCOUNT_COOKIE}; ${cookieHeader.split(";")[0] ?? ""}`;
       const restored = await fetch(`${origin}/api/experience/status`, {
         headers: { Origin: origin, Cookie: cookie }, signal: AbortSignal.timeout(5_000),
       });
@@ -113,10 +120,10 @@ describe("开发代理的体验授权回归", () => {
       expect(crossed.status).toBe(403);
       expect(CredentialsErrorResponseSchema.parse(await crossed.json())).toEqual({ code: "CREDENTIALS_INVALID" });
       expect(requests.map(request => request.url)).toEqual([
-        "/api/experience", "/api/experience/status", "/api/experience", "/api/experience",
+        "/api/experience", "/api/experience", "/api/experience/status", "/api/experience", "/api/experience",
       ]);
       for (const request of requests) expect(request.host).toBe(new URL(origin).host);
-      expect(requests.map(request => request.origin)).toEqual([origin, origin, origin, hostileOrigin]);
+      expect(requests.map(request => request.origin)).toEqual([origin, origin, origin, origin, hostileOrigin]);
     });
   });
 

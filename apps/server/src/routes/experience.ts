@@ -9,7 +9,7 @@ import {
   ExperienceStatusResponseSchema,
   SettingsPublicResponseSchema,
 } from "@wayfinder/contracts";
-import type { FastifyInstance, FastifyReply } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 
 import {
   createExperienceCookie,
@@ -17,6 +17,9 @@ import {
   isAuthorAuthorized,
   isExperienceInviteValid,
 } from "../settings/experience-authorization.js";
+import type { AccountAuth, AccountIdentity } from "../accounts/auth.js";
+import { databaseOperation } from "../accounts/database.js";
+import { accountRequestHeaders } from "./account.js";
 import { readExperienceConfig, type ExperienceConfig } from "../settings/experience-config.js";
 import { isSameOriginRequest } from "../settings/request-origin.js";
 
@@ -26,7 +29,7 @@ export function sendCredentialsAccessError(
   error: CredentialsAccessError,
   statusCode?: number,
 ): FastifyReply {
-  const status = statusCode ?? (error.code === "EXPERIENCE_UNAVAILABLE" ? 503
+  const status = statusCode ?? (error.code === "ACCOUNT_REQUIRED" ? 401 : error.code === "EXPERIENCE_UNAVAILABLE" ? 503
     : error.code === "INVITE_CODE_INVALID" || error.code === "EXPERIENCE_REVOKED" ? 403 : 400);
   return reply.header("Cache-Control", "no-store").code(status).send(CredentialsErrorResponseSchema.parse({
     code: error.code,
@@ -49,8 +52,18 @@ function sameAuthorization(first: ExperienceConfig, current: ExperienceConfig | 
 
 export function registerExperienceRoutes(
   server: FastifyInstance,
-  options: Readonly<{ configPath: string | null; publicOrigin: string | null }>,
+  options: Readonly<{ configPath: string | null; publicOrigin: string | null; auth?: Pick<AccountAuth, "getIdentity"> | null }>,
 ): void {
+  const withIdentity = async <T>(request: FastifyRequest, reply: FastifyReply,
+    action: (read: () => Promise<AccountIdentity | null>) => Promise<T>): Promise<T> => {
+    const controller = new AbortController();
+    const abort = (): void => controller.abort();
+    const disconnected = (): void => { if (!reply.raw.writableFinished) abort(); };
+    request.raw.once("aborted", abort); reply.raw.once("close", disconnected);
+    const operation = databaseOperation(controller.signal);
+    try { return await action(async () => options.auth?.getIdentity(accountRequestHeaders(request), operation) ?? null); }
+    finally { request.raw.removeListener("aborted", abort); reply.raw.removeListener("close", disconnected); }
+  };
   // Fastify 封装域让固定错误处理只作用于这三路，不改变既有搜索和静态资源错误语义。
   void server.register(async routes => {
     routes.addHook("onRequest", async (request, reply) => {
@@ -72,7 +85,7 @@ export function registerExperienceRoutes(
       const config = await loadConfig(options.configPath);
       return reply.send(SettingsPublicResponseSchema.parse({
         announcement: config?.announcement ?? "",
-        experienceAvailable: config !== null,
+        experienceAvailable: config !== null && options.auth !== undefined && options.auth !== null,
       }));
     });
 
@@ -85,24 +98,34 @@ export function registerExperienceRoutes(
       if (!parsed.success) return sendCredentialsAccessError(reply, new CredentialsAccessError("INVITE_CODE_INVALID"), 400);
       const config = await loadConfig(options.configPath);
       if (config === null) throw new CredentialsAccessError("EXPERIENCE_UNAVAILABLE");
+      return withIdentity(request, reply, async readIdentity => {
+      const identity = await readIdentity();
+      if (identity === null) throw new CredentialsAccessError("ACCOUNT_REQUIRED");
       if (!isExperienceInviteValid(parsed.data.inviteCode, config)) throw new CredentialsAccessError("INVITE_CODE_INVALID");
       const current = await loadConfig(options.configPath);
       if (!sameAuthorization(config, current) || !isExperienceInviteValid(parsed.data.inviteCode, current)) {
         throw new CredentialsAccessError("EXPERIENCE_REVOKED");
       }
-      return reply.header("Set-Cookie", createExperienceCookie(current))
+      const currentIdentity = await readIdentity();
+      if (currentIdentity === null || currentIdentity.userId !== identity.userId || currentIdentity.sessionId !== identity.sessionId) {
+        throw new CredentialsAccessError("ACCOUNT_REQUIRED");
+      }
+      return reply.header("Set-Cookie", createExperienceCookie(current, identity))
         .send(ExperienceStatusResponseSchema.parse({ authorized: true }));
+      });
     });
 
-    routes.get("/api/experience/status", async (request, reply) => {
+    routes.get("/api/experience/status", async (request, reply) => withIdentity(request, reply, async readIdentity => {
+      const identity = await readIdentity();
       const config = await loadConfig(options.configPath);
-      if (config === null || !isAuthorAuthorized(request.headers.cookie, config)) {
+      if (config === null || !isAuthorAuthorized(request.headers.cookie, config, identity)) {
         return reply.send(ExperienceStatusResponseSchema.parse({ authorized: false }));
       }
       const current = await loadConfig(options.configPath);
-      const authorized = sameAuthorization(config, current) && isAuthorAuthorized(request.headers.cookie, current);
-      if (authorized) reply.header("Set-Cookie", createExperienceCookie(current));
+      const currentIdentity = await readIdentity();
+      const authorized = currentIdentity !== null && identity !== null && currentIdentity.userId === identity.userId && currentIdentity.sessionId === identity.sessionId && sameAuthorization(config, current) && isAuthorAuthorized(request.headers.cookie, current, currentIdentity);
+      if (authorized) reply.header("Set-Cookie", createExperienceCookie(current, currentIdentity));
       return reply.send(ExperienceStatusResponseSchema.parse({ authorized }));
-    });
+    }));
   });
 }

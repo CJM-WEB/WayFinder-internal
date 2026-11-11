@@ -11,6 +11,8 @@ import { credentialsApi, CredentialsConfigurationError } from "../api/credential
 import { getMessages } from "../i18n/messages.js";
 import { credentialSettingsStore } from "../stores/credential-settings.js";
 import { useInkPresence } from "./ink-presence.js";
+import { InkAccount } from "./ink-account.js";
+import { accountStore } from "../stores/account.js";
 import "./ink-settings.css";
 
 type Preferences = ReturnType<typeof credentialSettingsStore.getState>["preferences"];
@@ -82,6 +84,7 @@ export function InkSettingsPanel({ open, presented, language, onClose }: Props) 
     const current = ++intent.current, controller = new AbortController();
     request.current = controller;
     setTrial(service); setAnnouncement(""); setAvailable(false); setAuthorized(false); setBusy(true);
+    if (accountStore.getState().account === null) { setTrialError(messages.account.required); setBusy(false); return; }
     try {
       const info = await credentialsApi.fetchSettings(controller.signal);
       if (intent.current !== current || controller.signal.aborted) return;
@@ -137,6 +140,7 @@ export function InkSettingsPanel({ open, presented, language, onClose }: Props) 
     <div className="ink-settings__content" inert={trial !== null} aria-hidden={trial !== null}>
     <header className="ink-study__history-header"><h2 id="ink-settings-title">{text.title}</h2>
       <button type="button" className="ink-study__pill" onClick={() => close(true)}>{messages.inkStudy.closePanel}</button></header>
+    {open ? <InkAccount language={language} /> : null}
     <p className="ink-settings__hint">{text.ownHint}</p>
     {settings.error !== null ? <div className="ink-settings__error" role="alert">
       <span>{settings.error === "read" ? text.readFailure : text.saveFailure}</span>

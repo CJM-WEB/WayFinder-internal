@@ -20,6 +20,7 @@ export type CredentialSettingsState = {
   reload: () => boolean;
   clearNotice: () => void;
   setNotice: (problem: CredentialsErrorResponse) => void;
+  setIdentity: (userId: string | null) => void;
 };
 export type CredentialSettingsStore = StoreApi<CredentialSettingsState>;
 type CredentialStorage = Pick<Storage, "getItem" | "setItem">;
@@ -54,11 +55,12 @@ function parsePreferences(input: unknown): CredentialPreferences | null {
 export function createCredentialSettingsStore(
   storageGetter: () => CredentialStorage = () => window.localStorage,
 ): CredentialSettingsStore {
+  let storageKey = CREDENTIAL_SETTINGS_STORAGE_KEY;
   const store = createStore<CredentialSettingsState>()((set, get) => ({
     preferences: defaults(), error: null, notice: null,
     reload: () => {
       try {
-        const saved = storageGetter().getItem(CREDENTIAL_SETTINGS_STORAGE_KEY);
+        const saved = storageGetter().getItem(storageKey);
         const preferences = saved === null ? defaults() : parsePreferences(JSON.parse(saved) as unknown);
         if (preferences === null) throw new Error("本地凭据配置格式无效");
         set({ preferences, error: null });
@@ -77,7 +79,7 @@ export function createCredentialSettingsStore(
       }
       const preferences = Object.freeze({ ...get().preferences, [service]: parsed });
       try {
-        storageGetter().setItem(CREDENTIAL_SETTINGS_STORAGE_KEY, JSON.stringify(preferences));
+        storageGetter().setItem(storageKey, JSON.stringify(preferences));
         set({ preferences, error: null });
         return true;
       } catch {
@@ -89,6 +91,12 @@ export function createCredentialSettingsStore(
     setNotice: problem => {
       const parsed = CredentialsErrorResponseSchema.safeParse(problem);
       if (parsed.success) set({ notice: Object.freeze(parsed.data) });
+    },
+    setIdentity: userId => {
+      storageKey = userId === null ? CREDENTIAL_SETTINGS_STORAGE_KEY : `${CREDENTIAL_SETTINGS_STORAGE_KEY}.user.${userId}`;
+      // 先清内存再读取；新空间读取失败时也不能继续显示或发送旧账号的 Key。
+      set({ preferences: defaults(), error: null, notice: null });
+      get().reload();
     },
   }));
   // 初始化只读；缺失存档也不自动落盘，避免导入模块或展示设置就修改浏览器数据。

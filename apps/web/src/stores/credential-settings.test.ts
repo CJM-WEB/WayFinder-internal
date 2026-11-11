@@ -15,6 +15,27 @@ function memoryStorage(initial: string | null = null) {
 }
 
 describe("独立凭据设置存储", () => {
+  it("访客和不同账号使用独立Key空间，读取失败也不保留旧Key", () => {
+    const values = new Map<string, string>();
+    let failRead = false;
+    const storage = { getItem: (key: string) => { if (failRead) throw new Error(); return values.get(key) ?? null; },
+      setItem: (key: string, value: string) => { values.set(key, value); } };
+    const store = createCredentialSettingsStore(() => storage);
+    store.getState().saveService("deepseek", { source: "own", apiKey: "fixture-guest-key" });
+    store.getState().setIdentity("fixture-A");
+    expect(store.getState().preferences.deepseek.apiKey).toBe("");
+    store.getState().saveService("deepseek", { source: "own", apiKey: "fixture-A-key" });
+    store.getState().setIdentity("fixture-B");
+    expect(store.getState().preferences.deepseek.apiKey).toBe("");
+    store.getState().setIdentity("fixture-A");
+    expect(store.getState().preferences.deepseek.apiKey).toBe("fixture-A-key");
+    store.getState().setIdentity(null);
+    expect(store.getState().preferences.deepseek.apiKey).toBe("fixture-guest-key");
+    failRead = true; store.getState().setIdentity("fixture-B");
+    expect(store.getState().preferences.deepseek.apiKey).toBe("");
+    expect(store.getState().error).toBe("read");
+    expect(values.size).toBe(2);
+  });
   it("默认两个服务都自带空Key，初始化、reload及notice变化均不自动写入", () => {
     const disk = memoryStorage();
     const store = createCredentialSettingsStore(() => disk.storage);

@@ -27,6 +27,7 @@ import {
   type GraphStoreState,
 } from "../stores/graph-store.js";
 import { prepareSearchCredentials, CredentialsConfigurationError } from "./credentials.js";
+import { accountStore } from "../stores/account.js";
 import { credentialSettingsStore } from "../stores/credential-settings.js";
 
 /** 只依赖 Zustand Vanilla Store 的最小能力，便于测试隔离且不复制状态类型。 */
@@ -221,4 +222,9 @@ export function createStartStreamingSearch(
 /** 应用级入口；Omnibox 只需调用此函数，不负责 Controller 生命周期。 */
 export const startStreamingSearch = createStartStreamingSearch({
   store: graphStore,
+});
+
+/** 只订阅实际加载的应用单例，身份发布时先取消；不让入口为了取消而提前加载搜索模块。 */
+accountStore.subscribe((next, previous) => {
+  if (next.epoch !== previous.epoch) { startStreamingSearch.cancelPending(); startStreamingSearch.cancel(); }
 });

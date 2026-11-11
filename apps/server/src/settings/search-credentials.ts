@@ -13,7 +13,11 @@ import {
 } from "@wayfinder/contracts";
 import type { FastifyRequest } from "fastify";
 
-import type { ServerConfig } from "../config.js";
+import type { AccountAuth, AccountIdentity } from "../accounts/auth.js";
+import { databaseOperation } from "../accounts/database.js";
+import { accountRequestHeaders } from "../routes/account.js";
+
+import { RUN_DEADLINE_MS, type ServerConfig } from "../config.js";
 import { CredentialsAccessError, isAuthorAuthorized } from "./experience-authorization.js";
 import { readExperienceConfig, type ExperienceConfig } from "./experience-config.js";
 import { isSameOriginRequest } from "./request-origin.js";
@@ -67,15 +71,35 @@ export async function prepareSearchCredentialScope(
   request: FastifyRequest,
   config: ServerConfig,
   connectionSignal: AbortSignal,
+  auth: Pick<AccountAuth, "getIdentity"> | null = null,
+  runDeadline = Date.now() + RUN_DEADLINE_MS,
 ): Promise<SearchCredentialScope> {
   connectionSignal.throwIfAborted();
   if (!isSameOriginRequest(request, config.publicOrigin)) throw new CredentialsAccessError("CREDENTIALS_INVALID");
   const credentials = parseCredentials(request);
   const needsAuthor = credentials.deepseek.source === "author" || credentials.serpapi.source === "author";
+  const identity = async (signal: AbortSignal): Promise<AccountIdentity> => {
+    signal.throwIfAborted();
+    if (auth === null) throw new CredentialsAccessError("ACCOUNT_REQUIRED");
+    try {
+      const operation = databaseOperation(signal);
+      const value = await auth.getIdentity(accountRequestHeaders(request), {
+        signal, deadline: Math.min(operation.deadline, runDeadline),
+      });
+      signal.throwIfAborted();
+      if (value === null) throw new CredentialsAccessError("ACCOUNT_REQUIRED");
+      return value;
+    } catch (error: unknown) {
+      if (signal.aborted) throw signal.reason;
+      if (error instanceof CredentialsAccessError) throw error;
+      throw new CredentialsAccessError("EXPERIENCE_UNAVAILABLE");
+    }
+  };
+  const initialIdentity = needsAuthor ? await identity(connectionSignal) : null;
   const initial = needsAuthor ? await currentAuthorConfig(config.experienceConfigPath) : null;
   connectionSignal.throwIfAborted();
   const cookie = request.headers.cookie;
-  if (needsAuthor && !isAuthorAuthorized(cookie, initial)) throw new CredentialsAccessError("EXPERIENCE_REVOKED");
+  if (needsAuthor && !isAuthorAuthorized(cookie, initial, initialIdentity)) throw new CredentialsAccessError("EXPERIENCE_REVOKED");
   const revocation = new AbortController();
 
   const assertService = async (service: CredentialService, signal: AbortSignal): Promise<void> => {
@@ -83,9 +107,13 @@ export async function prepareSearchCredentialScope(
     revocation.signal.throwIfAborted();
     if (credentials[service].source !== "author") return;
     try {
+      const currentIdentity = await identity(signal);
+      if (initialIdentity === null || currentIdentity.userId !== initialIdentity.userId || currentIdentity.sessionId !== initialIdentity.sessionId) {
+        throw new CredentialsAccessError("ACCOUNT_REQUIRED", service);
+      }
       const current = await currentAuthorConfig(config.experienceConfigPath);
       signal.throwIfAborted();
-      if (initial === null || current.generation !== initial.generation || !isAuthorAuthorized(cookie, current)) {
+      if (initial === null || current.generation !== initial.generation || !isAuthorAuthorized(cookie, current, currentIdentity)) {
         throw new CredentialsAccessError("EXPERIENCE_REVOKED", service);
       }
     } catch (error: unknown) {

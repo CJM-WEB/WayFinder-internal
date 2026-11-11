@@ -13,6 +13,7 @@ import {
 import {
   credentialSettingsStore, type CredentialPreference, type CredentialSettingsStore,
 } from "../stores/credential-settings.js";
+import { accountStore } from "../stores/account.js";
 
 /** 任何构造来源都再次投影，避免原始网络错误、响应字段或秘密进入可展示异常。 */
 export class CredentialsConfigurationError extends Error {
@@ -54,6 +55,7 @@ function toWirePreference(service: CredentialService, saved: CredentialPreferenc
 export function createCredentialsApi(
   store: CredentialSettingsStore = credentialSettingsStore,
   fetchImplementation: typeof fetch = (input, init) => globalThis.fetch(input, init),
+  checkIdentity?: (signal: AbortSignal | undefined, selected: SearchCredentials) => Promise<void>,
 ) {
   const requestJson = async (url: string, init: RequestInit, signal?: AbortSignal): Promise<unknown> => {
     try {
@@ -105,6 +107,8 @@ export function createCredentialsApi(
         deepseek: toWirePreference("deepseek", { ...state.preferences.deepseek }),
         serpapi: toWirePreference("serpapi", { ...state.preferences.serpapi }),
       });
+      if (checkIdentity !== undefined) await checkIdentity(signal, selected);
+      signal?.throwIfAborted();
       if ((selected.deepseek.source === "author" || selected.serpapi.source === "author") &&
         !await readExperienceStatus(signal)) throw new CredentialsConfigurationError({ code: "EXPERIENCE_REVOKED" });
       signal?.throwIfAborted();
@@ -121,5 +125,17 @@ export function createCredentialsApi(
   return { fetchSettings, readExperienceStatus, verifyExperience, prepareSearchCredentials };
 }
 
-export const credentialsApi = createCredentialsApi();
+/** 只允许原本就是访客的双自带Key在身份服务故障时继续；旧账号空间不能降级发送。 */
+export async function checkSearchIdentity(signal: AbortSignal | undefined, selected: SearchCredentials): Promise<void> {
+    const wasGuest = accountStore.getState().account === null && accountStore.getState().scopeUserId === null;
+    const epoch = accountStore.getState().epoch;
+    try { await accountStore.getState().refresh(signal); }
+    catch (error: unknown) {
+      signal?.throwIfAborted();
+      if (!(wasGuest && accountStore.getState().account === null && accountStore.getState().epoch === epoch &&
+          selected.deepseek.source === "own" && selected.serpapi.source === "own")) throw error;
+    }
+    if (accountStore.getState().epoch !== epoch) throw new CredentialsConfigurationError({ code: "ACCOUNT_REQUIRED" });
+}
+export const credentialsApi = createCredentialsApi(credentialSettingsStore, (input, init) => globalThis.fetch(input, init), checkSearchIdentity);
 export const prepareSearchCredentials = credentialsApi.prepareSearchCredentials;

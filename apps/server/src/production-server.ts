@@ -23,6 +23,7 @@ import { prepareSearchCredentialScope, type EffectiveProviderKeys } from "./sett
 import { assertPrivateConfigLocation } from "./settings/private-config-location.js";
 import { callAuthorizedLLM } from "./settings/authorized-llm-call.js";
 import type { AccountRuntime } from "./accounts/account-runtime.js";
+import { createAbsoluteRunDeadline } from "./orchestrator/absolute-run-deadline.js";
 import { registerAccountRoutes } from "./routes/account.js";
 
 export type ProductionBaseProviders = Readonly<{
@@ -39,7 +40,7 @@ export type BuildProductionServerInput = Readonly<{
   /** 仅作为确定性测试接缝，验证不同请求实际解析出的 Key；没有生产环境开关。 */
   providerFactory?: (keys: EffectiveProviderKeys, beforeSearchAttempt: (signal: AbortSignal) => Promise<void>) => ProductionBaseProviders;
   /** 仅由显式启动工厂提供；未配置时账号路由失败闭合，不隐式连接数据库。 */
-  accounts?: AccountRuntime;
+  accounts?: Readonly<{ auth: AccountRuntime["auth"]; database: Pick<AccountRuntime["database"], "close"> }>;
 }>;
 
 function createBaseProviders(
@@ -80,67 +81,74 @@ export async function buildProductionServer(
   registerExperienceRoutes(server, {
     configPath: input.config.experienceConfigPath,
     publicOrigin: input.config.publicOrigin,
+    auth: input.accounts?.auth ?? null,
   });
 
   registerSearchRoute(
     server,
     { prepare: async (request, connectionSignal) => {
-      const scope = await prepareSearchCredentialScope(request, input.config, connectionSignal);
-      const beforeSearchAttempt = (signal: AbortSignal) => scope.assertService("serpapi", signal);
-      const base = input.providerFactory?.(scope.keys, beforeSearchAttempt) ?? input.baseProviders
-        ?? createBaseProviders(input.config, scope.keys, beforeSearchAttempt);
-      connectionSignal.throwIfAborted();
-      // 此层位于共享队列内部，实际取得槽位后才复核，不让排队时已撤销的请求花费作者额度。
-      const guardedBase: ProductionBaseProviders = {
-        searchProvider: {
-          id: base.searchProvider.id, capabilities: [...base.searchProvider.capabilities],
-          search: async (searchRequest, signal) => {
-            await scope.assertService("serpapi", signal);
-            const result = await base.searchProvider.search(searchRequest, signal);
-            await scope.assertService("serpapi", signal);
-            return result;
+      const fatalController = new AbortController();
+      const runScope = createAbsoluteRunDeadline({ parentSignal: AbortSignal.any([connectionSignal, fatalController.signal]) });
+      try {
+        const scope = await prepareSearchCredentialScope(request, input.config, runScope.signal,
+          input.accounts?.auth ?? null, runScope.deadlineAt);
+        const beforeSearchAttempt = (signal: AbortSignal) => scope.assertService("serpapi", signal);
+        const base = input.providerFactory?.(scope.keys, beforeSearchAttempt) ?? input.baseProviders
+          ?? createBaseProviders(input.config, scope.keys, beforeSearchAttempt);
+        connectionSignal.throwIfAborted();
+        // 此层位于共享队列内部，实际取得槽位后才复核，不让排队时已撤销的请求花费作者额度。
+        const guardedBase: ProductionBaseProviders = {
+          searchProvider: {
+            id: base.searchProvider.id, capabilities: [...base.searchProvider.capabilities],
+            search: async (searchRequest, signal) => {
+              await scope.assertService("serpapi", signal);
+              const result = await base.searchProvider.search(searchRequest, signal);
+              await scope.assertService("serpapi", signal);
+              return result;
+            },
           },
-        },
-        llmProvider: {
-          id: base.llmProvider.id,
-          structured: (structuredInput, options) => callAuthorizedLLM(
-            base.llmProvider, structuredInput, options, signal => scope.assertService("deepseek", signal),
-          ),
-        },
-      };
-      const limited = createConcurrencyLimitedProviders({
-        ...guardedBase, concurrency: input.config.concurrency, queues,
-      });
-      // 作者共用一个有界池并按代际隔离；自带只在本次运行内缓存，不跨用户保存 Key 或结果。
-      const cachedSearch = createMemoryCachedSearchProvider(limited.searchProvider,
-        scope.credentials.serpapi.source === "author" && scope.authorGeneration !== null
-          ? { sharedCache: authorCache, namespace: scope.authorGeneration } : {});
-      const providers = {
-        ...limited,
-        searchProvider: {
-          id: cachedSearch.id, capabilities: [...cachedSearch.capabilities],
-          search: async (searchRequest: Parameters<SearchProvider["search"]>[0], signal: AbortSignal) => {
-            await scope.assertService("serpapi", signal);
-            const result = await cachedSearch.search(searchRequest, signal);
-            await scope.assertService("serpapi", signal);
-            return result;
+          llmProvider: {
+            id: base.llmProvider.id,
+            structured: (structuredInput, options) => callAuthorizedLLM(
+              base.llmProvider, structuredInput, options, signal => scope.assertService("deepseek", signal),
+            ),
           },
-        },
-      };
-      const handle = createRunSearchHandler({
-        providers,
-        officialSourcePolicy: { knownRiskyDownloadDomains: [] },
-        llmStageTimeoutMs: input.config.timeouts.plannerMs,
-        rerankTimeoutMs: input.config.timeouts.rerankMs,
-        normalizeQuery: query => query.normalize("NFKC").trim().toLowerCase(),
-        onPlannerValidationDiagnostic: () => undefined,
-        onRevisionValidationDiagnostic: () => undefined,
-        onSearchPlanValidationDiagnostic: () => undefined,
-        ...(runLogSink === undefined ? {} : { runLogSink }),
-      });
-      return searchInput => handle({
-        ...searchInput, signal: AbortSignal.any([searchInput.signal, scope.signal]),
-      });
+        };
+        const limited = createConcurrencyLimitedProviders({
+          ...guardedBase, concurrency: input.config.concurrency, queues,
+        });
+        // 作者共用一个有界池并按代际隔离；自带只在本次运行内缓存，不跨用户保存 Key 或结果。
+        const cachedSearch = createMemoryCachedSearchProvider(limited.searchProvider,
+          scope.credentials.serpapi.source === "author" && scope.authorGeneration !== null
+            ? { sharedCache: authorCache, namespace: scope.authorGeneration } : {});
+        const providers = {
+          ...limited,
+          searchProvider: {
+            id: cachedSearch.id, capabilities: [...cachedSearch.capabilities],
+            search: async (searchRequest: Parameters<SearchProvider["search"]>[0], signal: AbortSignal) => {
+              await scope.assertService("serpapi", signal);
+              const result = await cachedSearch.search(searchRequest, signal);
+              await scope.assertService("serpapi", signal);
+              return result;
+            },
+          },
+        };
+        const handle = createRunSearchHandler({
+          runContext: { scope: runScope, fatalController },
+          providers,
+          officialSourcePolicy: { knownRiskyDownloadDomains: [] },
+          llmStageTimeoutMs: input.config.timeouts.plannerMs,
+          rerankTimeoutMs: input.config.timeouts.rerankMs,
+          normalizeQuery: query => query.normalize("NFKC").trim().toLowerCase(),
+          onPlannerValidationDiagnostic: () => undefined,
+          onRevisionValidationDiagnostic: () => undefined,
+          onSearchPlanValidationDiagnostic: () => undefined,
+          ...(runLogSink === undefined ? {} : { runLogSink }),
+        });
+        return searchInput => handle({
+          ...searchInput, signal: AbortSignal.any([searchInput.signal, scope.signal]),
+        });
+      } catch (error: unknown) { runScope.dispose(); throw error; }
     } },
   );
   await registerWebAssets(server, input.webAssetsDirectory);

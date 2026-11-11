@@ -30,7 +30,7 @@ import { withRunLogObserver } from "../observability/run-log-context.js";
 import type { OfficialSourcePolicy } from "../pipeline/official-source.js";
 import type { SearchStreamHandler } from "../routes/search.js";
 import type { SearchProvider } from "../search/provider.js";
-import { createAbsoluteRunDeadline } from "./absolute-run-deadline.js";
+import { createAbsoluteRunDeadline, type AbsoluteRunDeadlineScope } from "./absolute-run-deadline.js";
 import { emitValidatedPlanEvents } from "./emit-validated-plan-events.js";
 import type { ConcurrencyLimitedProviders } from "./provider-concurrency.js";
 import {
@@ -45,6 +45,8 @@ import { settleNodeJobsUntilAbsoluteDeadline } from "./settle-node-jobs.js";
 import { startNodeJobs } from "./start-node-jobs.js";
 
 export type CreateRunSearchHandlerInput = Readonly<{
+  /** 生产入口在鉴权前创建唯一期限；测试或独立调用可省略并沿用既有创建路径。 */
+  runContext?: Readonly<{ scope: AbsoluteRunDeadlineScope; fatalController: AbortController }>;
   /** 必须是进程级共享的并发装饰器，不能每个 Run 重新创建队列。 */
   providers: ConcurrencyLimitedProviders;
   officialSourcePolicy: OfficialSourcePolicy;
@@ -213,12 +215,18 @@ export function createRunSearchHandler(
 ): SearchStreamHandler {
   return async ({ input, signal, emit }) => {
     const now = dependencies.now ?? (() => Date.now());
-    const fatalController = new AbortController();
-    const runScope = createAbsoluteRunDeadline({
+    const fatalController = dependencies.runContext?.fatalController ?? new AbortController();
+    const runScope = dependencies.runContext?.scope ?? createAbsoluteRunDeadline({
       // Route 取消与 Handler 自身的致命错误均必须能中止所有兄弟 Node。
       parentSignal: AbortSignal.any([signal, fatalController.signal]),
       now,
     });
+    // 预建期限已绑定传输取消；后续凭据撤销通过 Handler 的合并信号进入同一故障控制器。
+    const cancelPreparedRun = (): void => fatalController.abort(signal.reason);
+    if (dependencies.runContext !== undefined) {
+      if (signal.aborted) cancelPreparedRun();
+      else signal.addEventListener("abort", cancelPreparedRun, { once: true });
+    }
     const startedAt = runScope.deadlineAt - RUN_DEADLINE_MS;
     let recorder: RunLogRecorder | undefined;
     if (dependencies.runLogSink !== undefined) {
@@ -383,6 +391,7 @@ export function createRunSearchHandler(
         emit: observedEmit,
       });
     } finally {
+      signal.removeEventListener("abort", cancelPreparedRun);
       runScope.dispose();
       observeSafely(() => recorder?.recordInterrupted(signal.aborted));
       // 本地日志不能延长用户可见 Run；finish 自身观察并吸收写入失败。

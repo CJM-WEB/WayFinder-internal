@@ -62,6 +62,12 @@ type FixtureOptions = {
   fetchResponse?: (call: SearchCall) => Promise<Response | undefined>;
 };
 
+const fixtureAccounts = {
+  auth: { initialize: async () => {}, migrate: async () => {},
+    getIdentity: async () => ({ userId: "fixture_user", sessionId: "fixture_session", email: "fixture@example.com" }),
+    handle: async () => ({ body: { accepted: true as const }, cookies: [] as string[] }),
+  }, database: { close: async () => {} },
+};
 const directories: string[] = [];
 const servers: FastifyInstance[] = [];
 afterEach(async () => {
@@ -109,7 +115,7 @@ async function fixture(options: FixtureOptions = {}) {
     RUN_LOGGING: options.runLogging ? "true" : "false",
   });
   const server = await buildProductionServer({
-    config, repositoryRoot: root, webAssetsDirectory,
+    config, repositoryRoot: root, webAssetsDirectory, accounts: fixtureAccounts,
     providerFactory: (keys, beforeSearchAttempt) => {
       calls.factories.push({ ...keys });
       let outlines = 0;

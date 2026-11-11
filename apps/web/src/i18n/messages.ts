@@ -21,6 +21,11 @@ import type {
 } from "@wayfinder/contracts";
 
 export type Messages = Readonly<{
+  account: Readonly<{
+    title: string; form: string; email: string; password: string; otp: string; guest: string;
+    accepted: string; continueLogin: string; updated: string; busy: string; failure: string; required: string;
+    actions: Readonly<Record<"register" | "verify" | "login" | "logout" | "recover" | "reset" | "resend", string>>;
+  }>;
   settings: Readonly<{
     title: string; own: string; experience: string; key: string; save: string; saved: string;
     show: string; hide: string; clear: string; cancel: string; confirm: string; announcement: string;
@@ -150,6 +155,14 @@ export type Messages = Readonly<{
  */
 export const MESSAGES: Record<SearchLanguage, Messages> = {
   "zh-CN": {
+    account: {
+      title: "账号", form: "邮箱账号", email: "邮箱", password: "密码", otp: "验证码",
+      guest: "访客可自带 Key 使用；登录后才可验证邀请码并使用作者体验。图及历史、Key 不会自动上传。",
+      accepted: "若邮箱符合条件，将收到邮件。请检查邮箱后填写验证码；此提示不代表已投递成功。",
+      continueLogin: "操作已完成，请登录。", updated: "账号状态已更新。", busy: "正在处理账号请求…",
+      failure: "账号操作未完成，请检查输入或稍后重试。", required: "请先在设置中登录，再验证邀请码。",
+      actions: { login: "登录", register: "注册", verify: "验证邮箱", recover: "找回密码", reset: "重置密码", resend: "重新发送验证码", logout: "退出登录" },
+    },
     settings: {
       title: "设置", own: "自己的 API Key", experience: "体验 APIKEY", key: "API Key", save: "保存设置", saved: "已保存到本浏览器",
       show: "显示", hide: "隐藏", clear: "清除", cancel: "取消", confirm: "确认使用", announcement: "作者公告",
@@ -159,7 +172,7 @@ export const MESSAGES: Record<SearchLanguage, Messages> = {
       unavailable: "作者体验暂不可用。", readFailure: "设置读取失败，请重试；当前不会覆盖旧设置。", saveFailure: "设置保存失败，请重试。", retry: "重试读取", open: "打开设置",
       ownHint: "Key 长期保存在当前浏览器；搜索时发送到本应用后端代调用，服务端不持久保存；保存不会发起付费测试。",
       getKey: { deepseek: "获取DeepSeek API KEY", serpapi: "获取SerpAPI KEY" },
-      problems: { CREDENTIALS_REQUIRED: "请先配置 API Key。", CREDENTIALS_INVALID: "凭据配置无效，请检查设置。", INVITE_CODE_INVALID: "邀请码无效，请检查后重试。", EXPERIENCE_REVOKED: "体验资格已失效，请输入当前邀请码。", EXPERIENCE_UNAVAILABLE: "作者体验暂不可用，请稍后重试。" },
+      problems: { ACCOUNT_REQUIRED: "请先在设置中登录，再验证邀请码。", CREDENTIALS_REQUIRED: "请先配置 API Key。", CREDENTIALS_INVALID: "凭据配置无效，请检查设置。", INVITE_CODE_INVALID: "邀请码无效，请检查后重试。", EXPERIENCE_REVOKED: "体验资格已失效，请输入当前邀请码。", EXPERIENCE_UNAVAILABLE: "作者体验暂不可用，请稍后重试。" },
     },
     inkStudy: {
       statement: "让每个好奇，\n都有去处。", tagline: "打造属于自己的互联网", explore: "开始探索", contact: "联系作者",
@@ -326,6 +339,14 @@ export const MESSAGES: Record<SearchLanguage, Messages> = {
     },
   },
   "en-US": {
+    account: {
+      title: "Account", form: "Email account", email: "Email", password: "Password", otp: "Verification code",
+      guest: "Guests can use their own keys. Sign in before verifying an invitation for the author trial. Graphs, history and keys are never uploaded automatically.",
+      accepted: "If this email is eligible, you will receive a message. Check your inbox and enter the code. This notice does not confirm delivery.",
+      continueLogin: "Completed. Please log in.", updated: "Account status updated.", busy: "Processing account request…",
+      failure: "The account request could not be completed. Check your input or retry later.", required: "Log in in Settings before verifying an invitation.",
+      actions: { login: "Log in", register: "Register", verify: "Verify email", recover: "Recover password", reset: "Reset password", resend: "Resend code", logout: "Log out" },
+    },
     settings: {
       title: "Settings", own: "Your API key", experience: "Author trial", key: "API key", save: "Save settings", saved: "Saved in this browser",
       show: "Show", hide: "Hide", clear: "Clear", cancel: "Cancel", confirm: "Confirm trial", announcement: "Author announcement",
@@ -335,7 +356,7 @@ export const MESSAGES: Record<SearchLanguage, Messages> = {
       unavailable: "The author's trial is unavailable.", readFailure: "Settings could not be read. Retry before replacing existing settings.", saveFailure: "Settings could not be saved. Please retry.", retry: "Retry loading", open: "Open settings",
       ownHint: "Keys are saved in this browser long term and sent to this app’s backend for searches. The server does not persist them. Saving does not run a paid test.",
       getKey: { deepseek: "Get a DeepSeek API key", serpapi: "Get a SerpAPI key" },
-      problems: { CREDENTIALS_REQUIRED: "Configure your API keys first.", CREDENTIALS_INVALID: "The credential settings are invalid. Check your settings.", INVITE_CODE_INVALID: "The invitation code is invalid. Check it and retry.", EXPERIENCE_REVOKED: "Trial access has expired. Enter the current invitation code.", EXPERIENCE_UNAVAILABLE: "The author's trial is unavailable. Please retry later." },
+      problems: { ACCOUNT_REQUIRED: "Log in in Settings before verifying an invitation.", CREDENTIALS_REQUIRED: "Configure your API keys first.", CREDENTIALS_INVALID: "The credential settings are invalid. Check your settings.", INVITE_CODE_INVALID: "The invitation code is invalid. Check it and retry.", EXPERIENCE_REVOKED: "Trial access has expired. Enter the current invitation code.", EXPERIENCE_UNAVAILABLE: "The author's trial is unavailable. Please retry later." },
     },
     inkStudy: {
       statement: "Every curiosity,\na place to go.", tagline: "BUILD YOUR OWN INTERNET", explore: "Start exploring", contact: "Contact author",

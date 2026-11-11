@@ -35,13 +35,15 @@ if (h2Evaluation !== null) {
   ]);
   page = <H1EvaluationApp initialCondition={h1Evaluation.initialCondition} />;
 } else {
-  const [{ default: InkApp }, { initializeWorkspacePersistence }] = await Promise.all([
-    import("./design/ink-study.js"),
-    import("./stores/workspace-persistence.js"),
+  const [{ AccountApp }, { initializeAccountWorkspace }, { accountStore }] = await Promise.all([
+    import("./design/account-app.js"),
+    import("./stores/account-workspace.js"),
+    import("./stores/account.js"),
   ]);
-  // 保留默认依赖与存储格式；首次读取和后续重试均只恢复历史内容，选择留给用户。
-  await initializeWorkspacePersistence(undefined, undefined, undefined, { restoreSelection: false });
-  page = <InkApp />;
+  initializeAccountWorkspace();
+  // 身份不能从浏览器缓存猜测；接口失败清空旧私有空间，下一次搜索仍须重新核对身份。
+  await accountStore.getState().refresh().catch(() => {});
+  page = <AccountApp />;
 }
 
 createRoot(rootElement).render(<StrictMode>{page}</StrictMode>);

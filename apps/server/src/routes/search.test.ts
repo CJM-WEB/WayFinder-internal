@@ -18,6 +18,28 @@ import {
   writeNdjsonEvent,
   type SearchStreamHandler,
 } from "./search.js";
+import { createAbsoluteRunDeadline } from "../orchestrator/absolute-run-deadline.js";
+
+it("prepare成功后流头失败也终止预建期限，释放计时器而不调用Handler", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const server = Fastify({ logger: false });
+  let preparedSignal: AbortSignal | undefined;
+  const handler = vi.fn<SearchStreamHandler>(async () => {});
+  server.addHook("onRequest", async (_request, reply) => {
+    vi.spyOn(reply.raw, "writeHead").mockImplementationOnce(() => { throw new Error("fixture stream header failure"); });
+  });
+  registerSearchRoute(server, { prepare: async (_request, signal) => {
+    const scope = createAbsoluteRunDeadline({ parentSignal: signal });
+    preparedSignal = scope.signal;
+    return handler;
+  } });
+  try {
+    await expect(server.inject({ method: "POST", url: "/api/search", payload: { runId: "prepare-failure", query: "TypeScript", language: "zh-CN" } })).rejects.toThrow();
+    expect(handler).not.toHaveBeenCalled();
+    expect(preparedSignal?.aborted).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
+  } finally { await server.close(); vi.useRealTimers(); }
+});
 
 type Deferred<T> = Readonly<{
   promise: Promise<T>;

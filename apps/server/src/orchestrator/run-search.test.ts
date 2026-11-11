@@ -29,6 +29,7 @@ import { NodeEventEmissionError } from "../pipeline/process-node.js";
 import type { SearchProvider } from "../search/provider.js";
 import { createConcurrencyLimitedProviders } from "./provider-concurrency.js";
 import { createRunSearchHandler } from "./run-search.js";
+import { createAbsoluteRunDeadline } from "./absolute-run-deadline.js";
 
 const QUERY = "TypeScript compiler guide";
 const SECOND_QUERY = "TypeScript project configuration";
@@ -212,6 +213,24 @@ function createDependencies(
 }
 
 describe("createRunSearchHandler", () => {
+  it("鉴权准备耗时计入唯一40秒期限，Handler不重新获得预算", async () => {
+    const clock = createFixedClock("2026-11-11T00:00:00.000Z");
+    const fatalController = new AbortController();
+    const scope = createAbsoluteRunDeadline({ parentSignal: fatalController.signal, now: clock.now });
+    clock.advanceBy(39_000);
+    const dependencies = createDependencies(clock, [createPlan(), createRerankOutput()]);
+    const structured = vi.spyOn(dependencies.providers.llmProvider, "structured");
+    const handler = createRunSearchHandler({ ...dependencies, runContext: { scope, fatalController } });
+    const events: StreamEventPayload[] = [];
+    await handler({ input: { runId: "prepared-budget", query: QUERY, language: "zh-CN" },
+      signal: new AbortController().signal, emit: async event => { events.push(event); } });
+    expect(structured.mock.calls.length).toBeGreaterThan(0);
+    expect(structured.mock.calls.every(call => call[1].timeoutMs <= 1_000)).toBe(true);
+    const complete = events.find(event => event.type === "complete");
+    expect(complete?.type === "complete" ? complete.data.result.meta.timingMs.total : null).toBe(39_000);
+    expect(scope.deadlineAt).toBe(Date.parse("2026-11-11T00:00:40.000Z"));
+  });
+
   it("两阶段规划与 Search-only 外部阶段共享 Run Scope，迟到 Rerank 不能改写结果", async () => {
     vi.useFakeTimers();
     const clock = createFixedClock("2026-10-22T08:00:00.000Z");

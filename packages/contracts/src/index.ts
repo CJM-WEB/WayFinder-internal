@@ -106,6 +106,7 @@ export type ExperienceStatusResponse = z.infer<typeof ExperienceStatusResponseSc
 
 /** 前置错误发生在流式成功响应之前，不扩充图搜索的 AppError 或伪造节点终态。 */
 export const CredentialsErrorCodeSchema = z.enum([
+  "ACCOUNT_REQUIRED",
   "CREDENTIALS_REQUIRED",
   "INVITE_CODE_INVALID",
   "EXPERIENCE_REVOKED",

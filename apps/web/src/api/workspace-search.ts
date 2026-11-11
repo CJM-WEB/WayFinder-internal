@@ -7,6 +7,7 @@ import { resolveSearchEngine, type SearchRequest, type ResultGraph } from "@wayf
 import { createStartStreamingSearch } from "./search.js";
 import { buildGraphFlowElements } from "../components/Graph/graph-layout.js";
 import { graphStore } from "../stores/graph-store.js";
+import { accountStore } from "../stores/account.js";
 import {
   createEmptyGraph,
   fromResultGraph,
@@ -44,4 +45,9 @@ export const createWorkspaceSearchHandoff = (
 export const startWorkspaceSearch = createStartStreamingSearch({
   store: graphStore,
   ...createWorkspaceSearchHandoff(),
+});
+
+/** 单例加载后才订阅，真实换号同步取消旧运行，不改变原来的按需导入。 */
+accountStore.subscribe((next, previous) => {
+  if (next.epoch !== previous.epoch) { startWorkspaceSearch.cancelPending(); startWorkspaceSearch.cancel(); }
 });

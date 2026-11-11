@@ -13,6 +13,12 @@ import { parseServerConfig } from "../config.js";
 import { buildProductionServer } from "../production-server.js";
 import { updateExperienceConfig } from "./experience-config.js";
 
+const fixtureAccounts = {
+  auth: { initialize: async () => {}, migrate: async () => {},
+    getIdentity: async () => ({ userId: "fixture_user", sessionId: "fixture_session", email: "fixture@example.com" }),
+    handle: async () => ({ body: { accepted: true as const }, cookies: [] as string[] }),
+  }, database: { close: async () => {} },
+};
 const directories: string[] = [];
 afterEach(async () => {
   await Promise.all(directories.splice(0).map(directory => fs.rm(directory, { recursive: true, force: true })));
@@ -57,7 +63,7 @@ describe("生产服务的作者体验授权", () => {
         structured: async () => { providerCalls += 1; throw new Error("授权操作不应调用模型"); },
       },
     };
-    const start = () => buildProductionServer({ config, repositoryRoot: root, webAssetsDirectory, baseProviders });
+    const start = () => buildProductionServer({ config, repositoryRoot: root, webAssetsDirectory, baseProviders, accounts: fixtureAccounts });
     let server = await start();
     try {
       const announcement = await server.inject({ method: "GET", url: "/api/settings", headers: { host: "wayfinder.test" } });

@@ -14,6 +14,7 @@ import { createExperienceCookie, EXPERIENCE_COOKIE_NAME } from "../settings/expe
 import * as configuration from "../settings/experience-config.js";
 import { registerExperienceRoutes } from "./experience.js";
 
+const identity = { userId: "fixture_user", sessionId: "fixture_session", email: "fixture@example.com" };
 const directories: string[] = [];
 const servers: FastifyInstance[] = [];
 const publicOrigin = "https://wayfinder.example";
@@ -28,6 +29,7 @@ async function fixture(options: { disabled?: boolean; local?: boolean } = {}) {
   const server = buildServer();
   servers.push(server);
   registerExperienceRoutes(server, {
+    auth: { getIdentity: async () => identity },
     configPath: options.disabled ? null : configPath,
     publicOrigin: options.local ? null : publicOrigin,
   });
@@ -132,7 +134,7 @@ describe("体验公告与持久资格路由", () => {
     expect(grant.headers["set-cookie"]).toBeUndefined();
     vi.restoreAllMocks();
     vi.spyOn(configuration, "readExperienceConfig").mockResolvedValueOnce(original).mockResolvedValueOnce(changed);
-    const cookie = cookieValue(createExperienceCookie(original));
+    const cookie = cookieValue(createExperienceCookie(original, identity));
     const status = await server.inject({ method: "GET", url: "/api/experience/status", headers: { ...headers, cookie } });
     expect(status.json()).toEqual({ authorized: false });
     expect(status.headers["set-cookie"]).toBeUndefined();

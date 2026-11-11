@@ -84,18 +84,27 @@ export const browserWorkspaceStorage: WorkspaceStorage = {
   save: async snapshot => { await transact("readwrite", store => store.put(snapshot, "current")); },
 };
 
+/** 同库不同记录隔离身份；访客继续使用旧 current，不自动复制到任何账号。 */
+export const accountWorkspaceStorage = (userId: string | null): WorkspaceStorage => {
+  const key = userId === null ? "current" : `user:${userId}`;
+  return {
+    load: () => transact("readonly", store => store.get(key)),
+    save: async snapshot => { await transact("readwrite", store => store.put(snapshot, key)); },
+  };
+};
+
 export async function initializeWorkspacePersistence(
   store = workspaceStore,
   storage = browserWorkspaceStorage,
   feedback: StoreApi<WorkspacePersistenceState> = workspacePersistenceStore,
-  options: Readonly<{ restoreSelection?: boolean }> = {},
+  options: Readonly<{ restoreSelection?: boolean; isCurrent?: () => boolean }> = {},
 ): Promise<() => void> {
   let stopped = false;
   let unsubscribe: (() => void) | undefined;
   let writes = Promise.resolve();
   let revision = 0;
   const report = (state: Partial<WorkspacePersistenceState>): void => {
-    if (!stopped) feedback.setState(state);
+    if (!stopped && options.isCurrent?.() !== false) feedback.setState(state);
   };
 
   /** 顺序提交快照；较旧事务的回调不能把仍待保存的新状态误报为已保存。 */
@@ -116,7 +125,7 @@ export async function initializeWorkspacePersistence(
     report({ status: "loading", error: null });
     try {
       const snapshot = parseSnapshot(await storage.load());
-      if (stopped) return;
+      if (stopped || options.isCurrent?.() === false) return;
       if (snapshot !== null) {
         store.getState().restoreDocuments(snapshot.documents, snapshot.currentId, snapshot.histories);
         // 正式入口只恢复内容，旧选择不能在首次读取或失败重试后自动展示；订阅前清选也不写回旧库。

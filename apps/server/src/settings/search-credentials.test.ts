@@ -17,6 +17,7 @@ import { createExperienceCookie, CredentialsAccessError } from "./experience-aut
 import { readExperienceConfig, updateExperienceConfig } from "./experience-config.js";
 import { prepareSearchCredentialScope, type SearchCredentialScope } from "./search-credentials.js";
 
+const identity = { userId: "fixture_user", sessionId: "fixture_session", email: "fixture@example.com" };
 const directories: string[] = [];
 const servers: FastifyInstance[] = [];
 const headers = { host: "wayfinder.test", origin: "https://wayfinder.test" };
@@ -32,12 +33,14 @@ async function fixture() {
     LLM_API_KEY: "fake-author-llm", SERPAPI_API_KEY: "fake-author-search",
     EXPERIENCE_CONFIG_PATH: configPath, PUBLIC_ORIGIN: headers.origin,
   });
+  let currentIdentity: typeof identity | null = identity;
+  const auth = { getIdentity: vi.fn(async () => currentIdentity) };
   const captured: SearchCredentialScope[] = [];
   const server = buildServer();
   servers.push(server);
   server.post("/scope", async (request, reply) => {
     try {
-      captured.push(await prepareSearchCredentialScope(request, config, new AbortController().signal));
+      captured.push(await prepareSearchCredentialScope(request, config, new AbortController().signal, auth));
       return reply.code(204).send();
     } catch (error: unknown) {
       if (error instanceof CredentialsAccessError) return sendCredentialsAccessError(reply, error);
@@ -46,12 +49,13 @@ async function fixture() {
   });
   const current = await readExperienceConfig(configPath);
   if (current === null) throw new Error("缺少测试配置");
-  const cookie = createExperienceCookie(current).split(";")[0] ?? "";
+  const cookie = createExperienceCookie(current, identity).split(";")[0] ?? "";
   const send = (credentials: unknown, extra: Record<string, string> = {}) => server.inject({
     method: "POST", url: "/scope", headers: { ...headers,
       ...(credentials === undefined ? {} : { [SEARCH_CREDENTIALS_HEADER]: JSON.stringify(credentials) }), ...extra },
   });
-  return { config, configPath, captured, server, cookie, send };
+  return { config, configPath, captured, server, cookie, send, auth,
+    setIdentity: (next: typeof identity | null) => { currentIdentity = next; } };
 }
 afterEach(async () => {
   await Promise.all(servers.splice(0).map(server => server.close()));
@@ -59,8 +63,37 @@ afterEach(async () => {
 });
 
 describe("搜索请求凭据范围", () => {
-  it.each(["serpapi", "deepseek"] as const)("真实Cookie取得%s资格后排队，改码使实际出队零作者调用且不误伤自带请求", async service => {
-    const { send, captured, configPath, cookie } = await fixture();
+  it("初次身份库故障固定503且不泄漏内部异常，双自带不访问身份库", async () => {
+    const { send, auth, cookie } = await fixture();
+    auth.getIdentity.mockRejectedValue(new Error("fixture-private-database-address"));
+    const failure = await send({ deepseek: { source: "author" }, serpapi: { source: "author" } }, { cookie });
+    expect(failure.statusCode).toBe(503);
+    expect(failure.json()).toEqual({ code: "EXPERIENCE_UNAVAILABLE" });
+    expect(failure.body).not.toContain("fixture-private");
+    auth.getIdentity.mockClear();
+    expect((await send(own)).statusCode).toBe(204);
+    expect(auth.getIdentity).not.toHaveBeenCalled();
+  });
+  it("未登录拒绝作者，双自带仍可用；换号或会话撤销使旧范围失败闭合", async () => {
+    const { send, cookie, captured, setIdentity } = await fixture();
+    const author = { deepseek: { source: "author" }, serpapi: { source: "author" } };
+    setIdentity(null);
+    expect((await send(author, { cookie })).statusCode).toBe(401);
+    expect((await send(author, { cookie })).json()).toEqual({ code: "ACCOUNT_REQUIRED" });
+    expect((await send(own)).statusCode).toBe(204);
+    setIdentity(identity);
+    expect((await send(author, { cookie })).statusCode).toBe(204);
+    const previous = captured[1];
+    if (previous === undefined) throw new Error("缺少作者范围");
+    setIdentity({ ...identity, sessionId: "new_session" });
+    await expect(previous.assertService("deepseek", new AbortController().signal)).rejects.toMatchObject({ code: "ACCOUNT_REQUIRED" });
+    expect(previous.signal.aborted).toBe(true);
+    expect((await send(author, { cookie })).statusCode).toBe(403);
+  });
+  it.each([
+    ["serpapi", "generation"], ["deepseek", "generation"], ["serpapi", "logout"], ["deepseek", "logout"],
+  ] as const)("真实Cookie取得%s资格后排队，%s撤销使实际出队零作者调用且不误伤自带请求", async (service, revocation) => {
+    const { send, captured, configPath, cookie, setIdentity } = await fixture();
     expect((await send(own)).statusCode).toBe(204);
     expect((await send({ deepseek: { source: "author" }, serpapi: { source: "author" } }, { cookie })).statusCode).toBe(204);
     const ownScope = captured[0], authorScope = captured[1];
@@ -96,18 +129,19 @@ describe("搜索请求凭据范围", () => {
     await vi.waitFor(() => expect(calls).toEqual(["own"]));
     const queued = run(authorProvider, authorScope);
     // 先安装拒绝断言，确保出队中止不会成为未处理的 Promise（异步结果）拒绝。
-    const denied = expect(queued).rejects.toMatchObject({ code: "EXPERIENCE_REVOKED", service });
+    const denied = expect(queued).rejects.toMatchObject({ code: revocation === "generation" ? "EXPERIENCE_REVOKED" : "ACCOUNT_REQUIRED", ...(revocation === "generation" ? { service } : {}) });
     const queue = service === "serpapi" ? queues.search : queues.llm;
     await vi.waitFor(() => expect(queue.pendingCount).toBe(1));
     const nextOwn = run(ownProvider, ownScope);
     expect(queue.pendingCount).toBe(2);
-    await updateExperienceConfig(configPath, { inviteCode: "fake-after-queue" });
+    if (revocation === "generation") await updateExperienceConfig(configPath, { inviteCode: "fake-after-queue" });
+    else setIdentity(null);
     blocking.resolve();
     await Promise.all([active, denied, nextOwn]);
     expect(calls).toEqual(["own", "own"]);
     expect(authorScope.signal.aborted).toBe(true);
     expect(ownScope.signal.aborted).toBe(false);
-    expect((await send({ deepseek: { source: "author" }, serpapi: { source: "author" } }, { cookie })).statusCode).toBe(403);
+    expect((await send({ deepseek: { source: "author" }, serpapi: { source: "author" } }, { cookie })).statusCode).toBe(revocation === "generation" ? 403 : 401);
   });
 
   it("缺失、非法和重复头均在进入运行前固定拒绝，不回显原始Key", async () => {

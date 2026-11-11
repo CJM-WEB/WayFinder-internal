@@ -110,6 +110,7 @@ export function registerSearchRoute(
     };
 
     let eventWriter: RunEventWriter | undefined;
+    let handlerStarted = false;
 
     try {
       reply.raw.once("close", onClose);
@@ -139,6 +140,7 @@ export function registerSearchRoute(
           writeNdjsonEvent(reply.raw, controller.signal, event),
       });
 
+      handlerStarted = true;
       await preparedHandler({
         input: parsedRequest.data,
         signal: controller.signal,
@@ -151,7 +153,7 @@ export function registerSearchRoute(
         reply.raw.end();
       }
     } catch (error: unknown) {
-      if (!reply.raw.headersSent && !reply.raw.destroyed && !controller.signal.aborted) {
+      if (!reply.sent && !reply.raw.headersSent && !reply.raw.destroyed && !controller.signal.aborted) {
         if (error instanceof CredentialsAccessError) {
           await sendCredentialsAccessError(reply, error);
         } else {
@@ -167,6 +169,9 @@ export function registerSearchRoute(
         reply.raw.destroy();
       }
     } finally {
+      // prepare 已持有鉴权／期限资源时，流头失败或提前返回也必须终止其父生命周期。
+      // 正常 Handler 已写完终态并释放期限后才到此处，不改变已完成的结果。
+      if ((!handlerStarted || !reply.raw.writableEnded) && !controller.signal.aborted) controller.abort();
       eventWriter?.dispose();
       reply.raw.removeListener("close", onClose);
       reply.raw.removeListener("error", onError);

@@ -235,6 +235,7 @@ async function installBrowserFixture(
       }));
     }
     let experienceAuthorized = false;
+    let account: { userId: string; email: string } | null = null;
     const experienceRequests: string[] = [];
     type BrowserRun = {
       runId: string;
@@ -357,6 +358,17 @@ async function installBrowserFixture(
       const requestUrl =
         input instanceof Request ? input.url : input.toString();
       const url = new URL(requestUrl, window.location.href);
+      if (url.origin === window.location.origin && url.pathname === "/api/account") {
+        const json = (value: unknown) => new Response(JSON.stringify(value), { headers: { "Content-Type": "application/json" } });
+        if (init?.method === "POST") {
+          const body: unknown = JSON.parse(String(init.body));
+          if (typeof body === "object" && body !== null && "action" in body) {
+            if (body.action === "login") account = { userId: "fixture-browser-user", email: "fixture-browser@example.test" };
+            if (body.action === "logout") { account = null; experienceAuthorized = false; }
+          }
+        }
+        return json({ account });
+      }
       // 只声明设置的三条HTTP替身；不开放任意网络或真实Provider，原搜索流断言继续执行。
       if (url.origin === window.location.origin && ["/api/settings", "/api/experience", "/api/experience/status"].includes(url.pathname)) {
         experienceRequests.push(url.pathname);
@@ -4412,6 +4424,21 @@ async function openInkSettings(page: Page): Promise<Locator> {
   return panel;
 }
 
+/** 体验旅程必须通过账号表单登录；账号替身只隔离服务端认证，不注入前端登录状态。 */
+async function loginInkFixture(page: Page): Promise<void> {
+  const form = page.getByRole("form", { name: "邮箱账号", exact: true });
+  await form.getByLabel("邮箱", { exact: true }).fill("fixture-browser@example.test");
+  await form.getByLabel("密码", { exact: true }).fill("fixture-browser-password");
+  await form.getByRole("button", { name: "登录", exact: true }).click();
+  await expect(page.getByRole("region", { name: "设置", exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "开始探索", exact: true }).click();
+  if (await page.evaluate(() => navigator.maxTouchPoints > 0)) {
+    await page.getByRole("button", { name: "搜索历史", exact: true }).tap();
+    await page.getByRole("button", { name: "设置", exact: true }).tap();
+  } else await openInkSettings(page);
+  await expect(page.getByRole("region", { name: "账号", exact: true })).toContainText("fixture-browser@example.test");
+}
+
 test("凭据设置缺配置保留输入、首页隔离、独立保存和刷新恢复", async ({ page }) => {
   await installBrowserFixture(page, createJourneyEvents(), false);
   await openInkProduct(page);
@@ -4460,8 +4487,12 @@ test("凭据设置体验确认隔离草稿、公告纯文本、共用资格和�
   await installBrowserFixture(page, createJourneyEvents());
   await openInkProduct(page);
   const panel = await openInkSettings(page);
+  await loginInkFixture(page);
   const llm = panel.getByRole("form", { name: "DeepSeek 设置", exact: true });
   const search = panel.getByRole("form", { name: "SerpAPI 设置", exact: true });
+  // 登录不会导入访客Key；先明确保存账号本地Key，再验证体验选择不会覆盖未保存草稿。
+  await llm.getByLabel("DeepSeek API Key", { exact: true }).fill("fake-browser-llm");
+  await llm.getByRole("button", { name: "保存设置", exact: true }).click();
   await llm.getByRole("button", { name: "显示", exact: true }).click();
   await llm.getByLabel("DeepSeek API Key", { exact: true }).fill("未保存的非法草稿");
   await llm.getByRole("button", { name: "体验 APIKEY", exact: true }).click();
@@ -4494,8 +4525,8 @@ test("凭据设置体验确认隔离草稿、公告纯文本、共用资格和�
   await trial.getByRole("button", { name: "确认使用", exact: true }).click();
   await expect(search.getByRole("button", { name: "体验 APIKEY", exact: true })).toHaveAttribute("aria-pressed", "true");
   expect(await page.evaluate(() => window.__WAYFINDER_E2E__.experienceRequests().filter(path => path === "/api/experience").length)).toBe(verifications);
-  expect(await page.evaluate(() => JSON.parse(window.localStorage.getItem("wayfinder.credentials.v1") ?? "null") as unknown)).toEqual({
-    deepseek: { source: "author", apiKey: "fake-browser-llm" }, serpapi: { source: "author", apiKey: "fake-browser-search" },
+  expect(await page.evaluate(() => JSON.parse(window.localStorage.getItem("wayfinder.credentials.v1.user.fixture-browser-user") ?? "null") as unknown)).toEqual({
+    deepseek: { source: "author", apiKey: "fake-browser-llm" }, serpapi: { source: "author", apiKey: "" },
   });
   await panel.getByRole("button", { name: "收起面板", exact: true }).click();
   await page.evaluate(() => window.__WAYFINDER_E2E__.setExperienceAccess(false));
@@ -4540,6 +4571,7 @@ test.describe("凭据设置触屏入口", () => {
     await page.getByRole("button", { name: "设置", exact: true }).tap();
     const settings = page.getByRole("region", { name: "设置", exact: true });
     await expect(settings).toBeVisible();
+    await loginInkFixture(page);
     const bottoms = await dock.locator("button").evaluateAll(buttons => buttons.map(button => button.getBoundingClientRect().bottom));
     expect(Math.max(...bottoms) - Math.min(...bottoms)).toBeLessThan(1);
     await expect(page.getByRole("region", { name: "搜索历史", exact: true })).toHaveCount(0);
