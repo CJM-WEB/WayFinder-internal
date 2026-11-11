@@ -17,6 +17,7 @@ describe("验证码SMTP边界", () => {
       logger: false, debug: false, disableFileAccess: true, disableUrlAccess: true,
     }));
     expect(transport.sendMail).toHaveBeenCalledWith(expect.objectContaining({
+      from: { name: "WayFinder", address: config.from },
       to: message.email, text: expect.stringContaining(message.otp), signal: expect.any(AbortSignal),
     }));
     expect(transport.close).toHaveBeenCalled();
@@ -43,5 +44,8 @@ describe("验证码SMTP边界", () => {
     expect(factory).not.toHaveBeenCalled();
     await mailer.sendOTP({ ...message, purpose: "reset" }, new AbortController().signal);
     expect(factory).toHaveBeenCalledWith(expect.objectContaining({ secure: false, requireTLS: true }));
+    expect(factory.mock.results[0]?.value.sendMail).toHaveBeenCalledWith(expect.objectContaining({
+      from: { name: "WayFinder", address: config.from },
+    }));
   });
 });

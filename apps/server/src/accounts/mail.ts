@@ -50,7 +50,8 @@ export function createSmtpAccountMailer(
         transport.sendMail({
           // Nodemailer原生中止本次SMTP连接；close()只作清理，不能代替传递取消信号。
           signal,
-          from: config.from, to: message.email, subject: `WayFinder ${purpose}`,
+          // 仅补充品牌显示名；真实发件地址仍使用已验证的SMTP邮箱，不能伪装域名地址。
+          from: { name: "WayFinder", address: config.from }, to: message.email, subject: `WayFinder ${purpose}`,
           text: `${purpose}\n\n${message.otp}\n\n验证码1小时有效且仅可使用一次。如非本人操作，请忽略。\nThis code expires in one hour and can be used once. Ignore it if you did not request it.`,
         }),
         new Promise<never>((_, reject) => {
