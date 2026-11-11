@@ -73,7 +73,8 @@ export async function buildProductionServer(
         enabled: true,
       })
     : undefined;
-  const server = buildServer();
+  // 唯一生产入口是同机Nginx，由其覆盖转发头；Node仍只监听127.0.0.1。
+  const server = buildServer({ trustLocalProxy: true });
 
   registerAccountRoutes(server, { auth: input.accounts?.auth ?? null, publicOrigin: input.config.publicOrigin });
   registerWorkspaceRoutes(server, { auth: input.accounts?.auth ?? null, storage: input.accounts?.workspace ?? null,

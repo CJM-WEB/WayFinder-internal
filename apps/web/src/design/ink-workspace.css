@@ -71,6 +71,11 @@
 /* 面板仅在相互切换时淡入淡出，关闭期间由父层持有视觉选择；不再叠加独立位移或提前隐藏。 */
 .ink-study__history-drawer > .ink-study__history-panel { position: absolute; inset: 0; opacity: 0; visibility: hidden;
   transform: none; transition: opacity 360ms var(--ink-slide-ease), visibility 0s 360ms; }
+/* 备案底条随父抽屉上下滑；给三个滚动区留出实占空间，不覆盖表单或现有按钮。 */
+.ink-study__history-drawer[data-has-filing="true"] > .ink-study__history-panel { height: calc(100% - 42px); bottom: 42px; }
+.ink-study__history-filing { position: absolute; inset: auto 0 0; height: 42px; display: flex; align-items: center; justify-content: center;
+  padding: 0 18px; border: 1px solid #ffffffa6; border-top: 0; background: var(--ink-history-glass); backdrop-filter: blur(14px);
+  color: #6b6b6b; font-size: 11px; line-height: 1.5; text-align: center; }
 .ink-study__history-drawer[data-present-panel="history"] > #ink-search-history,
 .ink-study__history-drawer[data-present-panel="undo"] > #ink-undo-history,
 .ink-study__history-drawer[data-present-panel="settings"] > #ink-settings { opacity: 1; visibility: visible; transition-delay: 0s; }

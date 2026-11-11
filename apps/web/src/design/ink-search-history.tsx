@@ -111,6 +111,8 @@ export function InkSearchHistory({ open, available, language, onOpen, onClose, o
   const persistence = useStore(workspacePersistenceStore, state => state);
   const messages = getMessages(language);
   const disabled = persistence.status === "loading" || persistence.error === "load";
+  // 仅部署公开显示文本；地址固定为工信部，React按普通文本转义，不接受配置中的链接或HTML。
+  const filing = import.meta.env.VITE_ICP_FILING?.trim() ?? "";
 
   useEffect(() => {
     // presence 的视觉选择可能比业务开关晚一个提交；等 CSS 可见后再聚焦，不依赖盲等计时。
@@ -149,7 +151,7 @@ export function InkSearchHistory({ open, available, language, onOpen, onClose, o
   }, [touchExpanded]);
 
   return (
-    <div className="ink-study__history-drawer" ref={drawer} data-present-panel={present.value ?? "none"}
+    <div className="ink-study__history-drawer" ref={drawer} data-present-panel={present.value ?? "none"} data-has-filing={filing !== ""}
       data-ink-control data-ink-overlay inert={!available} aria-hidden={!available}>
       {/* 触发器与内容是同级，关闭抽屉时仍可从底边或键盘打开。 */}
       <div className="ink-study__history-dock" data-expanded={dockExpanded} data-panel-open={present.value !== null}
@@ -215,6 +217,17 @@ export function InkSearchHistory({ open, available, language, onOpen, onClose, o
       <InkUndoPanel open={undoOpen} presented={present.value === "undo"} available={available}
         disabled={undoDisabled} language={language} onClose={onCloseUndo} />
       <InkSettingsPanel open={settingsOpen} presented={present.value === "settings"} language={language} onClose={onCloseSettings} />
+      {/* 底条属于抽屉，随同退场；关闭即隔离交互，指针／键盘进入它不算面板外点击。 */}
+      {filing !== "" && present.value !== null ? <footer className="ink-study__history-filing"
+        inert={!(open || undoOpen || settingsOpen)} aria-hidden={!(open || undoOpen || settingsOpen)}
+        onPointerDown={event => event.stopPropagation()} onFocus={event => event.stopPropagation()}
+        onKeyDown={event => {
+          // 设置面板的键盘监听仅在其section内，底条需补同一关闭动作；其余面板沿用document监听。
+          if (!settingsOpen || event.key !== "Escape" || event.defaultPrevented) return;
+          event.preventDefault(); event.stopPropagation(); onCloseSettings(true);
+        }}>
+        <a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener noreferrer">{filing}</a>
+      </footer> : null}
     </div>
   );
 }
