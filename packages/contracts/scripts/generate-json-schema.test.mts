@@ -32,6 +32,9 @@ const expectedFileNames = [
   "experience-status-response.schema.json",
   "credentials-error-response.schema.json",
   "user-id.schema.json",
+  "account-action.schema.json",
+  "account-response.schema.json",
+  "account-error-response.schema.json",
 ] as const;
 
 const temporaryDirectories: string[] = [];

@@ -12,6 +12,7 @@ import {
   type ServerConfig,
 } from "./config.js";
 import { buildProductionServer } from "./production-server.js";
+import { loadAccountRuntime } from "./accounts/account-runtime.js";
 
 export interface ServerRuntime {
   readonly environment: Readonly<Record<string, string | undefined>>;
@@ -50,17 +51,25 @@ if (isDirectExecution) {
   await runServer({
     environment: process.env,
     startListening: async (config) => {
-      // 路径只从当前模块推导，部署启动目录变化不能改变静态根或 Run Log 根。
-      const server = await buildProductionServer({
-        config,
-        repositoryRoot: fileURLToPath(new URL("../../../", import.meta.url)),
-        webAssetsDirectory: fileURLToPath(
-          new URL("../../web/dist/", import.meta.url),
-        ),
-      });
+      const accounts = await loadAccountRuntime(process.env, config.publicOrigin,
+        () => { process.stderr.write("ACCOUNT_EMAIL_DELIVERY_FAILED\n"); });
+      try {
+        // 路径只从当前模块推导，部署启动目录变化不能改变静态根或 Run Log 根。
+        const server = await buildProductionServer({
+          config,
+          repositoryRoot: fileURLToPath(new URL("../../../", import.meta.url)),
+          webAssetsDirectory: fileURLToPath(
+            new URL("../../web/dist/", import.meta.url),
+          ),
+          ...(accounts === null ? {} : { accounts }),
+        });
 
-      // 腾讯云同机 Nginx 是唯一公网入口；Node 端口不得直接暴露。
-      await server.listen({ host: "127.0.0.1", port: config.port });
+        // 腾讯云同机 Nginx 是唯一公网入口；Node 端口不得直接暴露。
+        await server.listen({ host: "127.0.0.1", port: config.port });
+      } catch (error: unknown) {
+        await accounts?.database.close();
+        throw error;
+      }
     },
     writeError: (message) => process.stderr.write(message),
     setExitCode: (code) => {

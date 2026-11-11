@@ -3,7 +3,8 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "noEmit": true,
-    "lib": ["ES2023"],
+    // Node 24原生支持Fetch/WebCrypto；认证库声明需要Web标准类型，不引入浏览器运行代码。
+    "lib": ["ES2023", "DOM"],
     "types": ["node"],
     // 开发期直接检查 Contract 源码；生产运行仍通过 package exports 使用 dist。
     "paths": {

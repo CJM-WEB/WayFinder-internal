@@ -10,6 +10,9 @@ import { fileURLToPath } from "node:url";
 import { z } from "zod";
 
 import {
+  AccountActionSchema,
+  AccountResponseSchema,
+  AccountErrorResponseSchema,
   CredentialsErrorResponseSchema,
   EditableGraphSchema,
   ExperienceInviteRequestSchema,
@@ -116,6 +119,9 @@ const jsonSchemaRoots = [
     fileName: "user-id.schema.json",
     schema: UserIdSchema,
   },
+  { schemaName: "AccountActionSchema", fileName: "account-action.schema.json", schema: AccountActionSchema },
+  { schemaName: "AccountResponseSchema", fileName: "account-response.schema.json", schema: AccountResponseSchema },
+  { schemaName: "AccountErrorResponseSchema", fileName: "account-error-response.schema.json", schema: AccountErrorResponseSchema },
 ] as const satisfies readonly JsonSchemaRoot[];
 
 const defaultOutputDirectory = fileURLToPath(

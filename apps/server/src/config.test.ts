@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import { DATABASE_ENVIRONMENT_VARIABLES } from "./accounts/database.js";
+import { ACCOUNT_ENVIRONMENT_VARIABLES } from "./accounts/account-runtime.js";
 
 import {
   RUN_DEADLINE_MS,
@@ -112,12 +113,14 @@ describe("parseServerConfig", () => {
     const names = assignments.map(([name]) => name);
 
     expect(new Set(names).size).toBe(names.length);
-    expect([...names].sort()).toEqual([...SERVER_ENVIRONMENT_VARIABLES, ...DATABASE_ENVIRONMENT_VARIABLES].sort());
+    expect([...names].sort()).toEqual([...SERVER_ENVIRONMENT_VARIABLES, ...DATABASE_ENVIRONMENT_VARIABLES, ...ACCOUNT_ENVIRONMENT_VARIABLES].sort());
     expect(Object.fromEntries(assignments)).toMatchObject({
       LLM_API_KEY: "",
       SERPAPI_API_KEY: "",
       RUN_LOGGING: "false",
       WAYFINDER_DATABASE_URL: "",
+      WAYFINDER_AUTH_SECRET: "",
+      SMTP_PASSWORD: "",
       WAYFINDER_DATABASE_CA_FILE: "",
     });
   });

@@ -13,6 +13,34 @@ import { z } from "zod";
 export const UserIdSchema = z.string().min(1).max(128).regex(/^[A-Za-z0-9_-]+$/);
 export type UserId = z.infer<typeof UserIdSchema>;
 
+/** D11 账号接口只接收明确动作；密码和验证码仅出现在同源 JSON 请求体中。 */
+const accountEmailSchema = z.email().max(254);
+const accountPasswordSchema = z.string().min(8).max(128);
+const accountOtpSchema = z.string().regex(/^[0-9]{6}$/);
+export const AccountActionSchema = z.discriminatedUnion("action", [
+  z.strictObject({ action: z.literal("register"), email: accountEmailSchema, password: accountPasswordSchema }),
+  z.strictObject({ action: z.literal("login"), email: accountEmailSchema, password: accountPasswordSchema }),
+  z.strictObject({ action: z.literal("verify"), email: accountEmailSchema, otp: accountOtpSchema }),
+  z.strictObject({ action: z.literal("reset"), email: accountEmailSchema, otp: accountOtpSchema, password: accountPasswordSchema }),
+  z.strictObject({ action: z.literal("resend"), email: accountEmailSchema }),
+  z.strictObject({ action: z.literal("recover"), email: accountEmailSchema }),
+  z.strictObject({ action: z.literal("logout") }),
+]);
+export type AccountAction = z.infer<typeof AccountActionSchema>;
+
+/** 公共投影不返回库的会话令牌、会话标识、IP 或 User-Agent；accepted 不承诺邮件投递成功。 */
+export const AccountSchema = z.strictObject({ userId: UserIdSchema, email: accountEmailSchema });
+export type Account = z.infer<typeof AccountSchema>;
+export const AccountResponseSchema = z.union([
+  z.strictObject({ accepted: z.literal(true) }),
+  z.strictObject({ account: AccountSchema.nullable() }),
+]);
+export type AccountResponse = z.infer<typeof AccountResponseSchema>;
+export const AccountErrorResponseSchema = z.strictObject({
+  code: z.enum(["ACCOUNT_INVALID", "ACCOUNT_REQUIRED", "ACCOUNT_RATE_LIMITED", "ACCOUNT_UNAVAILABLE"]),
+});
+export type AccountErrorResponse = z.infer<typeof AccountErrorResponseSchema>;
+
 /**
  * D9 凭据传输与搜索内容分离：此头仅供浏览器向同源后端提交本次凭据选择。
  * 不得写入 URL、图内容、Prompt（提示词）或日志；体验授权另走专用安全通道。

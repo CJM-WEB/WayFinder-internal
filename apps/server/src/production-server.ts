@@ -22,6 +22,8 @@ import { registerWebAssets } from "./web-assets.js";
 import { prepareSearchCredentialScope, type EffectiveProviderKeys } from "./settings/search-credentials.js";
 import { assertPrivateConfigLocation } from "./settings/private-config-location.js";
 import { callAuthorizedLLM } from "./settings/authorized-llm-call.js";
+import type { AccountRuntime } from "./accounts/account-runtime.js";
+import { registerAccountRoutes } from "./routes/account.js";
 
 export type ProductionBaseProviders = Readonly<{
   searchProvider: SearchProvider;
@@ -36,6 +38,8 @@ export type BuildProductionServerInput = Readonly<{
   baseProviders?: ProductionBaseProviders;
   /** 仅作为确定性测试接缝，验证不同请求实际解析出的 Key；没有生产环境开关。 */
   providerFactory?: (keys: EffectiveProviderKeys, beforeSearchAttempt: (signal: AbortSignal) => Promise<void>) => ProductionBaseProviders;
+  /** 仅由显式启动工厂提供；未配置时账号路由失败闭合，不隐式连接数据库。 */
+  accounts?: AccountRuntime;
 }>;
 
 function createBaseProviders(
@@ -67,6 +71,11 @@ export async function buildProductionServer(
       })
     : undefined;
   const server = buildServer();
+
+  registerAccountRoutes(server, { auth: input.accounts?.auth ?? null, publicOrigin: input.config.publicOrigin });
+  if (input.accounts !== undefined) {
+    server.addHook("onClose", async () => { await input.accounts?.database.close(); });
+  }
 
   registerExperienceRoutes(server, {
     configPath: input.config.experienceConfigPath,
