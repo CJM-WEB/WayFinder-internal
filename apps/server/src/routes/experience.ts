@@ -29,8 +29,8 @@ export function sendCredentialsAccessError(
   error: CredentialsAccessError,
   statusCode?: number,
 ): FastifyReply {
-  const status = statusCode ?? (error.code === "ACCOUNT_REQUIRED" ? 401 : error.code === "EXPERIENCE_UNAVAILABLE" ? 503
-    : error.code === "INVITE_CODE_INVALID" || error.code === "EXPERIENCE_REVOKED" ? 403 : 400);
+  const status = statusCode ?? (error.code === "ACCOUNT_REQUIRED" ? 401 : error.code === "EXPERIENCE_UNAVAILABLE" || error.code === "CLOUD_KEY_UNAVAILABLE" ? 503
+    : error.code === "INVITE_CODE_INVALID" || error.code === "EXPERIENCE_REVOKED" || error.code === "CLOUD_KEY_REVOKED" ? 403 : 400);
   return reply.header("Cache-Control", "no-store").code(status).send(CredentialsErrorResponseSchema.parse({
     code: error.code,
     ...(error.service === undefined ? {} : { service: error.service }),

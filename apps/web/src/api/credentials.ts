@@ -14,6 +14,8 @@ import {
   credentialSettingsStore, type CredentialPreference, type CredentialSettingsStore,
 } from "../stores/credential-settings.js";
 import { accountStore } from "../stores/account.js";
+import { accountKeysApi, AccountKeysError } from "./account-keys.js";
+import { accountKeysStore, publishAccountKeys } from "../stores/account-keys.js";
 
 /** 任何构造来源都再次投影，避免原始网络错误、响应字段或秘密进入可展示异常。 */
 export class CredentialsConfigurationError extends Error {
@@ -45,6 +47,7 @@ function awaitWithSignal<T>(operation: Promise<T>, signal?: AbortSignal): Promis
 
 function toWirePreference(service: CredentialService, saved: CredentialPreference): ServiceCredentials {
   if (saved.source === "author") return { source: "author" };
+  if (saved.source === "cloud") return { source: "cloud" };
   if (saved.source !== "own") throw new CredentialsConfigurationError({ code: "CREDENTIALS_INVALID", service });
   if (saved.apiKey === "") throw new CredentialsConfigurationError({ code: "CREDENTIALS_REQUIRED", service });
   const key = ApiKeySchema.safeParse(saved.apiKey);
@@ -136,6 +139,28 @@ export async function checkSearchIdentity(signal: AbortSignal | undefined, selec
           selected.deepseek.source === "own" && selected.serpapi.source === "own")) throw error;
     }
     if (accountStore.getState().epoch !== epoch) throw new CredentialsConfigurationError({ code: "ACCOUNT_REQUIRED" });
+    if (selected.deepseek.source === "cloud" || selected.serpapi.source === "cloud") {
+      const userId = accountStore.getState().account?.userId;
+      if (userId === undefined) throw new CredentialsConfigurationError({ code: "ACCOUNT_REQUIRED" });
+      const generation = accountKeysStore.getState().generation;
+      const serviceGenerations = accountKeysStore.getState().serviceGenerations;
+      try {
+        const summary = await accountKeysApi.read(userId, signal ?? new AbortController().signal);
+        signal?.throwIfAborted();
+        const published = publishAccountKeys(summary, userId, epoch, undefined, generation);
+        if (!published && (accountStore.getState().epoch !== epoch || accountStore.getState().scopeUserId !== userId ||
+            (["deepseek", "serpapi"] as const).some(service => selected[service].source === "cloud" && accountKeysStore.getState().serviceGenerations[service] !== serviceGenerations[service]))) {
+          throw new CredentialsConfigurationError({ code: "CLOUD_KEY_REVOKED" });
+        }
+        for (const service of ["deepseek", "serpapi"] as const) {
+          if (selected[service].source === "cloud" && !summary[service].configured) throw new CredentialsConfigurationError({ code: "CLOUD_KEY_REQUIRED", service });
+        }
+      } catch (error: unknown) {
+        signal?.throwIfAborted();
+        if (error instanceof CredentialsConfigurationError) throw error;
+        throw new CredentialsConfigurationError({ code: error instanceof AccountKeysError && error.problem.code === "ACCOUNT_REQUIRED" ? "ACCOUNT_REQUIRED" : "CLOUD_KEY_UNAVAILABLE" });
+      }
+    }
 }
 export const credentialsApi = createCredentialsApi(credentialSettingsStore, (input, init) => globalThis.fetch(input, init), checkSearchIdentity);
 export const prepareSearchCredentials = credentialsApi.prepareSearchCredentials;

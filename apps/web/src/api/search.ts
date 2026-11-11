@@ -13,9 +13,11 @@ import {
   SearchCredentialsSchema,
   CredentialsErrorResponseSchema,
   SEARCH_CREDENTIALS_HEADER,
+  CLOUD_ACCOUNT_HEADER,
   type SearchRequest,
   type SearchCredentials,
   type ResultGraph,
+  type CredentialService,
 } from "@wayfinder/contracts";
 
 import {
@@ -28,6 +30,7 @@ import {
 } from "../stores/graph-store.js";
 import { prepareSearchCredentials, CredentialsConfigurationError } from "./credentials.js";
 import { accountStore } from "../stores/account.js";
+import { accountKeysStore } from "../stores/account-keys.js";
 import { credentialSettingsStore } from "../stores/credential-settings.js";
 
 /** 只依赖 Zustand Vanilla Store 的最小能力，便于测试隔离且不复制状态类型。 */
@@ -58,6 +61,7 @@ type ActiveRun = Readonly<{
   /** Controller（控制器）对象身份同时充当当前 Run 的唯一所有权令牌。 */
   controller: AbortController;
   runId: SearchRequest["runId"];
+  cloudServices: readonly CredentialService[];
 }>;
 
 export type StartStreamingSearchInput = Readonly<
@@ -89,6 +93,7 @@ export type StreamingSearchOptions = Readonly<{
 export type StreamingSearch = ((input: StartStreamingSearchInput, options?: StreamingSearchOptions) => Promise<void>) & {
   cancel: () => void;
   cancelPending: () => void;
+  cancelForCloudKeyChange: (services: readonly CredentialService[]) => boolean;
 };
 
 export function createStartStreamingSearch(
@@ -101,6 +106,7 @@ export function createStartStreamingSearch(
   const createRunId = dependencies.createRunId ?? createDefaultRunId;
   const prepareCredentials = dependencies.prepareCredentials ?? prepareSearchCredentials;
   let activeRun: ActiveRun | undefined;
+  let lastRunCloudServices: readonly CredentialService[] = [];
   let pending: AbortController | undefined;
 
   const startSearch = async (input: StartStreamingSearchInput, options: StreamingSearchOptions = {}): Promise<void> => {
@@ -114,16 +120,25 @@ export function createStartStreamingSearch(
     pending = controller;
     const signal = options.signal === undefined ? controller.signal : AbortSignal.any([controller.signal, options.signal]);
     let credentials: SearchCredentials;
+    const keyGenerations = accountKeysStore.getState().serviceGenerations;
     try {
       // 固定同一份凭据快照；保存设置不会替换正在检查或运行的请求。
       credentials = SearchCredentialsSchema.parse(await prepareCredentials(signal));
       if (signal.aborted || pending !== controller) return;
+      if ((["deepseek", "serpapi"] as const).some(service => credentials[service].source === "cloud" && accountKeysStore.getState().serviceGenerations[service] !== keyGenerations[service])) {
+        throw new CredentialsConfigurationError({ code: "CLOUD_KEY_REVOKED" });
+      }
     } catch (error) {
       if (signal.aborted || pending !== controller) return;
       throw error;
     } finally {
       if (pending === controller) pending = undefined;
     }
+    // 在onStart等可重入回调之前冻结身份；云端凭据不能随后读成同步切换后的另一账号。
+    const usesCloud = credentials.deepseek.source === "cloud" || credentials.serpapi.source === "cloud";
+    const cloudServices = (["deepseek", "serpapi"] as const).filter(service => credentials[service].source === "cloud");
+    const expectedCloudAccount = usesCloud ? accountStore.getState().account?.userId : undefined;
+    if (usesCloud && expectedCloudAccount === undefined) throw new CredentialsConfigurationError({ code: "ACCOUNT_REQUIRED" });
     const request = SearchRequestSchema.parse({
       runId: createRunId(),
       ...validatedInput,
@@ -134,7 +149,8 @@ export function createStartStreamingSearch(
     previousRun?.controller.abort(
       new DOMException("新 Query 已开始", "AbortError"),
     );
-    activeRun = { controller, runId: request.runId };
+    lastRunCloudServices = cloudServices;
+    activeRun = { controller, runId: request.runId, cloudServices };
     dependencies.store.getState().startRun(request);
     dependencies.onStart?.(request);
     options.onStart?.(request.runId);
@@ -148,12 +164,14 @@ export function createStartStreamingSearch(
     };
 
     try {
+      signal.throwIfAborted();
       const response = await fetchImplementation("/api/search", {
         method: "POST",
         headers: {
           Accept: "application/x-ndjson",
           "Content-Type": "application/json",
           [SEARCH_CREDENTIALS_HEADER]: JSON.stringify(credentials),
+          ...(expectedCloudAccount === undefined ? {} : { [CLOUD_ACCOUNT_HEADER]: expectedCloudAccount }),
         },
         body: JSON.stringify(request),
         credentials: "same-origin",
@@ -202,6 +220,18 @@ export function createStartStreamingSearch(
     }
   };
   return Object.assign(startSearch, {
+    cancelForCloudKeyChange: (services: readonly CredentialService[]): boolean => {
+      const usedCloud = lastRunCloudServices.some(service => services.includes(service));
+      if (activeRun?.cloudServices.some(service => services.includes(service))) {
+        const current = activeRun;
+        current.controller.abort(new DOMException("云端Key已变化", "AbortError"));
+        activeRun = undefined;
+        const state = dependencies.store.getState();
+        if (state.activeRunId === current.runId && state.isSearching) state.finishRun();
+      }
+      if (usedCloud) lastRunCloudServices = [];
+      return usedCloud;
+    },
     cancelPending: (): void => {
       pending?.abort(new DOMException("搜索意图已撤销", "AbortError"));
       pending = undefined;
@@ -227,4 +257,8 @@ export const startStreamingSearch = createStartStreamingSearch({
 /** 只订阅实际加载的应用单例，身份发布时先取消；不让入口为了取消而提前加载搜索模块。 */
 accountStore.subscribe((next, previous) => {
   if (next.epoch !== previous.epoch) { startStreamingSearch.cancelPending(); startStreamingSearch.cancel(); }
+});
+
+accountKeysStore.subscribe((next, previous) => {
+  if (next.generation !== previous.generation) startStreamingSearch.cancelForCloudKeyChange(next.changedServices);
 });

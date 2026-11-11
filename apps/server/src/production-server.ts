@@ -26,6 +26,7 @@ import type { AccountRuntime } from "./accounts/account-runtime.js";
 import { createAbsoluteRunDeadline } from "./orchestrator/absolute-run-deadline.js";
 import { registerAccountRoutes } from "./routes/account.js";
 import { registerWorkspaceRoutes } from "./routes/workspace.js";
+import { registerAccountKeyRoutes } from "./routes/account-keys.js";
 
 export type ProductionBaseProviders = Readonly<{
   searchProvider: SearchProvider;
@@ -41,7 +42,7 @@ export type BuildProductionServerInput = Readonly<{
   /** 仅作为确定性测试接缝，验证不同请求实际解析出的 Key；没有生产环境开关。 */
   providerFactory?: (keys: EffectiveProviderKeys, beforeSearchAttempt: (signal: AbortSignal) => Promise<void>) => ProductionBaseProviders;
   /** 仅由显式启动工厂提供；未配置时账号路由失败闭合，不隐式连接数据库。 */
-  accounts?: Readonly<{ auth: AccountRuntime["auth"]; database: Pick<AccountRuntime["database"], "close">; workspace?: AccountRuntime["workspace"] }>;
+  accounts?: Readonly<{ auth: AccountRuntime["auth"]; database: Pick<AccountRuntime["database"], "close">; workspace?: AccountRuntime["workspace"]; keys?: AccountRuntime["keys"] }>;
 }>;
 
 function createBaseProviders(
@@ -77,6 +78,8 @@ export async function buildProductionServer(
   registerAccountRoutes(server, { auth: input.accounts?.auth ?? null, publicOrigin: input.config.publicOrigin });
   registerWorkspaceRoutes(server, { auth: input.accounts?.auth ?? null, storage: input.accounts?.workspace ?? null,
     publicOrigin: input.config.publicOrigin });
+  registerAccountKeyRoutes(server, { auth: input.accounts?.auth ?? null, storage: input.accounts?.keys ?? null,
+    publicOrigin: input.config.publicOrigin });
   if (input.accounts !== undefined) {
     server.addHook("onClose", async () => { await input.accounts?.database.close(); });
   }
@@ -94,7 +97,7 @@ export async function buildProductionServer(
       const runScope = createAbsoluteRunDeadline({ parentSignal: AbortSignal.any([connectionSignal, fatalController.signal]) });
       try {
         const scope = await prepareSearchCredentialScope(request, input.config, runScope.signal,
-          input.accounts?.auth ?? null, runScope.deadlineAt);
+          input.accounts?.auth ?? null, runScope.deadlineAt, input.accounts?.keys ?? null, runScope.requirePositiveRemainingMs);
         const beforeSearchAttempt = (signal: AbortSignal) => scope.assertService("serpapi", signal);
         const base = input.providerFactory?.(scope.keys, beforeSearchAttempt) ?? input.baseProviders
           ?? createBaseProviders(input.config, scope.keys, beforeSearchAttempt);

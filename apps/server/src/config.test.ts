@@ -120,6 +120,7 @@ describe("parseServerConfig", () => {
       RUN_LOGGING: "false",
       WAYFINDER_DATABASE_URL: "",
       WAYFINDER_AUTH_SECRET: "",
+      WAYFINDER_KEY_ENCRYPTION_KEY: "",
       SMTP_PASSWORD: "",
       WAYFINDER_DATABASE_CA_FILE: "",
     });

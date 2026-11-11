@@ -9,6 +9,7 @@
     "accounts:test:mysql": "pnpm run build && node dist/accounts/mysql-check.js",
     "accounts:test:auth": "pnpm run build && node dist/accounts/auth-check.js",
     "accounts:test:workspace": "pnpm run build && node dist/accounts/workspace-check.js",
+    "accounts:test:keys": "pnpm run build && node dist/accounts/keys-check.js",
     "experience:configure": "pnpm run build && node --env-file-if-exists=../../.env dist/settings/configure-experience.js",
     "eval:golden": "pnpm run build && node dist/eval/run-planner-golden.js",
     "eval:h2-baseline": "pnpm run build && node dist/eval/run-h2-retrieval-baseline.js",

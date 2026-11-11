@@ -10,7 +10,7 @@ import {
 import { createStore, type StoreApi } from "zustand/vanilla";
 
 export const CREDENTIAL_SETTINGS_STORAGE_KEY = "wayfinder.credentials.v1";
-export type CredentialPreference = Readonly<{ source: "own" | "author"; apiKey: string }>;
+export type CredentialPreference = Readonly<{ source: "own" | "author" | "cloud"; apiKey: string }>;
 export type CredentialPreferences = Readonly<Record<CredentialService, CredentialPreference>>;
 export type CredentialSettingsState = {
   preferences: CredentialPreferences;
@@ -37,7 +37,7 @@ function parsePreference(input: unknown): CredentialPreference | null {
   if (typeof input !== "object" || input === null || Array.isArray(input) ||
     Object.keys(input).length !== 2 || !("source" in input) || !("apiKey" in input) ||
     !Object.hasOwn(input, "source") || !Object.hasOwn(input, "apiKey") ||
-    (input.source !== "own" && input.source !== "author") || typeof input.apiKey !== "string") return null;
+    (input.source !== "own" && input.source !== "author" && input.source !== "cloud") || typeof input.apiKey !== "string") return null;
   const key = input.apiKey === "" ? "" : ApiKeySchema.safeParse(input.apiKey);
   if (key !== "" && !key.success) return null;
   return Object.freeze({ source: input.source, apiKey: key === "" ? "" : key.data });
@@ -105,3 +105,13 @@ export function createCredentialSettingsStore(
 }
 
 export const credentialSettingsStore = createCredentialSettingsStore();
+
+/** 只在人员明确点击读取访客Key时调用；不写入当前账号偏好、不上传或清除访客源。 */
+export function readGuestApiKey(service: CredentialService, storageGetter: () => Pick<Storage, "getItem"> = () => window.localStorage): string {
+  try {
+    const raw = storageGetter().getItem(CREDENTIAL_SETTINGS_STORAGE_KEY);
+    const preferences = raw === null ? null : parsePreferences(JSON.parse(raw) as unknown);
+    if (preferences === null || !preferences[service].apiKey) throw new Error();
+    return preferences[service].apiKey;
+  } catch { throw new Error("无法读取该服务的访客Key"); }
+}

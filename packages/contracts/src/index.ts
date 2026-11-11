@@ -67,11 +67,12 @@ export type ApiKey = z.infer<typeof ApiKeySchema>;
 
 /**
  * 每项服务显式选择来源；缺失或未知值不能默认使用作者凭据。
- * author（作者）分支不接受 Key 或前端已验证标记，真正资格必须由服务端核对。
+ * author（作者）与 cloud（账号云端）分支不接受 Key 或前端已验证标记，资格和归属由服务端核对。
  */
 export const ServiceCredentialsSchema = z.discriminatedUnion("source", [
   z.strictObject({ source: z.literal("own"), apiKey: ApiKeySchema }),
   z.strictObject({ source: z.literal("author") }),
+  z.strictObject({ source: z.literal("cloud") }),
 ]);
 export type ServiceCredentials = z.infer<typeof ServiceCredentialsSchema>;
 
@@ -112,6 +113,9 @@ export const CredentialsErrorCodeSchema = z.enum([
   "EXPERIENCE_REVOKED",
   "EXPERIENCE_UNAVAILABLE",
   "CREDENTIALS_INVALID",
+  "CLOUD_KEY_REQUIRED",
+  "CLOUD_KEY_REVOKED",
+  "CLOUD_KEY_UNAVAILABLE",
 ]);
 export type CredentialsErrorCode = z.infer<typeof CredentialsErrorCodeSchema>;
 
@@ -1367,3 +1371,28 @@ export const CloudWorkspaceErrorResponseSchema = z.strictObject({
   code: z.enum(["WORKSPACE_INVALID", "WORKSPACE_CONFLICT", "WORKSPACE_NOT_FOUND", "WORKSPACE_UNAVAILABLE", "ACCOUNT_REQUIRED"]),
 });
 export type CloudWorkspaceErrorResponse = z.infer<typeof CloudWorkspaceErrorResponseSchema>;
+
+/** 普通读取只有掩码及并发版本；删除墓碑仍有版本，不能以空配置绕过旧写入检查。 */
+export const AccountKeyStatusSchema = z.discriminatedUnion("configured", [
+  z.strictObject({ configured: z.literal(true), mask: z.string().regex(/^••••(?:[\x20-\x7E]{4})?$/), revision: UserIdSchema }),
+  z.strictObject({ configured: z.literal(false), mask: z.null(), revision: UserIdSchema.nullable() }),
+]);
+export type AccountKeyStatus = z.infer<typeof AccountKeyStatusSchema>;
+
+/** Key 只允许同源明确保存动作携带，不进入图／历史或云端读取；空预期版本只用于从未存在的记录。 */
+const accountKeyActionFields = {
+  service: CredentialServiceSchema, expectedRevision: UserIdSchema.nullable(), mutationId: UserIdSchema,
+};
+export const AccountKeyActionSchema = z.discriminatedUnion("action", [
+  z.strictObject({ action: z.literal("save"), ...accountKeyActionFields, apiKey: ApiKeySchema }),
+  z.strictObject({ action: z.literal("delete"), ...accountKeyActionFields }),
+]);
+export type AccountKeyAction = z.infer<typeof AccountKeyActionSchema>;
+export const AccountKeysResponseSchema = z.strictObject({
+  userId: UserIdSchema, deepseek: AccountKeyStatusSchema, serpapi: AccountKeyStatusSchema,
+});
+export type AccountKeysResponse = z.infer<typeof AccountKeysResponseSchema>;
+export const AccountKeysErrorResponseSchema = z.strictObject({
+  code: z.enum(["KEY_INVALID", "KEY_CONFLICT", "KEY_UNAVAILABLE", "ACCOUNT_REQUIRED"]), service: CredentialServiceSchema.optional(),
+});
+export type AccountKeysErrorResponse = z.infer<typeof AccountKeysErrorResponseSchema>;

@@ -2,7 +2,7 @@
  * 模块职责：使用临时 Run 生成重搜预览，用户明确应用后才修改当前工作图。
  * 旧图不接收临时流；取消、迟到结果、切图或删除目标都不能复活或改写其他记录。
  */
-import { resolveSearchEngine, type ResultGraph, type SearchEngine, type SearchLanguage } from "@wayfinder/contracts";
+import { resolveSearchEngine, type ResultGraph, type SearchEngine, type SearchLanguage, type CredentialService } from "@wayfinder/contracts";
 import { createStore, type StoreApi } from "zustand/vanilla";
 
 import { createStartStreamingSearch, SearchInputSchema, type SearchCoordinatorDependencies } from "./search.js";
@@ -11,6 +11,7 @@ import { createGraphStore } from "../stores/graph-store.js";
 import { fromResultGraph, workspaceStore, type WorkspaceStoreState } from "../stores/workspace-store.js";
 import { applyGraphSearchResult, applyNodeSearchResult } from "../stores/workspace-research.js";
 import { accountStore } from "../stores/account.js";
+import { accountKeysStore } from "../stores/account-keys.js";
 
 export type ResearchPreview = {
   graphId: string;
@@ -29,6 +30,7 @@ type ResearchState = {
   start: (graphId: string, nodeId?: string, topic?: string, onStart?: () => void) => Promise<void>;
   cancel: () => void;
   cancelPending: () => void;
+  cancelForCloudKeyChange: (services: readonly CredentialService[]) => void;
   dismiss: () => void;
   apply: (mode: "append" | "replace") => void;
 };
@@ -111,6 +113,11 @@ export function createResearchStore(
       pendingTarget?.controller.abort(new DOMException("取消重搜意图", "AbortError"));
       pendingTarget = null;
     },
+    cancelForCloudKeyChange: services => {
+      if (!search.cancelForCloudKeyChange(services)) return;
+      owner = null;
+      store.setState({ preview: null, inputError: null });
+    },
     dismiss: () => store.getState().cancel(),
     apply: mode => {
       const preview = store.getState().preview;
@@ -180,4 +187,8 @@ export const researchStore = createResearchStore();
 /** 已加载的预览在身份变化时立即撤销；未加载的预览不应成为首页依赖。 */
 accountStore.subscribe((next, previous) => {
   if (next.epoch !== previous.epoch) { researchStore.getState().cancelPending(); researchStore.getState().dismiss(); }
+});
+
+accountKeysStore.subscribe((next, previous) => {
+  if (next.generation !== previous.generation) researchStore.getState().cancelForCloudKeyChange(next.changedServices);
 });

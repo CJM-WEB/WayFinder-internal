@@ -21,6 +21,11 @@ import type {
 } from "@wayfinder/contracts";
 
 export type Messages = Readonly<{
+  cloudKeys: Readonly<{
+    title: string; loading: string; use: string; draft: string; readGuest: string; save: string; delete: string; reload: string;
+    saveNotice: string; deleteNotice: string; confirmSave: string; confirmDelete: string; busy: string; saved: string; notConfigured: string; guestMissing: string;
+    problems: Readonly<Record<"KEY_INVALID" | "KEY_CONFLICT" | "KEY_UNAVAILABLE" | "ACCOUNT_REQUIRED", string>>;
+  }>;
   cloud: Readonly<{
     title: string; retry: string; conflict: string; reload: string; copy: string; import: string; importNotice: string; confirmImport: string; importBlocked: string;
     statuses: Readonly<Record<"guest" | "loading" | "saving" | "synced" | "offline" | "error" | "conflict", string>>;
@@ -159,6 +164,15 @@ export type Messages = Readonly<{
  */
 export const MESSAGES: Record<SearchLanguage, Messages> = {
   "zh-CN": {
+    cloudKeys: {
+      title: "云端 Key", loading: "正在读取云端 Key 状态…", use: "使用云端 Key", draft: "待保存的云端 Key", readGuest: "读取该服务的访客 Key",
+      save: "保存到云端", delete: "删除云端 Key", reload: "重新读取 Key 状态", busy: "正在处理云端 Key…", saved: "云端 Key 已更新；凭据来源保持原选择。",
+      notConfigured: "尚未配置", guestMissing: "该服务没有可读取的访客 Key，原数据未修改。",
+      saveNotice: "确认将此服务的 Key 保存到当前账号？服务端将加密托管，不会验证上游或自动切换凭据来源；访客源 Key 保留。",
+      deleteNotice: "确认删除此服务的云端 Key？正在使用旧云端 Key 的运行将停止，浏览器原有 Key 保留。",
+      confirmSave: "确认保存云端 Key", confirmDelete: "确认删除云端 Key",
+      problems: { KEY_INVALID: "云端 Key 输入无效，请检查后重试。", KEY_CONFLICT: "云端 Key 已变化，请重新读取状态后再次确认。", KEY_UNAVAILABLE: "云端 Key 暂不可用；浏览器 Key 和图数据不受影响。", ACCOUNT_REQUIRED: "请先登录当前账号。" },
+    },
     cloud: {
       title: "云端工作区", importBlocked: "请先完成待提交同步或处理冲突，再导入访客图。", retry: "重试云端同步", conflict: "存在冲突，本地修改已保留", reload: "重新载入云端图", copy: "另存本地副本",
       import: "导入访客图及历史", importNotice: "确认把本浏览器访客图、撤销历史及可恢复删除记录导入当前账号？不会上传 API Key，也不会删除访客源数据。",
@@ -180,9 +194,9 @@ export const MESSAGES: Record<SearchLanguage, Messages> = {
       sharedWarning: "使用作者APIKEY之后额度共享，费用全由作者承担，但也可能出现额度不足导致搜索失败",
       privacyWarning: "使用作者体验 APIKEY 期间，请尽量避免搜索涉及个人隐私或敏感信息的内容，以降低相关内容向作者或其他相关开发者暴露的风险。",
       unavailable: "作者体验暂不可用。", readFailure: "设置读取失败，请重试；当前不会覆盖旧设置。", saveFailure: "设置保存失败，请重试。", retry: "重试读取", open: "打开设置",
-      ownHint: "Key 长期保存在当前浏览器；搜索时发送到本应用后端代调用，服务端不持久保存；保存不会发起付费测试。",
+      ownHint: "浏览器 Key 长期保存在本浏览器，搜索时发给后端代调用；云端 Key 需独立确认后加密托管。保存不会进行付费验证。",
       getKey: { deepseek: "获取DeepSeek API KEY", serpapi: "获取SerpAPI KEY" },
-      problems: { ACCOUNT_REQUIRED: "请先在设置中登录，再验证邀请码。", CREDENTIALS_REQUIRED: "请先配置 API Key。", CREDENTIALS_INVALID: "凭据配置无效，请检查设置。", INVITE_CODE_INVALID: "邀请码无效，请检查后重试。", EXPERIENCE_REVOKED: "体验资格已失效，请输入当前邀请码。", EXPERIENCE_UNAVAILABLE: "作者体验暂不可用，请稍后重试。" },
+      problems: { CLOUD_KEY_REQUIRED: "请先保存该服务的云端 Key 或选择其他凭据来源。", CLOUD_KEY_REVOKED: "云端 Key 已变更，请重新开始搜索。", CLOUD_KEY_UNAVAILABLE: "云端 Key 暂不可用，请检查云端设置。", ACCOUNT_REQUIRED: "请先在设置中登录，再验证邀请码。", CREDENTIALS_REQUIRED: "请先配置 API Key。", CREDENTIALS_INVALID: "凭据配置无效，请检查设置。", INVITE_CODE_INVALID: "邀请码无效，请检查后重试。", EXPERIENCE_REVOKED: "体验资格已失效，请输入当前邀请码。", EXPERIENCE_UNAVAILABLE: "作者体验暂不可用，请稍后重试。" },
     },
     inkStudy: {
       statement: "让每个好奇，\n都有去处。", tagline: "打造属于自己的互联网", explore: "开始探索", contact: "联系作者",
@@ -349,6 +363,15 @@ export const MESSAGES: Record<SearchLanguage, Messages> = {
     },
   },
   "en-US": {
+    cloudKeys: {
+      title: "Cloud key", loading: "Loading cloud key status…", use: "Use cloud key", draft: "Cloud key to save", readGuest: "Read this service’s guest key",
+      save: "Save to cloud", delete: "Delete cloud key", reload: "Reload key status", busy: "Updating cloud key…", saved: "Cloud key updated. Your selected credential source is unchanged.",
+      notConfigured: "Not configured", guestMissing: "No guest key is available for this service. Source data is unchanged.",
+      saveNotice: "Save this service’s key to the current account? The server stores it encrypted. No provider test or automatic source switch occurs; the guest key stays intact.",
+      deleteNotice: "Delete this service’s cloud key? Runs using the old cloud key will stop. Existing browser keys stay intact.",
+      confirmSave: "Confirm cloud key save", confirmDelete: "Confirm cloud key deletion",
+      problems: { KEY_INVALID: "The cloud key input is invalid. Check it and retry.", KEY_CONFLICT: "The cloud key changed. Reload its status and confirm again.", KEY_UNAVAILABLE: "Cloud keys are unavailable. Browser keys and graph data are unaffected.", ACCOUNT_REQUIRED: "Log in to the current account first." },
+    },
     cloud: {
       title: "Cloud workspace", importBlocked: "Finish pending sync or resolve conflicts before importing guest graphs.", retry: "Retry cloud sync", conflict: "Conflict: local changes are preserved", reload: "Reload cloud graph", copy: "Save local copy",
       import: "Import guest graphs and history", importNotice: "Import this browser's guest graphs, undo history and recoverable deleted graphs into this account? API keys are excluded and guest source data stays intact.",
@@ -370,9 +393,9 @@ export const MESSAGES: Record<SearchLanguage, Messages> = {
       sharedWarning: "The author's API quota is shared and all costs are paid by the author. Searches may fail if the quota runs out.",
       privacyWarning: "While using the author's trial API keys, avoid searching for personal or sensitive information to reduce the risk of exposing it to the author or other developers involved in the service.",
       unavailable: "The author's trial is unavailable.", readFailure: "Settings could not be read. Retry before replacing existing settings.", saveFailure: "Settings could not be saved. Please retry.", retry: "Retry loading", open: "Open settings",
-      ownHint: "Keys are saved in this browser long term and sent to this app’s backend for searches. The server does not persist them. Saving does not run a paid test.",
+      ownHint: "Browser keys stay in this browser and are sent to the backend for searches. Cloud keys are stored encrypted only after separate confirmation. Saving does not run a paid test.",
       getKey: { deepseek: "Get a DeepSeek API key", serpapi: "Get a SerpAPI key" },
-      problems: { ACCOUNT_REQUIRED: "Log in in Settings before verifying an invitation.", CREDENTIALS_REQUIRED: "Configure your API keys first.", CREDENTIALS_INVALID: "The credential settings are invalid. Check your settings.", INVITE_CODE_INVALID: "The invitation code is invalid. Check it and retry.", EXPERIENCE_REVOKED: "Trial access has expired. Enter the current invitation code.", EXPERIENCE_UNAVAILABLE: "The author's trial is unavailable. Please retry later." },
+      problems: { CLOUD_KEY_REQUIRED: "Save a cloud key for this service or choose another source.", CLOUD_KEY_REVOKED: "The cloud key changed. Start a new search.", CLOUD_KEY_UNAVAILABLE: "The cloud key is unavailable. Check cloud settings.", ACCOUNT_REQUIRED: "Log in in Settings before verifying an invitation.", CREDENTIALS_REQUIRED: "Configure your API keys first.", CREDENTIALS_INVALID: "The credential settings are invalid. Check your settings.", INVITE_CODE_INVALID: "The invitation code is invalid. Check it and retry.", EXPERIENCE_REVOKED: "Trial access has expired. Enter the current invitation code.", EXPERIENCE_UNAVAILABLE: "The author's trial is unavailable. Please retry later." },
     },
     inkStudy: {
       statement: "Every curiosity,\na place to go.", tagline: "BUILD YOUR OWN INTERNET", explore: "Start exploring", contact: "Contact author",
