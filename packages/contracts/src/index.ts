@@ -9,6 +9,38 @@
  */
 import { z } from "zod";
 
+/** D11 稳定归属标识；只表达身份，不允许邮箱或浏览器提交值替代可信会话。 */
+export const UserIdSchema = z.string().min(1).max(128).regex(/^[A-Za-z0-9_-]+$/);
+export type UserId = z.infer<typeof UserIdSchema>;
+
+/** D11 账号接口只接收明确动作；密码和验证码仅出现在同源 JSON 请求体中。 */
+const accountEmailSchema = z.email().max(254);
+const accountPasswordSchema = z.string().min(8).max(128);
+const accountOtpSchema = z.string().regex(/^[0-9]{6}$/);
+export const AccountActionSchema = z.discriminatedUnion("action", [
+  z.strictObject({ action: z.literal("register"), email: accountEmailSchema, password: accountPasswordSchema }),
+  z.strictObject({ action: z.literal("login"), email: accountEmailSchema, password: accountPasswordSchema }),
+  z.strictObject({ action: z.literal("verify"), email: accountEmailSchema, otp: accountOtpSchema }),
+  z.strictObject({ action: z.literal("reset"), email: accountEmailSchema, otp: accountOtpSchema, password: accountPasswordSchema }),
+  z.strictObject({ action: z.literal("resend"), email: accountEmailSchema }),
+  z.strictObject({ action: z.literal("recover"), email: accountEmailSchema }),
+  z.strictObject({ action: z.literal("logout") }),
+]);
+export type AccountAction = z.infer<typeof AccountActionSchema>;
+
+/** 公共投影不返回库的会话令牌、会话标识、IP 或 User-Agent；accepted 不承诺邮件投递成功。 */
+export const AccountSchema = z.strictObject({ userId: UserIdSchema, email: accountEmailSchema });
+export type Account = z.infer<typeof AccountSchema>;
+export const AccountResponseSchema = z.union([
+  z.strictObject({ accepted: z.literal(true) }),
+  z.strictObject({ account: AccountSchema.nullable() }),
+]);
+export type AccountResponse = z.infer<typeof AccountResponseSchema>;
+export const AccountErrorResponseSchema = z.strictObject({
+  code: z.enum(["ACCOUNT_INVALID", "ACCOUNT_REQUIRED", "ACCOUNT_RATE_LIMITED", "ACCOUNT_UNAVAILABLE"]),
+});
+export type AccountErrorResponse = z.infer<typeof AccountErrorResponseSchema>;
+
 /**
  * D9 凭据传输与搜索内容分离：此头仅供浏览器向同源后端提交本次凭据选择。
  * 不得写入 URL、图内容、Prompt（提示词）或日志；体验授权另走专用安全通道。
@@ -35,11 +67,12 @@ export type ApiKey = z.infer<typeof ApiKeySchema>;
 
 /**
  * 每项服务显式选择来源；缺失或未知值不能默认使用作者凭据。
- * author（作者）分支不接受 Key 或前端已验证标记，真正资格必须由服务端核对。
+ * author（作者）与 cloud（账号云端）分支不接受 Key 或前端已验证标记，资格和归属由服务端核对。
  */
 export const ServiceCredentialsSchema = z.discriminatedUnion("source", [
   z.strictObject({ source: z.literal("own"), apiKey: ApiKeySchema }),
   z.strictObject({ source: z.literal("author") }),
+  z.strictObject({ source: z.literal("cloud") }),
 ]);
 export type ServiceCredentials = z.infer<typeof ServiceCredentialsSchema>;
 
@@ -74,11 +107,15 @@ export type ExperienceStatusResponse = z.infer<typeof ExperienceStatusResponseSc
 
 /** 前置错误发生在流式成功响应之前，不扩充图搜索的 AppError 或伪造节点终态。 */
 export const CredentialsErrorCodeSchema = z.enum([
+  "ACCOUNT_REQUIRED",
   "CREDENTIALS_REQUIRED",
   "INVITE_CODE_INVALID",
   "EXPERIENCE_REVOKED",
   "EXPERIENCE_UNAVAILABLE",
   "CREDENTIALS_INVALID",
+  "CLOUD_KEY_REQUIRED",
+  "CLOUD_KEY_REVOKED",
+  "CLOUD_KEY_UNAVAILABLE",
 ]);
 export type CredentialsErrorCode = z.infer<typeof CredentialsErrorCodeSchema>;
 
@@ -1212,3 +1249,150 @@ export function canonicalizeHttpUrl(input: string): URL | null {
   url.searchParams.sort();
   return url;
 }
+
+/** 历史动作沿用已实现的局部编辑语义；Schema 是云端持久化结构的唯一来源。 */
+export const WorkspaceHistoryKindSchema = z.enum([
+  "graph.rename", "graph.update", "graph.search", "node.add", "node.edit", "node.delete", "node.search",
+  "resource.add", "resource.edit", "resource.delete", "resource.move", "edge.add", "edge.edit", "edge.delete", "engine.change",
+]);
+export type WorkspaceHistoryKind = z.infer<typeof WorkspaceHistoryKindSchema>;
+export const WorkspaceHistoryScopeSchema = z.discriminatedUnion("type", [
+  z.strictObject({ type: z.literal("graph.replace") }),
+  z.strictObject({ type: z.literal("node.append"), nodeId: z.string().min(1) }),
+  z.strictObject({ type: z.literal("node.replace"), nodeId: z.string().min(1) }),
+]);
+export type WorkspaceHistoryScope = Readonly<z.infer<typeof WorkspaceHistoryScopeSchema>>;
+
+const historyIdSchema = z.string().min(1);
+const historyMissingSchema = <T extends z.ZodType>(initial: T) => z.strictObject({
+  initial, order: z.array(historyIdSchema).optional(), ownedResourceIds: z.array(historyIdSchema).optional(),
+});
+const historyPairsSchema = <T extends z.ZodType>(value: T) => z.array(z.tuple([historyIdSchema, value]));
+
+/**
+ * 截断基线可能含待后续事件消解的临时依赖，因此只复用字段形状，不施加最终图根级规则。
+ * 事件快照仍是完整有效图；所有引用、重做及最终重放一致性由共享恢复函数进一步验证。
+ */
+export const StoredGraphHistoryBaseSchema = z.strictObject({
+  graph: z.strictObject(EditableGraphSchema.shape),
+  nodes: historyPairsSchema(historyMissingSchema(EditableNodeSchema)),
+  resources: historyPairsSchema(historyPairsSchema(historyMissingSchema(EditableResourceSchema))),
+  edges: historyPairsSchema(historyMissingSchema(GraphEdgeSchema)),
+  positions: historyPairsSchema(editablePositionSchema.nullable()),
+  manualNodes: z.array(historyIdSchema),
+});
+export const StoredGraphHistoryEventSchema = z.strictObject({
+  id: historyIdSchema, occurredAt: EditableGraphSchema.shape.createdAt, active: z.boolean(),
+  kind: WorkspaceHistoryKindSchema, subject: z.string(), scope: WorkspaceHistoryScopeSchema.optional(),
+  before: EditableGraphSchema, after: EditableGraphSchema,
+});
+export const StoredGraphHistorySchema = z.strictObject({
+  version: z.literal("history.v1"), base: StoredGraphHistoryBaseSchema,
+  events: z.array(StoredGraphHistoryEventSchema).max(100), redoIds: z.array(historyIdSchema),
+});
+type StoredGraphHistoryValue = z.infer<typeof StoredGraphHistorySchema>;
+/** 只保持原公开类型的两层只读，不冻结运行对象或改变既有编辑算法。 */
+export type StoredGraphHistory = Readonly<Omit<StoredGraphHistoryValue, "base"> & {
+  base: Readonly<StoredGraphHistoryValue["base"]>;
+}>;
+
+/** 预期账号仅用于拒绝错号的待提交操作；权限始终来自服务端验证的会话。 */
+export const CLOUD_ACCOUNT_HEADER = "x-wayfinder-account";
+const cloudGraphIdSchema = EditableGraphSchema.shape.id;
+const cloudRevisionSchema = z.number().int().min(1);
+const cloudGraphFields = {
+  document: EditableGraphSchema, history: StoredGraphHistorySchema, revision: cloudRevisionSchema,
+};
+
+/** 原位置只对删除记录有意义；内容与历史的语义一致性另由共享重放算法验证。 */
+export const CloudGraphRecordSchema = z.discriminatedUnion("status", [
+  z.strictObject({ ...cloudGraphFields, status: z.literal("active"), originalIndex: z.null() }),
+  z.strictObject({ ...cloudGraphFields, status: z.literal("deleted"), originalIndex: z.number().int().min(0) }),
+]);
+export type CloudGraphRecord = z.infer<typeof CloudGraphRecordSchema>;
+
+const cloudOrderFields = {
+  activeOrder: z.array(cloudGraphIdSchema), deletedIds: z.array(cloudGraphIdSchema).max(100),
+};
+/** 整体读取必须来自同一事务快照；每个身份只返回其自己的图及可恢复删除记录。 */
+export const CloudWorkspaceResponseSchema = z.strictObject({
+  userId: UserIdSchema, ...cloudOrderFields, graphs: z.array(CloudGraphRecordSchema),
+}).superRefine((value, context) => {
+  const rows = new Map(value.graphs.map(record => [record.document.id, record]));
+  const ids = [...value.activeOrder, ...value.deletedIds];
+  if (rows.size !== value.graphs.length || new Set(ids).size !== ids.length || ids.length !== rows.size ||
+      value.activeOrder.some(id => rows.get(id)?.status !== "active") ||
+      value.deletedIds.some(id => rows.get(id)?.status !== "deleted")) {
+    context.addIssue({ code: "custom", message: "工作区顺序、删除栈与图记录不一致" });
+  }
+});
+export type CloudWorkspaceResponse = z.infer<typeof CloudWorkspaceResponseSchema>;
+
+/** 操作标识由客户端生成供重试去重；版本0仅允许新建，不提供覆盖删除或墓碑的捷径。 */
+const cloudMutationFields = { mutationId: UserIdSchema };
+export const CloudGraphWriteRequestSchema = z.discriminatedUnion("action", [
+  z.strictObject({ action: z.literal("save"), ...cloudMutationFields, expectedRevision: z.number().int().min(0),
+    document: EditableGraphSchema, history: StoredGraphHistorySchema }),
+  z.strictObject({ action: z.literal("delete"), ...cloudMutationFields, graphId: cloudGraphIdSchema,
+    expectedRevision: cloudRevisionSchema }),
+  z.strictObject({ action: z.literal("restore"), ...cloudMutationFields, graphId: cloudGraphIdSchema,
+    expectedRevision: cloudRevisionSchema }),
+]);
+export type CloudGraphWriteRequest = z.infer<typeof CloudGraphWriteRequestSchema>;
+
+/**
+ * 访客明确确认后整批导入；标识只用于幂等，目标账号始终来自会话。
+ * 源活动列表与删除栈分别保留顺序，缺失历史须先在客户端建立真实当前图的空基线。
+ * 同一源图不能同时出现在两组中；不接收Key或由客户端指定目标身份／版本。
+ */
+const cloudImportGraphFields = { document: EditableGraphSchema, history: StoredGraphHistorySchema };
+export const CloudWorkspaceImportRequestSchema = z.strictObject({
+  action: z.literal("import"), importId: UserIdSchema,
+  documents: z.array(z.strictObject(cloudImportGraphFields)),
+  deletedGraphs: z.array(z.strictObject({ ...cloudImportGraphFields, originalIndex: z.number().int().min(0) })).max(100),
+}).superRefine((value, context) => {
+  const ids = [...value.documents, ...value.deletedGraphs].map(item => item.document.id);
+  if (new Set(ids).size !== ids.length) context.addIssue({ code: "custom", message: "导入源图标识不能重复" });
+});
+export type CloudWorkspaceImportRequest = z.infer<typeof CloudWorkspaceImportRequestSchema>;
+
+export const CloudGraphWriteResponseSchema = z.strictObject({
+  userId: UserIdSchema, record: CloudGraphRecordSchema, ...cloudOrderFields,
+}).superRefine((value, context) => {
+  const id = value.record.document.id, ids = [...value.activeOrder, ...value.deletedIds];
+  if (new Set(ids).size !== ids.length || (value.record.status === "active"
+    ? !value.activeOrder.includes(id) || value.deletedIds.includes(id)
+    : !value.deletedIds.includes(id) || value.activeOrder.includes(id))) {
+    context.addIssue({ code: "custom", message: "保存结果与工作区顺序不一致" });
+  }
+});
+export type CloudGraphWriteResponse = z.infer<typeof CloudGraphWriteResponseSchema>;
+export const CloudWorkspaceErrorResponseSchema = z.strictObject({
+  code: z.enum(["WORKSPACE_INVALID", "WORKSPACE_CONFLICT", "WORKSPACE_NOT_FOUND", "WORKSPACE_UNAVAILABLE", "ACCOUNT_REQUIRED"]),
+});
+export type CloudWorkspaceErrorResponse = z.infer<typeof CloudWorkspaceErrorResponseSchema>;
+
+/** 普通读取只有掩码及并发版本；删除墓碑仍有版本，不能以空配置绕过旧写入检查。 */
+export const AccountKeyStatusSchema = z.discriminatedUnion("configured", [
+  z.strictObject({ configured: z.literal(true), mask: z.string().regex(/^••••(?:[\x20-\x7E]{4})?$/), revision: UserIdSchema }),
+  z.strictObject({ configured: z.literal(false), mask: z.null(), revision: UserIdSchema.nullable() }),
+]);
+export type AccountKeyStatus = z.infer<typeof AccountKeyStatusSchema>;
+
+/** Key 只允许同源明确保存动作携带，不进入图／历史或云端读取；空预期版本只用于从未存在的记录。 */
+const accountKeyActionFields = {
+  service: CredentialServiceSchema, expectedRevision: UserIdSchema.nullable(), mutationId: UserIdSchema,
+};
+export const AccountKeyActionSchema = z.discriminatedUnion("action", [
+  z.strictObject({ action: z.literal("save"), ...accountKeyActionFields, apiKey: ApiKeySchema }),
+  z.strictObject({ action: z.literal("delete"), ...accountKeyActionFields }),
+]);
+export type AccountKeyAction = z.infer<typeof AccountKeyActionSchema>;
+export const AccountKeysResponseSchema = z.strictObject({
+  userId: UserIdSchema, deepseek: AccountKeyStatusSchema, serpapi: AccountKeyStatusSchema,
+});
+export type AccountKeysResponse = z.infer<typeof AccountKeysResponseSchema>;
+export const AccountKeysErrorResponseSchema = z.strictObject({
+  code: z.enum(["KEY_INVALID", "KEY_CONFLICT", "KEY_UNAVAILABLE", "ACCOUNT_REQUIRED"]), service: CredentialServiceSchema.optional(),
+});
+export type AccountKeysErrorResponse = z.infer<typeof AccountKeysErrorResponseSchema>;

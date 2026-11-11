@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "code": {
+      "type": "string",
+      "enum": [
+        "WORKSPACE_INVALID",
+        "WORKSPACE_CONFLICT",
+        "WORKSPACE_NOT_FOUND",
+        "WORKSPACE_UNAVAILABLE",
+        "ACCOUNT_REQUIRED"
+      ]
+    }
+  },
+  "required": [
+    "code"
+  ],
+  "additionalProperties": false
+}

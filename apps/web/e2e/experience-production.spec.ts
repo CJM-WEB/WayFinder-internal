@@ -1,12 +1,13 @@
 /**
  * 跨层回归：真实浏览器设置、生产授权路由与搜索 Pipeline（流水线）共用同一条请求链。
- * 只替换付费边界的 LLM（大语言模型）输出和 SerpAPI Fetch；Cookie 由 Chromium 接收和发送，
+ * 账号服务使用内存假实现（真实认证库/MySQL另有显式集成验证），付费边界替换 LLM 输出和 SerpAPI Fetch；Cookie 由 Chromium 接收和发送，
  * 不注入资格、不改浏览器 fetch，也不监听额外端口。全部凭据及配置都是本测试生成的假数据。
  */
 import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { randomUUID } from "node:crypto";
 
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import { EditableGraphSchema, StreamEventSchema, type EditableGraph } from "@wayfinder/contracts";
@@ -18,6 +19,7 @@ import { buildProductionServer } from "../../server/src/production-server.js";
 import { SerpApiBingSearchProvider } from "../../server/src/search/providers/serpapi-bing.js";
 import { updateExperienceConfig } from "../../server/src/settings/experience-config.js";
 import { EXPERIENCE_COOKIE_NAME } from "../../server/src/settings/experience-authorization.js";
+import { AccountAccessError, type AccountAuth } from "../../server/src/accounts/auth.js";
 
 const ORIGIN = "http://127.0.0.1:4174";
 const QUERY = "TypeScript compiler guide";
@@ -26,8 +28,10 @@ const INVITE_A = "fake-browser-production-invite-a";
 const INVITE_B = "fake-browser-production-invite-b";
 const AUTHOR_KEYS = { llmApiKey: "fake-browser-author-llm", serpApiKey: "fake-browser-author-search" };
 const OWN_KEYS = { llmApiKey: "fake-browser-own-llm", serpApiKey: "fake-browser-own-search" };
-const SCREENSHOT_DIRECTORY = fileURLToPath(new URL("../../../scratch/d9/", import.meta.url));
-const SECRETS = [...Object.values(AUTHOR_KEYS), ...Object.values(OWN_KEYS), INVITE_A, INVITE_B];
+const ACCOUNT = { userId: "fixture-browser-user", email: "fixture-browser@example.test", password: "fixture-browser-password" };
+const ACCOUNT_COOKIE = "__Host-wayfinder_fixture_session";
+const SCREENSHOT_DIRECTORY = fileURLToPath(new URL("../../../scratch/d11/", import.meta.url));
+const SECRETS = [...Object.values(AUTHOR_KEYS), ...Object.values(OWN_KEYS), INVITE_A, INVITE_B, ACCOUNT.password];
 
 // 采用服务器凭据集成测试的最小合法产物；Planner、Reviser、SearchPlan、Rerank 均走正式校验。
 const OUTLINE = GraphOutlineSchema.parse({
@@ -59,8 +63,30 @@ async function productionFixture(page: Page) {
   });
   const calls = { factories: [] as Keys[], llm: [] as { key: string; stage: Stage; prompt: string }[], search: [] as { key: string | null; query: string }[] };
   const exchanges: Exchange[] = [];
+  // 测试会话也只能由登录动作签发，浏览器自然保存HttpOnly Cookie；不直接注入登录或邀请码资格。
+  const sessions = new Map<string, { userId: string; sessionId: string; email: string }>();
+  const tokenFrom = (headers: Headers): string => (headers.get("cookie") ?? "").split(";")
+    .map(part => part.trim()).find(part => part.startsWith(`${ACCOUNT_COOKIE}=`))?.slice(ACCOUNT_COOKIE.length + 1) ?? "";
+  const auth: AccountAuth = {
+    initialize: async () => {}, migrate: async () => {},
+    getIdentity: async headers => sessions.get(tokenFrom(headers)) ?? null,
+    handle: async (input, headers) => {
+      if (input.action === "login") {
+        if (input.email !== ACCOUNT.email || input.password !== ACCOUNT.password) throw new AccountAccessError("ACCOUNT_INVALID");
+        sessions.delete(tokenFrom(headers));
+        const token = randomUUID();
+        sessions.set(token, { userId: ACCOUNT.userId, sessionId: randomUUID(), email: ACCOUNT.email });
+        return { body: { account: { userId: ACCOUNT.userId, email: ACCOUNT.email } },
+          cookies: [`${ACCOUNT_COOKIE}=${token}; Path=/; HttpOnly; Secure; SameSite=Strict`] };
+      }
+      if (input.action !== "logout") throw new AccountAccessError("ACCOUNT_INVALID");
+      sessions.delete(tokenFrom(headers));
+      return { body: { accepted: true }, cookies: [`${ACCOUNT_COOKIE}=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0`] };
+    },
+  };
   const createServer = () => buildProductionServer({
     config, repositoryRoot: directory, webAssetsDirectory,
+    accounts: { auth, database: { close: async () => {} } },
     providerFactory: (keys, beforeAttempt) => {
       calls.factories.push({ ...keys });
       let outlines = 0;
@@ -92,7 +118,7 @@ async function productionFixture(page: Page) {
   // 只截获根 /api/：Vite 的 /src/api/*.ts 是真实浏览器模块，必须继续由开发服务器提供。
   await page.route(url => url.origin === ORIGIN && url.pathname.startsWith("/api/"), async route => {
     const request = route.request(), url = new URL(request.url());
-    if (!["/api/settings", "/api/experience", "/api/experience/status", "/api/search"].includes(url.pathname)) {
+    if (!["/api/account", "/api/account/keys", "/api/workspace", "/api/settings", "/api/experience", "/api/experience/status", "/api/search"].includes(url.pathname)) {
       throw new Error("跨层夹具收到未声明的 API 路径");
     }
     const method = request.method();
@@ -138,6 +164,30 @@ async function openSettings(page: Page): Promise<Locator> {
   const panel = page.getByRole("region", { name: "设置", exact: true });
   await expect(panel).toBeVisible(); return panel;
 }
+/** 通过真实界面提交登录，再等待身份边界重挂页面；不写会话或资格Cookie。 */
+async function logIn(page: Page, touch = false): Promise<Locator> {
+  const settings = async (): Promise<Locator> => {
+    if (!touch) return openSettings(page);
+    await page.getByRole("button", { name: "搜索历史", exact: true }).tap();
+    await page.getByRole("button", { name: "设置", exact: true }).tap();
+    return page.getByRole("region", { name: "设置", exact: true });
+  };
+  const panel = await settings();
+  const form = panel.getByRole("form", { name: "邮箱账号", exact: true });
+  await form.getByLabel("邮箱", { exact: true }).fill(ACCOUNT.email);
+  await form.getByLabel("密码", { exact: true }).fill(ACCOUNT.password);
+  await fs.mkdir(SCREENSHOT_DIRECTORY, { recursive: true });
+  await page.screenshot({ path: path.join(SCREENSHOT_DIRECTORY, `way-137-login-${touch ? "mobile" : "desktop"}.png`) });
+  const submit = form.getByRole("button", { name: "登录", exact: true });
+  if (touch) await submit.tap(); else await submit.click();
+  const explore = page.getByRole("button", { name: "开始探索", exact: true });
+  await expect(explore).toBeVisible();
+  if (touch) await explore.tap(); else await explore.click();
+  await expect(page.locator(".ink-study__stage")).toHaveAttribute("data-search-ready", "true");
+  const loggedIn = await settings();
+  await expect(loggedIn.getByRole("region", { name: "账号", exact: true })).toContainText(ACCOUNT.email);
+  return loggedIn;
+}
 async function selectTrial(panel: Locator, service: "DeepSeek" | "SerpAPI"): Promise<Locator> {
   const settingsResponse = panel.page().waitForResponse(response => new URL(response.url()).pathname === "/api/settings");
   await panel.getByRole("form", { name: `${service} 设置`, exact: true }).getByRole("button", { name: "体验 APIKEY", exact: true }).click();
@@ -162,16 +212,16 @@ async function submitSearch(page: Page): Promise<void> {
   await input.fill(QUERY); await input.press("Enter");
 }
 async function readDocuments(page: Page): Promise<readonly EditableGraph[]> {
-  const raw: unknown = await page.evaluate(async () => {
+  const raw: unknown = await page.evaluate(async userId => {
     const database = await new Promise<IDBDatabase>((resolve, reject) => {
       const request = indexedDB.open("wayfinder-workspace", 1);
       request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error);
     });
     try { return await new Promise<unknown>((resolve, reject) => {
-      const transaction = database.transaction("workspace", "readonly"), request = transaction.objectStore("workspace").get("current");
+      const transaction = database.transaction("workspace", "readonly"), request = transaction.objectStore("workspace").get(`user:${userId}`);
       transaction.oncomplete = () => resolve(request.result ?? null); transaction.onerror = () => reject(transaction.error);
     }); } finally { database.close(); }
-  });
+  }, ACCOUNT.userId);
   if (typeof raw !== "object" || raw === null || !("documents" in raw) || !Array.isArray(raw.documents)) return [];
   return raw.documents.map(document => EditableGraphSchema.parse(document));
 }
@@ -203,18 +253,18 @@ test.describe("生产体验授权跨层", () => {
     const fixture = await productionFixture(page);
     try {
       await openProduct(page);
-      let panel = await openSettings(page);
+      let panel = await logIn(page);
       await configureOwn(panel, "DeepSeek", OWN_KEYS.llmApiKey);
       let trial = await selectTrial(panel, "SerpAPI");
       await expect(trial.getByLabel("邀请码", { exact: true })).toBeEnabled();
       await expect(trial.locator(".ink-settings__announcement")).toContainText("跨层测试作者公告");
       await fs.mkdir(SCREENSHOT_DIRECTORY, { recursive: true });
-      await page.screenshot({ path: path.join(SCREENSHOT_DIRECTORY, "way-127-settings-desktop.png") });
+      await page.screenshot({ path: path.join(SCREENSHOT_DIRECTORY, "way-137-settings-desktop.png") });
       await trial.getByLabel("邀请码", { exact: true }).fill(INVITE_A);
       await trial.getByRole("button", { name: "确认使用", exact: true }).click();
       await expect(trial).toHaveCount(0);
       const originalGrant = await assertBrowserGrant(page);
-      const preferences = await page.evaluate(() => localStorage.getItem("wayfinder.credentials.v1"));
+      const preferences = await page.evaluate(id => localStorage.getItem(`wayfinder.credentials.v1.user.${id}`), ACCOUNT.userId);
       expect(JSON.parse(preferences ?? "null") as unknown).toEqual({
         deepseek: { source: "own", apiKey: OWN_KEYS.llmApiKey }, serpapi: { source: "author", apiKey: "" },
       });
@@ -285,9 +335,7 @@ test.describe("生产体验授权移动布局", () => {
     const fixture = await productionFixture(page);
     try {
       await openProduct(page);
-      await page.getByRole("button", { name: "搜索历史", exact: true }).tap();
-      await page.getByRole("button", { name: "设置", exact: true }).tap();
-      const panel = page.getByRole("region", { name: "设置", exact: true });
+      const panel = await logIn(page, true);
       const button = panel.getByRole("form", { name: "SerpAPI 设置", exact: true }).getByRole("button", { name: "体验 APIKEY", exact: true });
       await button.scrollIntoViewIfNeeded(); await button.tap();
       const trial = panel.getByRole("dialog", { name: "使用作者 APIKEY 体验", exact: true });
@@ -297,9 +345,9 @@ test.describe("生产体验授权移动布局", () => {
       const confirm = trial.getByRole("button", { name: "确认使用", exact: true });
       await expect(confirm).toBeInViewport({ ratio: 1 }); await expect(confirm).toBeEnabled();
       await fs.mkdir(SCREENSHOT_DIRECTORY, { recursive: true });
-      await page.screenshot({ path: path.join(SCREENSHOT_DIRECTORY, "way-127-settings-mobile.png") });
+      await page.screenshot({ path: path.join(SCREENSHOT_DIRECTORY, "way-137-settings-mobile.png") });
       await confirm.tap(); await expect(trial).toHaveCount(0); await assertBrowserGrant(page);
-      expect(await page.evaluate(() => JSON.parse(localStorage.getItem("wayfinder.credentials.v1") ?? "null") as unknown)).toEqual({
+      expect(await page.evaluate(id => JSON.parse(localStorage.getItem(`wayfinder.credentials.v1.user.${id}`) ?? "null") as unknown, ACCOUNT.userId)).toEqual({
         deepseek: { source: "own", apiKey: "" }, serpapi: { source: "author", apiKey: "" },
       });
       expect(fixture.calls.factories).toHaveLength(0);

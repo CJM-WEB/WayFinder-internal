@@ -6,27 +6,31 @@
 import { EditableGraphSchema } from "@wayfinder/contracts";
 import { createStore, type StoreApi } from "zustand/vanilla";
 import { workspaceStore, type WorkspaceStoreState } from "./workspace-store.js";
-import { storeGraphHistory, type StoredGraphHistory } from "./workspace-history.js";
+import { restoreGraphHistory, storeGraphHistory, type StoredGraphHistory } from "./workspace-history.js";
 
 export type WorkspaceSnapshot = Pick<WorkspaceStoreState, "documents" | "currentId"> & Readonly<{
   version: "workspace-storage.v2";
   histories: Record<string, StoredGraphHistory>;
+  deletedGraphs?: Array<{ document: WorkspaceStoreState["documents"][number]; history: StoredGraphHistory; index: number }>;
+  cloud?: unknown;
 }>;
 export type WorkspaceStorage = {
   load: () => Promise<unknown>;
   save: (snapshot: WorkspaceSnapshot) => Promise<void>;
+  getGeneration?: () => number | undefined;
 };
 export type WorkspacePersistenceState = {
   status: "loading" | "ready" | "saving" | "error";
   error: "load" | "save" | null;
   retry: () => Promise<void>;
 };
+export type WorkspacePersistenceHandle = (() => void) & { persist: () => Promise<void>; flush: () => Promise<void> };
 export const workspacePersistenceStore = createStore<WorkspacePersistenceState>(() => ({
   status: "loading", error: null, retry: async () => {},
 }));
 
 /** IndexedDB 中的数据也按不可信输入处理，所有文档继续复用唯一的 Zod 协议。 */
-function parseSnapshot(value: unknown): (Pick<WorkspaceStoreState, "documents" | "currentId"> & { histories?: Record<string, unknown> }) | null {
+export function parseWorkspaceSnapshot(value: unknown): (Pick<WorkspaceStoreState, "documents" | "currentId" | "deletedGraphs"> & { histories?: Record<string, unknown>; cloud?: unknown }) | null {
   if (value === undefined || value === null) return null;
   if (typeof value !== "object" || value === null ||
       !("documents" in value) || !("currentId" in value) ||
@@ -41,10 +45,33 @@ function parseSnapshot(value: unknown): (Pick<WorkspaceStoreState, "documents" |
         || ![Object.prototype, null].includes(Object.getPrototypeOf(value.histories))) throw new Error("本地搜索图存储版本或历史格式无效");
     histories = value.histories as Record<string, unknown>;
   }
+  const deletedGraphs: WorkspaceStoreState["deletedGraphs"] = [];
+  if ("deletedGraphs" in value) {
+    if (!Array.isArray(value.deletedGraphs) || value.deletedGraphs.length > 100) throw new Error("删除恢复记录格式无效");
+    for (const raw of value.deletedGraphs) {
+      if (typeof raw !== "object" || raw === null || !("document" in raw) || !("history" in raw) || !("index" in raw)
+        || typeof raw.index !== "number" || !Number.isSafeInteger(raw.index) || raw.index < 0) throw new Error("删除恢复记录格式无效");
+      const document = EditableGraphSchema.parse(raw.document);
+      deletedGraphs.push({ document, history: restoreGraphHistory(raw.history, document, 100), index: raw.index });
+    }
+  }
+  const documents = EditableGraphSchema.array().parse(value.documents);
+  const ids = [...documents.map(document => document.id), ...deletedGraphs.map(item => item.document.id)];
+  if (new Set(ids).size !== ids.length) throw new Error("搜索图身份重复");
   return {
-    documents: EditableGraphSchema.array().parse(value.documents),
+    documents, deletedGraphs,
     currentId: value.currentId,
     ...(histories === undefined ? {} : { histories }),
+    ...("cloud" in value ? { cloud: value.cloud } : {}),
+  };
+}
+
+/** 图、历史、删除恢复与同步元数据由同一次捕获进入唯一IDB写队列。 */
+export function captureWorkspaceSnapshot(state: WorkspaceStoreState, cloud?: unknown): WorkspaceSnapshot {
+  return { version: "workspace-storage.v2", documents: state.documents, currentId: state.currentId,
+    histories: Object.fromEntries(Object.entries(state.histories).map(([id, history]) => [id, storeGraphHistory(history)])),
+    deletedGraphs: state.deletedGraphs.map(item => ({ document: item.document, history: storeGraphHistory(item.history), index: item.index })),
+    ...(cloud === undefined ? {} : { cloud: structuredClone(cloud) }),
   };
 }
 
@@ -84,48 +111,91 @@ export const browserWorkspaceStorage: WorkspaceStorage = {
   save: async snapshot => { await transact("readwrite", store => store.put(snapshot, "current")); },
 };
 
+/** 同库不同记录隔离身份；访客继续使用旧 current，不自动复制到任何账号。 */
+export const accountWorkspaceStorage = (userId: string | null, retainedGeneration?: () => number | undefined): WorkspaceStorage => {
+  const key = userId === null ? "current" : `user:${userId}`;
+  let generation: number | undefined;
+  const savedGeneration = (value: unknown): number => {
+    if (typeof value !== "object" || value === null || !("localGeneration" in value)) return 0;
+    if (typeof value.localGeneration !== "number" || !Number.isSafeInteger(value.localGeneration) || value.localGeneration < 0) throw new Error("本地保存代际无效");
+    return value.localGeneration;
+  };
+  return {
+    load: async () => { const value = await transact("readonly", store => store.get(key)); generation = savedGeneration(value); return value; },
+    getGeneration: () => generation ?? retainedGeneration?.(),
+    save: async snapshot => {
+      if (userId === null) { await transact("readwrite", store => store.put(snapshot, key)); return; }
+      generation ??= retainedGeneration?.();
+      if (generation === undefined) throw new Error("账号本地存档尚未读取");
+      const expected = generation;
+      // 同一读写事务执行本地代际CAS，其他标签页已保存时拒绝旧快照，不覆盖其未同步编辑。
+      await transact("readwrite", store => {
+        const request = store.get(key);
+        request.addEventListener("success", () => {
+          try {
+            if (savedGeneration(request.result) !== expected) { store.transaction.abort(); return; }
+            store.put({ ...snapshot, localGeneration: expected + 1 }, key);
+          } catch { store.transaction.abort(); }
+        }, { once: true });
+        return request;
+      });
+      generation = expected + 1;
+    },
+  };
+};
+
 export async function initializeWorkspacePersistence(
   store = workspaceStore,
   storage = browserWorkspaceStorage,
   feedback: StoreApi<WorkspacePersistenceState> = workspacePersistenceStore,
-  options: Readonly<{ restoreSelection?: boolean }> = {},
-): Promise<() => void> {
+  options: Readonly<{ restoreSelection?: boolean; isCurrent?: () => boolean;
+    captureCloud?: (state: WorkspaceStoreState) => unknown;
+    onRestored?: (cloud: unknown, state: WorkspaceStoreState) => void;
+    onReady?: (handle: WorkspacePersistenceHandle) => void;
+  }> = {},
+): Promise<WorkspacePersistenceHandle> {
   let stopped = false;
   let unsubscribe: (() => void) | undefined;
   let writes = Promise.resolve();
   let revision = 0;
   const report = (state: Partial<WorkspacePersistenceState>): void => {
-    if (!stopped) feedback.setState(state);
+    if (!stopped && options.isCurrent?.() !== false) feedback.setState(state);
   };
 
   /** 顺序提交快照；较旧事务的回调不能把仍待保存的新状态误报为已保存。 */
   const save = (): Promise<void> => {
+    // 旧namespace的迟到任务不得重新捕获全局新账号状态；已捕获旧快照的在途事务可正常完成。
+    if (stopped || options.isCurrent?.() === false) return Promise.reject(new Error("本地保存身份已失效"));
     const currentRevision = ++revision;
-    const { documents, currentId, histories } = store.getState();
-    const snapshot: WorkspaceSnapshot = { version: "workspace-storage.v2", documents, currentId,
-      histories: Object.fromEntries(Object.entries(histories).map(([id, history]) => [id, storeGraphHistory(history)])) };
+    let snapshot: WorkspaceSnapshot;
+    try { const state = store.getState(); snapshot = captureWorkspaceSnapshot(state, options.captureCloud?.(state)); }
+    catch { report({ status: "error", error: "save" }); return Promise.reject(new Error("本地搜索图保存失败")); }
     report({ status: "saving", error: null });
-    writes = writes.then(() => storage.save(snapshot)).then(() => {
+    writes = writes.catch(() => {}).then(() => storage.save(snapshot)).then(() => {
       if (currentRevision === revision) report({ status: "ready", error: null });
     }).catch(() => {
       if (currentRevision === revision) report({ status: "error", error: "save" });
+      throw new Error("本地搜索图保存失败");
     });
     return writes;
   };
   const load = async (): Promise<void> => {
     report({ status: "loading", error: null });
     try {
-      const snapshot = parseSnapshot(await storage.load());
-      if (stopped) return;
+      const snapshot = parseWorkspaceSnapshot(await storage.load());
+      if (stopped || options.isCurrent?.() === false) return;
       if (snapshot !== null) {
         store.getState().restoreDocuments(snapshot.documents, snapshot.currentId, snapshot.histories);
+        store.setState({ deletedGraphs: snapshot.deletedGraphs });
         // 正式入口只恢复内容，旧选择不能在首次读取或失败重试后自动展示；订阅前清选也不写回旧库。
         if (options.restoreSelection === false) store.getState().selectGraph(null);
       }
+      options.onRestored?.(snapshot?.cloud, store.getState());
       unsubscribe = store.subscribe((next, previous) => {
-        if (next.documents !== previous.documents || next.currentId !== previous.currentId || next.histories !== previous.histories) void save();
+        if (next.documents !== previous.documents || next.currentId !== previous.currentId || next.histories !== previous.histories || next.deletedGraphs !== previous.deletedGraphs) void save().catch(() => {});
       });
       report({ status: "ready", error: null });
+      options.onReady?.(handle);
     } catch {
       report({ status: "error", error: "load" });
     }
@@ -134,6 +204,7 @@ export async function initializeWorkspacePersistence(
     if (feedback.getState().error === "load") await load();
     else await save();
   } });
+  const handle = Object.assign(() => { stopped = true; unsubscribe?.(); }, { persist: save, flush: () => writes.catch(() => {}) });
   await load();
-  return () => { stopped = true; unsubscribe?.(); };
+  return handle;
 }

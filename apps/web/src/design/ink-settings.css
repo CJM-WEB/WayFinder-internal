@@ -5,6 +5,9 @@
   padding: clamp(22px, 3.6vw, 44px) clamp(18px, 3.2vw, 40px) 80px; }
 .ink-settings__hint { color: #66665e; font-size: 12px; line-height: 1.65; }
 .ink-settings__services { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+.ink-settings__account { margin: 18px 0 24px; padding-bottom: 22px; border-bottom: 1px solid #ffffffb3; }
+.ink-settings__account form { max-width: 440px; }
+.ink-settings__cloud-key { margin-top: 20px; padding-top: 14px; border-top: 1px solid #ffffffb3; }
 .ink-settings__service { min-width: 0; padding: 20px; border: 1px solid #ffffffb3; border-radius: 24px; background: #ffffff45; }
 .ink-settings h3 { margin: 0 0 15px; color: #33332e; font-size: 15px; font-weight: 500; }
 .ink-settings__choices, .ink-settings__actions { display: flex; flex-wrap: wrap; gap: 9px; }

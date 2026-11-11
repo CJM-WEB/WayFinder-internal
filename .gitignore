@@ -33,8 +33,8 @@ yarn-error.log*
 /data/eval-results/
 /tests/eval-private/
 /apps/server/src/ai/prompts/private/
-*.local.md
-*.private.md
+# Markdown说明文档仅留本机，不进入后续提交。
+*.[mM][dD]
 
 # Local AI assistant state
 /.codex/

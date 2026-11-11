@@ -6,7 +6,8 @@
   "scripts": {
     "build": "tsc --project tsconfig.build.json --noEmit && vite build",
     "dev": "vite",
-    "lint": "eslint src e2e vite.config.mjs playwright.config.ts --max-warnings=0",
+    "deployment:check": "node scripts/deployment-browser-check.mjs",
+    "lint": "eslint src e2e scripts vite.config.mjs playwright.config.ts --max-warnings=0",
     "test": "vitest run src",
     "test:e2e": "playwright test --config playwright.config.ts",
     "typecheck": "tsc --project tsconfig.build.json --noEmit && tsc --project tsconfig.json --noEmit"

@@ -15,9 +15,13 @@ const HEALTH_RESPONSE_SCHEMA = {
   },
 } as const;
 
-export function buildServer(): FastifyInstance {
+export function buildServer(options: Readonly<{ trustLocalProxy?: boolean }> = {}): FastifyInstance {
   // HTTP Logger 保持关闭；脱敏 Run Log 由生产组合根按显式开关独立注入。
-  const server = Fastify({ logger: false });
+  const server = Fastify({ logger: false,
+    // 仅生产组合根启用同机Nginx；同时校验回环地址与第一跳，不能只按跳数信任外部转发链。
+    trustProxy: options.trustLocalProxy === true
+      ? (address, hop) => address === "127.0.0.1" && hop === 0 : false,
+  });
 
   server.get(
     "/health",

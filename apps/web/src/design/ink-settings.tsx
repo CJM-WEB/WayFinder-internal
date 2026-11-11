@@ -11,6 +11,11 @@ import { credentialsApi, CredentialsConfigurationError } from "../api/credential
 import { getMessages } from "../i18n/messages.js";
 import { credentialSettingsStore } from "../stores/credential-settings.js";
 import { useInkPresence } from "./ink-presence.js";
+import { InkAccount } from "./ink-account.js";
+import { accountStore } from "../stores/account.js";
+import { accountKeysApi, AccountKeysError } from "../api/account-keys.js";
+import { accountKeysStore, publishAccountKeys } from "../stores/account-keys.js";
+import { InkCloudKey } from "./ink-cloud-key.js";
 import "./ink-settings.css";
 
 type Preferences = ReturnType<typeof credentialSettingsStore.getState>["preferences"];
@@ -25,6 +30,7 @@ const KEY_PORTALS: Readonly<Record<CredentialService, string>> = {
 
 export function InkSettingsPanel({ open, presented, language, onClose }: Props) {
   const settings = useStore(credentialSettingsStore, state => state);
+  const account = useStore(accountStore, state => state);
   const messages = getMessages(language);
   const text = messages.settings;
   const [draft, setDraft] = useState<Preferences>(settings.preferences);
@@ -61,6 +67,22 @@ export function InkSettingsPanel({ open, presented, language, onClose }: Props) 
   }, [open, settings.preferences]);
   useEffect(() => () => { ++intent.current; request.current?.abort(); }, []);
   useEffect(() => {
+    if (!open || account.account === null) return;
+    const userId = account.account.userId, epoch = account.epoch, generation = accountKeysStore.getState().generation;
+    const controller = new AbortController();
+    accountKeysStore.setState({ loading: true, error: null });
+    void accountKeysApi.read(userId, controller.signal).then(response => {
+      if (!controller.signal.aborted) publishAccountKeys(response, userId, epoch, undefined, generation);
+    }).catch((error: unknown) => {
+      if (!controller.signal.aborted && accountStore.getState().epoch === epoch && accountKeysStore.getState().generation === generation) {
+        const problem = error instanceof AccountKeysError ? error.problem : { code: "KEY_UNAVAILABLE" as const };
+        accountKeysStore.setState({ loading: false, error: problem });
+        if (problem.code === "ACCOUNT_REQUIRED") void accountStore.getState().refresh().catch(() => {});
+      }
+    });
+    return () => controller.abort();
+  }, [open, account.account?.userId, account.epoch]);
+  useEffect(() => {
     // 抽屉的视觉选择晚于业务开关；真正可见后再聚焦，保持与历史面板一致。
     if (open && presented && trial === null) panel.current?.focus({ preventScroll: true });
   }, [open, presented, trial]);
@@ -82,6 +104,7 @@ export function InkSettingsPanel({ open, presented, language, onClose }: Props) 
     const current = ++intent.current, controller = new AbortController();
     request.current = controller;
     setTrial(service); setAnnouncement(""); setAvailable(false); setAuthorized(false); setBusy(true);
+    if (accountStore.getState().account === null) { setTrialError(messages.account.required); setBusy(false); return; }
     try {
       const info = await credentialsApi.fetchSettings(controller.signal);
       if (intent.current !== current || controller.signal.aborted) return;
@@ -137,6 +160,7 @@ export function InkSettingsPanel({ open, presented, language, onClose }: Props) 
     <div className="ink-settings__content" inert={trial !== null} aria-hidden={trial !== null}>
     <header className="ink-study__history-header"><h2 id="ink-settings-title">{text.title}</h2>
       <button type="button" className="ink-study__pill" onClick={() => close(true)}>{messages.inkStudy.closePanel}</button></header>
+    {open ? <InkAccount language={language} /> : null}
     <p className="ink-settings__hint">{text.ownHint}</p>
     {settings.error !== null ? <div className="ink-settings__error" role="alert">
       <span>{settings.error === "read" ? text.readFailure : text.saveFailure}</span>
@@ -180,6 +204,15 @@ export function InkSettingsPanel({ open, presented, language, onClose }: Props) 
           <button type="submit" className="ink-study__pill" disabled={draft[service].source !== "own" || settings.error === "read"}>{text.save}</button>
         </div>
         {saved === service ? <p role="status">{text.saved}</p> : null}
+        {open && account.account !== null ? <InkCloudKey key={`${account.epoch}:${service}`} service={service} language={language} selected={draft[service].source === "cloud"}
+          onChoose={() => {
+            const retainedKey = credentialSettingsStore.getState().preferences[service].apiKey;
+            if (credentialSettingsStore.getState().saveService(service, { source: "cloud", apiKey: retainedKey })) {
+              credentialSettingsStore.getState().clearNotice();
+              setDraft(previous => ({ ...previous, [service]: { source: "cloud", apiKey: retainedKey } }));
+              setVisible(previous => ({ ...previous, [service]: false })); setSaved(service);
+            }
+          }} /> : null}
       </form>)}
     </div>
     </div>

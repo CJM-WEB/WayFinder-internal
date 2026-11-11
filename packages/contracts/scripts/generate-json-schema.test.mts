@@ -31,6 +31,19 @@ const expectedFileNames = [
   "experience-invite-request.schema.json",
   "experience-status-response.schema.json",
   "credentials-error-response.schema.json",
+  "user-id.schema.json",
+  "account-action.schema.json",
+  "account-response.schema.json",
+  "account-error-response.schema.json",
+  "account-key-action.schema.json",
+  "account-keys-response.schema.json",
+  "account-keys-error-response.schema.json",
+  "stored-graph-history.schema.json",
+  "cloud-workspace-response.schema.json",
+  "cloud-workspace-import-request.schema.json",
+  "cloud-graph-write-request.schema.json",
+  "cloud-graph-write-response.schema.json",
+  "cloud-workspace-error-response.schema.json",
 ] as const;
 
 const temporaryDirectories: string[] = [];

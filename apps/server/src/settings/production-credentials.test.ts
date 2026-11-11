@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import {
-  SEARCH_CREDENTIALS_HEADER, SearchRequestSchema, StreamEventSchema,
+  CLOUD_ACCOUNT_HEADER, SEARCH_CREDENTIALS_HEADER, SearchRequestSchema, StreamEventSchema,
   type ProviderSearchRequest, type SearchCredentials, type StreamEvent,
 } from "@wayfinder/contracts";
 import type { FastifyInstance } from "fastify";
@@ -23,6 +23,7 @@ import { buildProductionServer } from "../production-server.js";
 import { SerpApiBingSearchProvider } from "../search/providers/serpapi-bing.js";
 import { readExperienceConfig, updateExperienceConfig } from "./experience-config.js";
 import type { EffectiveProviderKeys } from "./search-credentials.js";
+import { AccountKeyAccessError, type AccountKeyStorage } from "../accounts/key-storage.js";
 
 const QUERY = "TypeScript compiler guide";
 const BROAD_QUERY = "TypeScript compiler ecosystem";
@@ -55,6 +56,7 @@ type LlmCall = { key: string; stage: LlmStage; prompt: string };
 type SearchCall = { key: string | null; query: string };
 type SearchRequestCall = { key: string; query: string; kind: ProviderSearchRequest["kind"] };
 type FixtureOptions = {
+  cloudKeys?: AccountKeyStorage;
   local?: boolean;
   runLogging?: boolean;
   beforeLlm?: (call: LlmCall) => Promise<void>;
@@ -62,6 +64,12 @@ type FixtureOptions = {
   fetchResponse?: (call: SearchCall) => Promise<Response | undefined>;
 };
 
+const fixtureAccounts = {
+  auth: { initialize: async () => {}, migrate: async () => {},
+    getIdentity: async () => ({ userId: "fixture_user", sessionId: "fixture_session", email: "fixture@example.com" }),
+    handle: async () => ({ body: { accepted: true as const }, cookies: [] as string[] }),
+  }, database: { close: async () => {} },
+};
 const directories: string[] = [];
 const servers: FastifyInstance[] = [];
 afterEach(async () => {
@@ -91,6 +99,21 @@ function assertCompleted(text: string): void {
   }
 }
 
+/** 托管边界用假记录版本，后续实际Pipeline／队列／缓存／HTTP适配器仍走生产组合。 */
+function cloudKeyFixture() {
+  let revision = "fixture_cloud_revision_A";
+  const storage: AccountKeyStorage = {
+    read: vi.fn(), write: vi.fn(),
+    resolve: vi.fn<AccountKeyStorage["resolve"]>().mockImplementation(async (_user, service) => ({
+      apiKey: service === "deepseek" ? OWN_B.llmApiKey : OWN_B.serpApiKey, revision,
+    })),
+    assertCurrent: vi.fn<AccountKeyStorage["assertCurrent"]>().mockImplementation(async (_user, revisions) => {
+      for (const service of ["deepseek", "serpapi"] as const) if (revisions[service] !== undefined && revisions[service] !== revision) throw new AccountKeyAccessError("KEY_CONFLICT", service);
+    }),
+  };
+  return { storage, replace: () => { revision = "fixture_cloud_revision_B"; } };
+}
+
 async function fixture(options: FixtureOptions = {}) {
   const root = await fs.mkdtemp(path.join(tmpdir(), "wayfinder-production-credentials-"));
   directories.push(root);
@@ -109,7 +132,7 @@ async function fixture(options: FixtureOptions = {}) {
     RUN_LOGGING: options.runLogging ? "true" : "false",
   });
   const server = await buildProductionServer({
-    config, repositoryRoot: root, webAssetsDirectory,
+    config, repositoryRoot: root, webAssetsDirectory, accounts: { ...fixtureAccounts, ...(options.cloudKeys === undefined ? {} : { keys: options.cloudKeys }) },
     providerFactory: (keys, beforeSearchAttempt) => {
       calls.factories.push({ ...keys });
       let outlines = 0;
@@ -158,7 +181,8 @@ async function fixture(options: FixtureOptions = {}) {
   });
   servers.push(server);
   const search = (runId: string, selected: SearchCredentials, cookie?: string) => server.inject({
-    method: "POST", url: "/api/search", headers: { ...credentialHeaders(selected, cookie), ...requestHeaders }, payload: payload(runId),
+    method: "POST", url: "/api/search", headers: { ...credentialHeaders(selected, cookie), ...requestHeaders,
+      ...(options.cloudKeys === undefined ? {} : { [CLOUD_ACCOUNT_HEADER]: "fixture_user" }) }, payload: payload(runId),
   });
   const grant = async (inviteCode = INVITE): Promise<string> => {
     const response = await server.inject({ method: "POST", url: "/api/experience", headers: requestHeaders, payload: { inviteCode } });
@@ -172,7 +196,7 @@ async function fixture(options: FixtureOptions = {}) {
 }
 
 /** 用真正回环 HTTP 观察撤销后的物理断流；所有访问均为临时本机服务。 */
-async function startAuthorStream(server: FastifyInstance) {
+async function startCredentialStream(server: FastifyInstance, selected = AUTHOR_CREDENTIALS) {
   const address = await server.listen({ port: 0, host: "127.0.0.1" });
   const grant = await fetch(`${address}/api/experience`, {
     method: "POST", headers: { origin: address, "content-type": "application/json" }, body: JSON.stringify({ inviteCode: INVITE }),
@@ -183,7 +207,8 @@ async function startAuthorStream(server: FastifyInstance) {
   const cookie = header.split(";")[0] ?? "";
   await grant.body?.cancel();
   const response = await fetch(`${address}/api/search`, {
-    method: "POST", headers: { origin: address, cookie, [SEARCH_CREDENTIALS_HEADER]: JSON.stringify(AUTHOR_CREDENTIALS), "content-type": "application/json" },
+    method: "POST", headers: { origin: address, cookie, [SEARCH_CREDENTIALS_HEADER]: JSON.stringify(selected), "content-type": "application/json",
+      ...(selected.deepseek.source === "cloud" || selected.serpapi.source === "cloud" ? { [CLOUD_ACCOUNT_HEADER]: "fixture_user" } : {}) },
     body: JSON.stringify(payload("bounded-retry-revocation")),
   });
   expect(response.status).toBe(200);
@@ -215,7 +240,7 @@ describe("生产搜索的请求凭据接线", () => {
       firstAttempt.resolve();
       return responseGate.promise;
     } });
-    const { received } = await startAuthorStream(server);
+    const { received } = await startCredentialStream(server);
     await firstAttempt.promise;
     await updateExperienceConfig(configPath, { inviteCode: "fake-retry-next" });
     if (change === "A→B→A") await updateExperienceConfig(configPath, { inviteCode: INVITE });
@@ -334,6 +359,35 @@ describe("生产搜索的请求凭据接线", () => {
     expect(calls.factories).toEqual([expected]);
     expect(calls.llm.every(call => call.key === expected.llmApiKey)).toBe(true);
     expect(calls.search.every(call => call.key === expected.serpApiKey)).toBe(true);
+  });
+
+  it.each(["cloud-llm", "cloud-search", "cloud-both"] as const)("显式%s经真实Pipeline取对应服务Key，cloud检索跨Run不共用作者缓存", async mode => {
+    const { storage } = cloudKeyFixture();
+    const { calls, search, grant } = await fixture({ cloudKeys: storage });
+    const cookie = await grant();
+    const selected: SearchCredentials = mode === "cloud-llm"
+      ? { deepseek: { source: "cloud" }, serpapi: { source: "author" } }
+      : { deepseek: mode === "cloud-both" ? { source: "cloud" } : { source: "own", apiKey: OWN_A.llmApiKey }, serpapi: { source: "cloud" } };
+    const expected = { llmApiKey: mode === "cloud-search" ? OWN_A.llmApiKey : OWN_B.llmApiKey,
+      serpApiKey: mode === "cloud-llm" ? AUTHOR_KEYS.serpApiKey : OWN_B.serpApiKey };
+    assertCompleted((await search(`first-${mode}`, selected, cookie)).body);
+    assertCompleted((await search(`second-${mode}`, selected, cookie)).body);
+    expect(calls.factories).toEqual([expected, expected]);
+    expect(calls.llm.every(call => call.key === expected.llmApiKey)).toBe(true);
+    expect(calls.search.every(call => call.key === expected.serpApiKey)).toBe(true);
+    expect(calls.search).toHaveLength(mode === "cloud-llm" ? 2 : 4);
+    for (const call of calls.llm) for (const key of Object.values(OWN_B)) expect(call.prompt).not.toContain(key);
+  });
+
+  it("cloud更换后，混合own搜索的已允许重试也不能发第二次HTTP或伪造complete", async () => {
+    const keys = cloudKeyFixture(), entered = createDeferred<void>(), gate = createDeferred<Response>();
+    const { server, calls } = await fixture({ local: true, cloudKeys: keys.storage, fetchResponse: async () => { entered.resolve(); return gate.promise; } });
+    const { received } = await startCredentialStream(server, { deepseek: { source: "cloud" }, serpapi: { source: "own", apiKey: OWN_A.serpApiKey } });
+    await entered.promise; keys.replace(); gate.resolve(new Response("fixture-private-upstream-body", { status: 503 }));
+    const result = await received;
+    expect(result.terminated).toBe(true); expect(events(result.text).some(event => event.type === "complete")).toBe(false);
+    expect(calls.search).toHaveLength(1); expect(calls.llm.map(call => call.stage)).toEqual(["planner"]);
+    expect(result.text).not.toContain(OWN_B.llmApiKey); expect(result.text).not.toContain("fixture-private-upstream-body");
   });
 
   it("作者同代际命中共享缓存；改码拒绝旧Cookie，新代际重新检索", async () => {

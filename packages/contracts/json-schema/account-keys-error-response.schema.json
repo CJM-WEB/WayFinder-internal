@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "code": {
+      "type": "string",
+      "enum": [
+        "KEY_INVALID",
+        "KEY_CONFLICT",
+        "KEY_UNAVAILABLE",
+        "ACCOUNT_REQUIRED"
+      ]
+    },
+    "service": {
+      "type": "string",
+      "enum": [
+        "deepseek",
+        "serpapi"
+      ]
+    }
+  },
+  "required": [
+    "code"
+  ],
+  "additionalProperties": false
+}

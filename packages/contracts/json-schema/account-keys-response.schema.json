@@ -1,0 +1,138 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "userId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "deepseek": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "configured": {
+              "type": "boolean",
+              "const": true
+            },
+            "mask": {
+              "type": "string",
+              "pattern": "^••••(?:[\\x20-\\x7E]{4})?$"
+            },
+            "revision": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9_-]+$"
+            }
+          },
+          "required": [
+            "configured",
+            "mask",
+            "revision"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "configured": {
+              "type": "boolean",
+              "const": false
+            },
+            "mask": {
+              "type": "null"
+            },
+            "revision": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128,
+                  "pattern": "^[A-Za-z0-9_-]+$"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "configured",
+            "mask",
+            "revision"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "serpapi": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "configured": {
+              "type": "boolean",
+              "const": true
+            },
+            "mask": {
+              "type": "string",
+              "pattern": "^••••(?:[\\x20-\\x7E]{4})?$"
+            },
+            "revision": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9_-]+$"
+            }
+          },
+          "required": [
+            "configured",
+            "mask",
+            "revision"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "configured": {
+              "type": "boolean",
+              "const": false
+            },
+            "mask": {
+              "type": "null"
+            },
+            "revision": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128,
+                  "pattern": "^[A-Za-z0-9_-]+$"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "configured",
+            "mask",
+            "revision"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    }
+  },
+  "required": [
+    "userId",
+    "deepseek",
+    "serpapi"
+  ],
+  "additionalProperties": false
+}

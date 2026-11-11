@@ -10,7 +10,7 @@ import {
 import { createStore, type StoreApi } from "zustand/vanilla";
 
 export const CREDENTIAL_SETTINGS_STORAGE_KEY = "wayfinder.credentials.v1";
-export type CredentialPreference = Readonly<{ source: "own" | "author"; apiKey: string }>;
+export type CredentialPreference = Readonly<{ source: "own" | "author" | "cloud"; apiKey: string }>;
 export type CredentialPreferences = Readonly<Record<CredentialService, CredentialPreference>>;
 export type CredentialSettingsState = {
   preferences: CredentialPreferences;
@@ -20,6 +20,7 @@ export type CredentialSettingsState = {
   reload: () => boolean;
   clearNotice: () => void;
   setNotice: (problem: CredentialsErrorResponse) => void;
+  setIdentity: (userId: string | null) => void;
 };
 export type CredentialSettingsStore = StoreApi<CredentialSettingsState>;
 type CredentialStorage = Pick<Storage, "getItem" | "setItem">;
@@ -36,7 +37,7 @@ function parsePreference(input: unknown): CredentialPreference | null {
   if (typeof input !== "object" || input === null || Array.isArray(input) ||
     Object.keys(input).length !== 2 || !("source" in input) || !("apiKey" in input) ||
     !Object.hasOwn(input, "source") || !Object.hasOwn(input, "apiKey") ||
-    (input.source !== "own" && input.source !== "author") || typeof input.apiKey !== "string") return null;
+    (input.source !== "own" && input.source !== "author" && input.source !== "cloud") || typeof input.apiKey !== "string") return null;
   const key = input.apiKey === "" ? "" : ApiKeySchema.safeParse(input.apiKey);
   if (key !== "" && !key.success) return null;
   return Object.freeze({ source: input.source, apiKey: key === "" ? "" : key.data });
@@ -54,11 +55,12 @@ function parsePreferences(input: unknown): CredentialPreferences | null {
 export function createCredentialSettingsStore(
   storageGetter: () => CredentialStorage = () => window.localStorage,
 ): CredentialSettingsStore {
+  let storageKey = CREDENTIAL_SETTINGS_STORAGE_KEY;
   const store = createStore<CredentialSettingsState>()((set, get) => ({
     preferences: defaults(), error: null, notice: null,
     reload: () => {
       try {
-        const saved = storageGetter().getItem(CREDENTIAL_SETTINGS_STORAGE_KEY);
+        const saved = storageGetter().getItem(storageKey);
         const preferences = saved === null ? defaults() : parsePreferences(JSON.parse(saved) as unknown);
         if (preferences === null) throw new Error("本地凭据配置格式无效");
         set({ preferences, error: null });
@@ -77,7 +79,7 @@ export function createCredentialSettingsStore(
       }
       const preferences = Object.freeze({ ...get().preferences, [service]: parsed });
       try {
-        storageGetter().setItem(CREDENTIAL_SETTINGS_STORAGE_KEY, JSON.stringify(preferences));
+        storageGetter().setItem(storageKey, JSON.stringify(preferences));
         set({ preferences, error: null });
         return true;
       } catch {
@@ -90,6 +92,12 @@ export function createCredentialSettingsStore(
       const parsed = CredentialsErrorResponseSchema.safeParse(problem);
       if (parsed.success) set({ notice: Object.freeze(parsed.data) });
     },
+    setIdentity: userId => {
+      storageKey = userId === null ? CREDENTIAL_SETTINGS_STORAGE_KEY : `${CREDENTIAL_SETTINGS_STORAGE_KEY}.user.${userId}`;
+      // 先清内存再读取；新空间读取失败时也不能继续显示或发送旧账号的 Key。
+      set({ preferences: defaults(), error: null, notice: null });
+      get().reload();
+    },
   }));
   // 初始化只读；缺失存档也不自动落盘，避免导入模块或展示设置就修改浏览器数据。
   store.getState().reload();
@@ -97,3 +105,13 @@ export function createCredentialSettingsStore(
 }
 
 export const credentialSettingsStore = createCredentialSettingsStore();
+
+/** 只在人员明确点击读取访客Key时调用；不写入当前账号偏好、不上传或清除访客源。 */
+export function readGuestApiKey(service: CredentialService, storageGetter: () => Pick<Storage, "getItem"> = () => window.localStorage): string {
+  try {
+    const raw = storageGetter().getItem(CREDENTIAL_SETTINGS_STORAGE_KEY);
+    const preferences = raw === null ? null : parsePreferences(JSON.parse(raw) as unknown);
+    if (preferences === null || !preferences[service].apiKey) throw new Error();
+    return preferences[service].apiKey;
+  } catch { throw new Error("无法读取该服务的访客Key"); }
+}

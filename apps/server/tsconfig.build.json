@@ -5,10 +5,11 @@
     "noEmit": false,
     "outDir": "dist",
     "rootDir": "src",
-    "lib": ["ES2023"],
+    "lib": ["ES2023", "DOM"],
     // 生产构建只读取已生成声明，避免把另一个 Workspace 的源码纳入 Server rootDir。
     "paths": {
-      "@wayfinder/contracts": ["../../packages/contracts/dist/index.d.ts"]
+      "@wayfinder/contracts": ["../../packages/contracts/dist/index.d.ts"],
+      "@wayfinder/contracts/graph-history": ["../../packages/contracts/dist/graph-history.d.ts"]
     },
     // 生产源码通过显式 node:* 导入使用运行时能力，不注入额外环境全局。
     "types": []

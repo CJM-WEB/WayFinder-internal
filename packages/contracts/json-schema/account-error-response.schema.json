@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "code": {
+      "type": "string",
+      "enum": [
+        "ACCOUNT_INVALID",
+        "ACCOUNT_REQUIRED",
+        "ACCOUNT_RATE_LIMITED",
+        "ACCOUNT_UNAVAILABLE"
+      ]
+    }
+  },
+  "required": [
+    "code"
+  ],
+  "additionalProperties": false
+}

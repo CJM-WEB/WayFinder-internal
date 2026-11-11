@@ -1,3 +1,14 @@
 packages:
   - "apps/*"
   - "packages/*"
+# 仅限本轮明确批准的固定版本及其同版本认证依赖，不放宽其他包或版本。
+minimumReleaseAgeExclude:
+  - '@better-auth/core@1.7.20'
+  - '@better-auth/drizzle-adapter@1.7.20'
+  - '@better-auth/kysely-adapter@1.7.20'
+  - '@better-auth/memory-adapter@1.7.20'
+  - '@better-auth/mongo-adapter@1.7.20'
+  - '@better-auth/prisma-adapter@1.7.20'
+  - '@better-auth/telemetry@1.7.20'
+  - better-auth@1.7.20
+  - nodemailer@10.5.0

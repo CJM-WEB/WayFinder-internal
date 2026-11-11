@@ -1,0 +1,22 @@
+# 单机常驻服务：配置保留在受控目录，通过/etc/wayfinder链接读取，不复制秘密进发布目录。
+[Unit]
+Description=WayFinder web application
+After=network.target mysql.service
+Requires=mysql.service
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/wayfinder/current
+# 启动只检查已有结构，不自动迁移、发信或执行搜索。
+ExecStart=/usr/local/bin/node --env-file=/etc/wayfinder/runtime.env --env-file=/etc/wayfinder/providers.env --env-file=/etc/wayfinder/mail.env apps/server/dist/main.js
+Environment=NODE_ENV=production
+UMask=0077
+Restart=on-failure
+RestartSec=5s
+# 暂停前先隔离新流量并等待在途运行收敛；此值不改变应用40秒期限。
+TimeoutStopSec=50s
+
+[Install]
+WantedBy=multi-user.target
