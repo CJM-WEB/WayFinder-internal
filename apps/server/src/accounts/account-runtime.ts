@@ -8,6 +8,7 @@ import { createAccountAuth, type AccountAuth } from "./auth.js";
 import { AccountDatabase, databaseOperation, loadDatabaseConfig } from "./database.js";
 import { createSmtpAccountMailer, SmtpAccountConfigSchema } from "./mail.js";
 import { normalizePublicOrigin } from "../settings/request-origin.js";
+import { createWorkspaceStorage, type WorkspaceStorage } from "./workspace-storage.js";
 
 export const ACCOUNT_ENVIRONMENT_VARIABLES = Object.freeze([
   "WAYFINDER_AUTH_SECRET", "SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASSWORD", "SMTP_FROM",
@@ -41,7 +42,7 @@ export function parseAccountEnvironment(
   } catch { throw new AccountConfigError(); }
 }
 
-export type AccountRuntime = Readonly<{ auth: AccountAuth; database: AccountDatabase }>;
+export type AccountRuntime = Readonly<{ auth: AccountAuth; database: AccountDatabase; workspace: WorkspaceStorage }>;
 
 export async function loadAccountRuntime(
   environment: Readonly<Record<string, string | undefined>>,
@@ -57,7 +58,7 @@ export async function loadAccountRuntime(
       mailer: createSmtpAccountMailer(config.smtp), onDeliveryFailure,
     });
     await auth.initialize(databaseOperation(new AbortController().signal));
-    return { auth, database };
+    return { auth, database, workspace: createWorkspaceStorage(database) };
   } catch {
     await database.close();
     throw new AccountConfigError();

@@ -136,20 +136,31 @@ export class AccountDatabase {
     });
   }
 
-  async transaction<T>(operation: DatabaseOperation, action: (query: (sql: string, values?: SqlValue[]) => Promise<unknown>) => Promise<T>): Promise<T> {
+  async transaction<T>(operation: DatabaseOperation, action: (query: (sql: string, values?: SqlValue[]) => Promise<unknown>) => Promise<T>, consistentRead = false): Promise<T> {
     return this.withConnection(operation, async (connection, signal) => {
       const query = async (sql: string, values: SqlValue[] = []): Promise<unknown> => {
         signal.throwIfAborted();
-        const [result] = await connection.query({ sql, values, timeout: Math.max(1, operation.deadline - Date.now()) });
+        // 同步编码或重放可能耗尽预算而Timer尚未取得执行权，不能再发送INSERT或COMMIT。
+        const remainingMs = operation.deadline - Date.now();
+        if (remainingMs <= 0) {
+          this.discarded.add(connection);
+          connection.destroy();
+          throw new DatabaseError("DATABASE_TIMEOUT");
+        }
+        const [result] = await connection.query({ sql, values, timeout: remainingMs });
         signal.throwIfAborted();
         return result;
       };
-      await query("START TRANSACTION");
+      // 工作区多行读取必须与服务器默认隔离级别无关；设置只作用于下一事务，不改变连接会话默认值。
+      if (consistentRead) await query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ");
+      await query(consistentRead ? "START TRANSACTION WITH CONSISTENT SNAPSHOT" : "START TRANSACTION");
       try {
         const result = await action(query);
         await query("COMMIT");
         return result;
       } catch (error: unknown) {
+        // 同步期限守卫已经销毁连接；再尝试ROLLBACK既无效，也会把明确超时覆盖成未知故障。
+        if (error instanceof DatabaseError && error.code === "DATABASE_TIMEOUT") throw error;
         // 取消已经销毁连接，不能再排队 rollback；其他错误先回滚再复用连接。
         if (!signal.aborted) {
           try { await query("ROLLBACK"); }

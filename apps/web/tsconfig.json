@@ -10,7 +10,8 @@
     "types": ["node", "vite/client"],
     "jsx": "react-jsx",
     "paths": {
-      "@wayfinder/contracts": ["../../packages/contracts/src/index.ts"]
+      "@wayfinder/contracts": ["../../packages/contracts/src/index.ts"],
+      "@wayfinder/contracts/graph-history": ["../../packages/contracts/src/graph-history.ts"]
     }
   },
   "include": [

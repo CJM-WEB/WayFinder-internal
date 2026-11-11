@@ -30,8 +30,10 @@ export default defineConfig({
   },
   // 沿用 Vite 默认 index.html 单入口；墨迹漫游即正式产品，不再打包重复的试验页面。
   resolve: {
-    alias: {
-      "@wayfinder/contracts": contractsEntry,
-    },
+    // 根与工程子路径均精确匹配，避免子路径被拼接到 index.ts 后面。
+    alias: [
+      { find: /^@wayfinder\/contracts$/, replacement: contractsEntry },
+      { find: /^@wayfinder\/contracts\/graph-history$/, replacement: fileURLToPath(new globalThis.URL("../../packages/contracts/src/graph-history.ts", import.meta.url)) },
+    ],
   },
 });

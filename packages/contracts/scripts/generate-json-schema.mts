@@ -13,6 +13,10 @@ import {
   AccountActionSchema,
   AccountResponseSchema,
   AccountErrorResponseSchema,
+  CloudWorkspaceResponseSchema,
+  CloudGraphWriteRequestSchema,
+  CloudGraphWriteResponseSchema,
+  CloudWorkspaceErrorResponseSchema,
   CredentialsErrorResponseSchema,
   EditableGraphSchema,
   ExperienceInviteRequestSchema,
@@ -25,6 +29,7 @@ import {
   SearchRequestSchema,
   SettingsPublicResponseSchema,
   StreamEventSchema,
+  StoredGraphHistorySchema,
   UserIdSchema,
 } from "../src/index.ts";
 
@@ -122,6 +127,15 @@ const jsonSchemaRoots = [
   { schemaName: "AccountActionSchema", fileName: "account-action.schema.json", schema: AccountActionSchema },
   { schemaName: "AccountResponseSchema", fileName: "account-response.schema.json", schema: AccountResponseSchema },
   { schemaName: "AccountErrorResponseSchema", fileName: "account-error-response.schema.json", schema: AccountErrorResponseSchema },
+  {
+    schemaName: "StoredGraphHistorySchema",
+    fileName: "stored-graph-history.schema.json",
+    schema: StoredGraphHistorySchema,
+  },
+  { schemaName: "CloudWorkspaceResponseSchema", fileName: "cloud-workspace-response.schema.json", schema: CloudWorkspaceResponseSchema },
+  { schemaName: "CloudGraphWriteRequestSchema", fileName: "cloud-graph-write-request.schema.json", schema: CloudGraphWriteRequestSchema },
+  { schemaName: "CloudGraphWriteResponseSchema", fileName: "cloud-graph-write-response.schema.json", schema: CloudGraphWriteResponseSchema },
+  { schemaName: "CloudWorkspaceErrorResponseSchema", fileName: "cloud-workspace-error-response.schema.json", schema: CloudWorkspaceErrorResponseSchema },
 ] as const satisfies readonly JsonSchemaRoot[];
 
 const defaultOutputDirectory = fileURLToPath(

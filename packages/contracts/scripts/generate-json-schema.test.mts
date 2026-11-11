@@ -35,6 +35,11 @@ const expectedFileNames = [
   "account-action.schema.json",
   "account-response.schema.json",
   "account-error-response.schema.json",
+  "stored-graph-history.schema.json",
+  "cloud-workspace-response.schema.json",
+  "cloud-graph-write-request.schema.json",
+  "cloud-graph-write-response.schema.json",
+  "cloud-workspace-error-response.schema.json",
 ] as const;
 
 const temporaryDirectories: string[] = [];
