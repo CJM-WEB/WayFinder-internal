@@ -7,7 +7,8 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import process from "node:process";
 import { z } from "zod";
-import { CLOUD_ACCOUNT_HEADER, SEARCH_CREDENTIALS_HEADER, type AccountKeyAction, type CredentialService } from "@wayfinder/contracts";
+import { CLOUD_ACCOUNT_HEADER, SEARCH_CREDENTIALS_HEADER, EditableGraphSchema, type AccountKeyAction, type CredentialService } from "@wayfinder/contracts";
+import { createGraphHistory, storeGraphHistory } from "@wayfinder/contracts/graph-history";
 import { buildServer } from "../app.js";
 import { parseServerConfig } from "../config.js";
 import { registerAccountKeyRoutes } from "../routes/account-keys.js";
@@ -15,6 +16,7 @@ import { prepareSearchCredentialScope, type SearchCredentialScope } from "../set
 import { createAccountAuth } from "./auth.js";
 import { AccountDatabase, databaseConfigFromUrl, databaseOperation, migrateAccountData } from "./database.js";
 import { createAccountKeyStorage } from "./key-storage.js";
+import { createWorkspaceStorage } from "./workspace-storage.js";
 
 type Query = Parameters<Parameters<AccountDatabase["transaction"]>[1]>[0];
 /** 写入新密文后故意触发实际SQL错误，证明事务不会留下失败更换的Key或版本。 */
@@ -137,6 +139,20 @@ try {
   const recreated = await storage.write(a, save("deepseek", deleted.deepseek.revision, oldResolve.apiKey), operation());
   assert.notEqual(recreated.deepseek.revision, oldResolve.revision);
   await assert.rejects(storage.assertCurrent(a, { deepseek: oldResolve.revision }, operation()), { code: "KEY_CONFLICT" });
+  stage = "同用户图与Key命名空间共存";
+  const graphs = createWorkspaceStorage(db), beforeGraph = await storage.read(a, operation());
+  // 故意复用Key记录的可见名称；图实际使用哈希前缀，不能覆盖或混入Key行。
+  const document = EditableGraphSchema.parse({ version: "workspace.v1", id: "k_deepseek", title: "共存假图", query: "", language: "zh-CN",
+    presentationMode: "graph", createdAt: "2026-11-11T00:00:00.000Z", updatedAt: "2026-11-11T00:00:00.000Z", lastRunId: null, nodes: [], edges: [], positions: {} });
+  const graphRecord = await graphs.write(a, { action: "save", document, history: storeGraphHistory(createGraphHistory(document)), expectedRevision: 0, mutationId: randomUUID() }, operation());
+  assert.deepEqual((await graphs.read(a, operation())).graphs, [graphRecord.record]);
+  assert.deepEqual(await storage.read(a, operation()), beforeGraph);
+  const graphDeleted = await graphs.write(a, { action: "delete", graphId: document.id, expectedRevision: graphRecord.record.revision, mutationId: randomUUID() }, operation());
+  assert.deepEqual(await storage.read(a, operation()), beforeGraph);
+  await graphs.write(a, { action: "restore", graphId: document.id, expectedRevision: graphDeleted.record.revision, mutationId: randomUUID() }, operation());
+  assert.deepEqual((await graphs.read(a, operation())).graphs.map(record => record.document), [document]);
+  assert.deepEqual(await storage.read(a, operation()), beforeGraph);
+  assert.deepEqual((await graphs.read(b, operation())).graphs, []);
   stage = "取消与到期不产生迟到写";
   const beforeCancel = await storage.read(a, operation()), cancelled = new AbortController(); cancelled.abort();
   await assert.rejects(storage.write(a, save("deepseek", recreated.deepseek.revision), databaseOperation(cancelled.signal)), { code: "KEY_UNAVAILABLE" });
@@ -163,7 +179,7 @@ try {
     assert(scope); await auth.handle({ action: "logout" }, authHeaders(cookies[0]), operation());
     await assert.rejects(scope.assertService("serpapi", new AbortController().signal), { code: "ACCOUNT_REQUIRED" }); assert(scope.signal.aborted);
   } finally { await server.close(); }
-  console.info("MySQL 云Key：掩码/归属/双连接CAS/真实故障回滚/丢失ACK/篡改与receipt拼接/交换归属/认证墓碑ABA/取消期限/真实Cookie与退出撤销通过");
+  console.info("MySQL 云Key：掩码/归属/双连接CAS/真实故障回滚/丢失ACK/篡改与receipt拼接/交换归属/认证墓碑ABA/图Key共存/取消期限/真实Cookie与退出撤销通过");
 } catch {
   console.error(`MySQL 云Key隔离验证失败：${stage}；未输出原始异常、身份或秘密`); process.exitCode = 1;
 } finally {

@@ -1,7 +1,7 @@
 /**
  * 脚本职责：从编译产物启动一个真实回环服务，证明单个 Fastify 实例同时提供 Web、API 与渐进 NDJSON。
  *
- * 安全边界：只注入代码内 Fake Provider，不读取 Secret、不访问公网，也不增加生产可启用的 Fake 开关。
+ * 安全边界：只注入代码内假Provider／账号存储，不读取Secret或访问公网，不增加生产假环境开关。
  */
 import { access, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -12,6 +12,10 @@ import { TextDecoder } from "node:util";
 
 import {
   calculateSearchPlanMaxResults,
+  AccountResponseSchema,
+  AccountKeysResponseSchema,
+  CloudWorkspaceResponseSchema,
+  CLOUD_ACCOUNT_HEADER,
   GraphPlanSchema,
   SEARCH_CREDENTIALS_HEADER,
   StreamEventSchema,
@@ -182,6 +186,24 @@ const config = parseServerConfig({
   LLM_API_KEY: "fake-smoke-llm-key",
   SERPAPI_API_KEY: "fake-smoke-search-key",
 });
+// 仅验证编译产物的路由装配；真实认证／SQL持久化由显式隔离数据库检查承担。
+const identity = { userId: "fixture_smoke_owner", sessionId: "fixture-private-session-id", email: "fixture@example.test" };
+const cookie = "fixture_session=fixture-private-cookie", cloudKey = "fixture-private-cloud-key";
+const calls = { auth: 0, workspace: 0, keys: 0 };
+const account = { userId: identity.userId, email: identity.email };
+const workspace = { userId: identity.userId, activeOrder: [], deletedIds: [], graphs: [] };
+const keys = { userId: identity.userId, deepseek: { configured: true, mask: "••••tail", revision: "fixture_revision" },
+  serpapi: { configured: false, mask: null, revision: null } };
+const unexpected = async () => { throw new Error("Smoke意外调用未获准的账号副作用"); };
+const accounts = {
+  auth: { initialize: unexpected, migrate: unexpected, handle: unexpected,
+    getIdentity: async headers => { calls.auth++; return headers.get("cookie") === cookie ? identity : null; } },
+  database: { close: async () => {} },
+  workspace: { read: async userId => { calls.workspace++; assert(userId === identity.userId, "工作区装配使用错误归属"); return workspace; },
+    write: unexpected, importGuest: unexpected },
+  keys: { read: async userId => { calls.keys++; assert(userId === identity.userId, "云Key装配使用错误归属"); return keys; },
+    write: unexpected, resolve: unexpected, assertCurrent: unexpected },
+};
 let server;
 
 try {
@@ -192,6 +214,7 @@ try {
     repositoryRoot: temporaryRoot,
     webAssetsDirectory,
     baseProviders: { searchProvider, llmProvider },
+    accounts,
   });
   const address = await server.listen({ host: "127.0.0.1", port: 0 });
 
@@ -218,6 +241,26 @@ try {
       "Vite Asset MIME 不合理",
     );
   }
+
+  // 同一实例必须真的注册D11三类路由；浏览器Fixture拦截不能替代该装配检查。
+  const accountHeaders = { Origin: address, Cookie: cookie, [CLOUD_ACCOUNT_HEADER]: identity.userId };
+  for (const [path, schema, expected] of [["/api/account", AccountResponseSchema, { account }],
+    ["/api/workspace", CloudWorkspaceResponseSchema, workspace], ["/api/account/keys", AccountKeysResponseSchema, keys]]) {
+    const result = await fetchFromLoopback(`${address}${path}`, { headers: accountHeaders });
+    const text = await result.text(), parsed = schema.safeParse(JSON.parse(text));
+    assert(result.status === 200 && parsed.success && JSON.stringify(parsed.data) === JSON.stringify(expected), "D11路由装配或公共响应不正确");
+    assert(result.headers.get("cache-control") === "no-store", "D11响应不得被缓存");
+    for (const secret of [identity.sessionId, cookie, cloudKey]) assert(!text.includes(secret), "普通响应泄漏秘密");
+  }
+  const anonymous = await fetchFromLoopback(`${address}/api/account`, { headers: { Origin: address } });
+  assert(JSON.stringify(await anonymous.json()) === '{"account":null}', "访客账号查询错误");
+  for (const path of ["/api/workspace", "/api/account/keys"]) {
+    const rejected = await fetchFromLoopback(`${address}${path}`, { headers: { ...accountHeaders, [CLOUD_ACCOUNT_HEADER]: "wrong_owner" } });
+    assert(rejected.status === 401 && rejected.headers.get("cache-control") === "no-store", "错号数据请求未失败闭合");
+    assert(JSON.stringify(await rejected.json()) === '{"code":"ACCOUNT_REQUIRED"}', "错号错误投影不正确");
+  }
+  assert(calls.workspace === 1 && calls.keys === 1, "错号请求不应进入存储");
+  const beforeGuestSearch = JSON.stringify(calls);
 
   const response = await fetchFromLoopback(`${address}/api/search`, {
     method: "POST",
@@ -265,6 +308,7 @@ try {
   }
   assert(events.at(-1)?.type === "complete", "NDJSON 未以 complete 结束");
   assert(searchResolved, "Fake Search 未完成");
+  assert(JSON.stringify(calls) === beforeGuestSearch, "访客双自带搜索不应读取账号或云存储");
 
   // Run Log 默认关闭时，生产组合根不得创建任何日志目录。
   await access(join(temporaryRoot, "data")).then(
@@ -279,4 +323,4 @@ try {
   await rm(temporaryRoot, { recursive: true, force: true });
 }
 
-process.stdout.write("WAY-94 production smoke passed\n");
+process.stdout.write("WAY-94 / D11 production smoke passed\n");
