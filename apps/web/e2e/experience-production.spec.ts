@@ -118,7 +118,7 @@ async function productionFixture(page: Page) {
   // 只截获根 /api/：Vite 的 /src/api/*.ts 是真实浏览器模块，必须继续由开发服务器提供。
   await page.route(url => url.origin === ORIGIN && url.pathname.startsWith("/api/"), async route => {
     const request = route.request(), url = new URL(request.url());
-    if (!["/api/account", "/api/settings", "/api/experience", "/api/experience/status", "/api/search"].includes(url.pathname)) {
+    if (!["/api/account", "/api/workspace", "/api/settings", "/api/experience", "/api/experience/status", "/api/search"].includes(url.pathname)) {
       throw new Error("跨层夹具收到未声明的 API 路径");
     }
     const method = request.method();

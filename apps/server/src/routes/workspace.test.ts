@@ -25,11 +25,29 @@ function fixture() {
     return { userId, record: { document: input.document, history: input.history, revision: 1, status: "active", originalIndex: null },
       activeOrder: [input.document.id], deletedIds: [] };
   });
-  registerWorkspaceRoutes(server, { auth: { getIdentity }, storage: { read, write }, publicOrigin: origin });
-  return { server, getIdentity, read, write };
+  const importGuest = vi.fn<WorkspaceStorage["importGuest"]>(async () => ({ userId, activeOrder: [], deletedIds: [], graphs: [] }));
+  registerWorkspaceRoutes(server, { auth: { getIdentity }, storage: { read, write, importGuest }, publicOrigin: origin });
+  return { server, getIdentity, read, write, importGuest };
 }
 
 describe("云工作区HTTP边界", () => {
+  it("显式导入走独立协议和Snapshot响应，不调用单图保存；错号和额外Key字段先拒绝", async () => {
+    const { server, getIdentity, write, importGuest } = fixture();
+    const saved = request();
+    if (saved.action !== "save") throw new Error("预期保存夹具");
+    const input = { action: "import", importId: "fixture_import", documents: [{ document: saved.document, history: saved.history }], deletedGraphs: [] };
+    try {
+      const response = await server.inject({ method: "POST", url: "/api/workspace", headers, payload: input });
+      expect(response.statusCode).toBe(200); expect(response.json()).toEqual({ userId, activeOrder: [], deletedIds: [], graphs: [] });
+      expect(importGuest).toHaveBeenCalledOnce(); expect(write).not.toHaveBeenCalled();
+      importGuest.mockClear(); getIdentity.mockResolvedValue({ ...identity, userId: "other_user" });
+      expect((await server.inject({ method: "POST", url: "/api/workspace", headers, payload: input })).statusCode).toBe(401);
+      expect(importGuest).not.toHaveBeenCalled();
+      getIdentity.mockResolvedValue(identity);
+      expect((await server.inject({ method: "POST", url: "/api/workspace", headers, payload: { ...input, apiKey: "fixture_private_key" } })).statusCode).toBe(400);
+      expect(importGuest).not.toHaveBeenCalled();
+    } finally { await server.close(); }
+  });
   it("会话和预期账号在解析前校验，匿名及错号大坏JSON不会进入存储", async () => {
     const { server, getIdentity, read, write } = fixture();
     const invalid = `{${" ".repeat(1024 * 1024 + 1)}`;

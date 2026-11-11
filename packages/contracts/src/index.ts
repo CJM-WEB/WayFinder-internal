@@ -1335,6 +1335,23 @@ export const CloudGraphWriteRequestSchema = z.discriminatedUnion("action", [
     expectedRevision: cloudRevisionSchema }),
 ]);
 export type CloudGraphWriteRequest = z.infer<typeof CloudGraphWriteRequestSchema>;
+
+/**
+ * 访客明确确认后整批导入；标识只用于幂等，目标账号始终来自会话。
+ * 源活动列表与删除栈分别保留顺序，缺失历史须先在客户端建立真实当前图的空基线。
+ * 同一源图不能同时出现在两组中；不接收Key或由客户端指定目标身份／版本。
+ */
+const cloudImportGraphFields = { document: EditableGraphSchema, history: StoredGraphHistorySchema };
+export const CloudWorkspaceImportRequestSchema = z.strictObject({
+  action: z.literal("import"), importId: UserIdSchema,
+  documents: z.array(z.strictObject(cloudImportGraphFields)),
+  deletedGraphs: z.array(z.strictObject({ ...cloudImportGraphFields, originalIndex: z.number().int().min(0) })).max(100),
+}).superRefine((value, context) => {
+  const ids = [...value.documents, ...value.deletedGraphs].map(item => item.document.id);
+  if (new Set(ids).size !== ids.length) context.addIssue({ code: "custom", message: "导入源图标识不能重复" });
+});
+export type CloudWorkspaceImportRequest = z.infer<typeof CloudWorkspaceImportRequestSchema>;
+
 export const CloudGraphWriteResponseSchema = z.strictObject({
   userId: UserIdSchema, record: CloudGraphRecordSchema, ...cloudOrderFields,
 }).superRefine((value, context) => {

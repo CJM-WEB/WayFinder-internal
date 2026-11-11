@@ -482,6 +482,24 @@ export function restoreGraphHistory(value: unknown, document: EditableGraph, lim
   return result.history;
 }
 
+/**
+ * 副本只改变图身份：节点、事件、重做和坐标插入顺序均保留，不能把历史截为空基线。
+ * 复制前后都真实重放；中间基线只改id，不错误施加最终图约束。原输入不被修改。
+ */
+export function remapGraphHistoryIdentity(document: EditableGraph, history: StoredGraphHistory, newId: string): {
+  document: EditableGraph; history: StoredGraphHistory;
+} {
+  restoreGraphHistory(history, document, 100);
+  const copy = structuredClone({ document, history });
+  copy.document = EditableGraphSchema.parse({ ...copy.document, id: newId });
+  copy.history = { ...copy.history,
+    base: { ...copy.history.base, graph: { ...copy.history.base.graph, id: newId } },
+    events: copy.history.events.map(event => ({ ...event, before: { ...event.before, id: newId }, after: { ...event.after, id: newId } })),
+  };
+  restoreGraphHistory(copy.history, copy.document, 100);
+  return copy;
+}
+
 /** 当前事件集合重新重建，失败不返回半成品，调用方只能保留原图和原历史。 */
 export function undoHistoryEvent(history: GraphHistory, id: string): HistoryChange {
   return rebuild(history, history.events.map(event => event.id === id ? { ...event, active: false } : event),

@@ -7,6 +7,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import {
   CLOUD_ACCOUNT_HEADER, CloudGraphWriteRequestSchema, CloudGraphWriteResponseSchema,
   CloudWorkspaceErrorResponseSchema, CloudWorkspaceResponseSchema, UserIdSchema,
+  CloudWorkspaceImportRequestSchema,
 } from "@wayfinder/contracts";
 
 import type { AccountAuth, AccountIdentity } from "../accounts/auth.js";
@@ -79,6 +80,8 @@ export function registerWorkspaceRoutes(server: FastifyInstance, options: Readon
         if (!write) return reply.send(CloudWorkspaceResponseSchema.parse(await options.storage.read(identity.userId, operation)));
         const contentType = request.headers["content-type"]?.split(";", 1)[0]?.trim().toLowerCase();
         if (contentType !== "application/json") throw new WorkspaceAccessError("WORKSPACE_INVALID");
+        const imported = CloudWorkspaceImportRequestSchema.safeParse(request.body);
+        if (imported.success) return reply.send(CloudWorkspaceResponseSchema.parse(await options.storage.importGuest(identity.userId, imported.data, operation)));
         const input = CloudGraphWriteRequestSchema.safeParse(request.body);
         if (!input.success) throw new WorkspaceAccessError("WORKSPACE_INVALID");
         return reply.send(CloudGraphWriteResponseSchema.parse(await options.storage.write(identity.userId, input.data, operation)));

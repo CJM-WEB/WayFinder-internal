@@ -8,10 +8,12 @@ import { z } from "zod";
 import {
   CloudGraphRecordSchema, CloudGraphWriteRequestSchema, CloudGraphWriteResponseSchema,
   CloudWorkspaceResponseSchema, UserIdSchema,
+  CloudWorkspaceImportRequestSchema,
   type CloudGraphRecord, type CloudGraphWriteRequest, type CloudGraphWriteResponse,
   type CloudWorkspaceErrorResponse, type CloudWorkspaceResponse,
+  type CloudWorkspaceImportRequest,
 } from "@wayfinder/contracts";
-import { restoreGraphHistory } from "@wayfinder/contracts/graph-history";
+import { remapGraphHistoryIdentity, restoreGraphHistory } from "@wayfinder/contracts/graph-history";
 
 import { AccountDatabase, type DatabaseOperation } from "./database.js";
 
@@ -21,6 +23,7 @@ export class WorkspaceAccessError extends Error {
 export type WorkspaceStorage = Readonly<{
   read: (userId: string, operation: DatabaseOperation) => Promise<CloudWorkspaceResponse>;
   write: (userId: string, input: CloudGraphWriteRequest, operation: DatabaseOperation) => Promise<CloudGraphWriteResponse>;
+  importGuest: (userId: string, input: CloudWorkspaceImportRequest, operation: DatabaseOperation) => Promise<CloudWorkspaceResponse>;
 }>;
 
 const META_KEY = "workspace_meta";
@@ -37,10 +40,16 @@ const PurgedEnvelopeSchema = z.strictObject({
   lastMutationId: UserIdSchema, requestFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
 });
 const EnvelopeSchema = z.discriminatedUnion("kind", [GraphEnvelopeSchema, PurgedEnvelopeSchema]);
+/** 收据只保存去重依据及目标身份，不保留正文或历史，不能绕过最近删除100张的清理。 */
+const ImportReceiptSchema = z.strictObject({
+  kind: z.literal("guestImport"), requestFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
+  graphIds: z.array(z.string().min(1)),
+});
 type Metadata = z.infer<typeof MetaSchema>;
 type Envelope = z.infer<typeof PurgedEnvelopeSchema> | (Omit<z.infer<typeof GraphEnvelopeSchema>, "recordJson"> & { record: CloudGraphRecord });
 type Query = Parameters<Parameters<AccountDatabase["transaction"]>[1]>[0];
 type Outcome = Readonly<{ ok: true; value: CloudGraphWriteResponse }> | Readonly<{ ok: false; code: CloudWorkspaceErrorResponse["code"] }>;
+type ImportOutcome = Readonly<{ ok: true; value: CloudWorkspaceResponse }> | Readonly<{ ok: false; code: CloudWorkspaceErrorResponse["code"] }>;
 const emptyMeta = (): Metadata => ({ kind: "workspace", activeOrder: [], deletedIds: [] });
 const graphKey = (id: string): string => `g_${createHash("sha256").update(id).digest("hex")}`;
 
@@ -81,32 +90,48 @@ function success(userId: string, record: CloudGraphRecord, meta: Metadata): Outc
   return { ok: true, value: CloudGraphWriteResponseSchema.parse({ userId, record,
     activeOrder: meta.activeOrder, deletedIds: meta.deletedIds }) };
 }
-function envelope(record: CloudGraphRecord, input: CloudGraphWriteRequest, fingerprint: string): z.infer<typeof GraphEnvelopeSchema> {
-  return { kind: "graph", recordJson: JSON.stringify(record), lastMutationId: input.mutationId, requestFingerprint: fingerprint };
+function envelope(record: CloudGraphRecord, mutationId: string, fingerprint: string): z.infer<typeof GraphEnvelopeSchema> {
+  return { kind: "graph", recordJson: JSON.stringify(record), lastMutationId: mutationId, requestFingerprint: fingerprint };
+}
+
+/** 普通读取沿用RR快照；导入及其重试使用当前锁读，返回同一事务中的完整结果。 */
+async function readSnapshot(query: Query, userId: string, lock = false): Promise<CloudWorkspaceResponse> {
+  const rawMeta = await load(query, userId, META_KEY, lock);
+  const meta = rawMeta === null ? emptyMeta() : MetaSchema.parse(rawMeta);
+  const rows = payloadRows(await query(`SELECT payload FROM wf_user_data WHERE userId = ? AND LEFT(recordId, 2) = 'g_' AND JSON_UNQUOTE(JSON_EXTRACT(payload, '$.kind')) = 'graph'${lock ? " FOR UPDATE" : ""}`, [userId]));
+  const records = rows.map(row => {
+    const parsed = decodeEnvelope(row);
+    if (parsed.kind !== "graph") throw new WorkspaceAccessError("WORKSPACE_UNAVAILABLE");
+    return parsed.record;
+  });
+  const ids = [...meta.activeOrder, ...meta.deletedIds];
+  if (records.length !== ids.length || ids.some(id => !records.some(record => record.document.id === id))) throw new WorkspaceAccessError("WORKSPACE_UNAVAILABLE");
+  for (const record of records) {
+    if ((record.status === "active") !== meta.activeOrder.includes(record.document.id)) throw new WorkspaceAccessError("WORKSPACE_UNAVAILABLE");
+  }
+  return CloudWorkspaceResponseSchema.parse({ userId, activeOrder: meta.activeOrder, deletedIds: meta.deletedIds,
+    graphs: ids.map(id => records.find(record => record.document.id === id)) });
+}
+
+/** 单张删除和批次导入共用清理：先去正文，永久保留拒绝旧身份写入的轻量墓碑。 */
+async function trimDeleted(query: Query, userId: string, meta: Metadata): Promise<void> {
+  while (meta.deletedIds.length > 100) {
+    const purgedId = meta.deletedIds.shift();
+    if (purgedId === undefined) throw new WorkspaceAccessError("WORKSPACE_UNAVAILABLE");
+    const oldest = checkedEnvelope(await load(query, userId, graphKey(purgedId), true), purgedId);
+    if (oldest?.kind !== "graph" || oldest.record.status !== "deleted") throw new WorkspaceAccessError("WORKSPACE_UNAVAILABLE");
+    await store(query, userId, graphKey(purgedId), {
+      kind: "purged", graphId: purgedId, revision: oldest.record.revision + 1,
+      lastMutationId: oldest.lastMutationId, requestFingerprint: oldest.requestFingerprint,
+    });
+  }
 }
 
 export function createWorkspaceStorage(database: AccountDatabase): WorkspaceStorage {
   return {
     read: async (trustedUserId, operation) => {
       const userId = UserIdSchema.parse(trustedUserId);
-      return database.transaction(operation, async query => {
-        // 两次普通读取共享同一事务快照；不能把多个独立时刻的顺序和正文拼成一次成功读取。
-        const rawMeta = await load(query, userId, META_KEY, false);
-        const meta = rawMeta === null ? emptyMeta() : MetaSchema.parse(rawMeta);
-        const rows = payloadRows(await query("SELECT payload FROM wf_user_data WHERE userId = ? AND LEFT(recordId, 2) = 'g_' AND JSON_UNQUOTE(JSON_EXTRACT(payload, '$.kind')) = 'graph'", [userId]));
-        const records = rows.map(row => {
-          const parsed = decodeEnvelope(row);
-          if (parsed.kind !== "graph") throw new WorkspaceAccessError("WORKSPACE_UNAVAILABLE");
-          return parsed.record;
-        });
-        const ids = [...meta.activeOrder, ...meta.deletedIds];
-        if (records.length !== ids.length || ids.some(id => !records.some(record => record.document.id === id))) throw new WorkspaceAccessError("WORKSPACE_UNAVAILABLE");
-        for (const record of records) {
-          if ((record.status === "active") !== meta.activeOrder.includes(record.document.id)) throw new WorkspaceAccessError("WORKSPACE_UNAVAILABLE");
-        }
-        return CloudWorkspaceResponseSchema.parse({ userId, activeOrder: meta.activeOrder, deletedIds: meta.deletedIds,
-          graphs: ids.map(id => records.find(record => record.document.id === id)) });
-      }, true);
+      return database.transaction(operation, query => readSnapshot(query, userId), true);
     },
     write: async (trustedUserId, raw, operation) => {
       const userId = UserIdSchema.parse(trustedUserId);
@@ -154,19 +179,54 @@ export function createWorkspaceStorage(database: AccountDatabase): WorkspaceStor
           }
         }
         // 所有前置条件通过后才写入；预期业务冲突返回判别值，避免被数据库层改成未知503。
-        if (meta.deletedIds.length > 100) {
-          const purgedId = meta.deletedIds.shift();
-          if (purgedId === undefined) throw new WorkspaceAccessError("WORKSPACE_UNAVAILABLE");
-          const oldest = checkedEnvelope(await load(query, userId, graphKey(purgedId), true), purgedId);
-          if (oldest?.kind !== "graph" || oldest.record.status !== "deleted") throw new WorkspaceAccessError("WORKSPACE_UNAVAILABLE");
-          await store(query, userId, graphKey(purgedId), {
-            kind: "purged", graphId: purgedId, revision: oldest.record.revision + 1,
-            lastMutationId: oldest.lastMutationId, requestFingerprint: oldest.requestFingerprint,
-          });
-        }
-        await store(query, userId, key, envelope(CloudGraphRecordSchema.parse(next), input, fingerprint));
+        await trimDeleted(query, userId, meta);
+        await store(query, userId, key, envelope(CloudGraphRecordSchema.parse(next), input.mutationId, fingerprint));
         if (modifiesOrder) await store(query, userId, META_KEY, MetaSchema.parse(meta));
         return success(userId, next, meta);
+      });
+      if (!result.ok) throw new WorkspaceAccessError(result.code);
+      return result.value;
+    },
+    importGuest: async (trustedUserId, raw, operation) => {
+      const userId = UserIdSchema.parse(trustedUserId);
+      let input: CloudWorkspaceImportRequest;
+      let mapped: Array<{ document: CloudGraphRecord["document"]; history: CloudGraphRecord["history"]; originalIndex: number | null }>;
+      try {
+        input = CloudWorkspaceImportRequestSchema.parse(raw);
+        const sources = [...input.documents.map(value => ({ ...value, originalIndex: null })), ...input.deletedGraphs];
+        mapped = sources.map(source => {
+          const id = `import_${createHash("sha256").update(JSON.stringify([userId, input.importId, source.document.id])).digest("hex")}`;
+          return { ...remapGraphHistoryIdentity(source.document, source.history, id), originalIndex: source.originalIndex };
+        });
+      } catch { throw new WorkspaceAccessError("WORKSPACE_INVALID"); }
+      const fingerprint = createHash("sha256").update(JSON.stringify(input)).digest("hex");
+      const receiptKey = `i_${createHash("sha256").update(input.importId).digest("hex")}`;
+      const result = await database.transaction<ImportOutcome>(operation, async query => {
+        const meta = await lockMetadata(query, userId);
+        const rawReceipt = await load(query, userId, receiptKey, true);
+        if (rawReceipt !== null) {
+          const receipt = ImportReceiptSchema.parse(rawReceipt);
+          return receipt.requestFingerprint === fingerprint ? { ok: true, value: await readSnapshot(query, userId, true) }
+            : { ok: false, code: "WORKSPACE_CONFLICT" };
+        }
+        // 稳定身份仍可能被其他合法操作占用或已成为墓碑；任何一处碰撞均拒绝整批，不能覆盖。
+        for (const source of mapped) {
+          if (await load(query, userId, graphKey(source.document.id), true) !== null) return { ok: false, code: "WORKSPACE_CONFLICT" };
+        }
+        const offset = meta.activeOrder.length;
+        for (const source of mapped) {
+          const record = CloudGraphRecordSchema.parse({ document: source.document, history: source.history,
+            revision: 1, status: source.originalIndex === null ? "active" : "deleted",
+            originalIndex: source.originalIndex === null ? null : offset + source.originalIndex });
+          await store(query, userId, graphKey(record.document.id), envelope(record, input.importId, fingerprint));
+          if (record.status === "active") meta.activeOrder.push(record.document.id);
+          else meta.deletedIds.push(record.document.id);
+        }
+        await trimDeleted(query, userId, meta);
+        await store(query, userId, META_KEY, MetaSchema.parse(meta));
+        await store(query, userId, receiptKey, ImportReceiptSchema.parse({ kind: "guestImport", requestFingerprint: fingerprint,
+          graphIds: mapped.map(source => source.document.id) }));
+        return { ok: true, value: await readSnapshot(query, userId, true) };
       });
       if (!result.ok) throw new WorkspaceAccessError(result.code);
       return result.value;

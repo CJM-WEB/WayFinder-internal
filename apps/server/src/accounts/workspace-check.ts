@@ -7,8 +7,9 @@ import { createHash, randomUUID } from "node:crypto";
 import process from "node:process";
 import {
   CLOUD_ACCOUNT_HEADER, EditableGraphSchema, EditableNodeSchema, type CloudGraphWriteRequest, type EditableGraph,
+  type CloudWorkspaceImportRequest,
 } from "@wayfinder/contracts";
-import { appendHistory, createGraphHistory, redoHistoryEvent, restoreGraphHistory, storeGraphHistory, undoHistoryEvent } from "@wayfinder/contracts/graph-history";
+import { appendHistory, createGraphHistory, redoHistoryEvent, remapGraphHistoryIdentity, restoreGraphHistory, storeGraphHistory, undoHistoryEvent } from "@wayfinder/contracts/graph-history";
 
 import { buildServer } from "../app.js";
 import { registerWorkspaceRoutes } from "../routes/workspace.js";
@@ -19,10 +20,12 @@ import { createWorkspaceStorage } from "./workspace-storage.js";
 type Query = Parameters<Parameters<AccountDatabase["transaction"]>[1]>[0];
 /** 在实际事务已写图和元数据后触发真正的 SQL 错误，验证整笔回滚而不是模拟成功。 */
 class FailingDatabase extends AccountDatabase {
+  failAtReceipt = false;
   override transaction<T>(operation: DatabaseOperation, action: (query: Query) => Promise<T>, consistentRead = false): Promise<T> {
     return super.transaction(operation, query => action(async (sql, values = []) => {
       const result = await query(sql, values);
-      if (sql.includes("UPDATE payload") && values[1] === "workspace_meta") {
+      const key = values[1];
+      if (sql.includes("UPDATE payload") && (this.failAtReceipt ? typeof key === "string" && key.startsWith("i_") : key === "workspace_meta")) {
         await query("SELECT fixture_missing_column FROM wf_user_data");
       }
       return result;
@@ -54,7 +57,7 @@ const save = (document: EditableGraph, expectedRevision = 0): CloudGraphWriteReq
 const edit = (action: "delete" | "restore", graphId: string, expectedRevision: number): CloudGraphWriteRequest => ({
   action, graphId, expectedRevision, mutationId: randomUUID(),
 });
-let database: AccountDatabase | undefined, second: AccountDatabase | undefined, failing: AccountDatabase | undefined;
+let database: AccountDatabase | undefined, second: AccountDatabase | undefined, failing: FailingDatabase | undefined;
 let interleaved: InterleavedDatabase | undefined;
 let stage = "配置";
 const users: string[] = [], emails: string[] = [];
@@ -229,6 +232,80 @@ try {
   assert(JSON.stringify(tombstone).includes('"purged"'));
   assert(!JSON.stringify(tombstone).includes('"document"') && !JSON.stringify(tombstone).includes('"history"'));
 
+  stage = "整批访客导入、并发重试和完整身份映射";
+  const sourceActive = remapGraphHistoryIdentity(layoutRecord.document, layoutRecord.history, "guest-active");
+  const sourceDeleted = remapGraphHistoryIdentity(layoutRecord.document, layoutRecord.history, "guest-deleted-rich");
+  const sourceEmpty = (id: string) => { const document = graph(id); return { document, history: storeGraphHistory(createGraphHistory(document)) }; };
+  const imported: CloudWorkspaceImportRequest = { action: "import", importId: randomUUID(), documents: [sourceActive],
+    deletedGraphs: [{ ...sourceDeleted, originalIndex: 0 }, { ...sourceEmpty("guest-deleted-2"), originalIndex: 1 },
+      { ...sourceEmpty("guest-deleted-3"), originalIndex: 0 }] };
+  const sourceBytes = JSON.stringify(imported);
+  const target = (owner: string, importId: string, sourceId: string) => `import_${createHash("sha256").update(JSON.stringify([owner, importId, sourceId])).digest("hex")}`;
+  const importedId = target(b, imported.importId, sourceActive.document.id);
+  const importedDeletedIds = imported.deletedGraphs.map(source => target(b, imported.importId, source.document.id));
+  const beforeImport = await storage.read(b, operation());
+  const [batch, batchRetry] = await Promise.all([
+    storage.importGuest(b, imported, operation()), otherConnection.importGuest(b, imported, operation()),
+  ]);
+  assert.deepEqual(batchRetry, batch);
+  assert.deepEqual(batch.activeOrder, [...beforeImport.activeOrder, importedId]);
+  assert.equal(batch.deletedIds.length, 100);
+  assert.deepEqual(batch.deletedIds.slice(-3), importedDeletedIds);
+  const importedRecord = batch.graphs.find(record => record.document.id === importedId); assert(importedRecord);
+  assert.deepEqual(importedRecord.document, remapGraphHistoryIdentity(sourceActive.document, sourceActive.history, importedId).document);
+  assert.deepEqual(importedRecord.history, remapGraphHistoryIdentity(sourceActive.document, sourceActive.history, importedId).history);
+  assert.deepEqual(Object.keys(importedRecord.document.positions), ["z", "m"]);
+  assert.equal(batch.graphs.find(record => record.document.id === importedDeletedIds[0])?.originalIndex, beforeImport.activeOrder.length);
+  assert.equal(JSON.stringify(imported), sourceBytes);
+  const changed = { ...imported, documents: [sourceEmpty("different-source")] };
+  await assert.rejects(storage.importGuest(b, changed, operation()), { code: "WORKSPACE_CONFLICT" });
+  const restoredImported = await storage.write(b, edit("restore", importedDeletedIds[2] ?? "", 1), operation());
+  assert.equal(restoredImported.activeOrder[beforeImport.activeOrder.length], importedDeletedIds[2]);
+  const renamed = { ...importedRecord.document, title: "导入后继续编辑" };
+  const renamedHistory = appendHistory(restoreGraphHistory(importedRecord.history, importedRecord.document, 100), importedRecord.document, renamed,
+    { kind: "graph.rename", subject: "假标题", id: "after_import", occurredAt: "2026-11-11T00:00:03.000Z", active: true }, 100);
+  await storage.write(b, { action: "save", document: renamed, history: storeGraphHistory(renamedHistory), expectedRevision: 1, mutationId: randomUUID() }, operation());
+  const latestRetry = await storage.importGuest(b, imported, operation());
+  assert.equal(latestRetry.graphs.find(record => record.document.id === importedId)?.document.title, renamed.title);
+  assert.equal(latestRetry.graphs.find(record => record.document.id === importedId)?.revision, 2);
+  assert.equal(latestRetry.graphs.find(record => record.document.id === importedDeletedIds[2])?.status, "active");
+
+  stage = "稳定目标碰撞、全局清理及收据不复活旧数据";
+  const collision: CloudWorkspaceImportRequest = { action: "import", importId: randomUUID(), documents: [sourceEmpty("reserved-source")], deletedGraphs: [] };
+  const collisionId = target(b, collision.importId, "reserved-source");
+  await storage.write(b, save(graph(collisionId, "已存在身份")), operation());
+  const beforeCollision = await storage.read(b, operation());
+  await assert.rejects(storage.importGuest(b, collision, operation()), { code: "WORKSPACE_CONFLICT" });
+  assert.deepEqual(await storage.read(b, operation()), beforeCollision);
+  await storage.write(b, edit("delete", collisionId, 1), operation());
+  const cleanup: CloudWorkspaceImportRequest = { action: "import", importId: randomUUID(), documents: [],
+    deletedGraphs: Array.from({ length: 100 }, (_, index) => ({ ...sourceEmpty(`cleanup-${index}`), originalIndex: 0 })) };
+  const afterCleanup = await storage.importGuest(b, cleanup, operation());
+  assert.equal(afterCleanup.deletedIds.length, 100);
+  assert(!afterCleanup.graphs.some(record => record.document.id === importedDeletedIds[0] || record.document.id === collisionId));
+  assert.deepEqual(await storage.importGuest(b, imported, operation()), afterCleanup);
+  await assert.rejects(storage.importGuest(b, collision, operation()), { code: "WORKSPACE_CONFLICT" });
+  await assert.rejects(storage.write(b, save(graph(importedDeletedIds[0] ?? "")), operation()), { code: "WORKSPACE_CONFLICT" });
+  const receiptKey = `i_${createHash("sha256").update(imported.importId).digest("hex")}`;
+  const receipt = await db.query(operation(), "SELECT payload FROM wf_user_data WHERE userId = ? AND recordId = ?", [b, receiptKey]);
+  assert(JSON.stringify(receipt).includes("requestFingerprint"));
+  assert(!JSON.stringify(receipt).includes('"document"') && !JSON.stringify(receipt).includes('"history"'));
+  const importedOtherOwner = await storage.importGuest(a, imported, operation());
+  assert(importedOtherOwner.activeOrder.includes(target(a, imported.importId, sourceActive.document.id)));
+  assert(!importedOtherOwner.activeOrder.includes(importedId));
+
+  stage = "收据写入后实际SQL故障使整批回滚";
+  const atomic: CloudWorkspaceImportRequest = { action: "import", importId: randomUUID(), documents: [sourceEmpty("atomic-active")],
+    deletedGraphs: [{ ...sourceEmpty("atomic-deleted"), originalIndex: 0 }] };
+  const beforeAtomic = await storage.read(a, operation());
+  failing.failAtReceipt = true;
+  await assert.rejects(createWorkspaceStorage(failing).importGuest(a, atomic, operation()), { message: "DATABASE_UNAVAILABLE" });
+  assert.deepEqual(await storage.read(a, operation()), beforeAtomic);
+  const failedReceipt = await db.query(operation(), "SELECT payload FROM wf_user_data WHERE userId = ? AND recordId = ?",
+    [a, `i_${createHash("sha256").update(atomic.importId).digest("hex")}`]);
+  assert.deepEqual(failedReceipt, []);
+  assert.equal((await storage.importGuest(a, atomic, operation())).activeOrder.length, beforeAtomic.activeOrder.length + 1);
+
   stage = "真实Cookie与预期账号护栏";
   const server = buildServer(); registerWorkspaceRoutes(server, { auth, storage, publicOrigin: origin });
   try {
@@ -238,14 +315,17 @@ try {
     const wrongAccount = { ...goodHeaders, cookie: cookies[1] ?? "" };
     assert.equal((await server.inject({ url: "/api/workspace", headers: wrongAccount })).statusCode, 401);
     assert.equal((await server.inject({ method: "POST", url: "/api/workspace", headers: wrongAccount, payload: save(graph("wrong-account")) })).statusCode, 401);
+    assert.equal((await server.inject({ method: "POST", url: "/api/workspace", headers: wrongAccount, payload: { ...atomic, importId: randomUUID() } })).statusCode, 401);
     assert.deepEqual(await storage.read(b, operation()), before);
+    const httpImport = await server.inject({ method: "POST", url: "/api/workspace", headers: goodHeaders, payload: { ...atomic, importId: randomUUID() } });
+    assert.equal(httpImport.statusCode, 200); assert.equal(httpImport.json().userId, a);
     const guestHeaders = { host: "fixture.example", origin, [CLOUD_ACCOUNT_HEADER]: a };
     assert.equal((await server.inject({ url: "/api/workspace", headers: guestHeaders })).statusCode, 401);
     const invalidUser = await server.inject({ method: "POST", url: "/api/workspace", headers: goodHeaders,
       payload: { ...save(graph("foreign-user")), userId: b } });
     assert.equal(invalidUser.statusCode, 400);
   } finally { await server.close(); }
-  console.info("MySQL 云图：可信归属/幂等/并发CAS/实际事务回滚/RC连接一致快照/100步重做/100张恢复/墓碑/真实Cookie护栏通过");
+  console.info("MySQL 云图：归属/CAS/事务回滚/RR快照/完整历史及布局/100张墓碑/原子访客导入/并发去重/清理后重试/真实Cookie护栏通过");
 } catch {
   console.error(`MySQL 云图隔离验证失败：${stage}；未输出原始异常、账号或图内容`);
   process.exitCode = 1;

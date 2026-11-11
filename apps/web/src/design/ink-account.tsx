@@ -4,6 +4,7 @@ import { useStore } from "zustand";
 import type { AccountAction, SearchLanguage } from "@wayfinder/contracts";
 import { accountStore } from "../stores/account.js";
 import { getMessages } from "../i18n/messages.js";
+import { InkCloudSync } from "./ink-cloud-sync.js";
 
 type Mode = Exclude<AccountAction["action"], "logout">;
 export function InkAccount({ language }: Readonly<{ language: SearchLanguage }>) {
@@ -52,5 +53,6 @@ export function InkAccount({ language }: Readonly<{ language: SearchLanguage }>)
     {account.busy ? <p role="status">{text.busy}</p> : null}
     {notice === null ? null : <p className="ink-settings__hint" role="status">{notice}</p>}
     {failure ? <p className="ink-settings__error" role="alert">{text.failure}</p> : null}
+    <InkCloudSync language={language} allowImport />
   </section>;
 }

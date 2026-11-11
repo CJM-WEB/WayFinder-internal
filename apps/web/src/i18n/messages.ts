@@ -21,6 +21,10 @@ import type {
 } from "@wayfinder/contracts";
 
 export type Messages = Readonly<{
+  cloud: Readonly<{
+    title: string; retry: string; conflict: string; reload: string; copy: string; import: string; importNotice: string; confirmImport: string; importBlocked: string;
+    statuses: Readonly<Record<"guest" | "loading" | "saving" | "synced" | "offline" | "error" | "conflict", string>>;
+  }>;
   account: Readonly<{
     title: string; form: string; email: string; password: string; otp: string; guest: string;
     accepted: string; continueLogin: string; updated: string; busy: string; failure: string; required: string;
@@ -155,6 +159,12 @@ export type Messages = Readonly<{
  */
 export const MESSAGES: Record<SearchLanguage, Messages> = {
   "zh-CN": {
+    cloud: {
+      title: "云端工作区", importBlocked: "请先完成待提交同步或处理冲突，再导入访客图。", retry: "重试云端同步", conflict: "存在冲突，本地修改已保留", reload: "重新载入云端图", copy: "另存本地副本",
+      import: "导入访客图及历史", importNotice: "确认把本浏览器访客图、撤销历史及可恢复删除记录导入当前账号？不会上传 API Key，也不会删除访客源数据。",
+      confirmImport: "确认导入图及历史",
+      statuses: { guest: "尚未启用云端同步", loading: "正在读取云端工作区…", saving: "正在同步到云端…", synced: "已同步到云端", offline: "当前离线，修改保留在本地", error: "云端同步未完成，本地修改已保留；请重试", conflict: "云端版本有冲突，请选择重新载入或另存副本" },
+    },
     account: {
       title: "账号", form: "邮箱账号", email: "邮箱", password: "密码", otp: "验证码",
       guest: "访客可自带 Key 使用；登录后才可验证邀请码并使用作者体验。图及历史、Key 不会自动上传。",
@@ -339,6 +349,12 @@ export const MESSAGES: Record<SearchLanguage, Messages> = {
     },
   },
   "en-US": {
+    cloud: {
+      title: "Cloud workspace", importBlocked: "Finish pending sync or resolve conflicts before importing guest graphs.", retry: "Retry cloud sync", conflict: "Conflict: local changes are preserved", reload: "Reload cloud graph", copy: "Save local copy",
+      import: "Import guest graphs and history", importNotice: "Import this browser's guest graphs, undo history and recoverable deleted graphs into this account? API keys are excluded and guest source data stays intact.",
+      confirmImport: "Confirm graph and history import",
+      statuses: { guest: "Cloud sync is not active", loading: "Loading cloud workspace…", saving: "Syncing to cloud…", synced: "Synced to cloud", offline: "Offline. Your changes are kept locally", error: "Cloud sync did not complete. Local changes are preserved; please retry", conflict: "Cloud version conflict. Reload or save a local copy" },
+    },
     account: {
       title: "Account", form: "Email account", email: "Email", password: "Password", otp: "Verification code",
       guest: "Guests can use their own keys. Sign in before verifying an invitation for the author trial. Graphs, history and keys are never uploaded automatically.",

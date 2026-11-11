@@ -1,7 +1,7 @@
 /** 共享历史协议/重放回归：云结构严格，但旧本地恢复接受规则与真实算法保持不变。 */
 import { describe, expect, it } from "vitest";
 import { EditableGraphSchema, StoredGraphHistoryBaseSchema, StoredGraphHistorySchema, type EditableGraph } from "./index.js";
-import { appendHistory, createGraphHistory, redoHistoryEvent, restoreGraphHistory, storeGraphHistory, undoHistoryEvent } from "./graph-history.js";
+import { appendHistory, createGraphHistory, redoHistoryEvent, remapGraphHistoryIdentity, restoreGraphHistory, storeGraphHistory, undoHistoryEvent } from "./graph-history.js";
 
 const graph = (): EditableGraph => EditableGraphSchema.parse({
   version: "workspace.v1", id: "fixture-graph", title: "原图", query: "", language: "zh-CN",
@@ -11,7 +11,11 @@ const graph = (): EditableGraph => EditableGraphSchema.parse({
 
 describe("共享历史持久化协议", () => {
   it("保留100步、选择性撤销及redo分支，经过Schema和JSON恢复仍可重做", () => {
-    let current = graph(), history = createGraphHistory(current);
+    let current = EditableGraphSchema.parse({ ...graph(), lastRunId: "original-run",
+      nodes: ["A", "B"].map(id => ({ id, title: id, description: "", nodeType: "primary", layer: 0, status: "empty", resources: [], warnings: [] })),
+      positions: { B: { x: 1, y: 2 }, A: { x: 3, y: 4 } },
+    });
+    let history = createGraphHistory(current);
     for (let index = 0; index < 101; index++) {
       const after = { ...current, title: `图${index}` };
       history = appendHistory(history, current, after, { kind: "graph.rename", subject: after.title,
@@ -27,6 +31,17 @@ describe("共享历史持久化协议", () => {
     const redone = redoHistoryEvent(restored);
     expect(redone?.ok).toBe(true);
     if (redone?.ok) expect(redone.graph).toEqual(current);
+    const before = JSON.stringify(stored);
+    const copy = remapGraphHistoryIdentity(undone.graph, stored, "copy-graph");
+    expect(JSON.stringify(stored)).toBe(before);
+    expect(copy.history.events).toHaveLength(100); expect(copy.history.redoIds).toEqual(stored.redoIds);
+    expect(copy.document.lastRunId).toBe("original-run");
+    expect(Object.keys(copy.document.positions)).toEqual(["B", "A"]);
+    expect(copy.document.nodes.map(node => node.id)).toEqual(["A", "B"]);
+    expect(copy.history.events.map(event => event.id)).toEqual(stored.events.map(event => event.id));
+    const copiedRedo = redoHistoryEvent(restoreGraphHistory(copy.history, copy.document, 100));
+    if (!copiedRedo?.ok) throw new Error("副本无法重做");
+    expect(copiedRedo.graph).toEqual({ ...current, id: "copy-graph" });
     expect(StoredGraphHistorySchema.safeParse({ ...stored, events: [...stored.events, stored.events[0]] }).success).toBe(false);
   });
 

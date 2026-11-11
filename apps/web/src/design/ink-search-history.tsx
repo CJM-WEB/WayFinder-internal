@@ -9,6 +9,7 @@ import type { SearchLanguage } from "@wayfinder/contracts";
 import { getMessages } from "../i18n/messages.js";
 import { workspaceStore } from "../stores/workspace-store.js";
 import { workspacePersistenceStore } from "../stores/workspace-persistence.js";
+import { InkCloudSync } from "./ink-cloud-sync.js";
 import { InkUndoPanel } from "./ink-undo-panel.js";
 import { InkSettingsPanel } from "./ink-settings.js";
 import { useInkPresence } from "./ink-presence.js";
@@ -193,6 +194,7 @@ export function InkSearchHistory({ open, available, language, onOpen, onClose, o
           </button>
         </header>
         {documents.length === 0 ? <p className="ink-study__history-empty">{messages.workspace.emptyRecords}</p> : null}
+        <InkCloudSync language={language} />
         <ul className="ink-study__history-list">
           {documents.map((document, index) => <HistoryRecord key={document.id} id={document.id} title={document.title} index={index}
             language={language} disabled={disabled} selected={document.id === currentId}

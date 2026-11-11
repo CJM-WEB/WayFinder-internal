@@ -2,7 +2,7 @@
 import { describe, expect, it } from "vitest";
 import {
   CloudGraphRecordSchema, CloudGraphWriteRequestSchema, CloudGraphWriteResponseSchema,
-  CloudWorkspaceResponseSchema, EditableGraphSchema, StoredGraphHistorySchema,
+  CloudWorkspaceResponseSchema, CloudWorkspaceImportRequestSchema, EditableGraphSchema, StoredGraphHistorySchema,
 } from "./index.js";
 import { createGraphHistory, storeGraphHistory } from "./graph-history.js";
 
@@ -47,5 +47,21 @@ describe("云工作区公共协议", () => {
     const response = { userId: "fixture-user", record, activeOrder: [document.id], deletedIds: [] };
     expect(CloudGraphWriteResponseSchema.safeParse(response).success).toBe(true);
     expect(CloudGraphWriteResponseSchema.safeParse({ ...response, activeOrder: [] }).success).toBe(false);
+  });
+
+  it("导入保留两组源顺序，拒绝重复身份、秘密、额外账号与超限删除栈", () => {
+    const source = { document, history };
+    const request = { action: "import", importId: "fixture-import", documents: [source], deletedGraphs: [] };
+    expect(CloudWorkspaceImportRequestSchema.parse(request)).toEqual(request);
+    for (const invalid of [{ ...request, userId: "other-user" }, { ...request, apiKey: "fixture-only-key" },
+      { ...request, documents: [source, source] },
+      { ...request, deletedGraphs: [{ ...source, originalIndex: 0 }] },
+      { ...request, documents: [], deletedGraphs: Array.from({ length: 101 }, (_, i) => ({
+        document: { ...document, id: `deleted-${i}` }, history, originalIndex: i,
+      })) }]) {
+      expect(CloudWorkspaceImportRequestSchema.safeParse(invalid).success).toBe(false);
+    }
+    // 空列表可幂等确认；语义重放继续由存储入口统一校验，不在Schema平行实现。
+    expect(CloudWorkspaceImportRequestSchema.safeParse({ ...request, documents: [] }).success).toBe(true);
   });
 });

@@ -1,6 +1,6 @@
 /** 普通CI验证图／历史不一致和取消在数据库连接前失败，不把假实现当实际SQL证据。 */
 import { describe, expect, it } from "vitest";
-import { EditableGraphSchema, type CloudGraphWriteRequest } from "@wayfinder/contracts";
+import { EditableGraphSchema, type CloudGraphWriteRequest, type CloudWorkspaceImportRequest } from "@wayfinder/contracts";
 import { createGraphHistory, storeGraphHistory } from "@wayfinder/contracts/graph-history";
 import { AccountDatabase, databaseConfigFromUrl, databaseOperation } from "./database.js";
 import { createWorkspaceStorage } from "./workspace-storage.js";
@@ -19,6 +19,15 @@ describe("云图数据拒绝边界", () => {
       const controller = new AbortController(); controller.abort();
       await expect(storage.write("fixture_user", input, databaseOperation(controller.signal))).rejects.toMatchObject({ code: "DATABASE_CANCELLED" });
       await expect(storage.read("fixture_user", databaseOperation(controller.signal))).rejects.toMatchObject({ code: "DATABASE_CANCELLED" });
+      const imported: CloudWorkspaceImportRequest = { action: "import", importId: "fixture_import",
+        documents: [{ document, history: input.history }], deletedGraphs: [] };
+      await expect(storage.importGuest("fixture_user", { ...imported,
+        deletedGraphs: [{ document, history: input.history, originalIndex: 0 }] }, databaseOperation(new AbortController().signal)))
+        .rejects.toMatchObject({ code: "WORKSPACE_INVALID" });
+      await expect(storage.importGuest("fixture_user", { ...imported,
+        documents: [{ document: { ...document, title: "与源历史不一致" }, history: input.history }] }, databaseOperation(new AbortController().signal)))
+        .rejects.toMatchObject({ code: "WORKSPACE_INVALID" });
+      await expect(storage.importGuest("fixture_user", imported, databaseOperation(controller.signal))).rejects.toMatchObject({ code: "DATABASE_CANCELLED" });
     } finally { await database.close(); }
   });
 });
