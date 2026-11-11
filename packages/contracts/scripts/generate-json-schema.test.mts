@@ -31,6 +31,7 @@ const expectedFileNames = [
   "experience-invite-request.schema.json",
   "experience-status-response.schema.json",
   "credentials-error-response.schema.json",
+  "user-id.schema.json",
 ] as const;
 
 const temporaryDirectories: string[] = [];

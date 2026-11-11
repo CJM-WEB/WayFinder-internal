@@ -67,7 +67,7 @@ const EnvironmentInputSchema = z
   // `process.env` 包含操作系统与工具链变量；这里只投影应用明确声明的字段。
   .strip();
 
-/** `.env.example` 与部署文档必须和这份输入白名单保持完全一致。 */
+/** 搜索运行输入白名单；`.env.example` 另含 accounts/database 的显式迁移配置。 */
 export const SERVER_ENVIRONMENT_VARIABLES = Object.freeze(
   Object.keys(EnvironmentInputSchema.shape).sort(),
 );

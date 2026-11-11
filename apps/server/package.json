@@ -5,6 +5,8 @@
   "type": "module",
   "scripts": {
     "build": "pnpm --filter @wayfinder/contracts --fail-if-no-match run build && tsc --project tsconfig.build.json && node --input-type=module --eval \"await import('./dist/index.js')\"",
+    "accounts:migrate": "pnpm run build && node --env-file-if-exists=../../.env dist/accounts/migrate.js",
+    "accounts:test:mysql": "pnpm run build && node dist/accounts/mysql-check.js",
     "experience:configure": "pnpm run build && node --env-file-if-exists=../../.env dist/settings/configure-experience.js",
     "eval:golden": "pnpm run build && node dist/eval/run-planner-golden.js",
     "eval:h2-baseline": "pnpm run build && node dist/eval/run-h2-retrieval-baseline.js",
@@ -22,6 +24,7 @@
     "@wayfinder/contracts": "workspace:*",
     "fastify": "5.12.7",
     "lru-cache": "11.5.3",
+    "mysql2": "3.24.6",
     "openai": "7.32.0",
     "p-limit": "3.1.0",
     "zod": "4.6.7"

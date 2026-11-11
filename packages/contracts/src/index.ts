@@ -9,6 +9,10 @@
  */
 import { z } from "zod";
 
+/** D11 稳定归属标识；只表达身份，不允许邮箱或浏览器提交值替代可信会话。 */
+export const UserIdSchema = z.string().min(1).max(128).regex(/^[A-Za-z0-9_-]+$/);
+export type UserId = z.infer<typeof UserIdSchema>;
+
 /**
  * D9 凭据传输与搜索内容分离：此头仅供浏览器向同源后端提交本次凭据选择。
  * 不得写入 URL、图内容、Prompt（提示词）或日志；体验授权另走专用安全通道。

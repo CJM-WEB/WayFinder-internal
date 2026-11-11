@@ -22,6 +22,7 @@ import {
   SearchRequestSchema,
   SettingsPublicResponseSchema,
   StreamEventSchema,
+  UserIdSchema,
 } from "../src/index.ts";
 
 export interface JsonSchemaArtifact {
@@ -109,6 +110,11 @@ const jsonSchemaRoots = [
     schemaName: "CredentialsErrorResponseSchema",
     fileName: "credentials-error-response.schema.json",
     schema: CredentialsErrorResponseSchema,
+  },
+  {
+    schemaName: "UserIdSchema",
+    fileName: "user-id.schema.json",
+    schema: UserIdSchema,
   },
 ] as const satisfies readonly JsonSchemaRoot[];
 
