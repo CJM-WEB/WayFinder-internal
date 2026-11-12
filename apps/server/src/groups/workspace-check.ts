@@ -170,9 +170,11 @@ try {
       kind: "graph.update", subject: "仅时间字段不产生编辑", mutationId: mutation() }, operation())).workspace;
     assert.equal(metadataOnly.revision, beforeMetadataOnly.revision);
     assert.deepEqual(record(metadataOnly, edited.document.id), edited);
+    // WAY-148 允许旧基线重复写入当前同值成为无操作；不同竞争名称才应验证同字段冲突。
+    const competingDocument = { ...changedDocument, title: "过期基线竞争的另一个图名" };
     await rejectCode(workspace.write(owner.userId, { action: "edit", groupId: groupA,
-      graphId: copiedIn.document.id, expectedRevision: copiedIn.revision, before: copiedIn.document, after: changedDocument,
-      kind: "graph.rename", subject: changedDocument.title, mutationId: mutation() }, operation()), "GROUP_CONFLICT");
+      graphId: copiedIn.document.id, expectedRevision: copiedIn.revision, before: copiedIn.document, after: competingDocument,
+      kind: "graph.rename", subject: competingDocument.title, mutationId: mutation() }, operation()), "GROUP_CONFLICT");
     assert.equal((await personal.read(member.userId, operation())).graphs.find(value => value.document.id === source.id)?.document.title, source.title);
 
     const nextSource = { ...source, title: "个人后来独立修改的图" };
