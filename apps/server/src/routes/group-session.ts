@@ -26,6 +26,16 @@ export function authorizeGroupConnection(request: FastifyRequest, identity: Acco
   return sync.authorize(identity, groupId, connectionId, operation);
 }
 
+/** 搜索prepare与组路由共用同一固定错误投影；不会把权限／版本拒绝改成无正文500。 */
+export function sendGroupAccessError(reply: FastifyReply, error: GroupAccessError): FastifyReply {
+  const code = error.code;
+  reply.header("Cache-Control", "no-store");
+  const status = code === "ACCOUNT_REQUIRED" ? 401 : code === "GROUP_FORBIDDEN" ? 403 : code === "GROUP_NOT_FOUND" ? 404
+    : code === "GROUP_CONFLICT" || code === "GROUP_DEPENDENCY" || code === "GROUP_CONSTRAINT" ? 409
+      : code === "GROUP_INVALID" || code === "NICKNAME_REQUIRED" ? 400 : 503;
+  return reply.code(status).send(GroupErrorResponseSchema.parse({ code }));
+}
+
 export function registerGroupSessionRoutes(server: FastifyInstance, options: SessionOptions,
   setup: (routes: FastifyInstance, guard: Guard) => void): void {
   void server.register(async routes => {
@@ -59,10 +69,7 @@ export function registerGroupSessionRoutes(server: FastifyInstance, options: Ses
       const status = typeof error === "object" && error !== null && "statusCode" in error ? error.statusCode : undefined;
       const code = error instanceof GroupAccessError ? error.code
         : typeof status === "number" && status >= 400 && status < 500 ? "GROUP_INVALID" : "GROUP_UNAVAILABLE";
-      const httpStatus = code === "ACCOUNT_REQUIRED" ? 401 : code === "GROUP_FORBIDDEN" ? 403 : code === "GROUP_NOT_FOUND" ? 404
-        : code === "GROUP_CONFLICT" || code === "GROUP_DEPENDENCY" || code === "GROUP_CONSTRAINT" ? 409
-          : code === "GROUP_INVALID" || code === "NICKNAME_REQUIRED" ? 400 : 503;
-      return reply.code(httpStatus).send(GroupErrorResponseSchema.parse({ code }));
+      return sendGroupAccessError(reply, new GroupAccessError(code));
     });
     setup(routes, handler => async (request, reply) => withOperation(request, reply, async operation => {
       const initial = admitted.get(request);

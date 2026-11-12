@@ -31,7 +31,7 @@ export function registerGroupWorkspaceRoutes(server: FastifyInstance, options: R
       const input = GroupGraphActionSchema.safeParse(request.body);
       if (!input.success) throw new GroupAccessError("GROUP_INVALID");
       const admitted = authorizeGroupConnection(request, identity, input.data.groupId, operation, options.sync);
-      const result = GroupGraphWriteResponseSchema.parse(await options.storage.write(identity.userId, input.data, admitted));
+      const result = GroupGraphWriteResponseSchema.parse(await options.storage.write(identity.userId, input.data, admitted, identity.sessionId));
       options.sync?.notifyGroup(input.data.groupId);
       return reply.send(result);
     }));

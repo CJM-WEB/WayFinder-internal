@@ -7,6 +7,7 @@ import {
   AccountNicknameSchema, AccountProfileActionSchema, AccountProfileResponseSchema,
   EditableGraphSchema, GroupActionSchema, GroupActionResponseSchema, GroupDetailsSchema,
   GroupGraphActionSchema, GroupGraphHistorySchema, GroupInvitationCodeSchema,
+  GroupSearchTargetSchema, GroupSearchReceiptSchema,
   GroupSyncEventSchema, GroupWorkspaceResponseSchema, StoredGraphHistorySchema,
 } from "./index.js";
 import { createGraphHistory, storeGraphHistory } from "./graph-history.js";
@@ -80,6 +81,20 @@ describe("D12 管理与图动作", () => {
       { ...edit, after: { ...document, id: "another-graph" } }, { ...edit, actorUserId: "owner" }, { ...edit, history }]) {
       expect(GroupGraphActionSchema.safeParse(invalid).success).toBe(false);
     }
+  });
+
+  it("手工动作不能提交搜索来源或范围；小组搜索目标与收据严格校验", () => {
+    const edit = { action: "edit", groupId: group.groupId, mutationId: "edit", graphId: document.id, expectedRevision: 1,
+      before: document, after: document, kind: "graph.update", subject: "修改" };
+    for (const invalid of [{ ...edit, scope: { type: "graph.replace" } }, { ...edit, kind: "graph.search" }, { ...edit, kind: "node.search" }]) {
+      expect(GroupGraphActionSchema.safeParse(invalid).success).toBe(false);
+    }
+    const target = { groupId: group.groupId, graphId: document.id, expectedRevision: 1, nodeId: "节点" };
+    expect(GroupSearchTargetSchema.safeParse(target).success).toBe(true);
+    expect(GroupSearchTargetSchema.safeParse({ ...target, userId: "owner" }).success).toBe(false);
+    const receipt = { version: "groupSearch.v1", target, runId: "run", signature: "a".repeat(64) };
+    expect(GroupSearchReceiptSchema.safeParse(receipt).success).toBe(true);
+    expect(GroupSearchReceiptSchema.safeParse({ ...receipt, sessionId: "not-public" }).success).toBe(false);
   });
 
   it("双向复制只提交已授权来源，不能携带旧历史或指定目标账号", () => {

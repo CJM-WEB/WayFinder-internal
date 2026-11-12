@@ -74,6 +74,17 @@ describe("小组历史作者窗口", () => {
     expect(result.base.graph.positions.node).toEqual({ x: 20, y: 30 });
     expect(() => restoreGroupHistory(result, moved)).not.toThrow();
   });
+
+  it("可信搜索作用域即使当前内容同值，也保留本次明确替换的事件归属", () => {
+    const history = appendGroupHistory(createGroupHistory(document), document, document, {
+      ...metadata("search_replace", "owner"), kind: "graph.search", scope: { type: "graph.replace" },
+    });
+    expect(history.events).toHaveLength(1);
+    expect(history.events[0]).toMatchObject({ actorUserId: "owner", kind: "graph.search", scope: { type: "graph.replace" }, active: true });
+    const undone = undoGroupHistory(history, document, "owner", "search_replace");
+    expect(undone.history.redoIdsByUser.owner).toEqual(["search_replace"]);
+    expect(undone.document.title).toBe(document.title);
+  });
 });
 
 const node = (id: string) => ({ id, title: id, description: "", nodeType: "primary" as const, layer: 0,

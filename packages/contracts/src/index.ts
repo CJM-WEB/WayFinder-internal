@@ -229,6 +229,22 @@ export const SearchRequestSchema = z.strictObject({
 });
 export type SearchRequest = z.infer<typeof SearchRequestSchema>;
 
+/** 小组搜索只携带公开目标；身份与会话始终由服务端冻结，连接证明不占用40秒运行信号。 */
+const editableGraphIdSchema = z.string().min(1);
+const graphRevisionSchema = z.number().int().min(1);
+export const GROUP_SEARCH_TARGET_HEADER = "x-wayfinder-group-search-target";
+export const GroupSearchTargetSchema = z.strictObject({
+  groupId: UserIdSchema, graphId: editableGraphIdSchema, expectedRevision: graphRevisionSchema,
+  nodeId: z.string().min(1).optional(),
+});
+export type GroupSearchTarget = z.infer<typeof GroupSearchTargetSchema>;
+/** 收据只证明真实完成结果；应用还须重新校验会话、成员代际和当前版本，不能作为访问凭据。 */
+export const GroupSearchReceiptSchema = z.strictObject({
+  version: z.literal("groupSearch.v1"), target: GroupSearchTargetSchema,
+  runId: SearchRequestSchema.shape.runId, signature: z.string().regex(/^[a-f0-9]{64}$/),
+});
+export type GroupSearchReceipt = z.infer<typeof GroupSearchReceiptSchema>;
+
 /** Graph（图）结构词表由计划图与最终结果图共同使用。 */
 export const NodeTypeSchema = z.enum([
   "primary",
@@ -1052,8 +1068,12 @@ const completeStreamEventDataSchema = z
   .strictObject({
     finalStatus: z.enum(["complete", "partial"]),
     result: ResultGraphSchema,
+    groupSearchReceipt: GroupSearchReceiptSchema.optional(),
   })
   .superRefine((data, context) => {
+    if (data.groupSearchReceipt !== undefined && data.groupSearchReceipt.runId !== data.result.runId) {
+      context.addIssue({ code: "custom", path: ["groupSearchReceipt", "runId"], message: "小组搜索收据与结果运行身份不一致" });
+    }
     const expectedStatus = data.result.meta.partial
       ? "partial"
       : "complete";
@@ -1149,7 +1169,7 @@ const editablePositionSchema = z.strictObject({
  */
 export const EditableGraphSchema = z.strictObject({
   version: z.literal("workspace.v1"),
-  id: z.string().min(1),
+  id: editableGraphIdSchema,
   title: z.string().min(1),
   query: z.string().max(2000),
   language: SearchLanguageSchema,
@@ -1301,7 +1321,7 @@ export const CLOUD_ACCOUNT_HEADER = "x-wayfinder-account";
 /** 仅绑定同会话已追平的小组连接；成员权限仍由服务端事务校验。 */
 export const GROUP_CONNECTION_HEADER = "x-wayfinder-group-connection";
 const cloudGraphIdSchema = EditableGraphSchema.shape.id;
-const cloudRevisionSchema = z.number().int().min(1);
+const cloudRevisionSchema = graphRevisionSchema;
 const cloudGraphFields = {
   document: EditableGraphSchema, history: StoredGraphHistorySchema, revision: cloudRevisionSchema,
 };
@@ -1527,7 +1547,11 @@ const groupGraphTargetFields = { ...groupTargetFields, graphId: cloudGraphIdSche
 export const GroupGraphActionSchema = z.discriminatedUnion("action", [
   z.strictObject({ action: z.literal("create"), ...groupTargetFields, document: EditableGraphSchema }),
   z.strictObject({ action: z.literal("edit"), ...groupGraphTargetFields, before: EditableGraphSchema, after: EditableGraphSchema,
-    kind: WorkspaceHistoryKindSchema, subject: z.string(), scope: WorkspaceHistoryScopeSchema.optional() }),
+    kind: WorkspaceHistoryKindSchema.exclude(["graph.search", "node.search"]), subject: z.string() }),
+  // 搜索正文必须与服务端完成收据绑定，不能利用普通整图编辑绕过可信来源与预览版本检查。
+  z.strictObject({ action: z.literal("applySearch"), ...groupGraphTargetFields, receipt: GroupSearchReceiptSchema,
+    result: ResultGraphSchema, mode: z.enum(["append", "replace"]), positions: EditableGraphSchema.shape.positions.optional(),
+    confirmedRevision: cloudRevisionSchema.optional() }),
   z.strictObject({ action: z.literal("delete"), ...groupGraphTargetFields }),
   z.strictObject({ action: z.literal("restore"), ...groupGraphTargetFields }),
   z.strictObject({ action: z.literal("undo"), ...groupGraphTargetFields, eventId: historyIdSchema }),
@@ -1537,6 +1561,11 @@ export const GroupGraphActionSchema = z.discriminatedUnion("action", [
 ]).superRefine((value, context) => {
   if (value.action === "edit" && (value.before.id !== value.graphId || value.after.id !== value.graphId)) {
     context.addIssue({ code: "custom", message: "编辑前后图标识必须与目标图一致" });
+  }
+  if (value.action === "applySearch" && (value.receipt.target.groupId !== value.groupId
+    || value.receipt.target.graphId !== value.graphId || value.receipt.runId !== value.result.runId
+    || value.receipt.target.nodeId === undefined && value.mode !== "replace")) {
+    context.addIssue({ code: "custom", message: "搜索应用与原小组、图、运行或作用域不一致" });
   }
 });
 export type GroupGraphAction = z.infer<typeof GroupGraphActionSchema>;
@@ -1575,3 +1604,84 @@ export const GroupSyncEventSchema = z.discriminatedUnion("type", [
   }
 });
 export type GroupSyncEvent = z.infer<typeof GroupSyncEventSchema>;
+
+/** 共享确定性搜索投影不包含网络、布局库或身份状态。 */
+
+/** 真实结果只在此边界转换；来源和失败信息保持原样，不让编辑协议反向放宽搜索结果。 */
+export const fromResultGraph = (result: ResultGraph, graphId: string): EditableGraph => {
+  const validated = ResultGraphSchema.parse(result);
+  return EditableGraphSchema.parse({
+    version: "workspace.v1",
+    id: graphId,
+    title: validated.query.raw,
+    query: validated.query.raw,
+    language: validated.query.language,
+    presentationMode: validated.analysis.presentationMode,
+    analysis: validated.analysis,
+    createdAt: validated.meta.createdAt,
+    updatedAt: validated.meta.createdAt,
+    lastRunId: validated.runId,
+    nodes: validated.graph.nodes.map(node => ({
+      ...node,
+      resources: node.resources.map(resource => ({ ...resource, origin: "search" as const })),
+    })),
+    edges: validated.graph.edges,
+    positions: {},
+  });
+};
+
+const MAX_NEW_RESOURCES_PER_NODE = 6;
+
+export function applyNodeSearchResult(
+  graph: EditableGraph, nodeId: string, input: ResultGraph, mode: "append" | "replace", at = new Date().toISOString(),
+): EditableGraph {
+  const result = ResultGraphSchema.parse(input);
+  const previous = graph.nodes.find(node => node.id === nodeId);
+  const incoming = result.graph.nodes.find(node => node.id === nodeId);
+  if (previous === undefined || incoming === undefined || incoming.status === "failed") return graph;
+
+  // 追加检查全图；替换排除即将覆盖的本节点，但仍尊重其他节点现有 URL 所有权。
+  const occupied = new Set(graph.nodes
+    .filter(node => mode === "append" || node.id !== nodeId)
+    .flatMap(node => node.resources.map(resource => resource.canonicalUrl)));
+  const kept = mode === "append" ? previous.resources : [];
+  const ids = new Set(kept.map(resource => resource.id));
+  const additions: EditableResource[] = [];
+  for (const resource of incoming.resources.slice(0, MAX_NEW_RESOURCES_PER_NODE)) {
+    if (occupied.has(resource.canonicalUrl)) continue;
+    occupied.add(resource.canonicalUrl);
+    // 不同搜索运行可能重用候选 ID；新资源拥有独立身份，旧资源 ID 保持不变。
+    const prefix = `${result.runId}:${resource.id}`;
+    let id = prefix;
+    let suffix = 1;
+    while (ids.has(id)) id = `${prefix}:${suffix++}`;
+    ids.add(id);
+    additions.push({ ...resource, id, origin: "search" });
+  }
+  if (additions.length === 0) return graph;
+
+  const node: EditableNode = {
+    ...previous, status: incoming.status, warnings: incoming.warnings,
+    searchPlan: incoming.searchPlan,
+    resources: [...kept, ...additions].map((resource, index) => ({ ...resource, rank: index + 1 })),
+  };
+  delete node.error;
+  return EditableGraphSchema.parse({
+    ...graph, lastRunId: result.runId, updatedAt: at,
+    nodes: graph.nodes.map(current => current.id === nodeId ? node : current),
+  });
+}
+
+/** 全图明确替换保留身份／标题与创建时间；坐标仅能引用本次结果已有节点。 */
+export function applyGraphSearchResultContent(graph: EditableGraph, input: ResultGraph,
+  positions: EditableGraph["positions"] = {}, at = new Date().toISOString()): EditableGraph {
+  const result = ResultGraphSchema.parse(input);
+  if (!result.graph.nodes.some(node => node.resources.length > 0)) return graph;
+  const generated = fromResultGraph(result, graph.id);
+  return EditableGraphSchema.parse({
+    ...generated, id: graph.id, title: graph.title, createdAt: graph.createdAt,
+    ...(graph.engine === undefined ? {} : { engine: graph.engine }),
+    nodes: generated.nodes.map(node => ({ ...node, resources: node.resources.slice(0, MAX_NEW_RESOURCES_PER_NODE) })),
+    positions, updatedAt: at,
+  });
+}

@@ -45,6 +45,20 @@ describe("共享图确定性差异合并", () => {
     expect(mergeGroupEdit(before, before, after)).toEqual(before);
   });
 
+  it("手工修改不能伪造运行身份、AI分析或搜索计划，原可信元数据保持", () => {
+    const analysis = { intent: "learn" as const, topic: "学习", freshnessSensitive: false, ambiguityLevel: "low" as const,
+      broadSearchQueries: [], strategy: "plan_first" as const, presentationMode: "graph" as const };
+    const plan = { queries: ["固定检索"], maxResults: 20, rankingProfile: "software" as const, providerHints: ["code" as const] };
+    const before = graph();
+    const forged = changed(before, copy => { copy.lastRunId = "fake-run"; copy.analysis = analysis; copy.nodes[0]!.searchPlan = plan; });
+    expect(mergeGroupEdit(before, before, forged)).toEqual(before);
+    const trusted = changed(before, copy => { copy.lastRunId = "real-run"; copy.analysis = analysis; copy.nodes[0]!.searchPlan = plan; });
+    const edited = changed(trusted, copy => { copy.title = "手工改名"; copy.lastRunId = "fake-run";
+      copy.analysis = { ...analysis, topic: "伪造" }; copy.nodes[0]!.searchPlan = { ...plan, queries: ["伪造检索"] }; });
+    const result = mergeGroupEdit(trusted, trusted, edited);
+    expect(result.lastRunId).toBe("real-run"); expect(result.analysis).toEqual(analysis); expect(result.nodes[0]?.searchPlan).toEqual(plan);
+  });
+
   it("普通新建规范实际URL并剥离伪造搜索来源，复制只校验不改写来源", () => {
     const source = changed(graph(), copy => {
       copy.nodes[0]!.resources[0] = { ...resource("r1"), origin: "search", searchProvider: "fixture-search" };

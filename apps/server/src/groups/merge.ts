@@ -58,8 +58,12 @@ function manualResource(previous: EditableResource | undefined, incoming: Editab
     : { ...previous, ...presentation };
 }
 function normalizedAfter(before: EditableGraph, after: EditableGraph): EditableGraph {
-  const nodes = after.nodes.map(node => {
-    const old = before.nodes.find(value => value.id === node.id);
+  const nodes = after.nodes.map(input => {
+    const old = before.nodes.find(value => value.id === input.id);
+    // 搜索计划同来源元数据一样只能由可信搜索应用建立；手工字段变化不能伪造一次检索。
+    const node = { ...input };
+    if (old?.searchPlan === undefined) delete node.searchPlan;
+    else node.searchPlan = old.searchPlan;
     const resources = node.resources.map(resource => manualResource(old?.resources.find(value => value.id === resource.id), resource));
     const changed = old === undefined || old.title !== node.title || old.description !== node.description || !same(old.resources, resources);
     if (!changed && old !== undefined) {
@@ -73,7 +77,10 @@ function normalizedAfter(before: EditableGraph, after: EditableGraph): EditableG
     delete edited.error;
     return edited;
   });
-  const parsed = EditableGraphSchema.safeParse({ ...after, nodes, id: before.id, createdAt: before.createdAt, updatedAt: before.updatedAt });
+  const content = { ...after, nodes, id: before.id, createdAt: before.createdAt, updatedAt: before.updatedAt, lastRunId: before.lastRunId };
+  if (before.analysis === undefined) delete content.analysis;
+  else content.analysis = before.analysis;
+  const parsed = EditableGraphSchema.safeParse(content);
   if (!parsed.success) throw new GroupAccessError("GROUP_CONSTRAINT");
   return parsed.data;
 }

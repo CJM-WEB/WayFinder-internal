@@ -8,7 +8,7 @@ import { randomUUID } from "node:crypto";
 import process from "node:process";
 import {
   EditableGraphSchema, canonicalizeHttpUrl, type EditableGraph, type EditableNode, type GroupGraphAction,
-  type GroupGraphRecord, type GroupWorkspaceResponse, type WorkspaceHistoryKind, type WorkspaceHistoryScope,
+  type GroupGraphRecord, type GroupWorkspaceResponse,
 } from "@wayfinder/contracts";
 import { createGraphHistory, storeGraphHistory } from "@wayfinder/contracts/graph-history";
 
@@ -77,9 +77,9 @@ try {
       const id = result.workspace.activeOrder.at(-1); assert.ok(id);
       return record(result.workspace, id);
     };
-    const action = (before: GroupGraphRecord, after: EditableGraph, kind: WorkspaceHistoryKind = "graph.update", scope?: WorkspaceHistoryScope): Extract<GroupGraphAction, { action: "edit" }> => ({
+    const action = (before: GroupGraphRecord, after: EditableGraph, kind: Extract<GroupGraphAction, { action: "edit" }>["kind"] = "graph.update"): Extract<GroupGraphAction, { action: "edit" }> => ({
       action: "edit", groupId: targetGroup, graphId: before.document.id, expectedRevision: before.revision,
-      before: before.document, after, kind, subject: "多人SQL确定性修改", mutationId: mutation(), ...(scope === undefined ? {} : { scope }),
+      before: before.document, after, kind, subject: "多人SQL确定性修改", mutationId: mutation(),
     });
     const write = async (userId: string, input: GroupGraphAction) => {
       const result = await workspace.write(userId, input, operation());
@@ -150,8 +150,10 @@ try {
     assert.deepEqual(node(searchCopy.document, "A").resources, node(validSearchDocument, "A").resources);
     assert.equal(node(searchCopy.document, "A").status, "ready");
     const invalidScopedResource = { ...node(searchCopy.document, "A").resources[0]!, canonicalUrl: "https://forged.example/scoped", domain: "forged.example" };
-    await fail(a.userId, action(searchCopy, withNode(searchCopy.document, "A", { resources: [invalidScopedResource] }),
-      "graph.search", { type: "graph.replace" }), "GROUP_CONSTRAINT");
+    // 公开编辑已不能伪装搜索范围；真实签名结果的URL／CAS在search-check显式回归。
+    const invalidScopedAction = { ...action(searchCopy, withNode(searchCopy.document, "A", { resources: [invalidScopedResource] })),
+      scope: { type: "graph.replace" } };
+    await fail(a.userId, invalidScopedAction, "GROUP_INVALID");
     const copiedBack = (await workspace.write(b.userId, { action: "copyOut", groupId: targetGroup, graphId: searchCopyId,
       expectedRevision: searchCopy.revision, mutationId: mutation() }, operation())).personalGraph;
     assert.ok(copiedBack);
@@ -277,7 +279,8 @@ try {
     assert.deepEqual(await write(a.userId, noopAction), layoutUndone);
     assert.deepEqual(await write(a.userId, noopAction), layoutUndone);
     await fail(a.userId, { ...action(layoutUndone, withNode(layoutUndone.document, "A", { title: "未来版本" }), "node.edit"), expectedRevision: layoutUndone.revision + 100 }, "GROUP_CONFLICT");
-    await fail(a.userId, action(layoutBase, { ...layoutBase.document, title: "过期全图搜索替换" }, "graph.search", { type: "graph.replace" }), "GROUP_CONFLICT");
+    const invalidStaleScope = { ...action(layoutBase, { ...layoutBase.document, title: "过期全图搜索替换" }), scope: { type: "graph.replace" } };
+    await fail(a.userId, invalidStaleScope, "GROUP_INVALID");
     const cancelled = new AbortController(); cancelled.abort();
     const cancelledAction = action(layoutUndone, withNode(layoutUndone.document, "A", { title: "已取消修改" }), "node.edit");
     const beforeCancel = await workspace.read(a.userId, targetGroup, operation());

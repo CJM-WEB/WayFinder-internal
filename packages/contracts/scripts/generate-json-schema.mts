@@ -38,6 +38,8 @@ import {
   AccountProfileActionSchema,
   AccountProfileResponseSchema,
   GroupActionSchema,
+  GroupSearchTargetSchema,
+  GroupSearchReceiptSchema,
   GroupActionResponseSchema,
   GroupListResponseSchema,
   GroupErrorResponseSchema,
@@ -176,6 +178,8 @@ const jsonSchemaRoots = [
   { schemaName: "GroupWorkspaceQuerySchema", fileName: "group-workspace-query.schema.json", schema: GroupWorkspaceQuerySchema },
   { schemaName: "GroupGraphReceiptQuerySchema", fileName: "group-graph-receipt-query.schema.json", schema: GroupGraphReceiptQuerySchema },
   { schemaName: "GroupGraphReceiptResponseSchema", fileName: "group-graph-receipt-response.schema.json", schema: GroupGraphReceiptResponseSchema },
+  { schemaName: "GroupSearchTargetSchema", fileName: "group-search-target.schema.json", schema: GroupSearchTargetSchema },
+  { schemaName: "GroupSearchReceiptSchema", fileName: "group-search-receipt.schema.json", schema: GroupSearchReceiptSchema },
 ] as const satisfies readonly JsonSchemaRoot[];
 
 const defaultOutputDirectory = fileURLToPath(

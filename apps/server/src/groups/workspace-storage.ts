@@ -8,6 +8,7 @@ import { z } from "zod";
 import {
   EditableGraphSchema, GroupGraphActionSchema, GroupGraphReceiptResponseSchema,
   GroupGraphRecordSchema, GroupGraphWriteResponseSchema, GroupWorkspaceResponseSchema, UserIdSchema,
+  applyGraphSearchResultContent, applyNodeSearchResult,
   type EditableGraph, type GroupGraphAction, type GroupGraphReceiptResponse, type GroupGraphRecord,
   type GroupGraphWriteResponse, type GroupSummary, type GroupWorkspaceResponse,
 } from "@wayfinder/contracts";
@@ -18,10 +19,11 @@ import { GroupAccessError } from "./errors.js";
 import { appendGroupHistory, createGroupHistory, redoGroupHistory, restoreGroupHistory, undoGroupHistory } from "./history.js";
 import { assertGroupResourceUrls, mergeGroupEdit, normalizeGroupCreate } from "./merge.js";
 import { bumpGroupRevision, groupTransaction, loadMemberGroup, lockGroupActor, type GroupQuery } from "./storage.js";
+import type { GroupSearchAccess } from "./search.js";
 
 export type GroupWorkspaceStorage = Readonly<{
   read: (userId: string, groupId: string, operation: DatabaseOperation) => Promise<GroupWorkspaceResponse>;
-  write: (userId: string, input: GroupGraphAction, operation: DatabaseOperation) => Promise<GroupGraphWriteResponse>;
+  write: (userId: string, input: GroupGraphAction, operation: DatabaseOperation, sessionId?: string) => Promise<GroupGraphWriteResponse>;
   receipt: (userId: string, mutationId: string, operation: DatabaseOperation) => Promise<GroupGraphReceiptResponse>;
 }>;
 const MetaSchema = z.strictObject({ kind: z.literal("workspace"), activeOrder: z.array(z.string().min(1)), deletedIds: z.array(z.string().min(1)).max(100) });
@@ -70,6 +72,14 @@ async function loadRecord(query: GroupQuery, groupId: string, graphId: string) {
   const value = await load(query, groupId, graphKey(graphId));
   return value === null ? null : decode(value, graphId);
 }
+/** 调用方已在同一事务内核验组成员；搜索只读取活跃目标，不从旧草稿或删除栈复活。 */
+export async function readActiveGroupGraph(query: GroupQuery, groupId: string, graphId: string, expectedRevision?: number): Promise<GroupGraphRecord> {
+  const found = await loadRecord(query, groupId, graphId);
+  if (found === null) throw new GroupAccessError("GROUP_NOT_FOUND");
+  if (found.kind === "purged" || found.record.status !== "active"
+    || expectedRevision !== undefined && found.record.revision !== expectedRevision) throw new GroupAccessError("GROUP_CONFLICT");
+  return found.record;
+}
 async function storeRecord(query: GroupQuery, groupId: string, record: GroupGraphRecord): Promise<void> {
   await store(query, groupId, graphKey(record.document.id), { kind: "graph", recordJson: JSON.stringify(record) });
 }
@@ -108,7 +118,7 @@ async function trimDeleted(query: GroupQuery, groupId: string, meta: Meta): Prom
 }
 
 export function createGroupWorkspaceStorage(database: AccountDatabase, options: Readonly<{
-  createId?: () => string; now?: () => string;
+  createId?: () => string; now?: () => string; search?: Pick<GroupSearchAccess, "consume">;
 }> = {}): GroupWorkspaceStorage {
   const now = options.now ?? (() => new Date().toISOString());
   const newDocument = (source: EditableGraph): EditableGraph => {
@@ -126,7 +136,7 @@ export function createGroupWorkspaceStorage(database: AccountDatabase, options: 
       return GroupGraphReceiptResponseSchema.parse({ mutationId, applied: value !== null,
         groupId: value?.groupId ?? null, graphId: value?.graphId ?? null, personalGraphId: value?.personalGraphId ?? null });
     }, true),
-    write: async (trustedUserId, raw, operation) => {
+    write: async (trustedUserId, raw, operation, sessionId) => {
       let input: GroupGraphAction, userId: string;
       try { input = GroupGraphActionSchema.parse(raw); userId = UserIdSchema.parse(trustedUserId); }
       catch { throw new GroupAccessError("GROUP_INVALID"); }
@@ -171,17 +181,33 @@ export function createGroupWorkspaceStorage(database: AccountDatabase, options: 
           } else if (input.action === "edit") {
             if (current.status !== "active") throw new GroupAccessError("GROUP_CONFLICT");
             const sameVersion = input.expectedRevision === current.revision, matchesBefore = sameGraphContent(input.before, current.document);
-            // 搜索结果带整体／节点写入意图，必须保留原严格预览门禁；普通旧版本编辑只合并本次差异。
-            if ((sameVersion && !matchesBefore) || (input.scope !== undefined && (!sameVersion || !matchesBefore))) throw new GroupAccessError("GROUP_CONFLICT");
-            // 搜索作用域同样不得通过客户端填写的canonical/domain绕过实际URL硬边界。
-            if (input.scope !== undefined) assertGroupResourceUrls(input.after);
-            const merged = input.scope === undefined ? mergeGroupEdit(current.document, input.before, input.after) : input.after;
+            // 普通编辑只合并手工变化；搜索scope及来源只能由下面已验证收据的applySearch产生。
+            if (sameVersion && !matchesBefore) throw new GroupAccessError("GROUP_CONFLICT");
+            const merged = mergeGroupEdit(current.document, input.before, input.after);
             const document = EditableGraphSchema.parse({ ...merged, createdAt: current.document.createdAt, updatedAt: now() });
             if (!sameGraphContent(current.document, document)) {
               const history = appendGroupHistory(current.history, current.document, document, { id: randomUUID(), occurredAt: document.updatedAt,
-                actorUserId: userId, kind: input.kind, subject: input.subject, ...(input.scope === undefined ? {} : { scope: input.scope }) });
+                actorUserId: userId, kind: input.kind, subject: input.subject });
               await storeRecord(query, group.groupId, { ...current, document, history, revision: current.revision + 1 }); changed = true;
             }
+          } else if (input.action === "applySearch") {
+            if (current.status !== "active") throw new GroupAccessError("GROUP_CONFLICT");
+            if (sessionId === undefined || options.search === undefined) throw new GroupAccessError("GROUP_FORBIDDEN");
+            const result = await options.search.consume(query, userId, sessionId, input, current);
+            const nodeId = input.receipt.target.nodeId, at = now();
+            let next: EditableGraph;
+            try { next = nodeId === undefined ? applyGraphSearchResultContent(current.document, result, input.positions ?? {}, at)
+              : applyNodeSearchResult(current.document, nodeId, result, input.mode, at); }
+            catch { throw new GroupAccessError("GROUP_CONSTRAINT"); }
+            if (next === current.document) throw new GroupAccessError("GROUP_CONSTRAINT");
+            assertGroupResourceUrls(next);
+            const document = EditableGraphSchema.parse({ ...next, createdAt: current.document.createdAt, updatedAt: at });
+            const scope = nodeId === undefined ? { type: "graph.replace" as const }
+              : { type: input.mode === "append" ? "node.append" as const : "node.replace" as const, nodeId };
+            const history = appendGroupHistory(current.history, current.document, document, { id: randomUUID(), occurredAt: at,
+              actorUserId: userId, kind: nodeId === undefined ? "graph.search" : "node.search",
+              subject: nodeId === undefined ? current.document.title : current.document.nodes.find(node => node.id === nodeId)?.title ?? current.document.title, scope });
+            await storeRecord(query, group.groupId, { ...current, document, history, revision: current.revision + 1 }); changed = true;
           } else if (input.action === "undo" || input.action === "redo") {
             if (current.status !== "active") throw new GroupAccessError("GROUP_CONFLICT");
             const result = input.action === "undo" ? undoGroupHistory(current.history, current.document, userId, input.eventId)

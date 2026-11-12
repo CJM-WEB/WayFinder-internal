@@ -26,7 +26,7 @@ export function restoreGroupHistory(value: GroupGraphHistory, document: Editable
 export function appendGroupHistory(value: GroupGraphHistory, before: EditableGraph, after: EditableGraph,
   metadata: GroupHistoryMetadata): GroupGraphHistory {
   const history = GroupGraphHistorySchema.parse(value), restored = restoreGroupHistory(history, before);
-  if (sameGraphContent(before, after)) return history;
+  if (metadata.scope === undefined && sameGraphContent(before, after)) return history;
   if (metadata.scope === undefined && onlyGraphLayoutChanged(before, after)) {
     // 布局仍不占撤销额度、不清个人重做；旧算法负责把当前生命期的位置写回保留快照。
     const moved = storeGraphHistory(updateHistoryLayout(restored, before, after));

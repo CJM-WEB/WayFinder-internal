@@ -25,10 +25,20 @@ export function createGroupSync(api: GroupApi = groupApi, timing: Readonly<{
     ++epoch; writableUntil = 0; lifetime?.abort(); connection?.abort(); lifetime = undefined; connection = undefined;
     store.setState({ state: clear ? "closed" : "offline", connectionId: null, ...(clear ? { userId: null, groupId: null, snapshot: null, lastReceipt: null, error: null } : {}) });
   };
+  /** 搜索等同源动作遇到明确连接拒绝时共用撤权；迟到旧证明不能关闭新连接。 */
+  const rejectConnection = (code: string, expectedConnectionId: string): void => {
+    if (store.getState().connectionId !== expectedConnectionId) return;
+    if (revoked(code)) { stop(true); store.setState({ error: code }); }
+    else if (["GROUP_UNAVAILABLE", "GROUP_OFFLINE"].includes(code)) {
+      store.setState({ state: "offline", connectionId: null, error: code }); connection?.abort();
+    }
+  };
   const connect = (userId: string, groupId: string): void => {
     const previous = store.getState();
-    const retained = previous.userId === userId && previous.groupId === groupId ? previous.snapshot : null;
-    stop(true); const current = epoch; lifetime = new AbortController(); const active = lifetime;
+    const sameContext = previous.userId === userId && previous.groupId === groupId;
+    const retained = sameContext ? previous.snapshot : null;
+    // 同组手动重连只撤销写权限，不能经临时空身份误清已完成的搜索预览。
+    stop(!sameContext); const current = epoch; lifetime = new AbortController(); const active = lifetime;
     store.setState({ userId, groupId, state: "connecting", snapshot: retained, error: null });
     const run = async (): Promise<void> => {
       let failures = 0, failedAt: number | null = null;
@@ -121,10 +131,7 @@ export function createGroupSync(api: GroupApi = groupApi, timing: Readonly<{
     }
     catch (error: unknown) {
       const code = error instanceof GroupRequestError ? error.code : "GROUP_UNAVAILABLE";
-      if (current === epoch && connection === lease && revoked(code)) { stop(true); store.setState({ error: code }); }
-      if (current === epoch && connection === lease && ["GROUP_UNAVAILABLE", "GROUP_OFFLINE"].includes(code)) {
-        store.setState({ state: "offline", connectionId: null, error: code }); lease.abort();
-      }
+      if (current === epoch && connection === lease) rejectConnection(code, state.connectionId);
       // 确认丢失仅查询原mutationId；不换ID、不重放。收据不返回组内容，也不恢复写权限。
       if (mutationId !== undefined && ["GROUP_UNAVAILABLE", "GROUP_OFFLINE"].includes(code)) {
         try {
@@ -136,7 +143,7 @@ export function createGroupSync(api: GroupApi = groupApi, timing: Readonly<{
     }
   };
   return {
-    store, connect,
+    store, connect, rejectConnection,
     disconnect: (): void => stop(true),
     /** 浏览器失联只作提前禁写；恢复网络仍须重新鉴权和取得快照。 */
     setNetworkOnline: (online: boolean): void => {

@@ -14,10 +14,12 @@ import {
   CredentialsErrorResponseSchema,
   SEARCH_CREDENTIALS_HEADER,
   CLOUD_ACCOUNT_HEADER,
+  GROUP_CONNECTION_HEADER, GROUP_SEARCH_TARGET_HEADER, GroupSearchTargetSchema, GroupErrorResponseSchema,
   type SearchRequest,
   type SearchCredentials,
   type ResultGraph,
   type CredentialService,
+  type GroupSearchTarget, type GroupSearchReceipt,
 } from "@wayfinder/contracts";
 
 import {
@@ -32,6 +34,7 @@ import { prepareSearchCredentials, CredentialsConfigurationError } from "./crede
 import { accountStore } from "../stores/account.js";
 import { accountKeysStore } from "../stores/account-keys.js";
 import { credentialSettingsStore } from "../stores/credential-settings.js";
+import { GroupRequestError } from "./groups.js";
 
 /** 只依赖 Zustand Vanilla Store 的最小能力，便于测试隔离且不复制状态类型。 */
 type SearchGraphStore = Readonly<{
@@ -54,7 +57,9 @@ export type SearchCoordinatorDependencies = Readonly<{
   createRunId?: () => SearchRequest["runId"];
   prepareCredentials?: (signal: AbortSignal) => Promise<SearchCredentials>;
   onStart?: (request: SearchRequest) => void;
-  onComplete?: (result: ResultGraph) => void;
+  onComplete?: (result: ResultGraph, receipt?: GroupSearchReceipt) => void;
+  /** 仅组搜索提供；所有凭据来源都冻结同一发起者和目标，不借用云Key分支顺带鉴权。 */
+  groupContext?: () => Readonly<{ userId: string; connectionId: string; target: GroupSearchTarget }>;
 }>;
 
 type ActiveRun = Readonly<{
@@ -143,6 +148,11 @@ export function createStartStreamingSearch(
       runId: createRunId(),
       ...validatedInput,
     });
+    const groupContext = dependencies.groupContext?.();
+    const groupTarget = groupContext === undefined ? undefined : GroupSearchTargetSchema.parse(groupContext.target);
+    if (groupContext !== undefined && (!groupContext.connectionId || usesCloud && groupContext.userId !== expectedCloudAccount)) {
+      throw new GroupRequestError("ACCOUNT_REQUIRED");
+    }
     const previousRun = activeRun;
 
     // Abort 事件同步分发；B 无需等待 A 的网络栈清理即可立即取得 Store 所有权。
@@ -172,6 +182,13 @@ export function createStartStreamingSearch(
           "Content-Type": "application/json",
           [SEARCH_CREDENTIALS_HEADER]: JSON.stringify(credentials),
           ...(expectedCloudAccount === undefined ? {} : { [CLOUD_ACCOUNT_HEADER]: expectedCloudAccount }),
+          ...(groupContext === undefined ? {} : {
+            [CLOUD_ACCOUNT_HEADER]: groupContext.userId,
+            [GROUP_CONNECTION_HEADER]: groupContext.connectionId,
+            // HTTP头是字节串；JSON Unicode转义兼容原节点ID，不增加协议长度或字符限制。
+            [GROUP_SEARCH_TARGET_HEADER]: JSON.stringify(groupTarget).replace(/[\u007f-\uffff]/g,
+              character => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`),
+          }),
         },
         body: JSON.stringify(request),
         credentials: "same-origin",
@@ -182,7 +199,10 @@ export function createStartStreamingSearch(
 
       // preflight（调用前检查）与POST之间仍可能轮换邀请码；服务端错误只投影公共字段。
       if (!response.ok) {
-        const problem = CredentialsErrorResponseSchema.safeParse(await response.json().catch(() => null));
+        const raw: unknown = await response.json().catch(() => null);
+        const groupProblem = GroupErrorResponseSchema.safeParse(raw);
+        if (groupContext !== undefined && groupProblem.success) throw new GroupRequestError(groupProblem.data.code);
+        const problem = CredentialsErrorResponseSchema.safeParse(raw);
         signal.throwIfAborted();
         if (problem.success) {
           credentialSettingsStore.getState().setNotice(problem.data);
@@ -195,6 +215,12 @@ export function createStartStreamingSearch(
         signal,
         onEvent: event => {
           if (signal.aborted || event.runId !== request.runId) return;
+          if (event.type === "complete" && groupContext !== undefined) {
+            const receipt = event.data.groupSearchReceipt;
+            if (receipt === undefined || receipt.runId !== request.runId || JSON.stringify(receipt.target) !== JSON.stringify(groupTarget)) {
+              throw new GroupRequestError("GROUP_INVALID");
+            }
+          }
           const before = dependencies.store.getState();
           // 交付回调只能观察真正被当前 Run 接纳的 complete，过期事件不能写进历史记录。
           const acceptsComplete = !signal.aborted && event.runId === request.runId && event.type === "complete" &&
@@ -202,7 +228,7 @@ export function createStartStreamingSearch(
             event.sequence > before.lastSequence && event.data.result.runId === event.runId;
           before.applyStreamEvent(event);
           if (acceptsComplete && event.type === "complete") {
-            dependencies.onComplete?.(event.data.result);
+            dependencies.onComplete?.(event.data.result, event.data.groupSearchReceipt);
           }
         },
         closeRun: closeRunIfActive,

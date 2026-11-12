@@ -60,6 +60,8 @@ const expectedFileNames = [
   "group-workspace-query.schema.json",
   "group-graph-receipt-query.schema.json",
   "group-graph-receipt-response.schema.json",
+  "group-search-target.schema.json",
+  "group-search-receipt.schema.json",
 ] as const;
 
 const temporaryDirectories: string[] = [];

@@ -26,6 +26,7 @@ type GroupRow = { groupId: string; ownerUserId: string; invitationCode: unknown;
 const GroupRowsSchema = z.array(z.object({ groupId: UserIdSchema, ownerUserId: UserIdSchema, invitationCode: z.unknown(), payload: z.unknown() }));
 const ReceiptSchema = z.strictObject({ kind: z.literal("groupMutation"), fingerprint: z.string().regex(/^[a-f0-9]{64}$/), groupId: UserIdSchema });
 const NicknameSchema = z.strictObject({ nickname: AccountNicknameSchema });
+const MembershipEpochSchema = z.strictObject({ kind: z.literal("memberEpoch"), epoch: UserIdSchema });
 const digest = (value: string): string => createHash("sha256").update(value).digest("hex");
 const jsonValue = (value: unknown): unknown => typeof value === "string" ? JSON.parse(value) as unknown : value;
 
@@ -77,6 +78,22 @@ export async function bumpGroupRevision(query: GroupQuery, group: GroupSummary):
   const next = GroupSummarySchema.parse({ ...group, revision: group.revision + 1 });
   await query("UPDATE wf_groups SET payload = ? WHERE groupId = ?", [JSON.stringify(next), next.groupId]);
   return next;
+}
+
+/** 成员代际独立于组内容版本；退出后重进取得新代际，旧搜索预览不能因身份相同重新有效。 */
+export async function readGroupMembershipEpoch(query: GroupQuery, userId: string, groupId: string): Promise<string | null> {
+  const rows = z.array(z.object({ payload: z.unknown() })).parse(await query(
+    "SELECT payload FROM wf_group_data WHERE groupId = ? AND recordId = ?", [groupId, `m_${digest(userId)}`]));
+  return rows.length === 0 ? null : MembershipEpochSchema.parse(jsonValue(rows[0]?.payload)).epoch;
+}
+/** 调用方已锁组并核验成员；为首次接入的既有成员懒建一次代际，不改变其图或历史。 */
+export async function ensureGroupMembershipEpoch(query: GroupQuery, userId: string, groupId: string): Promise<string> {
+  const existing = await readGroupMembershipEpoch(query, userId, groupId);
+  if (existing !== null) return existing;
+  const epoch = randomUUID();
+  await query("INSERT INTO wf_group_data (groupId, recordId, payload) VALUES (?, ?, ?)",
+    [groupId, `m_${digest(userId)}`, JSON.stringify({ kind: "memberEpoch", epoch })]);
+  return epoch;
 }
 
 async function listGroups(query: GroupQuery, userId: string): Promise<GroupListResponse> {
@@ -171,6 +188,7 @@ export function createGroupStorage(database: AccountDatabase, options: Readonly<
           if (created === undefined) throw new GroupAccessError("GROUP_CONFLICT");
           groupId = created.groupId;
           await query("INSERT INTO wf_group_members (groupId, userId) VALUES (?, ?)", [groupId, userId]);
+          await ensureGroupMembershipEpoch(query, userId, groupId);
         } else if (input.action === "join") {
           await nickname(query, userId);
           const rows = GroupRowsSchema.parse(await query("SELECT groupId, ownerUserId, invitationCode, payload FROM wf_groups WHERE invitationCode = ? FOR UPDATE", [input.invitationCode]));
@@ -179,6 +197,7 @@ export function createGroupStorage(database: AccountDatabase, options: Readonly<
           const group = summary(row); groupId = group.groupId;
           if (!await isMember(query, userId, groupId)) {
             await query("INSERT INTO wf_group_members (groupId, userId) VALUES (?, ?)", [groupId, userId]);
+            await ensureGroupMembershipEpoch(query, userId, groupId);
             await bumpGroupRevision(query, group);
           }
         } else {
@@ -188,6 +207,7 @@ export function createGroupStorage(database: AccountDatabase, options: Readonly<
           if (input.action === "leave") {
             if (owner) throw new GroupAccessError("GROUP_FORBIDDEN");
             await query("DELETE FROM wf_group_members WHERE groupId = ? AND userId = ?", [groupId, userId]);
+            await query("DELETE FROM wf_group_data WHERE groupId = ? AND recordId = ?", [groupId, `m_${digest(userId)}`]);
             await bumpGroupRevision(query, group);
           } else {
             if (!owner) throw new GroupAccessError("GROUP_FORBIDDEN");
