@@ -1541,6 +1541,22 @@ export type GroupGraphAction = z.infer<typeof GroupGraphActionSchema>;
 export const GroupGraphWriteResponseSchema = z.strictObject({ workspace: GroupWorkspaceResponseSchema, personalGraph: CloudGraphRecordSchema.optional() });
 export type GroupGraphWriteResponse = z.infer<typeof GroupGraphWriteResponseSchema>;
 
+/** 组图快照须指定小组；确认丢失则按本人操作标识查回，不能依赖仍有源组访问权。 */
+export const GroupWorkspaceQuerySchema = GroupReadQuerySchema.required();
+export type GroupWorkspaceQuery = z.infer<typeof GroupWorkspaceQuerySchema>;
+export const GroupGraphReceiptQuerySchema = z.strictObject({ mutationId: UserIdSchema });
+export type GroupGraphReceiptQuery = z.infer<typeof GroupGraphReceiptQuerySchema>;
+export const GroupGraphReceiptResponseSchema = z.strictObject({
+  mutationId: UserIdSchema, applied: z.boolean(), groupId: UserIdSchema.nullable(),
+  graphId: cloudGraphIdSchema.nullable(), personalGraphId: cloudGraphIdSchema.nullable(),
+}).superRefine((value, context) => {
+  if (value.applied ? value.groupId === null || value.graphId === null
+    : value.groupId !== null || value.graphId !== null || value.personalGraphId !== null) {
+    context.addIssue({ code: "custom", message: "操作确认状态与目标标识不一致" });
+  }
+});
+export type GroupGraphReceiptResponse = z.infer<typeof GroupGraphReceiptResponseSchema>;
+
 /** 同步流只发布服务端权威快照与连接信号；退出／解散不能继续靠旧快照恢复写权限。 */
 export const GroupConnectionStateSchema = z.enum(["connecting", "syncing", "online", "offline", "reconnecting", "closed"]);
 export type GroupConnectionState = z.infer<typeof GroupConnectionStateSchema>;

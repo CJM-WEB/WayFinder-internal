@@ -48,6 +48,9 @@ import {
   GroupSyncEventSchema,
   GroupReadQuerySchema,
   GroupDetailsSchema,
+  GroupWorkspaceQuerySchema,
+  GroupGraphReceiptQuerySchema,
+  GroupGraphReceiptResponseSchema,
 } from "../src/index.ts";
 
 export interface JsonSchemaArtifact {
@@ -170,6 +173,9 @@ const jsonSchemaRoots = [
   { schemaName: "GroupSyncEventSchema", fileName: "group-sync-event.schema.json", schema: GroupSyncEventSchema },
   { schemaName: "GroupReadQuerySchema", fileName: "group-read-query.schema.json", schema: GroupReadQuerySchema },
   { schemaName: "GroupDetailsSchema", fileName: "group-details.schema.json", schema: GroupDetailsSchema },
+  { schemaName: "GroupWorkspaceQuerySchema", fileName: "group-workspace-query.schema.json", schema: GroupWorkspaceQuerySchema },
+  { schemaName: "GroupGraphReceiptQuerySchema", fileName: "group-graph-receipt-query.schema.json", schema: GroupGraphReceiptQuerySchema },
+  { schemaName: "GroupGraphReceiptResponseSchema", fileName: "group-graph-receipt-response.schema.json", schema: GroupGraphReceiptResponseSchema },
 ] as const satisfies readonly JsonSchemaRoot[];
 
 const defaultOutputDirectory = fileURLToPath(

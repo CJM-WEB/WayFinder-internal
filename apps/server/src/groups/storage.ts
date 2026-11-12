@@ -106,7 +106,7 @@ async function response(query: GroupQuery, userId: string, groupId: string): Pro
   const group = groups.groups.find(value => value.groupId === groupId);
   return GroupActionResponseSchema.parse({ ...groups, details: group === undefined ? null : await details(query, userId, group) });
 }
-async function lockUser(query: GroupQuery, userId: string): Promise<void> {
+export async function lockGroupActor(query: GroupQuery, userId: string): Promise<void> {
   await query("INSERT INTO wf_user_data (userId, recordId, payload) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE recordId = recordId",
     [userId, "groups_meta", '{"kind":"groups"}']);
 }
@@ -143,7 +143,7 @@ export function createGroupStorage(database: AccountDatabase, options: Readonly<
       const userId = identity.userId, key = `gm_${digest(input.mutationId)}`;
       const fingerprint = digest(JSON.stringify([userId, input]));
       return groupTransaction(database, operation, async query => {
-        await lockUser(query, userId);
+        await lockGroupActor(query, userId);
         const previous = await receipt(query, userId, key);
         if (previous !== null) {
           if (previous.fingerprint !== fingerprint) throw new GroupAccessError("GROUP_CONFLICT");
