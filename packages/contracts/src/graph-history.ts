@@ -297,6 +297,22 @@ function finalGraph(state: ReplayState): EditableGraph {
   return parsed.data;
 }
 
+/**
+ * 将已经通过冲突检查的一次局部变化应用到最新图，供小组复用同一实体／依赖／排序算法。
+ * 这里不创建持久事件或决定权限；临时标识只参与一次纯计算，失败不返回半张图。
+ */
+export function applyGraphDifference(current: EditableGraph, before: EditableGraph, after: EditableGraph):
+  Readonly<{ ok: true; graph: EditableGraph }> | Readonly<{ ok: false; reason: WorkspaceHistoryBlockedReason }> {
+  try {
+    const state = createGraphHistory(EditableGraphSchema.parse(current)).base;
+    applyDifference(state, { id: "difference", occurredAt: after.updatedAt, active: true,
+      kind: "graph.update", subject: "", before, after });
+    return { ok: true, graph: finalGraph(state) };
+  } catch (error: unknown) {
+    return { ok: false, reason: error instanceof MissingHistoryDependency ? "dependency" : "constraint" };
+  }
+}
+
 function copyReplay(state: ReplayState): ReplayState {
   const copyMissing = <T>(values: Map<string, MissingEntity<T>>) => new Map([...values].map(([id, value]) => [id, { ...value }]));
   return { graph: state.graph, nodes: copyMissing(state.nodes), edges: copyMissing(state.edges),

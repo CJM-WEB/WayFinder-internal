@@ -15,7 +15,8 @@ import { sameGraphContent } from "@wayfinder/contracts/graph-history";
 import type { AccountDatabase, DatabaseOperation } from "../accounts/database.js";
 import { appendCloudGraphCopy, readCloudGraphForCopy } from "../accounts/workspace-storage.js";
 import { GroupAccessError } from "./errors.js";
-import { appendGroupHistory, createGroupHistory, restoreGroupHistory } from "./history.js";
+import { appendGroupHistory, createGroupHistory, redoGroupHistory, restoreGroupHistory, undoGroupHistory } from "./history.js";
+import { assertGroupResourceUrls, mergeGroupEdit, normalizeGroupCreate } from "./merge.js";
 import { bumpGroupRevision, groupTransaction, loadMemberGroup, lockGroupActor, type GroupQuery } from "./storage.js";
 
 export type GroupWorkspaceStorage = Readonly<{
@@ -129,7 +130,6 @@ export function createGroupWorkspaceStorage(database: AccountDatabase, options: 
       let input: GroupGraphAction, userId: string;
       try { input = GroupGraphActionSchema.parse(raw); userId = UserIdSchema.parse(trustedUserId); }
       catch { throw new GroupAccessError("GROUP_INVALID"); }
-      if (input.action === "undo" || input.action === "redo") throw new GroupAccessError("GROUP_INVALID");
       const fingerprint = digest(JSON.stringify([userId, input]));
       return groupTransaction(database, operation, async query => {
         await lockGroupActor(query, userId);
@@ -147,7 +147,9 @@ export function createGroupWorkspaceStorage(database: AccountDatabase, options: 
             const found = await readCloudGraphForCopy(query, userId, input.sourceGraphId, input.sourceRevision);
             if (!found.ok) throw new GroupAccessError(found.reason === "missing" ? "GROUP_NOT_FOUND" : "GROUP_CONFLICT");
             source = found.record.document;
-          } else source = input.document;
+            // 内容复制保留源的人工／搜索来源，但不能沿用被伪造的canonical或domain绕过实际URL去重。
+            assertGroupResourceUrls(source);
+          } else source = normalizeGroupCreate(input.document);
           const document = newDocument(source); graphId = document.id;
           if (await loadRecord(query, group.groupId, graphId) !== null || [...meta.activeOrder, ...meta.deletedIds].includes(graphId)) throw new GroupAccessError("GROUP_CONFLICT");
           const record = GroupGraphRecordSchema.parse({ document, history: createGroupHistory(document), revision: 1, status: "active", originalIndex: null });
@@ -156,22 +158,37 @@ export function createGroupWorkspaceStorage(database: AccountDatabase, options: 
           graphId = input.graphId;
           const found = await loadRecord(query, group.groupId, graphId);
           if (found === null) throw new GroupAccessError("GROUP_NOT_FOUND");
-          if (found.kind === "purged" || found.record.revision !== input.expectedRevision) throw new GroupAccessError("GROUP_CONFLICT");
+          if (found.kind === "purged") throw new GroupAccessError("GROUP_CONFLICT");
           const current = found.record;
+          const latestOperation = input.action === "edit" || input.action === "undo" || input.action === "redo";
+          if (input.expectedRevision > current.revision || (!latestOperation && input.expectedRevision !== current.revision)) throw new GroupAccessError("GROUP_CONFLICT");
           if (input.action === "copyOut") {
             if (current.status !== "active") throw new GroupAccessError("GROUP_CONFLICT");
+            assertGroupResourceUrls(current.document);
             const copied = await appendCloudGraphCopy(query, userId, newDocument(current.document), input.mutationId);
             if (!copied.ok) throw new GroupAccessError("GROUP_CONFLICT");
             personalGraph = copied.record; personalGraphId = copied.record.document.id;
           } else if (input.action === "edit") {
-            if (current.status !== "active" || !sameGraphContent(input.before, current.document)) throw new GroupAccessError("GROUP_CONFLICT");
-            // 创建时间不是可编辑字段；先规范化再判同值，防止仅伪改时间也递增共享版本。
-            const document = EditableGraphSchema.parse({ ...input.after, createdAt: current.document.createdAt, updatedAt: now() });
+            if (current.status !== "active") throw new GroupAccessError("GROUP_CONFLICT");
+            const sameVersion = input.expectedRevision === current.revision, matchesBefore = sameGraphContent(input.before, current.document);
+            // 搜索结果带整体／节点写入意图，必须保留原严格预览门禁；普通旧版本编辑只合并本次差异。
+            if ((sameVersion && !matchesBefore) || (input.scope !== undefined && (!sameVersion || !matchesBefore))) throw new GroupAccessError("GROUP_CONFLICT");
+            // 搜索作用域同样不得通过客户端填写的canonical/domain绕过实际URL硬边界。
+            if (input.scope !== undefined) assertGroupResourceUrls(input.after);
+            const merged = input.scope === undefined ? mergeGroupEdit(current.document, input.before, input.after) : input.after;
+            const document = EditableGraphSchema.parse({ ...merged, createdAt: current.document.createdAt, updatedAt: now() });
             if (!sameGraphContent(current.document, document)) {
               const history = appendGroupHistory(current.history, current.document, document, { id: randomUUID(), occurredAt: document.updatedAt,
                 actorUserId: userId, kind: input.kind, subject: input.subject, ...(input.scope === undefined ? {} : { scope: input.scope }) });
               await storeRecord(query, group.groupId, { ...current, document, history, revision: current.revision + 1 }); changed = true;
             }
+          } else if (input.action === "undo" || input.action === "redo") {
+            if (current.status !== "active") throw new GroupAccessError("GROUP_CONFLICT");
+            const result = input.action === "undo" ? undoGroupHistory(current.history, current.document, userId, input.eventId)
+              : redoGroupHistory(current.history, current.document, userId);
+            const document = EditableGraphSchema.parse({ ...result.document, updatedAt: now() });
+            // 即使后写标题使画面同值，事件活动状态和本人重做已变化，仍须原子保存并提升共享版本。
+            await storeRecord(query, group.groupId, { ...current, document, history: result.history, revision: current.revision + 1 }); changed = true;
           } else if (input.action === "delete") {
             const index = meta.activeOrder.indexOf(graphId);
             if (current.status !== "active" || index < 0) throw new GroupAccessError("GROUP_CONFLICT");
