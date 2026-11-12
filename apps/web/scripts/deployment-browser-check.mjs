@@ -164,7 +164,9 @@ async function cookieCheck(context, previousCookies) {
 // pinned Better Auth每次成功请求刷新lastRequest；探针距上一真实POST完成至少10.2秒，不重试失败。
 let lastLoginCompletedAt = 0;
 async function login(page, user) {
-  await product(page); const settings = await panel(page, "设置"), form = settings.getByRole("form", { name: "邮箱账号" });
+  await product(page); const settings = await panel(page, "设置");
+  await settings.getByRole("region", { name: "账号", exact: true }).getByRole("button", { name: "登录", exact: true }).click();
+  const form = page.getByRole("dialog", { name: "登录", exact: true }).getByRole("form", { name: "邮箱账号" });
   await form.getByLabel("邮箱", { exact: true }).fill(user.email);
   await form.getByLabel("密码", { exact: true }).fill(user.password);
   await delay(Math.max(0, lastLoginCompletedAt + 10200 - Date.now()));
@@ -180,7 +182,7 @@ async function login(page, user) {
     let body; try { body = await response.json(); } catch { body = null; }
     throw new LoginResponseError(response.status(), body);
   }
-  await expect(settings).toHaveCount(0); await product(page);
+  await expect(form).toHaveCount(0); await expect(settings).toHaveCount(0); await product(page);
   assert.equal((await api(page, "/api/account")).body.account?.userId, user.userId);
   await cookieCheck(page.context());
 }

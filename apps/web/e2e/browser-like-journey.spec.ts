@@ -4430,10 +4430,12 @@ async function openInkSettings(page: Page): Promise<Locator> {
 
 /** 体验旅程必须通过账号表单登录；账号替身只隔离服务端认证，不注入前端登录状态。 */
 async function loginInkFixture(page: Page): Promise<void> {
+  await page.getByRole("region", { name: "账号", exact: true }).getByRole("button", { name: "登录", exact: true }).click();
   const form = page.getByRole("form", { name: "邮箱账号", exact: true });
   await form.getByLabel("邮箱", { exact: true }).fill("fixture-browser@example.test");
   await form.getByLabel("密码", { exact: true }).fill("fixture-browser-password");
   await form.getByRole("button", { name: "登录", exact: true }).click();
+  await expect(form).toHaveCount(0);
   await expect(page.getByRole("region", { name: "设置", exact: true })).toHaveCount(0);
   await page.getByRole("button", { name: "开始探索", exact: true }).click();
   if (await page.evaluate(() => navigator.maxTouchPoints > 0)) {

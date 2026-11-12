@@ -1,5 +1,5 @@
 /**
- * 小组抽屉：复用现有信息条／父抽屉，管理账号昵称与明确的小组动作。
+ * 小组抽屉：复用现有信息条／父抽屉，分层呈现小组列表与组内动作。
  * 读取只按当前账号展示；所有组图动作由工作区适配层发送，管理动作复用已追平连接门禁。
  */
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
@@ -7,6 +7,7 @@ import { useStore } from "zustand";
 import type { GroupAction, GroupDetails, GroupSummary, SearchLanguage } from "@wayfinder/contracts";
 import { groupApi, GroupRequestError } from "../api/groups.js";
 import { accountStore } from "../stores/account.js";
+import { accountProfileStore } from "../stores/account-profile.js";
 import { groupSync } from "../stores/group-sync.js";
 import { workspaceStore } from "../stores/workspace-store.js";
 import { activeWorkspaceStore, workspaceContext, workspaceContextStore } from "../stores/workspace-context.js";
@@ -18,8 +19,8 @@ type Props = { open: boolean; presented: boolean; available: boolean; language: 
   onClose: (restoreFocus: boolean) => void; onOpenSettings: () => void; onSelectGraph: (id: string) => void | Promise<void>; onNewSearch: () => void };
 function GroupCard({ group, details, selected, language, reveal, enter }: { group: GroupSummary; details: GroupDetails | undefined;
   selected: boolean; language: SearchLanguage; reveal: () => void; enter: () => void }) {
-  const [expanded, setExpanded] = useState(false), [pinned, setPinned] = useState(false);
-  const card = useRef<HTMLLIElement>(null), pointerHeld = useRef(false), collapsePending = useRef(false);
+  const [expanded, setExpanded] = useState(false);
+  const card = useRef<HTMLLIElement>(null), pointerHeld = useRef(false), collapsePending = useRef(false), touchInput = useRef(false);
   // 外部按钮在按下时先获得焦点；等本次点击完成再收起，避免布局移动吞掉点击。
   useEffect(() => {
     let collapseTimer: ReturnType<typeof setTimeout> | undefined;
@@ -29,29 +30,35 @@ function GroupCard({ group, details, selected, language, reveal, enter }: { grou
       if (!collapsePending.current) return;
       collapsePending.current = false;
       collapseTimer = setTimeout(() => {
-        if (!pinned && !card.current?.contains(document.activeElement) && !card.current?.matches(":hover")) setExpanded(false);
+        if (!card.current?.contains(document.activeElement) && !card.current?.matches(":hover")) setExpanded(false);
       }, 0);
     };
     document.addEventListener("pointerdown", down, true); document.addEventListener("pointerup", up, true); document.addEventListener("pointercancel", up, true);
     return () => {
       clearTimeout(collapseTimer); document.removeEventListener("pointerdown", down, true); document.removeEventListener("pointerup", up, true); document.removeEventListener("pointercancel", up, true);
     };
-  }, [pinned]);
+  }, []);
   const labels = getGroupMessages(language);
-  return <li ref={card} className="ink-study__history-record ink-group-record" data-expanded={expanded} data-selected={selected} data-group-id={group.groupId}
+  return <li ref={card} className="ink-study__history-record ink-group-record" data-expanded={expanded} data-selected={selected} data-group-id={group.groupId} tabIndex={0}
+    aria-label={`${group.name} · ${labels.members}`}
+    onPointerDown={event => { touchInput.current = event.pointerType === "touch"; }}
+    onPointerUp={event => {
+      // 触屏点空白处后把焦点留在信息条；兼容鼠标离开事件不能立即收起刚展开的成员。
+      if (event.pointerType === "touch" && !(event.target instanceof Element && event.target.closest("button"))) {
+        card.current?.focus({ preventScroll: true }); setExpanded(true); reveal();
+      }
+    }}
     onMouseEnter={() => { setExpanded(true); reveal(); }} onMouseLeave={event => {
-      if (!pinned && !event.currentTarget.contains(document.activeElement)) setExpanded(false);
+      if (!touchInput.current && !event.currentTarget.matches(":focus-visible") && event.currentTarget.querySelector(":focus-visible") === null) setExpanded(false);
     }} onFocusCapture={() => { setExpanded(true); reveal(); }} onBlur={event => {
-      if (!pinned && !event.currentTarget.contains(event.relatedTarget)) {
+      if (!event.currentTarget.contains(event.relatedTarget)) {
+        touchInput.current = false;
         if (pointerHeld.current) collapsePending.current = true;
         else setExpanded(false);
       }
     }}>
     <div className="ink-group-record__heading"><div><h3><button className="ink-study__history-title" type="button" onClick={enter}
-      aria-label={`${labels.open}：${group.name}`}>{group.name}</button></h3><p>{group.description}</p></div>
-      <button className="ink-study__pill" type="button" aria-expanded={expanded} onClick={() => {
-        setPinned(!pinned); setExpanded(!pinned); reveal();
-      }}>{labels.members}</button></div>
+      aria-expanded={expanded} aria-label={`${labels.open}：${group.name}`}>{group.name}</button></h3><p>{group.description}</p></div></div>
     <div className="ink-group-record__members" aria-hidden={!expanded} inert={!expanded}><div>
       {details === undefined ? <p>{labels.working}</p> : <ul aria-label={labels.members}>{details.members.map(member => <li key={member.userId}>
         <span>{member.nickname}</span>{member.role === "owner" ? <small>{labels.owner}</small> : null}
@@ -66,19 +73,24 @@ export function InkGroups({ open, presented, available, language, onClose, onOpe
   const documents = useStore(activeWorkspaceStore, state => state.documents), currentId = useStore(activeWorkspaceStore, state => state.currentId);
   const personal = useStore(workspaceStore, state => state.documents);
   const labels = getGroupMessages(language), common = getMessages(language);
-  const panel = useRef<HTMLElement>(null), nicknameInput = useRef<HTMLInputElement>(null);
+  const panel = useRef<HTMLElement>(null);
+  const profile = useStore(accountProfileStore, state => state);
+  const savedNickname = profile.userId === account?.userId ? profile.nickname : null;
+  const profileError = profile.userId === account?.userId ? profile.error : null;
   const lifetime = useRef(new AbortController()), requests = useRef(new Map<string, AbortController>());
-  // 已确认写入使更早的列表／昵称读取作废，避免迟到GET覆盖刚保存的状态。
+  // 已确认写入使更早的列表读取作废，避免迟到读取覆盖刚保存的状态。
   const readIntent = useRef(0);
-  const nicknameDirty = useRef(false), operation = useRef<GroupAction | null>(null);
+  const operation = useRef<GroupAction | null>(null);
   const [loadedFor, setLoadedFor] = useState<string | null>(null), [groups, setGroups] = useState<GroupSummary[]>([]);
   const [details, setDetails] = useState<Record<string, GroupDetails>>({});
-  const [nickname, setNickname] = useState(""), [savedNickname, setSavedNickname] = useState<string | null>(null);
+  // 返回列表只切换面板视图，保留当前组图；选择其他小组才切换业务上下文。
+  const [showList, setShowList] = useState(false);
+  const inGroup = context.kind === "group" && !showList;
   const [busy, setBusy] = useState(false), [error, setError] = useState<string | null>(null), [notice, setNotice] = useState<"success" | null>(null);
   const [mode, setMode] = useState<"create" | "join" | "update" | null>(null);
   const [name, setName] = useState(""), [description, setDescription] = useState(""), [invitation, setInvitation] = useState("");
   const [editingGroup, setEditingGroup] = useState<{ groupId: string; revision: number } | null>(null);
-  const [source, setSource] = useState(""), [graphName, setGraphName] = useState("");
+  const [source, setSource] = useState("");
   const renameCapture = useRef<ReturnType<typeof workspaceContext.captureEdit>>(null);
   const [renameId, setRenameId] = useState<string | null>(null), [renameTitle, setRenameTitle] = useState("");
   const [copyNotice, setCopyNotice] = useState<"copied" | "failed" | null>(null);
@@ -94,15 +106,15 @@ export function InkGroups({ open, presented, available, language, onClose, onOpe
     const identity = accountStore.getState(); if (identity.account === null) return;
     const { userId } = identity.account, epoch = identity.epoch, signal = lifetime.current.signal, currentRead = ++readIntent.current;
     try {
-      const [list, profile] = await Promise.all([groupApi.list(userId, signal), groupApi.profile(userId, signal)]);
+      // 资料读取由共享状态独立报告；设置打开会取消旧读取，不能把该取消误记成小组列表失败。
+      const [list] = await Promise.all([groupApi.list(userId, signal), accountProfileStore.getState().refresh(signal).catch(() => {})]);
       if (!stillCurrent(userId, epoch) || signal.aborted || currentRead !== readIntent.current) return;
-      setLoadedFor(userId); setGroups(list.groups); setDetails({}); setSavedNickname(profile.profile.nickname);
-      if (!nicknameDirty.current) setNickname(profile.profile.nickname ?? "");
+      setLoadedFor(userId); setGroups(list.groups); setDetails({});
     } catch (caught: unknown) { if (stillCurrent(userId, epoch) && !signal.aborted && currentRead === readIntent.current) fail(caught); }
   }, []);
   useEffect(() => {
     ++readIntent.current; lifetime.current.abort(); lifetime.current = new AbortController(); for (const controller of requests.current.values()) controller.abort(); requests.current.clear();
-    operation.current = null; nicknameDirty.current = false; setLoadedFor(null); setGroups([]); setDetails({}); setNickname(""); setSavedNickname(null);
+    operation.current = null; setLoadedFor(null); setGroups([]); setDetails({}); setShowList(false);
     setMode(null); setError(null); setNotice(null); setBusy(false); setCopyNotice(null); setRenameId(null);
     return () => { lifetime.current.abort(); for (const controller of requests.current.values()) controller.abort(); };
   }, [accountEpoch]);
@@ -112,7 +124,7 @@ export function InkGroups({ open, presented, available, language, onClose, onOpe
     setDetails(previous => ({ ...previous, [selected.group.groupId]: selected }));
     setGroups(previous => previous.map(group => group.groupId === selected.group.groupId ? selected.group : group));
   }, [selected, scopeMatches]);
-  useEffect(() => { setRenameId(null); setMode(previous => previous === "update" ? null : previous); setEditingGroup(null); setCopyNotice(null); }, [context.groupId]);
+  useEffect(() => { setShowList(false); setRenameId(null); setMode(previous => previous === "update" ? null : previous); setEditingGroup(null); setCopyNotice(null); }, [context.groupId]);
   useEffect(() => { if (open && presented) panel.current?.focus({ preventScroll: true }); }, [open, presented]);
   useEffect(() => {
     if (!open) return;
@@ -132,15 +144,6 @@ export function InkGroups({ open, presented, available, language, onClose, onOpe
       if (stillCurrent(userId, epoch) && !controller.signal.aborted) setDetails(previous => ({ ...previous, [groupId]: value }));
     } catch (caught: unknown) { if (stillCurrent(userId, epoch) && !controller.signal.aborted) fail(caught); }
     finally { if (requests.current.get(groupId) === controller) requests.current.delete(groupId); }
-  };
-  const saveNickname = async (event: FormEvent): Promise<void> => {
-    event.preventDefault(); if (account === null || busy || !browserOnline || !nickname.trim()) return;
-    const userId = account.userId, epoch = accountEpoch; ++readIntent.current; setBusy(true); setError(null);
-    try {
-      const value = await groupApi.profile(userId, lifetime.current.signal, { nickname });
-      if (stillCurrent(userId, epoch)) { nicknameDirty.current = false; setNickname(value.profile.nickname ?? ""); setSavedNickname(value.profile.nickname); setDetails({}); }
-    } catch (caught: unknown) { if (stillCurrent(userId, epoch)) fail(caught); }
-    finally { if (stillCurrent(userId, epoch)) setBusy(false); }
   };
   /** 管理动作确认未知时保留原标识；退出／解散可从当前列表核实，不依赖旧连接继续授权。 */
   const manage = async (input: GroupAction): Promise<void> => {
@@ -176,7 +179,8 @@ export function InkGroups({ open, presented, available, language, onClose, onOpe
     } finally { if (stillCurrent(userId, epoch)) setBusy(false); }
   };
   const submit = (event: FormEvent): void => {
-    event.preventDefault(); if (account === null || busy || savedNickname === null) { nicknameInput.current?.focus(); return; }
+    event.preventDefault(); if (account === null || busy) return;
+    if (mode !== "update" && savedNickname === null) { onOpenSettings(); return; }
     if (operation.current !== null) { void manage(operation.current); return; }
     const mutationId = crypto.randomUUID();
     if (mode === "create" && name.trim()) void manage({ action: "create", name, description, mutationId });
@@ -195,36 +199,27 @@ export function InkGroups({ open, presented, available, language, onClose, onOpe
     catch (caught: unknown) { if (stillCurrent(userId, epoch) && workspaceContextStore.getState().contextKey === key) fail(caught); }
     finally { if (stillCurrent(userId, epoch)) setBusy(false); }
   };
-  const createGraph = (event: FormEvent): void => {
-    event.preventDefault(); if (!writable || !graphName.trim()) return;
-    void run(async () => {
-      const { createEmptyGraph } = await import("../stores/workspace-store.js");
-      const id = await workspaceContext.createGraph(createEmptyGraph(crypto.randomUUID(), graphName.trim(), language)); setGraphName(""); await onSelectGraph(id);
-    });
-  };
   return <section className="ink-study__history-panel ink-groups-panel" ref={panel} tabIndex={-1} id="ink-groups"
     data-active={open} inert={!active} aria-hidden={!active} aria-labelledby="ink-groups-title" data-ink-overlay>
-    <header className="ink-study__history-header"><div><h2 id="ink-groups-title">{labels.title}</h2><span>{scopeMatches ? groups.length : 0}</span></div>
-      <div className="ink-group-actions"><button className="ink-study__pill" type="button" disabled={busy || !browserOnline || operation.current !== null} onClick={() => {
-        setMode("create"); setName(""); setDescription(""); setNotice(null); if (savedNickname === null) nicknameInput.current?.focus();
-      }}>{labels.create}</button><button className="ink-study__pill" type="button" disabled={busy || !browserOnline || operation.current !== null} onClick={() => {
-        setMode("join"); setInvitation(""); setNotice(null); if (savedNickname === null) nicknameInput.current?.focus();
-      }}>{labels.join}</button></div></header>
+    <header className="ink-study__history-header"><div><h2 id="ink-groups-title">{labels.title}{inGroup ? ` · ${context.groupName ?? labels.working}` : ""}</h2>{inGroup ? null : <span>{scopeMatches ? groups.length : 0}</span>}</div>
+      {inGroup ? <button className="ink-study__pill" type="button" onClick={() => { setShowList(true); setMode(null); void refresh(); }}>{labels.backToGroups}</button> : <div className="ink-group-actions"><button className="ink-study__pill" type="button" disabled={busy || !browserOnline || operation.current !== null || profile.loading} onClick={() => {
+        if (account === null || savedNickname === null) { onOpenSettings(); return; }
+        setMode("create"); setName(""); setDescription(""); setNotice(null);
+      }}>{labels.create}</button><button className="ink-study__pill" type="button" disabled={busy || !browserOnline || operation.current !== null || profile.loading} onClick={() => {
+        if (account === null || savedNickname === null) { onOpenSettings(); return; }
+        setMode("join"); setInvitation(""); setNotice(null);
+      }}>{labels.join}</button></div>}</header>
     {account === null ? <div className="ink-study__history-empty"><p>{labels.login}</p><button className="ink-study__pill" type="button" onClick={onOpenSettings}>{labels.settings}</button></div> : <>
-      <form className="ink-group-form ink-group-nickname" onSubmit={event => { void saveNickname(event); }}>
-        <label>{labels.nickname}<input ref={nicknameInput} aria-label={labels.nickname} value={scopeMatches ? nickname : ""} disabled={busy || !scopeMatches}
-          onChange={event => { nicknameDirty.current = true; setNickname(event.target.value); }} /></label>
-        <button className="ink-study__pill" type="submit" disabled={busy || !browserOnline || !scopeMatches || !nickname.trim()}>{labels.saveNickname}</button><small>{labels.nicknameHint}</small>
-      </form>
       {mode === null ? null : <form className="ink-group-form" onSubmit={submit}>
         {mode === "join" ? <label>{labels.invitation}<input aria-label={labels.invitation} value={invitation} disabled={busy || operation.current !== null} onChange={event => setInvitation(event.target.value)} autoComplete="off" /></label> : <>
           <label>{labels.name}<input aria-label={labels.name} value={name} disabled={busy || operation.current !== null} onChange={event => setName(event.target.value)} /></label>
           <label>{labels.description}<textarea aria-label={labels.description} value={description} disabled={busy || operation.current !== null} onChange={event => setDescription(event.target.value)} /></label></>}
-        <div className="ink-group-actions"><button className="ink-study__pill" type="submit" disabled={busy || !browserOnline || savedNickname === null || (mode === "update" && !writable)
+        <div className="ink-group-actions"><button className="ink-study__pill" type="submit" disabled={busy || !browserOnline || (mode !== "update" && savedNickname === null) || (mode === "update" && !writable)
           || (mode === "join" ? !invitation.trim() : !name.trim())}>{busy ? labels.working : operation.current !== null ? labels.retry : mode === "create" ? labels.create : mode === "join" ? labels.join : labels.save}</button>
           <button className="ink-study__pill" type="button" disabled={busy} onClick={() => { setMode(null); }}>{labels.cancel}</button></div>
       </form>}
       {error === null ? null : <p role="alert" data-ink-group-notice>{groupErrorMessage(error, language)}</p>}
+      {profileError === null ? null : <p role="alert" data-ink-group-notice>{groupErrorMessage(profileError, language)}</p>}
       {operation.current === null ? null : <div data-ink-group-notice><p>{labels.unknown}</p><button className="ink-study__pill" type="button" disabled={busy}
         onClick={() => { if (operation.current !== null) void manage(operation.current); }}>{labels.retry}</button></div>}
       {context.error === null ? null : <p role="alert">{groupErrorMessage(context.error, language)}</p>}
@@ -235,20 +230,28 @@ export function InkGroups({ open, presented, available, language, onClose, onOpe
         <button className="ink-study__pill" type="button" disabled={context.busy || context.failedAction.uncertain} title={context.failedAction.uncertain ? labels.unknown : undefined} onClick={() => workspaceContext.discardFailedAction()}>{labels.discard}</button>
       </div>}
       {notice === null ? null : <p role="status">{labels.success}</p>}
-      <div className="ink-group-actions"><button className="ink-study__pill" type="button" disabled={busy} onClick={() => { void refresh(); }}>{labels.refresh}</button>
-        {context.kind !== "group" ? null : <button className="ink-study__pill" type="button" onClick={() => { workspaceContext.leaveGroup(); }}>{labels.personal}</button>}</div>
-      {scopeMatches && groups.length === 0 ? <p className="ink-study__history-empty">{labels.empty}</p> : null}
-      <ul className="ink-study__history-list">{(scopeMatches ? groups : []).map(group => <GroupCard key={group.groupId} group={group} details={details[group.groupId]}
-        language={language} selected={context.groupId === group.groupId} reveal={() => { void reveal(group.groupId); }} enter={() => {
-          setMode(null); setError(null); setNotice(null); workspaceContext.enterGroup(account.userId, group.groupId);
-        }} />)}</ul>
-      {context.kind !== "group" ? null : <div className="ink-group-workspace" data-group-id={context.groupId}>
+      {inGroup ? null : <>
+        <div className="ink-group-actions"><button className="ink-study__pill" type="button" disabled={busy} onClick={() => { void refresh(); }}>{labels.refresh}</button></div>
+        {savedNickname !== null || profile.loading || profileError !== null ? null : <p className="ink-group-nickname-hint">{labels.nicknameHint} <button type="button" className="ink-study__pill" onClick={onOpenSettings}>{labels.nicknameSettings}</button></p>}
+        {scopeMatches && groups.length === 0 ? <p className="ink-study__history-empty">{labels.empty}</p> : null}
+        <ul className="ink-study__history-list">{(scopeMatches ? groups : []).map(group => <GroupCard key={group.groupId} group={group} details={details[group.groupId]}
+          language={language} selected={context.groupId === group.groupId} reveal={() => { void reveal(group.groupId); }} enter={() => {
+            setShowList(false); setMode(null); setError(null); setNotice(null);
+            // 返回列表保留了当前连接与组图；重进同组只切视图，避免清空快照后重连造成闪屏。
+            if (context.kind !== "group" || context.groupId !== group.groupId || context.userId !== account.userId || sync.state !== "online") {
+              workspaceContext.enterGroup(account.userId, group.groupId);
+            }
+          }} />)}</ul>
+      </>}
+      {!inGroup ? null : <div className="ink-group-workspace" data-group-id={context.groupId}>
         <p role="status" data-group-connection={sync.state}>{groupConnectionLabel(sync.state, language)}</p>
         {sync.state === "online" ? null : <button type="button" className="ink-study__pill" onClick={() => {
           if (account !== null && context.groupId !== null) groupSync.connect(account.userId, context.groupId);
         }}>{labels.reconnect}</button>}
+        {/* 初连失败也保留返回个人图，避免移除画布重复入口后困在失联小组。 */}
+        <div className="ink-group-actions"><button className="ink-study__pill" type="button" disabled={!writable} onClick={onNewSearch}>{labels.newSearch}</button>
+          <button className="ink-study__pill" type="button" onClick={() => { workspaceContext.leaveGroup(); }}>{labels.personal}</button></div>
         {selected === undefined ? null : <>
-          <button className="ink-study__pill" type="button" disabled={!writable} onClick={onNewSearch}>{labels.newSearch}</button>
           <header className="ink-group-selected"><h3>{selected.group.name}</h3><p>{selected.group.description}</p>
             <div className="ink-group-actions">{owner ? <><button className="ink-study__pill" type="button" disabled={!writable || operation.current !== null} onClick={() => {
               setMode("update"); setEditingGroup({ groupId: selected.group.groupId, revision: selected.group.revision }); setName(selected.group.name); setDescription(selected.group.description);
@@ -267,8 +270,6 @@ export function InkGroups({ open, presented, available, language, onClose, onOpe
                 catch { if (userId !== undefined && stillCurrent(userId, epoch)) setCopyNotice("failed"); }
               })();
             }}>{labels.copyCode}</button>{copyNotice === null ? null : <small role="status">{copyNotice === "copied" ? labels.copied : labels.copyFailed}</small>}</div> : null}
-          <form className="ink-group-form" onSubmit={createGraph}><label>{labels.graphName}<input aria-label={labels.graphName} value={graphName} disabled={!writable} onChange={event => setGraphName(event.target.value)} /></label>
-            <button className="ink-study__pill" type="submit" disabled={!writable || !graphName.trim()}>{labels.newGraph}</button></form>
           <ul className="ink-study__history-list">{documents.map(document => <li className="ink-study__history-record" key={document.id}>
             <div className="ink-group-record__heading">{renameId === document.id ? <form className="ink-group-actions" onSubmit={event => {
               event.preventDefault(); if (!writable || !renameTitle.trim()) return;

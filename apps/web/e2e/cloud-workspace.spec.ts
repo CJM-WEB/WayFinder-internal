@@ -128,9 +128,11 @@ test("访客删除队列经明确确认导入且源保留，不上传Key或重�
   const panel = await rename(page, "访客待恢复图");
   await panel.getByRole("button", { name: "删除记录：访客待恢复图", exact: true }).click();
   await page.locator(".ink-study__history-dock").hover(); await page.getByRole("button", { name: "设置", exact: true }).click();
+  await page.getByRole("region", { name: "账号", exact: true }).getByRole("button", { name: "登录", exact: true }).click();
   const form = page.getByRole("form", { name: "邮箱账号", exact: true });
   await form.getByLabel("邮箱", { exact: true }).fill("cloud@example.test"); await form.getByLabel("密码", { exact: true }).fill("fixture-password");
   await form.getByRole("button", { name: "登录", exact: true }).click();
+  await expect(form).toHaveCount(0);
   await expect(page.getByRole("region", { name: "设置", exact: true })).toHaveCount(0); await enter(page);
   await page.locator(".ink-study__history-dock").hover(); await page.getByRole("button", { name: "设置", exact: true }).click();
   const cloud = page.getByRole("region", { name: "云端工作区", exact: true });

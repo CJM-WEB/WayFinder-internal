@@ -1,0 +1,50 @@
+/* 认证面板：复用下方抽屉的灰色半透明玻璃、边框与模糊，所有账号步骤共用同一外观。 */
+.ink-account-dialog { --ink-account-motion-duration: 360ms; width: min(420px, calc(100vw - 32px)); max-height: calc(100svh - 32px); overflow-y: auto; padding: 48px 42px 32px; border: 1px solid #ffffffa6; border-radius: 26px; background: var(--ink-history-glass, #c8c8c280); backdrop-filter: blur(14px); color: #333; box-shadow: 0 12px 42px #11111118; }
+/* 遮罩与面板使用同一 S 曲线退场；原生 dialog 关闭前始终保留模态隔离。 */
+.ink-account-dialog::backdrop { background: #11111124; transition: background-color var(--ink-account-motion-duration) var(--ink-slide-ease); }
+.ink-account-dialog[data-closing="true"]::backdrop { background: transparent; }
+.ink-account-dialog header { display: grid; justify-items: center; margin-bottom: 28px; }
+.ink-account-dialog h2 { margin: 0; font-size: 32px; font-weight: 500; }
+.ink-account-dialog label { display: grid; gap: 8px; margin-top: 24px; color: #55554c; font-size: 13px; }
+.ink-account-dialog input { width: 100%; min-width: 0; padding: 8px 2px 12px; border: 0; border-bottom: 1px solid #ffffffa6; border-radius: 0; background: transparent; color: #222; font: inherit; font-size: 16px; outline-offset: 4px; }
+.ink-account-dialog input:focus { border-color: #0606ad; outline: none; box-shadow: 0 1px 0 #0606ad; }
+.ink-account-dialog button { cursor: pointer; }
+.ink-account-dialog button:disabled { opacity: .5; cursor: wait; }
+.ink-account-dialog__close { position: absolute; top: 14px; right: 14px; width: 36px; height: 36px; border: 0; border-radius: 50%; background: #ffffff55; color: #444; font-size: 24px; }
+.ink-account-dialog__link { padding: 4px 0; border: 0; background: transparent; color: #44443f; font-size: 13px; }
+.ink-account-dialog__forgot { display: block; margin: 10px 0 0 auto; }
+/* 主按钮沿用项目胶囊；蓝／洋红／橙取自 ink-reveal 的颜料色，以深底承托局部色团保证白字清晰。 */
+.ink-account-dialog .ink-account-dialog__submit {
+  --ink-account-paint: radial-gradient(ellipse at 6% 110%, #0606ade6, transparent 62%), radial-gradient(ellipse at 67% 130%, #f7017599, transparent 66%), radial-gradient(ellipse at 112% -10%, #ff4d0280, transparent 62%), #151515;
+  display: block; width: 100%; min-height: 48px; margin-top: 30px; padding: 12px 24px;
+  border: 1px solid #ffffff66; border-radius: 30px; background: var(--ink-account-paint); color: #fff;
+  font-size: 14px; font-weight: 500; box-shadow: inset 0 1px 0 #ffffff18; transition: filter 180ms var(--ink-slide-ease);
+}
+.ink-account-dialog .ink-account-dialog__submit:is(:hover, :focus-visible) { background: var(--ink-account-paint); color: #fff; filter: brightness(1.12); }
+.ink-account-dialog__navigation { display: flex; justify-content: center; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 14px; color: #55554c; font-size: 13px; }
+.ink-account-dialog__content > p { margin: 18px 0 0; color: #55554c; font-size: 12px; line-height: 1.7; }
+.ink-account-dialog__content > [role="alert"] { color: #925630; }
+/* 头像与语言按钮共用顶栏；名称向左展开，保持语言入口的右侧锚点。 */
+.ink-study__top-controls { position: relative; flex: none; margin-left: auto; display: flex; align-items: center; gap: 10px; }
+.ink-study__top-controls .ink-study__language { position: relative; inset: auto; }
+.ink-study__pill.ink-study__account-button { gap: 0; justify-content: center; }
+/* 已登录时按胶囊高度计算对称内边距，收起的头像为正圆；显式优先于通用胶囊样式。 */
+.ink-study__account-button[data-authenticated="true"] { min-width: var(--ink-pill-height); padding-inline: calc((var(--ink-pill-height) - 20px) / 2); }
+.ink-study__account-button svg { fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; }
+.ink-study__account-name { max-width: 0; opacity: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; transition: max-width 420ms var(--ink-slide-ease), margin-left 420ms var(--ink-slide-ease), opacity 220ms var(--ink-slide-ease); }
+.ink-study__account-button:is(:hover, :focus-visible) .ink-study__account-name { max-width: min(220px, 30vw); margin-left: 12px; opacity: 1; }
+@media (max-width: 620px) { .ink-account-dialog { padding: 44px 26px 28px; } .ink-study__top-controls { gap: 7px; } }
+@media (prefers-reduced-motion: reduce) { .ink-account-dialog { --ink-account-motion-duration: 0ms; } .ink-account-dialog::backdrop { transition: none; } .ink-study__account-name, .ink-account-dialog .ink-account-dialog__submit { transition: none; } }
+
+/* 顶栏共同分配宽度；整体保留语言控件原有的第10层，避免嵌套后下拉选项被第8层预览遮住。
+ * 透明空白不拦截画布，子控件仍保持正常命中。 */
+.ink-study__topbar { position: absolute; z-index: 10; top: var(--ink-corner-top); left: var(--ink-corner-inset); right: var(--ink-corner-inset); display: flex; align-items: center; gap: 12px; pointer-events: none; }
+.ink-study__topbar > * { pointer-events: auto; }
+.ink-study__topbar .ink-study__back { position: relative; inset: auto; flex: none; }
+@media (max-width: 620px) {
+  .ink-study__topbar { gap: 8px; }
+  /* 窄屏昵称在头像下方披露，不挤占返回按钮的空间；浮层文字不阻挡下方控件。 */
+  .ink-study__account-button { position: relative; }
+  .ink-study__account-name { position: absolute; top: calc(100% + 8px); right: 0; width: max-content; padding: 6px 10px; border-radius: 14px; background: #111; color: #fff; pointer-events: none; }
+  .ink-study__account-button:is(:hover, :focus-visible) .ink-study__account-name { max-width: min(220px, 60vw); margin-left: 0; }
+}

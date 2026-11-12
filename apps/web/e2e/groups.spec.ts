@@ -14,7 +14,7 @@ async function enter(page: Page) {
 }
 async function groups(page: Page) {
   await page.locator(".ink-study__history-dock").hover(); await page.getByRole("button", { name: "小组", exact: true }).click();
-  return page.getByRole("region", { name: "小组", exact: true });
+  return page.locator("#ink-groups");
 }
 async function openGroup(page: Page, groupId = FIXTURE_GROUP) {
   const panel = await groups(page);
@@ -23,7 +23,7 @@ async function openGroup(page: Page, groupId = FIXTURE_GROUP) {
   return panel;
 }
 async function selectGraph(page: Page, title = "组内搜索图") {
-  await page.getByRole("region", { name: "小组", exact: true }).locator(".ink-group-workspace").getByRole("button", { name: title, exact: true }).click();
+  await page.locator("#ink-groups .ink-group-workspace").getByRole("button", { name: title, exact: true }).click();
   await expect(page.locator("[data-ink-node=fixture-node]").getByRole("heading")).toBeVisible();
 }
 async function editNode(page: Page, title: string) {
@@ -35,8 +35,57 @@ async function editNode(page: Page, title: string) {
   await expect(page.locator("[data-ink-node=fixture-node]").getByRole("heading")).toHaveText(title);
 }
 
+test("返回列表后重进当前小组不清空组图或重连闪屏", async ({ page }) => {
+  await installGroupFixture(page); await enter(page); const panel = await openGroup(page);
+  const graph = page.locator(".ink-study__graph");
+  await expect(graph).toHaveCount(1);
+  const original = await graph.elementHandle();
+  const opened = await page.evaluate(() => (window as unknown as { groupFixture: { stats: () => { opened: number } } }).groupFixture.stats().opened);
+  await panel.getByRole("button", { name: "返回小组列表", exact: true }).click();
+  await panel.getByRole("button", { name: "进入小组：学习小组", exact: true }).click();
+  await expect(panel.getByRole("heading", { name: "小组 · 学习小组", exact: true })).toBeVisible();
+  expect(await page.evaluate(() => (window as unknown as { groupFixture: { stats: () => { opened: number } } }).groupFixture.stats().opened)).toBe(opened);
+  expect(await original!.evaluate(element => element === document.querySelector(".ink-study__graph"))).toBe(true);
+});
+
+test("头像收起居中，顶栏保留返回个人图且空白不挡抽屉箭头", async ({ page }) => {
+  const fixture = await installGroupFixture(page); await enter(page); const panel = await openGroup(page);
+  await panel.getByRole("heading", { name: "小组 · 学习小组", exact: true }).hover();
+  const avatar = page.getByRole("button", { name: "账号", exact: true });
+  // 同时检查桌面及窄屏的实际几何位置，避免通用胶囊间距覆盖后只剩表面样式断言。
+  for (const viewport of [{ width: 1462, height: 836 }, { width: 375, height: 760 }]) {
+    await page.setViewportSize(viewport);
+    const box = await avatar.boundingBox(), icon = await avatar.locator("svg").boundingBox();
+    expect(box).not.toBeNull(); expect(icon).not.toBeNull();
+    expect(Math.abs(box!.width - box!.height)).toBeLessThan(1);
+    expect(Math.abs(icon!.x + icon!.width / 2 - box!.x - box!.width / 2)).toBeLessThan(1);
+  }
+  await page.setViewportSize({ width: 1462, height: 836 });
+  const topReturn = page.locator(".ink-group-status").getByRole("button", { name: "返回个人图", exact: true });
+  await expect(topReturn).toBeVisible();
+  const dock = page.locator(".ink-study__history-dock");
+  await expect(dock).toHaveAttribute("data-expanded", "false");
+  const arrow = await dock.boundingBox(), topbar = await page.locator(".ink-study__topbar").boundingBox();
+  expect(arrow!.y + 5).toBeLessThan(topbar!.y + topbar!.height);
+  // 从原先被顶栏遮挡的箭头上沿进入并点击，不使用 force 绕开真实命中检测。
+  await page.mouse.move(arrow!.x + arrow!.width / 2, arrow!.y + 5);
+  await expect(dock).toHaveAttribute("data-expanded", "true");
+  await page.getByRole("button", { name: "搜索历史", exact: true }).click({ position: { x: 20, y: 5 } });
+  await expect(page.getByRole("region", { name: "搜索历史", exact: true })).toBeVisible();
+  await topReturn.click();
+  await expect(page.locator(".ink-group-status")).toHaveCount(0);
+  expect(fixture.requests).toHaveLength(0);
+});
+
 test("四个胶囊保持历史锚点并依次打开互斥面板，窄屏无越界", async ({ page }) => {
-  await installGroupFixture(page); await enter(page);
+  const longNickname = "共同探索网页的大学同学".repeat(3), longGroupName = "多位同学共同整理的网页探索与学习资料小组".repeat(3);
+  const fixture = await installGroupFixture(page, { nickname: longNickname });
+  fixture.groups[FIXTURE_GROUP]!.details.group.name = longGroupName;
+  await enter(page);
+  // 初始化脚本已序列化流端副本；显式同步长组名，让 HTTP 列表与实时快照使用相同样例。
+  await page.evaluate(groups => {
+    (window as unknown as { groupFixture: { replace: (value: unknown) => void } }).groupFixture.replace(groups);
+  }, fixture.groups);
   const dock = page.locator(".ink-study__history-dock"), history = page.getByRole("button", { name: "搜索历史", exact: true });
   await dock.hover();
   const controls = [history, page.getByRole("button", { name: "小组", exact: true }), page.getByRole("button", { name: "撤销", exact: true }), page.getByRole("button", { name: "设置", exact: true })];
@@ -52,6 +101,26 @@ test("四个胶囊保持历史锚点并依次打开互斥面板，窄屏无越�
   await page.keyboard.press("Escape"); await expect(page.getByRole("region", { name: "设置", exact: true })).toBeHidden();
   await page.setViewportSize({ width: 375, height: 760 }); await dock.hover();
   for (const button of controls) { const box = await button.boundingBox(); expect(box!.x).toBeGreaterThanOrEqual(0); expect(box!.x + box!.width).toBeLessThanOrEqual(375); }
+  // 窄屏长组名与头像展开共用顶栏；文字必须截断，不能撑高顶栏或遮住两侧按钮。
+  const panel = await groups(page);
+  await panel.getByRole("button", { name: `进入小组：${longGroupName}`, exact: true }).click();
+  await expect(panel.locator("[data-group-connection]")).toHaveAttribute("data-group-connection", "online");
+  await page.keyboard.press("Escape");
+  const avatar = page.getByRole("button", { name: "账号", exact: true });
+  await avatar.hover(); await expect(avatar).toContainText(longNickname);
+  const status = page.locator(".ink-group-status"); await expect(status).toBeVisible();
+  await expect(status).toHaveAttribute("title", `${longGroupName} · 已连接`);
+  const topbarBox = await page.locator(".ink-study__topbar").boundingBox();
+  const backBox = await page.locator(".ink-study__back").boundingBox();
+  const statusBox = await status.boundingBox(), avatarBox = await avatar.boundingBox();
+  const returnBox = await status.getByRole("button", { name: "返回个人图", exact: true }).boundingBox();
+  for (const box of [topbarBox, backBox, statusBox, avatarBox]) expect(box).not.toBeNull();
+  expect(topbarBox!.height).toBeLessThanOrEqual(48);
+  expect(statusBox!.width).toBeGreaterThan(0);
+  expect(backBox!.x + backBox!.width).toBeLessThanOrEqual(statusBox!.x);
+  expect(statusBox!.x + statusBox!.width).toBeLessThanOrEqual(avatarBox!.x);
+  expect(returnBox!.x + returnBox!.width).toBeLessThanOrEqual(avatarBox!.x);
+  expect(avatarBox!.x + avatarBox!.width).toBeLessThanOrEqual(375);
 });
 
 test("先保存统一昵称再创建或加入小组，完整邀请码只在加入表单发送", async ({ page }) => {
@@ -59,14 +128,19 @@ test("先保存统一昵称再创建或加入小组，完整邀请码只在加�
   await expect(panel.getByRole("button", { name: "创建小组", exact: true })).toBeVisible();
   await expect(panel.getByRole("button", { name: "加入小组", exact: true })).toBeVisible();
   await panel.getByRole("button", { name: "创建小组", exact: true }).first().click();
+  // 缺昵称直接引导统一设置，不在小组列表保留第二份账号表单。
+  const settings = page.getByRole("region", { name: "设置", exact: true });
+  await expect(settings).toBeVisible(); expect(fixture.requests).toHaveLength(0);
+  await settings.getByRole("textbox", { name: "账号昵称", exact: true }).fill("大学同学");
+  await settings.getByRole("button", { name: "保存昵称", exact: true }).click();
+  await expect(settings.getByRole("status").filter({ hasText: "操作已完成" })).toBeVisible();
+  await groups(page); await panel.getByRole("button", { name: "创建小组", exact: true }).click();
   await panel.getByRole("textbox", { name: "小组名称", exact: true }).fill("算法学习");
   await panel.getByRole("textbox", { name: "小组说明", exact: true }).fill("共读图论资料");
   const createSubmit = panel.locator("form").filter({ has: page.getByRole("textbox", { name: "小组名称", exact: true }) }).getByRole("button", { name: "创建小组", exact: true });
-  await expect(createSubmit).toBeDisabled(); expect(fixture.requests).toHaveLength(0);
-  await panel.getByRole("textbox", { name: "账号昵称", exact: true }).fill("大学同学");
-  await panel.getByRole("button", { name: "保存昵称", exact: true }).click();
   await expect(createSubmit).toBeEnabled(); await createSubmit.click();
-  await expect(panel).toContainText("算法学习");
+  await expect(panel.getByRole("heading", { name: "小组 · 算法学习", exact: true })).toBeVisible();
+  await panel.getByRole("button", { name: "返回小组列表", exact: true }).click();
   await panel.getByRole("button", { name: "加入小组", exact: true }).first().click();
   await panel.locator('input[aria-label="邀请码"]:not([readonly])').fill(INVITATION);
   await panel.getByRole("button", { name: "加入小组", exact: true }).last().click();
@@ -81,12 +155,25 @@ test("小组条悬浮向下展开成员，创建者管理与普通成员退出�
   const owned = panel.locator(".ink-group-record").first();
   const member = panel.locator(".ink-group-record").filter({ has: page.getByRole("button", { name: "进入小组：伙伴小组", exact: true }) });
   const before = await owned.boundingBox(), next = await member.boundingBox();
+  await expect(panel.getByRole("button", { name: "小组成员", exact: true })).toHaveCount(0);
+  await expect(panel.getByRole("textbox", { name: "账号昵称", exact: true })).toHaveCount(0);
   await owned.hover(); await expect(owned).toContainText("小乙");
   await expect.poll(async () => (await owned.boundingBox())!.height).toBeGreaterThan(before!.height);
   await expect.poll(async () => (await owned.boundingBox())!.width).toBeGreaterThan(before!.width);
   await expect.poll(async () => (await member.boundingBox())!.y).toBeGreaterThan(next!.y);
+  await panel.getByRole("heading", { name: "小组", exact: true }).hover();
+  await expect(owned).toHaveAttribute("data-expanded", "false");
+  await owned.focus(); await expect(owned.getByRole("list", { name: "小组成员", exact: true })).toBeVisible();
   await owned.getByRole("button", { name: "进入小组：学习小组", exact: true }).click();
   const selected = panel.locator(".ink-group-workspace");
+  await expect(panel.getByRole("heading", { name: "小组 · 学习小组", exact: true })).toBeVisible();
+  await expect(panel.locator(".ink-group-record")).toHaveCount(0);
+  await expect(panel.getByRole("button", { name: "创建小组", exact: true })).toHaveCount(0);
+  await expect(selected.getByRole("textbox", { name: "组图名称", exact: true })).toHaveCount(0);
+  await expect(selected).not.toContainText("操作实时同步");
+  const searchBox = await selected.getByRole("button", { name: "小组新搜索", exact: true }).boundingBox();
+  const personalBox = await selected.getByRole("button", { name: "返回个人图", exact: true }).boundingBox();
+  expect(personalBox!.x).toBeGreaterThan(searchBox!.x); expect(Math.abs(personalBox!.y - searchBox!.y)).toBeLessThan(2);
   await expect(selected.locator("[data-group-connection]")).toHaveAttribute("data-group-connection", "online");
   await expect(selected.getByRole("textbox", { name: "邀请码", exact: true })).toHaveValue(INVITATION);
   await expect(selected.getByRole("button", { name: "解散小组", exact: true })).toBeVisible();
@@ -95,12 +182,13 @@ test("小组条悬浮向下展开成员，创建者管理与普通成员退出�
   await panel.getByRole("textbox", { name: "小组名称", exact: true }).fill("共同学习");
   await panel.getByRole("textbox", { name: "小组说明", exact: true }).fill("更新说明");
   await panel.getByRole("button", { name: "保存", exact: true }).click();
-  await expect(owned).toContainText("共同学习");
+  await expect(panel.getByRole("heading", { name: "小组 · 共同学习", exact: true })).toBeVisible();
   // 推送可以先于HTTP确认到达；正常顺序旅程等待表单关闭，迟到确认另有专门用例覆盖。
   await expect(panel.getByRole("textbox", { name: "小组名称", exact: true })).toHaveCount(0);
   await expect(panel.getByRole("status").filter({ hasText: "操作已完成" })).toBeVisible();
   const update = fixture.requests.find(value => (value.body as { action?: string }).action === "update");
   expect(update?.proof).toMatch(/^fixture-proof-/); expect(update?.body).toMatchObject({ name: "共同学习", description: "更新说明" });
+  await panel.getByRole("button", { name: "返回小组列表", exact: true }).click();
   await member.getByRole("button", { name: "进入小组：伙伴小组", exact: true }).click();
   await expect(selected.locator("[data-group-connection]")).toHaveAttribute("data-group-connection", "online");
   await expect(selected.getByRole("button", { name: "编辑小组", exact: true })).toHaveCount(0);
@@ -112,6 +200,42 @@ test("小组条悬浮向下展开成员，创建者管理与普通成员退出�
   await expect(selected.locator("[data-group-connection]")).toHaveAttribute("data-group-connection", "online");
   page.once("dialog", dialog => dialog.accept()); await selected.getByRole("button", { name: "解散小组", exact: true }).click();
   await expect(owned).toHaveCount(0); expect(fixture.groups[FIXTURE_GROUP]).toBeUndefined();
+});
+
+/** 共享资料读取可被设置页主动替换；被取消的旧读取不是小组服务故障。 */
+test("设置取消小组在途昵称读取后，返回列表不显示虚假故障", async ({ page }) => {
+  await installGroupFixture(page); await enter(page);
+  let release!: () => void, began!: () => void, held = false;
+  const pending = new Promise<void>(resolve => { release = resolve; }), started = new Promise<void>(resolve => { began = resolve; });
+  await page.route("**/api/profile", async route => {
+    if (held) { await route.fallback(); return; }
+    held = true; began(); await pending;
+    // 客户端可能已取消旧请求；只释放假响应，不把测试清理时的取消当成页面故障。
+    await route.fulfill({ json: { profile: { userId: FIXTURE_USER, nickname: "小甲" } } }).catch(() => {});
+  });
+  try {
+    const panel = await groups(page); await started;
+    await page.getByRole("button", { name: "账号", exact: true }).click();
+    await expect(page.getByRole("region", { name: "设置", exact: true })).toBeVisible();
+    release(); await groups(page);
+    await expect(panel.getByRole("button", { name: "进入小组：学习小组", exact: true })).toBeVisible();
+    await expect(panel.getByRole("alert")).toHaveCount(0);
+  } finally { release(); }
+});
+
+/** 首次快照没有到达时也能离开小组；不得依赖已加载管理信息才能恢复个人上下文。 */
+test("初次连接失败时保留返回个人图，且新搜索保持禁用", async ({ page }) => {
+  const fixture = await installGroupFixture(page); await enter(page); const panel = await groups(page);
+  await expect(panel.getByRole("button", { name: "进入小组：学习小组", exact: true })).toBeVisible();
+  await fixture.disconnect();
+  await panel.getByRole("button", { name: "进入小组：学习小组", exact: true }).click();
+  const selected = panel.locator(".ink-group-workspace");
+  await expect(selected).toBeVisible();
+  await expect(selected.getByRole("button", { name: "小组新搜索", exact: true })).toBeDisabled();
+  await expect(selected.getByRole("button", { name: "编辑小组", exact: true })).toHaveCount(0);
+  await selected.getByRole("button", { name: "返回个人图", exact: true }).click();
+  await expect(selected).toHaveCount(0); await expect(panel.getByRole("heading", { name: "小组", exact: true })).toBeVisible();
+  expect(fixture.requests).toHaveLength(0);
 });
 
 test("真实编辑自动发往组图并接收另一成员推送，撤销仅显示本人且标明小组", async ({ page }) => {
@@ -159,9 +283,8 @@ test("浏览器断网后保留已读图但所有写入口阻断，重新快照�
   await expect(page.locator("[data-group-connection]")).not.toHaveAttribute("data-group-connection", "online");
   const before = fixture.requests.length;
   const panel = await groups(page), selected = panel.locator(".ink-group-workspace");
-  for (const name of ["创建小组", "加入小组", "保存昵称"]) await expect(panel.getByRole("button", { name, exact: true })).toBeDisabled();
-  await expect(selected.getByRole("textbox", { name: "组图名称", exact: true })).toBeDisabled();
-  await expect(selected.getByRole("button", { name: "新建组图", exact: true })).toBeDisabled();
+  for (const name of ["创建小组", "加入小组", "保存昵称", "新建组图"]) await expect(panel.getByRole("button", { name, exact: true })).toHaveCount(0);
+  await expect(selected.getByRole("button", { name: "小组新搜索", exact: true })).toBeDisabled();
   await expect(selected.getByRole("button", { name: "复制个人图到小组", exact: true })).toBeDisabled();
   for (const button of await selected.getByRole("button", { name: /重命名组图|删除组图|复制到个人/ }).all()) await expect(button).toBeDisabled();
   await page.keyboard.press("Escape");
@@ -177,7 +300,7 @@ test("浏览器断网后保留已读图但所有写入口阻断，重新快照�
   expect(fixture.requests.length).toBeGreaterThan(before);
 });
 
-/** 真正的触屏上下文：首次点底部只展开，成员按钮作为无hover设备的明确替代入口。 */
+/** 真正的触屏上下文：首次点底部只展开，信息条空白处作为无悬浮设备的成员入口。 */
 test.describe("触屏小组入口", () => {
   test.use({ hasTouch: true, viewport: { width: 375, height: 760 } });
   test("点按展开四选项并显式展示成员，胶囊始终落在屏幕内", async ({ page }, testInfo) => {
@@ -186,7 +309,7 @@ test.describe("触屏小组入口", () => {
     const dock = page.locator(".ink-study__history-dock"); await expect(dock).toHaveAttribute("data-expanded", "true");
     await page.getByRole("button", { name: "小组", exact: true }).tap();
     const row = page.getByRole("region", { name: "小组", exact: true }).locator(".ink-group-record").first();
-    await row.getByRole("button", { name: "小组成员", exact: true }).tap();
+    await row.getByText("一起探索网页", { exact: true }).tap();
     await expect(row.getByRole("list", { name: "小组成员", exact: true })).toBeVisible();
     await expect(row).toContainText("小乙");
     await page.screenshot({ path: testInfo.outputPath("group-phone-members.png"), animations: "disabled" });
@@ -203,6 +326,7 @@ for (const action of ["leave", "dissolve"] as const) test(`${action}迟到确认
   await panel.getByRole("button", { name: action === "leave" ? "退出小组" : "解散小组", exact: true }).click();
   try {
     await held.entered;
+    await panel.getByRole("button", { name: "返回小组列表", exact: true }).click();
     await panel.getByRole("button", { name: `进入小组：${remaining === FIXTURE_GROUP ? "学习小组" : "伙伴小组"}`, exact: true }).click();
     await expect(panel.locator(".ink-group-workspace")).toHaveAttribute("data-group-id", remaining);
     held.release();

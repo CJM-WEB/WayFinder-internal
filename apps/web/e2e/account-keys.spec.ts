@@ -53,6 +53,60 @@ async function open(page: Page, english = false) {
   await expect(panel).toBeVisible(); return panel;
 }
 
+test("设置切换或关闭时账号与Key整块退场，秘密当帧清空且快速重开不复活", async ({ page }, testInfo) => {
+  const remote = await fixture(page); await page.goto("/"); await page.getByRole("button", { name: "开始探索", exact: true }).click();
+  await open(page); const panel = page.locator("#ink-settings");
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  for (const target of ["搜索历史", "小组", "撤销", "关闭", "外点", "Escape"]) {
+    if (target !== "搜索历史") await open(page);
+    const account = await panel.locator(".ink-settings__account").elementHandle();
+    const cloud = panel.locator(".ink-settings__cloud-key").first(), shell = await cloud.elementHandle();
+    const input = cloud.getByLabel("DeepSeek 待保存的云端 Key", { exact: true });
+    await input.fill("fixture-retiring-secret");
+    await cloud.getByRole("button", { name: "保存到云端", exact: true }).click();
+    const height = await panel.locator(".ink-settings__content").evaluate(element => element.scrollHeight);
+    if (target === "关闭") await panel.getByRole("button", { name: "收起面板", exact: true }).click();
+    else if (target === "外点") await page.locator(".ink-study__stage").click({ position: { x: 12, y: 100 } });
+    else if (target === "Escape") await page.keyboard.press("Escape");
+    else { await page.locator(".ink-study__history-dock").hover(); await page.getByRole("button", { name: target, exact: true }).click(); }
+    await expect(page.locator("#ink-settings")).toHaveAttribute("inert", "");
+    // 暂停真实退场动画，检查仍在屏幕上的旧面板；不能只等完全消失后检查终态。
+    await page.locator(".ink-study__history-drawer").evaluate(element => element.getAnimations({ subtree: true }).forEach(animation => animation.pause()));
+    expect(await account!.evaluate(element => element.isConnected)).toBe(true);
+    expect(await shell!.evaluate(element => element.isConnected)).toBe(true);
+    expect(await input.inputValue()).toBe("");
+    expect(await page.locator("#ink-settings .ink-settings__content").evaluate(element => element.scrollHeight)).toBe(height);
+    await page.screenshot({ path: testInfo.outputPath(`settings-retiring-${target}.png`) });
+    await page.locator(".ink-study__history-drawer").evaluate(element => element.getAnimations({ subtree: true }).forEach(animation => animation.finish()));
+  }
+  await open(page);
+  await expect(panel.getByLabel("DeepSeek 待保存的云端 Key", { exact: true })).toHaveValue("");
+  expect(remote.actions).toHaveLength(0); expect(remote.searches).toHaveLength(0);
+});
+
+test("退场立即取消云Key写入的本地发布，迟到结果不更新保留的外壳", async ({ page }) => {
+  await fixture(page); await page.goto("/"); await page.getByRole("button", { name: "开始探索", exact: true }).click();
+  await open(page); const cloud = page.locator("#ink-settings .ink-settings__cloud-key").first();
+  let release!: () => void, started!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; }), pending = new Promise<void>(resolve => { started = resolve; });
+  await page.route("**/api/account/keys", async route => {
+    if (route.request().method() !== "POST") return route.fallback();
+    started(); await held;
+    await route.fulfill({ json: { userId: "fixture-key-user", deepseek: { configured: true, mask: "••••late", revision: "late-key" }, serpapi: { configured: false, mask: null, revision: null } } });
+  });
+  await cloud.getByLabel("DeepSeek 待保存的云端 Key", { exact: true }).fill("fixture-late-secret");
+  await cloud.getByRole("button", { name: "保存到云端", exact: true }).click();
+  await cloud.getByRole("button", { name: "确认保存云端 Key", exact: true }).click(); await pending;
+  await page.keyboard.press("Escape");
+  expect(await cloud.getByLabel("DeepSeek 待保存的云端 Key", { exact: true }).inputValue()).toBe("");
+  release();
+  // 等被取消请求的假响应回到浏览器事件队列，不把关闭理解为服务端必定撤回已经提交的写入。
+  await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+  await expect(cloud).not.toContainText("••••late");
+  await expect(cloud).not.toContainText("云端 Key 已更新");
+  await open(page); await expect(cloud.locator('[role="status"]')).toHaveCount(0);
+});
+
 test("独立确认保存不自动切来源，失败重试保留访客源，cloud混合请求不含云Key明文", async ({ page }, testInfo) => {
   const remote = await fixture(page); await page.goto("/"); await page.getByRole("button", { name: "开始探索", exact: true }).click();
   const panel = await open(page), card = panel.getByRole("form", { name: "DeepSeek 设置", exact: true }), cloud = card.getByRole("region", { name: "DeepSeek 云端 Key", exact: true });

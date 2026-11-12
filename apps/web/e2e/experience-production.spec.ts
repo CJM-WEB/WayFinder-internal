@@ -86,7 +86,11 @@ async function productionFixture(page: Page) {
   };
   const createServer = () => buildProductionServer({
     config, repositoryRoot: directory, webAssetsDirectory,
-    accounts: { auth, database: { close: async () => {} } },
+    accounts: { auth, database: { close: async () => {} }, profile: {
+      // 顶栏会读取本人昵称；该旅程继续走正式会话路由，只替换资料存储，不扩展为昵称写入测试。
+      read: async userId => ({ userId, nickname: null }),
+      write: async () => { throw new Error("本旅程不修改昵称"); },
+    } },
     providerFactory: (keys, beforeAttempt) => {
       calls.factories.push({ ...keys });
       let outlines = 0;
@@ -118,7 +122,7 @@ async function productionFixture(page: Page) {
   // 只截获根 /api/：Vite 的 /src/api/*.ts 是真实浏览器模块，必须继续由开发服务器提供。
   await page.route(url => url.origin === ORIGIN && url.pathname.startsWith("/api/"), async route => {
     const request = route.request(), url = new URL(request.url());
-    if (!["/api/account", "/api/account/keys", "/api/workspace", "/api/settings", "/api/experience", "/api/experience/status", "/api/search"].includes(url.pathname)) {
+    if (!["/api/account", "/api/account/keys", "/api/profile", "/api/workspace", "/api/settings", "/api/experience", "/api/experience/status", "/api/search"].includes(url.pathname)) {
       throw new Error("跨层夹具收到未声明的 API 路径");
     }
     const method = request.method();
@@ -173,7 +177,9 @@ async function logIn(page: Page, touch = false): Promise<Locator> {
     return page.getByRole("region", { name: "设置", exact: true });
   };
   const panel = await settings();
-  const form = panel.getByRole("form", { name: "邮箱账号", exact: true });
+  const openLogin = panel.getByRole("region", { name: "账号", exact: true }).getByRole("button", { name: "登录", exact: true });
+  if (touch) await openLogin.tap(); else await openLogin.click();
+  const form = page.getByRole("dialog", { name: "登录", exact: true }).getByRole("form", { name: "邮箱账号", exact: true });
   await form.getByLabel("邮箱", { exact: true }).fill(ACCOUNT.email);
   await form.getByLabel("密码", { exact: true }).fill(ACCOUNT.password);
   await fs.mkdir(SCREENSHOT_DIRECTORY, { recursive: true });

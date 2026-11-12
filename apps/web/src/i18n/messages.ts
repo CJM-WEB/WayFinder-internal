@@ -32,7 +32,8 @@ export type Messages = Readonly<{
   }>;
   account: Readonly<{
     title: string; form: string; email: string; password: string; otp: string; guest: string;
-    accepted: string; continueLogin: string; updated: string; busy: string; failure: string; required: string;
+    forgotPassword: string; noAccount: string; backLogin: string;
+    accepted: string; registered: string; continueLogin: string; updated: string; busy: string; failure: string; required: string;
     actions: Readonly<Record<"register" | "verify" | "login" | "logout" | "recover" | "reset" | "resend", string>>;
   }>;
   settings: Readonly<{
@@ -180,11 +181,12 @@ export const MESSAGES: Record<SearchLanguage, Messages> = {
       statuses: { guest: "尚未启用云端同步", loading: "正在读取云端工作区…", saving: "正在同步到云端…", synced: "已同步到云端", offline: "当前离线，修改保留在本地", error: "云端同步未完成，本地修改已保留；请重试", conflict: "云端版本有冲突，请选择重新载入或另存副本" },
     },
     account: {
+      forgotPassword: "忘记密码？", noAccount: "没有账号？", backLogin: "返回登录",
       title: "账号", form: "邮箱账号", email: "邮箱", password: "密码", otp: "验证码",
       guest: "访客可自带 Key 使用；登录后才可验证邀请码并使用作者体验。图及历史、Key 不会自动上传。",
       accepted: "若邮箱符合条件，将收到邮件。请检查邮箱后填写验证码；此提示不代表已投递成功。",
-      continueLogin: "操作已完成，请登录。", updated: "账号状态已更新。", busy: "正在处理账号请求…",
-      failure: "账号操作未完成，请检查输入或稍后重试。", required: "请先在设置中登录，再验证邀请码。",
+      registered: "注册成功，请登录。", continueLogin: "操作已完成，请登录。", updated: "账号状态已更新。", busy: "正在处理账号请求…",
+      failure: "账号操作未完成，请检查输入或稍后重试。", required: "请先登录，再验证邀请码。",
       actions: { login: "登录", register: "注册", verify: "验证邮箱", recover: "找回密码", reset: "重置密码", resend: "重新发送验证码", logout: "退出登录" },
     },
     settings: {
@@ -196,7 +198,7 @@ export const MESSAGES: Record<SearchLanguage, Messages> = {
       unavailable: "作者体验暂不可用。", readFailure: "设置读取失败，请重试；当前不会覆盖旧设置。", saveFailure: "设置保存失败，请重试。", retry: "重试读取", open: "打开设置",
       ownHint: "浏览器 Key 长期保存在本浏览器，搜索时发给后端代调用；云端 Key 需独立确认后加密托管。保存不会进行付费验证。",
       getKey: { deepseek: "获取DeepSeek API KEY", serpapi: "获取SerpAPI KEY" },
-      problems: { CLOUD_KEY_REQUIRED: "请先保存该服务的云端 Key 或选择其他凭据来源。", CLOUD_KEY_REVOKED: "云端 Key 已变更，请重新开始搜索。", CLOUD_KEY_UNAVAILABLE: "云端 Key 暂不可用，请检查云端设置。", ACCOUNT_REQUIRED: "请先在设置中登录，再验证邀请码。", CREDENTIALS_REQUIRED: "请先配置 API Key。", CREDENTIALS_INVALID: "凭据配置无效，请检查设置。", INVITE_CODE_INVALID: "邀请码无效，请检查后重试。", EXPERIENCE_REVOKED: "体验资格已失效，请输入当前邀请码。", EXPERIENCE_UNAVAILABLE: "作者体验暂不可用，请稍后重试。" },
+      problems: { CLOUD_KEY_REQUIRED: "请先保存该服务的云端 Key 或选择其他凭据来源。", CLOUD_KEY_REVOKED: "云端 Key 已变更，请重新开始搜索。", CLOUD_KEY_UNAVAILABLE: "云端 Key 暂不可用，请检查云端设置。", ACCOUNT_REQUIRED: "请先登录，再验证邀请码。", CREDENTIALS_REQUIRED: "请先配置 API Key。", CREDENTIALS_INVALID: "凭据配置无效，请检查设置。", INVITE_CODE_INVALID: "邀请码无效，请检查后重试。", EXPERIENCE_REVOKED: "体验资格已失效，请输入当前邀请码。", EXPERIENCE_UNAVAILABLE: "作者体验暂不可用，请稍后重试。" },
     },
     inkStudy: {
       statement: "让每个好奇，\n都有去处。", tagline: "打造属于自己的互联网", explore: "开始探索", contact: "联系作者",
@@ -379,11 +381,12 @@ export const MESSAGES: Record<SearchLanguage, Messages> = {
       statuses: { guest: "Cloud sync is not active", loading: "Loading cloud workspace…", saving: "Syncing to cloud…", synced: "Synced to cloud", offline: "Offline. Your changes are kept locally", error: "Cloud sync did not complete. Local changes are preserved; please retry", conflict: "Cloud version conflict. Reload or save a local copy" },
     },
     account: {
+      forgotPassword: "Forgot password?", noAccount: "No account?", backLogin: "Back to log in",
       title: "Account", form: "Email account", email: "Email", password: "Password", otp: "Verification code",
       guest: "Guests can use their own keys. Sign in before verifying an invitation for the author trial. Graphs, history and keys are never uploaded automatically.",
       accepted: "If this email is eligible, you will receive a message. Check your inbox and enter the code. This notice does not confirm delivery.",
-      continueLogin: "Completed. Please log in.", updated: "Account status updated.", busy: "Processing account request…",
-      failure: "The account request could not be completed. Check your input or retry later.", required: "Log in in Settings before verifying an invitation.",
+      registered: "Registration complete. Please log in.", continueLogin: "Completed. Please log in.", updated: "Account status updated.", busy: "Processing account request…",
+      failure: "The account request could not be completed. Check your input or retry later.", required: "Log in before verifying an invitation.",
       actions: { login: "Log in", register: "Register", verify: "Verify email", recover: "Recover password", reset: "Reset password", resend: "Resend code", logout: "Log out" },
     },
     settings: {
@@ -395,7 +398,7 @@ export const MESSAGES: Record<SearchLanguage, Messages> = {
       unavailable: "The author's trial is unavailable.", readFailure: "Settings could not be read. Retry before replacing existing settings.", saveFailure: "Settings could not be saved. Please retry.", retry: "Retry loading", open: "Open settings",
       ownHint: "Browser keys stay in this browser and are sent to the backend for searches. Cloud keys are stored encrypted only after separate confirmation. Saving does not run a paid test.",
       getKey: { deepseek: "Get a DeepSeek API key", serpapi: "Get a SerpAPI key" },
-      problems: { CLOUD_KEY_REQUIRED: "Save a cloud key for this service or choose another source.", CLOUD_KEY_REVOKED: "The cloud key changed. Start a new search.", CLOUD_KEY_UNAVAILABLE: "The cloud key is unavailable. Check cloud settings.", ACCOUNT_REQUIRED: "Log in in Settings before verifying an invitation.", CREDENTIALS_REQUIRED: "Configure your API keys first.", CREDENTIALS_INVALID: "The credential settings are invalid. Check your settings.", INVITE_CODE_INVALID: "The invitation code is invalid. Check it and retry.", EXPERIENCE_REVOKED: "Trial access has expired. Enter the current invitation code.", EXPERIENCE_UNAVAILABLE: "The author's trial is unavailable. Please retry later." },
+      problems: { CLOUD_KEY_REQUIRED: "Save a cloud key for this service or choose another source.", CLOUD_KEY_REVOKED: "The cloud key changed. Start a new search.", CLOUD_KEY_UNAVAILABLE: "The cloud key is unavailable. Check cloud settings.", ACCOUNT_REQUIRED: "Log in before verifying an invitation.", CREDENTIALS_REQUIRED: "Configure your API keys first.", CREDENTIALS_INVALID: "The credential settings are invalid. Check your settings.", INVITE_CODE_INVALID: "The invitation code is invalid. Check it and retry.", EXPERIENCE_REVOKED: "Trial access has expired. Enter the current invitation code.", EXPERIENCE_UNAVAILABLE: "The author's trial is unavailable. Please retry later." },
     },
     inkStudy: {
       statement: "Every curiosity,\na place to go.", tagline: "BUILD YOUR OWN INTERNET", explore: "Start exploring", contact: "Contact author",

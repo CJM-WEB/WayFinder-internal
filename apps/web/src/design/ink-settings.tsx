@@ -19,7 +19,7 @@ import { InkCloudKey } from "./ink-cloud-key.js";
 import "./ink-settings.css";
 
 type Preferences = ReturnType<typeof credentialSettingsStore.getState>["preferences"];
-type Props = Readonly<{ open: boolean; presented: boolean; language: SearchLanguage; onClose: (restoreFocus: boolean) => void }>;
+type Props = Readonly<{ open: boolean; presented: boolean; language: SearchLanguage; onClose: (restoreFocus: boolean) => void; onOpenLogin?: () => void }>;
 const SERVICES = ["deepseek", "serpapi"] as const;
 const SERVICE_NAMES: Readonly<Record<CredentialService, string>> = { deepseek: "DeepSeek", serpapi: "SerpAPI" };
 /** 获取入口只使用固定官网地址；新页隔离来源，不携带当前设置或浏览器页面地址。 */
@@ -28,7 +28,7 @@ const KEY_PORTALS: Readonly<Record<CredentialService, string>> = {
   serpapi: "https://serpapi.com/",
 };
 
-export function InkSettingsPanel({ open, presented, language, onClose }: Props) {
+export function InkSettingsPanel({ open, presented, language, onClose, onOpenLogin = () => {} }: Props) {
   const settings = useStore(credentialSettingsStore, state => state);
   const account = useStore(accountStore, state => state);
   const messages = getMessages(language);
@@ -62,7 +62,9 @@ export function InkSettingsPanel({ open, presented, language, onClose }: Props) 
       setDraft(settings.preferences); setSaved(null); setVisible({ deepseek: false, serpapi: false });
       panel.current?.focus({ preventScroll: true });
     }
-    if (!open && wasOpen.current) retireTrial();
+    if (!open && wasOpen.current) {
+      retireTrial(); setVisible({ deepseek: false, serpapi: false }); setDraft(settings.preferences);
+    }
     wasOpen.current = open;
   }, [open, settings.preferences]);
   useEffect(() => () => { ++intent.current; request.current?.abort(); }, []);
@@ -91,9 +93,18 @@ export function InkSettingsPanel({ open, presented, language, onClose }: Props) 
     const outside = (event: Event): void => {
       if (event.target instanceof Element && !panel.current?.contains(event.target) && !event.target.closest(".ink-study__history-dock")) close(false);
     };
+    const escape = (event: KeyboardEvent): void => {
+      // 确认动作会禁用原焦点按钮，浏览器可能把焦点交回 body；仍须允许 Esc 关闭当前面板。
+      // 面板内已处理的事件会带 defaultPrevented，避免同一次 Esc 连续关闭确认层与整个抽屉。
+      if (event.key !== "Escape" || event.defaultPrevented) return;
+      event.preventDefault();
+      if (trial !== null) { retireTrial(); panel.current?.focus({ preventScroll: true }); }
+      else close(true);
+    };
     document.addEventListener("pointerdown", outside);
     document.addEventListener("focusin", outside);
-    return () => { document.removeEventListener("pointerdown", outside); document.removeEventListener("focusin", outside); };
+    document.addEventListener("keydown", escape);
+    return () => { document.removeEventListener("pointerdown", outside); document.removeEventListener("focusin", outside); document.removeEventListener("keydown", escape); };
   });
   useEffect(() => {
     if (trial !== null && trialPresence.open) dialog.current?.focus({ preventScroll: true });
@@ -160,7 +171,8 @@ export function InkSettingsPanel({ open, presented, language, onClose }: Props) 
     <div className="ink-settings__content" inert={trial !== null} aria-hidden={trial !== null}>
     <header className="ink-study__history-header"><h2 id="ink-settings-title">{text.title}</h2>
       <button type="button" className="ink-study__pill" onClick={() => close(true)}>{messages.inkStudy.closePanel}</button></header>
-    {open ? <InkAccount language={language} /> : null}
+    {/* 账号与 Key 外壳统一随父层退场；active 负责立即停请求，不能按 open 提前抽走半块布局。 */}
+    <InkAccount key={account.epoch} active={open} language={language} onOpenLogin={onOpenLogin} />
     <p className="ink-settings__hint">{text.ownHint}</p>
     {settings.error !== null ? <div className="ink-settings__error" role="alert">
       <span>{settings.error === "read" ? text.readFailure : text.saveFailure}</span>
@@ -204,7 +216,7 @@ export function InkSettingsPanel({ open, presented, language, onClose }: Props) 
           <button type="submit" className="ink-study__pill" disabled={draft[service].source !== "own" || settings.error === "read"}>{text.save}</button>
         </div>
         {saved === service ? <p role="status">{text.saved}</p> : null}
-        {open && account.account !== null ? <InkCloudKey key={`${account.epoch}:${service}`} service={service} language={language} selected={draft[service].source === "cloud"}
+        {account.account !== null ? <InkCloudKey key={`${account.epoch}:${service}`} active={open} service={service} language={language} selected={draft[service].source === "cloud"}
           onChoose={() => {
             const retainedKey = credentialSettingsStore.getState().preferences[service].apiKey;
             if (credentialSettingsStore.getState().saveService(service, { source: "cloud", apiKey: retainedKey })) {

@@ -1,5 +1,5 @@
 /** 单服务云Key的独立确认；明文与冻结重试体只存当前组件，关闭或换号即销毁，不进持久化队列。 */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useStore } from "zustand";
 import { AccountKeyActionSchema, ApiKeySchema, MAX_API_KEY_LENGTH, type AccountKeyAction, type CredentialService, type SearchLanguage } from "@wayfinder/contracts";
 import { accountKeysApi, AccountKeysError } from "../api/account-keys.js";
@@ -8,8 +8,8 @@ import { accountStore } from "../stores/account.js";
 import { readGuestApiKey } from "../stores/credential-settings.js";
 import { getMessages } from "../i18n/messages.js";
 
-export function InkCloudKey({ service, language, selected, onChoose }: Readonly<{
-  service: CredentialService; language: SearchLanguage; selected: boolean; onChoose: () => void;
+export function InkCloudKey({ service, language, selected, onChoose, active = true }: Readonly<{
+  service: CredentialService; language: SearchLanguage; selected: boolean; onChoose: () => void; active?: boolean;
 }>) {
   const keys = useStore(accountKeysStore, state => state);
   const account = useStore(accountStore, state => state);
@@ -23,18 +23,25 @@ export function InkCloudKey({ service, language, selected, onChoose }: Readonly<
   const pending = useRef<AccountKeyAction | null>(null);
   const request = useRef<AbortController | null>(null);
   const intent = useRef(0);
-  const retire = (): void => {
+  const clearSecrets = (): void => {
     ++intent.current; request.current?.abort(); request.current = null; pending.current = null;
-    setDraft(""); setConfirm(null); setBusy(false); setError(null);
+    setDraft("");
   };
+  const retire = (): void => { clearSecrets(); setConfirm(null); setBusy(false); setError(null); };
   useEffect(() => () => { ++intent.current; request.current?.abort(); pending.current = null; }, []);
+  // 父面板退场时保留外壳，明文／重试体和在途操作仍在关闭当帧清理，迟到结果不能发布。
+  useLayoutEffect(() => {
+    if (!active) clearSecrets();
+    // 确认／状态文字不含秘密，随整个面板退场；下一次打开再重置，避免局部高度提前塌陷。
+    else { retire(); setSaved(false); }
+  }, [active]);
   if (account.account === null) return null;
   const userId = account.account.userId, epoch = account.epoch;
   const status = keys.summary?.userId === userId ? keys.summary[service] : null;
   const current = (generation: number): boolean => intent.current === generation && accountStore.getState().epoch === epoch && accountStore.getState().scopeUserId === userId;
 
   const update = async (): Promise<void> => {
-    if (confirm === null || busy || request.current !== null || status === null) return;
+    if (!active || confirm === null || busy || request.current !== null || status === null) return;
     const controller = new AbortController(), generation = ++intent.current;
     request.current = controller; setBusy(true); setError(null); setSaved(false);
     try {
@@ -53,7 +60,7 @@ export function InkCloudKey({ service, language, selected, onChoose }: Readonly<
     } finally { if (current(generation)) { request.current = null; setBusy(false); } }
   };
   const reload = async (): Promise<void> => {
-    if (busy) return;
+    if (!active || busy) return;
     pending.current = null; setConfirm(null); setError(null); setSaved(false);
     const generation = ++intent.current, controller = new AbortController(), keyGeneration = accountKeysStore.getState().generation;
     request.current = controller; setBusy(true);
@@ -63,7 +70,7 @@ export function InkCloudKey({ service, language, selected, onChoose }: Readonly<
     } catch { if (current(generation) && !controller.signal.aborted) setError(text.problems.KEY_UNAVAILABLE); }
     finally { if (current(generation)) { request.current = null; setBusy(false); } }
   };
-  return <section className="ink-settings__cloud-key" aria-label={`${name} ${text.title}`}>
+  return <section className="ink-settings__cloud-key" aria-label={`${name} ${text.title}`} inert={!active}>
     <p className="ink-settings__hint">{text.title} · {status?.configured ? status.mask : text.notConfigured}</p>
     {keys.loading ? <p className="ink-settings__hint">{text.loading}</p> : null}
     {keys.error === null ? null : <p className="ink-settings__error" role="alert">{text.problems[keys.error.code]}</p>}

@@ -27,9 +27,10 @@ describe("凭据设置呈现", () => {
     const html = render("zh-CN");
     expect(html).toContain('aria-label="DeepSeek 设置"');
     expect(html).toContain('aria-label="SerpAPI 设置"');
-    // 两项Key继续默认遮挡；新增账号密码同样遮挡，不能把第三个秘密字段误认成Key泄漏。
-    expect(html.match(/type="password"/g)).toHaveLength(3);
-    expect(html).toContain('aria-label="邮箱账号"');
+    // 登录移入独立弹窗；设置只保留两项默认遮挡的 Key 和明确登录入口。
+    expect(html.match(/type="password"/g)).toHaveLength(2);
+    expect(html).not.toContain('aria-label="邮箱账号"');
+    expect(html).toContain("登录");
     expect(html).toContain('autoComplete="off"');
     expect(html).toContain('maxLength="4096"');
     expect(html.match(/保存设置/g)).toHaveLength(2);

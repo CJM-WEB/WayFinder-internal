@@ -18,7 +18,10 @@
 .ink-group-form input, .ink-group-form textarea, .ink-group-form select, .ink-group-actions input { width: 100%; min-width: 0; padding: 9px 12px; border: 1px solid #ffffffa6; border-radius: 12px; background: #ffffff66; color: #242420; font: inherit; }
 .ink-group-form textarea { min-height: 64px; resize: vertical; }
 .ink-group-form small { flex: 1 0 100%; color: #62625d; line-height: 1.6; font-size: 11px; }
-.ink-group-workspace { margin-top: 24px; padding-top: 18px; border-top: 1px solid #ffffff80; }
+.ink-group-workspace { margin-top: 18px; }
+/* 组内页不再叠放列表；昵称门禁只提供前往统一设置的轻提示。 */
+.ink-group-nickname-hint { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; color: #62625d; font-size: 12px; }
+.ink-group-record:focus-visible { outline: 2px solid #62625d; outline-offset: 3px; }
 .ink-group-workspace > [role="status"] { font-size: 12px; color: #62625d; }
 .ink-group-selected { display: grid; gap: 8px; margin: 16px 0; }
 .ink-group-tag { margin-left: 8px; color: #76766d; font-size: 11px; font-weight: 400; }
@@ -29,7 +32,9 @@
 }
 @media (prefers-reduced-motion: reduce) { .ink-group-record, .ink-group-record__members { transition-duration: 0s; } }
 
-/* 只读连接提示为浮层，不挤占既有画布尺寸；进入面板仍用统一入口处理失败动作。 */
-.ink-group-status { position: absolute; z-index: 3; left: 24px; top: 105px; max-width: min(460px, calc(100% - 48px)); display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 11px; color: #62625d; }
-.ink-group-status span { overflow-wrap: anywhere; }
-.ink-group-status .ink-study__pill { font-size: 11px; min-height: 28px; padding: 4px 10px; }
+/* 连接提示在顶栏中使用剩余宽度，头像展开后自然收缩；长组名不覆盖两侧控件。 */
+.ink-study__topbar > .ink-group-status { pointer-events: none; }
+/* 提示的弹性空白不接收鼠标；只有实际按钮命中，抽屉箭头可从顶栏空白处正常点击。 */
+.ink-group-status { flex: 1 1 0; min-width: 0; min-height: 40px; display: flex; align-items: center; gap: 8px; font-size: 11px; line-height: 1.5; color: #62625d; }
+.ink-group-status button { flex: none; pointer-events: auto; }
+.ink-group-status span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

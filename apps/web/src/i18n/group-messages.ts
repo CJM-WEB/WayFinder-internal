@@ -3,12 +3,12 @@ import type { GroupConnectionState, GroupErrorCode, SearchLanguage } from "@wayf
 const zh = {
   title: "小组", create: "创建小组", join: "加入小组", name: "小组名称", description: "小组说明",
   nickname: "账号昵称", saveNickname: "保存昵称", nicknameHint: "昵称在所有小组通用，创建或加入前请先填写。",
-  login: "登录后可以创建或加入小组。", settings: "前往设置登录", invitation: "邀请码", copyCode: "复制邀请码",
+  login: "登录后可以创建或加入小组。", settings: "前往登录", invitation: "邀请码", copyCode: "复制邀请码",
   copied: "已复制", copyFailed: "复制失败，请选择邀请码手动复制", open: "进入小组", members: "小组成员", owner: "创建者",
   edit: "编辑小组", save: "保存", cancel: "取消", leave: "退出小组", dissolve: "解散小组",
   dissolveConfirm: "解散后全部组图和历史将删除，不自动备份。请先手动复制需要保留的图。确定解散？",
-  empty: "还没有小组，可以创建自己的小组或用邀请码加入。", working: "处理中…", refresh: "刷新列表", reconnect: "重新连接",
-  personal: "返回个人图", newSearch: "小组新搜索", newGraph: "新建组图", graphName: "组图名称", emptyGraphs: "组内还没有图。",
+  empty: "还没有小组，可以创建自己的小组或用邀请码加入。", working: "处理中…", refresh: "刷新列表", backToGroups: "返回小组列表", nicknameSettings: "前往设置填写昵称", reconnect: "重新连接",
+  personal: "返回个人图", newSearch: "小组新搜索", emptyGraphs: "组内还没有图。",
   copyOut: "复制到个人", copyIn: "复制个人图到小组", source: "选择个人图", noSource: "没有可复制的个人图",
   renameGraph: "重命名组图", deleteGraph: "删除组图", restoreGraph: "恢复最近删除的组图",
   retry: "重试原操作", confirmResult: "核对上次结果", keepMine: "确认保留我的修改", discard: "取消待处理修改", pending: "有尚未确认的修改，请先处理。",
@@ -19,12 +19,12 @@ const zh = {
 const en: typeof zh = {
   title: "Groups", create: "Create group", join: "Join group", name: "Group name", description: "Group description",
   nickname: "Nickname", saveNickname: "Save nickname", nicknameHint: "Your nickname is shared across groups. Fill it in before creating or joining.",
-  login: "Sign in to create or join a group.", settings: "Open settings to sign in", invitation: "Invitation code", copyCode: "Copy invitation code",
+  login: "Sign in to create or join a group.", settings: "Sign in", invitation: "Invitation code", copyCode: "Copy invitation code",
   copied: "Copied", copyFailed: "Copy failed. Select the code and copy it manually.", open: "Open group", members: "Group members", owner: "Creator",
   edit: "Edit group", save: "Save", cancel: "Cancel", leave: "Leave group", dissolve: "Dissolve group",
   dissolveConfirm: "All group graphs and history will be deleted, without an automatic backup. Copy anything you want to keep first. Dissolve this group?",
-  empty: "No groups yet. Create one or join with an invitation code.", working: "Working…", refresh: "Refresh groups", reconnect: "Reconnect",
-  personal: "Personal graphs", newSearch: "New group search", newGraph: "New group graph", graphName: "Group graph name", emptyGraphs: "This group has no graphs yet.",
+  empty: "No groups yet. Create one or join with an invitation code.", working: "Working…", refresh: "Refresh groups", backToGroups: "Back to groups", nicknameSettings: "Set nickname in settings", reconnect: "Reconnect",
+  personal: "Personal graphs", newSearch: "New group search", emptyGraphs: "This group has no graphs yet.",
   copyOut: "Copy to personal", copyIn: "Copy personal graph to group", source: "Choose a personal graph", noSource: "No personal graphs to copy",
   renameGraph: "Rename group graph", deleteGraph: "Delete group graph", restoreGraph: "Restore last deleted group graph",
   retry: "Retry original action", confirmResult: "Check previous result", keepMine: "Confirm my changes", discard: "Discard pending changes", pending: "Resolve the unconfirmed action first.",
@@ -35,8 +35,8 @@ const en: typeof zh = {
 export function getGroupMessages(language: SearchLanguage) { return language === "zh-CN" ? zh : en; }
 export function groupConnectionLabel(state: GroupConnectionState, language: SearchLanguage): string {
   const labels: Record<GroupConnectionState, string> = language === "zh-CN"
-    ? { connecting: "正在连接，暂不可操作", syncing: "正在对齐，暂不可操作", online: "已连接，操作实时同步", offline: "连接已断开，暂不可操作", reconnecting: "正在重连，暂不可操作", closed: "小组连接已关闭" }
-    : { connecting: "Connecting · read only", syncing: "Catching up · read only", online: "Connected · changes sync immediately", offline: "Disconnected · read only", reconnecting: "Reconnecting · read only", closed: "Group connection closed" };
+    ? { connecting: "正在连接，暂不可操作", syncing: "正在对齐，暂不可操作", online: "已连接", offline: "连接已断开，暂不可操作", reconnecting: "正在重连，暂不可操作", closed: "小组连接已关闭" }
+    : { connecting: "Connecting · read only", syncing: "Catching up · read only", online: "Connected", offline: "Disconnected · read only", reconnecting: "Reconnecting · read only", closed: "Group connection closed" };
   return labels[state];
 }
 export function groupErrorMessage(code: string, language: SearchLanguage): string {

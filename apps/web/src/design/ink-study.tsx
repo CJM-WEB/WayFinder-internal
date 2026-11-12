@@ -9,6 +9,9 @@ import { resolveSearchEngine, SearchEngineSchema, type SearchEngine, type Search
 import { resolveEntryLanguage } from "../i18n/entry-language.js";
 import { getMessages } from "../i18n/messages.js";
 import { createInkReveal, type InkRevealController, type InkTransferEvent } from "./ink-reveal.js";
+import { InkAccountDialog } from "./ink-account.js";
+import { accountStore } from "../stores/account.js";
+import { accountProfileStore } from "../stores/account-profile.js";
 import { InkSearchHistory } from "./ink-search-history.js";
 import { inkSceneKey, type InkScene } from "./ink-graph-motion.js";
 import { startOmniboxSubmission, type InvalidOmniboxInputReason } from "../lib/omnibox-submission.js";
@@ -110,6 +113,15 @@ export default function InkApp() {
   const [groupOpen, setGroupOpen] = useState(false);
   const [undoOpen, setUndoOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [loginOpen, setLoginOpen] = useState(false);
+  const accountButton = useRef<HTMLButtonElement>(null);
+  const account = useStore(accountStore, state => state.account);
+  const profile = useStore(accountProfileStore, state => state);
+  useEffect(() => {
+    const controller = new AbortController();
+    if (account !== null) void accountProfileStore.getState().refresh(controller.signal).catch(() => {});
+    return () => controller.abort();
+  }, [account?.userId]);
   const credentialProblem = useStore(credentialSettingsStore, state => state.notice);
   const [resourcesMounted, setResourcesMounted] = useState(false);
   const [actionsMounted, setActionsMounted] = useState(false);
@@ -471,6 +483,13 @@ export default function InkApp() {
   const openSettings = useCallback((): void => {
     setOpenControl(null); setHistoryOpen(false); setGroupOpen(false); setUndoOpen(false); closeActions(); setSettingsOpen(true);
   }, [closeActions]);
+  const openLogin = useCallback((): void => {
+    setOpenControl(null); setHistoryOpen(false); setGroupOpen(false); setUndoOpen(false); setSettingsOpen(false);
+    closeActions(); setLoginOpen(true);
+  }, [closeActions]);
+  const closeLogin = useCallback((): void => {
+    setLoginOpen(false); accountButton.current?.focus({ preventScroll: true });
+  }, []);
   const closeSettings = useCallback((restoreFocus: boolean): void => {
     restoreSearchFocus.current = restoreFocus; setSettingsOpen(false);
   }, []);
@@ -798,11 +817,8 @@ export default function InkApp() {
           <InkResearchPreview language={renderLanguage} active={entered} suspended={drawerOpen} onVisibilityChange={setResearchOpen} />
         </Suspense> : null}
         <InkNotice notice={groupNotice ?? credentialNotice ?? graphNotice} />
-        {!entered || !groupMode ? null : <div className="ink-group-status" data-ink-control data-ink-group-notice>
-          <span>{workspaceContextState.groupName ?? groupLabels.title} · {groupConnectionLabel(groupConnection, renderLanguage)}</span>
-          <button type="button" className="ink-study__pill" onClick={() => { workspaceContext.leaveGroup(); }}>{groupLabels.personal}</button>
-        </div>}
-
+        {/* 顶栏共用弹性行，长昵称展开时连接提示随剩余空间收缩，避免控件重叠。 */}
+        <div className="ink-study__topbar" data-ink-control>
         <button type="button" className="ink-study__pill ink-study__back" onClick={returnHome}
           inert={!entered} aria-hidden={!entered} aria-label={messages.inkStudy.backHome}>
           <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">
@@ -810,14 +826,28 @@ export default function InkApp() {
           </svg>
         </button>
 
-        <InkSearchHistory open={historyOpen} available={ready} language={renderLanguage}
-          groupOpen={groupOpen} onOpenGroup={openGroup} onCloseGroup={closeGroup} onSelectGroupGraph={id => restoreHistory(id, true)} onNewGroupSearch={newGroupSearch}
-          undoOpen={undoOpen} undoDisabled={storageBlocked || showsDraft || pendingSearch || movingGraph || researchOpen || (isCurrentRun && runtime.isSearching)}
-          onOpenUndo={openUndo} onCloseUndo={closeUndo}
-          settingsOpen={settingsOpen} onOpenSettings={openSettings} onCloseSettings={closeSettings}
-          onOpen={openHistory} onClose={closeHistory} onNewSearch={newSearch} onSelectGraph={id => restoreHistory(id)} />
+        {!entered || !groupMode ? null : <div className="ink-group-status" data-ink-control data-ink-group-notice
+          title={`${workspaceContextState.groupName ?? groupLabels.title} · ${groupConnectionLabel(groupConnection, renderLanguage)}`}>
+          <span>{workspaceContextState.groupName ?? groupLabels.title} · {groupConnectionLabel(groupConnection, renderLanguage)}</span>
+          {/* 顶栏也保留返回入口，复用现有离组动作；抽屉内入口保持可用。 */}
+          <button type="button" className="ink-study__pill" onClick={() => workspaceContext.leaveGroup()}>{groupLabels.personal}</button>
+        </div>}
 
         {/* 披露面板使用普通按钮与自然 Tab 顺序，避免模拟系统下拉框或改变语言协议。 */}
+        <div className="ink-study__top-controls" data-ink-control>
+        <button type="button" ref={accountButton} className="ink-study__pill ink-study__account-button"
+          data-authenticated={account !== null}
+          aria-label={account === null ? messages.account.actions.login : messages.account.title}
+          aria-haspopup={account === null ? "dialog" : undefined} onClick={() => {
+            if (account === null) openLogin();
+            else {
+              // 首页也可访问同一个设置抽屉；只推进已有入场过程，不触发搜索或新建图。
+              beginExploring(); openSettings();
+            }
+          }}>
+          {account === null ? messages.account.actions.login : <><svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4" /><path d="M4 21v-2a8 8 0 0 1 16 0v2" /></svg>
+            <span className="ink-study__account-name">{profile.userId === account.userId ? profile.nickname ?? account.email : account.email}</span></>}
+        </button>
         <div className="ink-study__language" ref={languageControl} data-ink-control
           onBlur={event => {
             if (!event.currentTarget.contains(event.relatedTarget)) setOpenControl(null);
@@ -854,6 +884,18 @@ export default function InkApp() {
             </div>
           )}
         </div>
+
+        </div>
+        </div>
+
+        <InkSearchHistory open={historyOpen} available={ready} language={renderLanguage}
+          groupOpen={groupOpen} onOpenGroup={openGroup} onCloseGroup={closeGroup} onSelectGroupGraph={id => restoreHistory(id, true)} onNewGroupSearch={newGroupSearch}
+          undoOpen={undoOpen} undoDisabled={storageBlocked || showsDraft || pendingSearch || movingGraph || researchOpen || (isCurrentRun && runtime.isSearching)}
+          onOpenUndo={openUndo} onCloseUndo={closeUndo}
+          settingsOpen={settingsOpen} onOpenLogin={openLogin} onOpenGroupSettings={account === null ? openLogin : openSettings} onOpenSettings={openSettings} onCloseSettings={closeSettings}
+          onOpen={openHistory} onClose={closeHistory} onNewSearch={newSearch} onSelectGraph={id => restoreHistory(id)} />
+
+        {loginOpen ? <InkAccountDialog language={renderLanguage} onClose={closeLogin} /> : null}
 
         {/* 悬浮或聚焦展示邮箱；点击仅复制，反馈独立于展开状态并在短暂停留后消失。 */}
         <div className="ink-study__contact-area" data-ink-control>

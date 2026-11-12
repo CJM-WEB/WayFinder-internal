@@ -29,6 +29,7 @@ type Props = Readonly<{
   groupOpen?: boolean; onOpenGroup?: () => void; onCloseGroup?: (restoreFocus: boolean) => void;
   onNewGroupSearch?: () => void;
   onSelectGroupGraph?: (graphId: string) => void | Promise<void>;
+  onOpenLogin?: () => void; onOpenGroupSettings?: () => void;
   settingsOpen: boolean; onOpenSettings: () => void; onCloseSettings: (restoreFocus: boolean) => void;
 }>;
 
@@ -92,7 +93,7 @@ function HistoryRecord({ id, title, language, disabled, onDelete, onSelect, sele
 }
 
 export function InkSearchHistory({ open, available, language, onOpen, onClose, onNewSearch, onSelectGraph,
-  undoOpen, undoDisabled, onOpenUndo, onCloseUndo, settingsOpen, onOpenSettings, onCloseSettings,
+  undoOpen, undoDisabled, onOpenUndo, onCloseUndo, settingsOpen, onOpenSettings, onCloseSettings, onOpenLogin = () => {}, onOpenGroupSettings,
   groupOpen = false, onOpenGroup = () => {}, onCloseGroup = () => {}, onSelectGroupGraph = () => {}, onNewGroupSearch = () => {} }: Props) {
   const drawer = useRef<HTMLDivElement>(null);
   const panel = useRef<HTMLElement>(null);
@@ -224,10 +225,10 @@ export function InkSearchHistory({ open, available, language, onOpen, onClose, o
         </div>}
       </section>
       <InkGroups open={groupOpen} presented={present.value === "groups"} available={available} language={language}
-        onClose={onCloseGroup} onOpenSettings={onOpenSettings} onSelectGraph={onSelectGroupGraph} onNewSearch={onNewGroupSearch} />
+        onClose={onCloseGroup} onOpenSettings={onOpenGroupSettings ?? onOpenSettings} onSelectGraph={onSelectGroupGraph} onNewSearch={onNewGroupSearch} />
       <InkUndoPanel open={undoOpen} presented={present.value === "undo"} available={available}
         disabled={undoDisabled} language={language} onClose={onCloseUndo} />
-      <InkSettingsPanel open={settingsOpen} presented={present.value === "settings"} language={language} onClose={onCloseSettings} />
+      <InkSettingsPanel open={settingsOpen} presented={present.value === "settings"} language={language} onClose={onCloseSettings} onOpenLogin={onOpenLogin} />
       {/* 底条属于抽屉，随同退场；关闭即隔离交互，指针／键盘进入它不算面板外点击。 */}
       {filing !== "" && present.value !== null ? <footer className="ink-study__history-filing"
         inert={!(open || groupOpen || undoOpen || settingsOpen)} aria-hidden={!(open || groupOpen || undoOpen || settingsOpen)}

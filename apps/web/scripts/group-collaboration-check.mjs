@@ -107,10 +107,11 @@ async function api(page, endpoint, userId, body, proof) {
     return { status: response.status, body: await response.json(), cache: response.headers.get("cache-control") };
   }, { endpoint, userId, body, proof, accountHeader: CLOUD_ACCOUNT_HEADER, proofHeader: GROUP_CONNECTION_HEADER });
 }
-const groupPanel = page => page.getByRole("region", { name: "小组", exact: true });
+// 详情标题包含实际组名；稳定容器用于操作，名称仍由各阶段界面断言核对。
+const groupPanel = page => page.locator("#ink-groups");
 async function panel(page, name) {
   await page.bringToFront();
-  const target = page.getByRole("region", { name: name === "撤销" ? "撤销记录" : name, exact: true });
+  const target = name === "小组" ? groupPanel(page) : page.getByRole("region", { name: name === "撤销" ? "撤销记录" : name, exact: true });
   if (!(await target.isVisible())) {
     const dock = page.locator(".ink-study__history-dock"); await dock.hover(); await dock.getByRole("button", { name, exact: true }).click();
   }
@@ -124,7 +125,10 @@ async function product(page) {
 }
 async function closePanel(page) { await page.keyboard.press("Escape"); await expect(page.locator('.ink-study__history-panel[data-active="true"]')).toHaveCount(0); }
 async function openGroup(page, name = GROUP_NAME) {
-  const groups = await panel(page, "小组"); await groups.getByRole("button", { name: `进入小组：${name}`, exact: true }).click();
+  const groups = await panel(page, "小组");
+  const backToList = groups.getByRole("button", { name: "返回小组列表", exact: true });
+  if (await backToList.isVisible()) await backToList.click();
+  await groups.getByRole("button", { name: `进入小组：${name}`, exact: true }).click();
   await expect(groups.locator("[data-group-connection]")).toHaveAttribute("data-group-connection", "online"); return groups;
 }
 async function selectGraph(page, title) {
@@ -225,13 +229,15 @@ export async function checkGroupCollaboration() {
         }
       });
       await page.goto(origin); await product(page);
-      const settings = await panel(page, "设置"), form = settings.getByRole("form", { name: "邮箱账号" });
+      const settings = await panel(page, "设置");
+      await settings.getByRole("region", { name: "账号", exact: true }).getByRole("button", { name: "登录", exact: true }).click();
+      const form = page.getByRole("dialog", { name: "登录", exact: true }).getByRole("form", { name: "邮箱账号" });
       await form.getByLabel("邮箱", { exact: true }).fill(user.email); await form.getByLabel("密码", { exact: true }).fill(user.password);
       // 固定版本认证库按同一IP／登录端点限速；等待真实期限，不重试被拒绝的登录。
       await delay(Math.max(0, lastLogin + 10_200 - Date.now()));
       const [response] = await Promise.all([page.waitForResponse(response => new URL(response.url()).pathname === "/api/account" && response.request().method() === "POST"),
         form.getByRole("button", { name: "登录", exact: true }).click()]); lastLogin = Date.now();
-      assert.equal(response.status(), 200); await expect(settings).toBeHidden();
+      assert.equal(response.status(), 200); await expect(form).toBeHidden(); await expect(settings).toBeHidden();
       const cookie = (await context.cookies(origin)).filter(value => value.name.endsWith("session_token"));
       assert.equal(cookie.length, 1); assert(cookie[0].secure && cookie[0].httpOnly && cookie[0].sameSite === "Strict");
       const identity = AccountResponseSchema.parse((await api(page, "/api/account", user.userId)).body); assert.equal(identity.account?.userId, user.userId);
@@ -247,8 +253,8 @@ export async function checkGroupCollaboration() {
     stage = "NICKNAME_CREATE_JOIN";
     for (const [page, nickname] of [[a, "共同昵称"], [b, "共同昵称"], [outsider, "外部同学"]]) {
       stage = page === a ? "NICKNAME_OWNER" : page === b ? "NICKNAME_MEMBER" : "NICKNAME_OUTSIDER";
-      const group = await panel(page, "小组"); await group.getByRole("textbox", { name: "账号昵称", exact: true }).fill(nickname);
-      await group.getByRole("button", { name: "保存昵称", exact: true }).click();
+      const settings = await panel(page, "设置"); await settings.getByRole("textbox", { name: "账号昵称", exact: true }).fill(nickname);
+      await settings.getByRole("button", { name: "保存昵称", exact: true }).click();
       await expect.poll(async () => (await profile.read(page === a ? users[0].userId : page === b ? users[1].userId : users[2].userId, operation())).nickname).toBe(nickname);
     }
     stage = "CREATE_GROUP";
