@@ -13,6 +13,7 @@ import type { GroupWorkspaceStorage } from "../groups/workspace-storage.js";
 import { GroupAccessError } from "../groups/errors.js";
 import { authorizeGroupConnection, registerGroupSessionRoutes } from "./group-session.js";
 import type { GroupSyncRuntime } from "../groups/sync.js";
+import { sendGroupWorkspaceJson } from "./group-response-encoding.js";
 
 export function registerGroupWorkspaceRoutes(server: FastifyInstance, options: Readonly<{
   auth: Pick<AccountAuth, "getIdentity"> | null; storage: GroupWorkspaceStorage | null; publicOrigin: string | null;
@@ -23,7 +24,7 @@ export function registerGroupWorkspaceRoutes(server: FastifyInstance, options: R
       if (options.storage === null) throw new GroupAccessError("GROUP_UNAVAILABLE");
       const query = GroupWorkspaceQuerySchema.safeParse(request.query);
       if (!query.success) throw new GroupAccessError("GROUP_INVALID");
-      return reply.send(GroupWorkspaceResponseSchema.parse(await options.storage.read(identity.userId, query.data.groupId, operation)));
+      return sendGroupWorkspaceJson(request, reply, GroupWorkspaceResponseSchema.parse(await options.storage.read(identity.userId, query.data.groupId, operation)), operation);
     }));
     routes.post("/api/group-workspace", { bodyLimit: bufferConstants.MAX_LENGTH }, guard(async (request, reply, identity, operation) => {
       if (options.storage === null) throw new GroupAccessError("GROUP_UNAVAILABLE");
@@ -33,7 +34,7 @@ export function registerGroupWorkspaceRoutes(server: FastifyInstance, options: R
       const admitted = authorizeGroupConnection(request, identity, input.data.groupId, operation, options.sync);
       const result = GroupGraphWriteResponseSchema.parse(await options.storage.write(identity.userId, input.data, admitted, identity.sessionId));
       options.sync?.notifyGroup(input.data.groupId);
-      return reply.send(result);
+      return sendGroupWorkspaceJson(request, reply, result, admitted);
     }));
     routes.get("/api/group-receipt", guard(async (request, reply, identity, operation) => {
       if (options.storage === null) throw new GroupAccessError("GROUP_UNAVAILABLE");

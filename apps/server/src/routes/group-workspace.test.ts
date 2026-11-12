@@ -1,5 +1,6 @@
 /** 组图HTTP边界复用假会话／存储，确认归属、收据和大正文不会绕过公共协议。 */
 import { describe, expect, it, vi } from "vitest";
+import { gunzipSync } from "node:zlib";
 import { CLOUD_ACCOUNT_HEADER, EditableGraphSchema, GROUP_CONNECTION_HEADER } from "@wayfinder/contracts";
 import { createGraphHistory, storeGraphHistory } from "@wayfinder/contracts/graph-history";
 import { buildServer } from "../app.js";
@@ -35,6 +36,38 @@ function fixture() {
 }
 
 describe("小组图HTTP边界", () => {
+  it("GET与写入ACK仅按协商压缩，正文身份／历史及拒绝路径保持一致", async () => {
+    const f = fixture();
+    try {
+      for (const method of ["GET", "POST"] as const) {
+        const options = method === "POST" ? { method, url: "/api/group-workspace", payload: { action: "create", groupId, mutationId: "fixture_gzip", document } }
+          : { method, url: `/api/group-workspace?groupId=${groupId}` };
+        const plain = await f.server.inject({ ...options, headers: { ...headers, "accept-encoding": "gzip;q=0, *;q=1" } });
+        const compressed = await f.server.inject({ ...options, headers: { ...headers, "accept-encoding": "gzip" } });
+        expect(plain.headers["content-encoding"]).toBeUndefined();
+        expect(compressed.headers["content-encoding"]).toBe("gzip");
+        expect(compressed.headers.vary).toBe("Accept-Encoding"); expect(compressed.headers["cache-control"]).toBe("no-store");
+        expect(gunzipSync(compressed.rawPayload).toString()).toBe(plain.payload);
+        expect(JSON.parse(gunzipSync(compressed.rawPayload).toString()) as unknown).toEqual(method === "POST" ? { workspace } : workspace);
+      }
+      f.getIdentity.mockResolvedValue(null);
+      const denied = await f.server.inject({ url: `/api/group-workspace?groupId=${groupId}`, headers: { ...headers, "accept-encoding": "gzip" } });
+      expect(denied.statusCode).toBe(401); expect(denied.json()).toEqual({ code: "ACCOUNT_REQUIRED" });
+      expect(denied.headers["content-encoding"]).toBeUndefined();
+    } finally { await f.server.close(); }
+  });
+
+  it("写入后已耗尽的原预算不能靠压缩重新续期或补发成功正文", async () => {
+    const f = fixture();
+    try {
+      f.authorize.mockImplementationOnce((_identity, _groupId, _connection, operation) => ({ ...operation, deadline: Date.now() - 1 }));
+      const response = await f.server.inject({ method: "POST", url: "/api/group-workspace", headers: { ...headers, "accept-encoding": "gzip" },
+        payload: { action: "create", groupId, mutationId: "fixture_expired", document } });
+      expect(f.write).toHaveBeenCalledOnce(); expect(response.statusCode).toBe(503);
+      expect(response.json()).toEqual({ code: "GROUP_UNAVAILABLE" }); expect(response.headers["content-encoding"]).toBeUndefined();
+    } finally { await f.server.close(); }
+  });
+
   it("快照必须指定组，归属和操作者由已复核会话传递", async () => {
     const f = fixture();
     try {

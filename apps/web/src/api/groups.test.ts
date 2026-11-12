@@ -30,6 +30,17 @@ describe("小组API边界", () => {
     const api = createGroupApi(vi.fn<typeof fetch>().mockResolvedValue(new Response(`${JSON.stringify(syncFixture())}\n`)));
     await expect(api.stream("other-user", "group-fixture", signal(), () => {})).rejects.toMatchObject({ code: "GROUP_FORBIDDEN" });
   });
+  it("编辑确认仍完整校验组正文并拒绝跨组，不因减少重复解析而放宽边界", async () => {
+    const action = { action: "delete" as const, groupId: "group-fixture", graphId: "graph-fixture", expectedRevision: 1, mutationId: "mutation-fixture" };
+    const workspace = syncFixture().workspace;
+    for (const [value, code] of [[workspace, null], [{ ...workspace, groupId: "other-group" }, "GROUP_FORBIDDEN"],
+      [{ ...workspace, activeOrder: ["missing-graph"] }, "GROUP_UNAVAILABLE"]] as const) {
+      const api = createGroupApi(vi.fn<typeof fetch>().mockResolvedValue(Response.json({ workspace: value })));
+      const result = api.write("user-fixture", action, "connection-fixture", signal());
+      if (code === null) await expect(result).resolves.toEqual({ workspace });
+      else await expect(result).rejects.toMatchObject({ code });
+    }
+  });
   it("忽略Signal的fetch或流读取仍可取消，不泄漏异常正文", async () => {
     for (const streaming of [false, true]) {
       const controller = new AbortController(), fetcher = vi.fn<typeof fetch>(() => streaming

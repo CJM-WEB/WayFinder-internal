@@ -44,9 +44,19 @@ export function readGroupSyncSnapshot(database: AccountDatabase, userId: string,
   }, true);
 }
 
+/** 未变化心跳与独立权限探测只读取当前成员／详情／组版本，不加载或重放整组图历史。 */
+export function readGroupSyncDetails(database: AccountDatabase, userId: string, groupId: string,
+  operation: DatabaseOperation): Promise<GroupDetails> {
+  return groupTransaction(database, operation, async query => {
+    const group = await loadMemberGroup(query, UserIdSchema.parse(userId), UserIdSchema.parse(groupId), false);
+    return readGroupDetailsSnapshot(query, userId, group);
+  }, true);
+}
+
 export function createGroupSync(options: Readonly<{
   auth: Pick<AccountAuth, "getIdentity">;
   readSnapshot: (userId: string, groupId: string, operation: DatabaseOperation) => Promise<GroupSyncSnapshot>;
+  readDetails?: (userId: string, groupId: string, operation: DatabaseOperation) => Promise<GroupDetails>;
   leaseMs?: number; heartbeatMs?: number; createId?: () => string;
 }>): GroupSyncRuntime {
   const leaseMs = options.leaseMs ?? 30_000, heartbeatMs = options.heartbeatMs ?? 2_000;
@@ -80,7 +90,9 @@ export function createGroupSync(options: Readonly<{
           for (;;) {
             const generation = lease.generation, operation = operationFor(lease);
             await recheck(lease, operation);
-            await options.readSnapshot(lease.identity.userId, lease.groupId, operation);
+            // 背压时仍独立核验权限，但不用为权限探测再加载一遍即将由主循环读取的大快照。
+            if (options.readDetails === undefined) await options.readSnapshot(lease.identity.userId, lease.groupId, operation);
+            else await options.readDetails(lease.identity.userId, lease.groupId, operation);
             await recheck(lease, operation);
             if (generation === lease.generation) break;
           }
@@ -138,11 +150,22 @@ export function createGroupSync(options: Readonly<{
           let snapshot: GroupSyncSnapshot | null = initial, previousSignature: string | null = null;
           try {
             while (!lease.controller.signal.aborted) {
-              if (snapshot === null || lease.dirty) snapshot = await readVerified(lease);
+              let unchanged = false;
+              if (snapshot === null && !lease.dirty && options.readDetails !== undefined) {
+                const operation = operationFor(lease);
+                await recheck(lease, operation);
+                const details = await options.readDetails(lease.identity.userId, lease.groupId, operation);
+                await recheck(lease, operation);
+                if (details.group.groupId !== lease.groupId) throw new GroupAccessError("GROUP_UNAVAILABLE");
+                // 组版本及成员／昵称每次从新事务读取；漏通知、资料变化和版本变化都必须重新读取完整快照。
+                unchanged = !lease.dirty && `${JSON.stringify(details)}:${details.group.revision}` === previousSignature;
+              }
+              if (!unchanged && (snapshot === null || lease.dirty)) snapshot = await readVerified(lease);
               await recheck(lease, operationFor(lease));
               if (lease.dirty) { snapshot = null; continue; }
-              const signature = `${JSON.stringify(snapshot.details)}:${snapshot.workspace.revision}`;
+              const signature: string | null = snapshot === null ? previousSignature : `${JSON.stringify(snapshot.details)}:${snapshot.workspace.revision}`;
               if (signature !== previousSignature) {
+                if (snapshot === null) throw new GroupAccessError("GROUP_UNAVAILABLE");
                 // connectionId有意位于完整快照末尾，首帧尚未写完前连接不能被用于写入证明。
                 await emit(GroupSyncEventSchema.parse({ type: "snapshot", sequence: lease.sequence++, details: snapshot.details,
                   workspace: snapshot.workspace, connectionId: lease.id }), lease.controller.signal);

@@ -18,6 +18,48 @@ function setup(timing: Parameters<typeof createGroupSync>[1] = {}) {
 const action = { action: "delete" as const, groupId: "group-fixture", graphId: "graph", expectedRevision: 1, mutationId: "mutation" };
 afterEach(() => vi.useRealTimers());
 describe("小组实时生命周期", () => {
+  it("编辑HTTP确认先到时保留原流并短暂禁写，推送追平再放行，不制造重连", async () => {
+    const { sync, attempts, api } = setup(); sync.connect("user-fixture", "group-fixture"); attempts[0]!.event(syncFixture());
+    api.write.mockResolvedValue({ workspace: syncFixture(1, 2).workspace });
+    await sync.write(action);
+    expect(sync.store.getState().state).toBe("syncing"); expect(sync.store.getState().snapshot?.workspace.revision).toBe(1);
+    await expect(sync.write(action)).rejects.toThrow("GROUP_OFFLINE");
+    expect(api.write).toHaveBeenCalledTimes(1); expect(attempts).toHaveLength(1); expect(attempts[0]!.signal.aborted).toBe(false);
+    attempts[0]!.event(syncFixture(1, 2)); expect(sync.store.getState().state).toBe("online");
+    await sync.write(action); expect(api.write).toHaveBeenCalledTimes(2); sync.disconnect();
+  });
+  it("推送已先于HTTP追平时不重新禁写，较旧ACK不能把最新快照降级", async () => {
+    const { sync, attempts, api } = setup(); sync.connect("user-fixture", "group-fixture"); attempts[0]!.event(syncFixture());
+    api.write.mockImplementation(async () => { attempts[0]!.event(syncFixture(1, 3)); return { workspace: syncFixture(1, 2).workspace }; });
+    await sync.write(action); expect(sync.store.getState().state).toBe("online");
+    expect(sync.store.getState().snapshot?.workspace.revision).toBe(3); expect(attempts).toHaveLength(1); sync.disconnect();
+  });
+  it("确认版本3后收到在途版本2和心跳仍禁写，只有权威版本3才恢复", async () => {
+    const { sync, attempts, api } = setup(); sync.connect("user-fixture", "group-fixture"); attempts[0]!.event(syncFixture());
+    api.write.mockResolvedValue({ workspace: syncFixture(2, 3).workspace }); await sync.write(action);
+    attempts[0]!.event(syncFixture(1, 2)); attempts[0]!.event({ type: "heartbeat", sequence: 2 });
+    expect(sync.store.getState().state).toBe("syncing"); expect(sync.store.getState().snapshot?.workspace.revision).toBe(2);
+    await expect(sync.write(action)).rejects.toThrow("GROUP_OFFLINE"); expect(api.write).toHaveBeenCalledTimes(1);
+    expect(attempts[0]!.signal.aborted).toBe(false); expect(attempts).toHaveLength(1);
+    attempts[0]!.event(syncFixture(3, 3)); expect(sync.store.getState().state).toBe("online"); sync.disconnect();
+  });
+  it("send完成到write恢复之间切组，旧HTTP确认不能把新组改为正在对齐", async () => {
+    const { sync, attempts, api } = setup(); sync.connect("user-fixture", "group-fixture"); attempts[0]!.event(syncFixture());
+    let resolveWrite!: (value: Awaited<ReturnType<typeof api.write>>) => void;
+    api.write.mockImplementation(() => new Promise(resolve => { resolveWrite = resolve; }));
+    const pending = sync.write(action);
+    resolveWrite({ workspace: syncFixture(1, 2).workspace });
+    // send自己的epoch检查先运行，切组随后发生，最后才恢复外层write这个新增await边界。
+    queueMicrotask(() => {
+      sync.connect("user-fixture", "another-group");
+      const next = syncFixture();
+      attempts[1]!.event({ ...next, connectionId: "another-connection", details: { ...next.details,
+        group: { ...next.details.group, groupId: "another-group" } }, workspace: { ...next.workspace, groupId: "another-group" } });
+    });
+    await pending;
+    expect(sync.store.getState()).toMatchObject({ groupId: "another-group", state: "online", connectionId: "another-connection" });
+    sync.disconnect();
+  });
   it("完整快照之前拒写，心跳丢失立即取消写权限，重连追平后恢复", async () => {
     vi.useFakeTimers(); const { sync, attempts, api } = setup(); sync.connect("user-fixture", "group-fixture");
     await expect(sync.write(action)).rejects.toThrow("GROUP_OFFLINE"); expect(api.write).not.toHaveBeenCalled();

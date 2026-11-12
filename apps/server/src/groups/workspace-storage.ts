@@ -41,6 +41,23 @@ const receiptKey = (mutationId: string): string => `gw_${digest(mutationId)}`;
 const emptyMeta = (): Meta => ({ kind: "workspace", activeOrder: [], deletedIds: [] });
 const jsonValue = (value: unknown): unknown => typeof value === "string" ? JSON.parse(value) as unknown : value;
 
+/**
+ * 只记住同一原始正文已经通过因果重放的事实，不缓存图、历史、权限或当前权威版本。
+ * 事务回滚后可能出现同版本不同正文，因此必须比较正文摘要，不能仅使用 revision。
+ * 每次仍从当前事务读取并校验结构；最多256对固定64字符摘要，字符串预算不超过64KiB（另有固定Map开销）。
+ */
+const verifiedRecords = new Map<string, string>();
+function verifyHistory(groupId: string, raw: string, record: GroupGraphRecord): void {
+  const key = digest(JSON.stringify([groupId, record.document.id])), fingerprint = digest(raw);
+  if (verifiedRecords.get(key) === fingerprint) {
+    verifiedRecords.delete(key); verifiedRecords.set(key, fingerprint); return;
+  }
+  restoreGroupHistory(record.history, record.document);
+  // 只有整份正文通过重放才替换证明；固定摘要也不会因异常大的身份或正文保留大字符串。
+  verifiedRecords.delete(key); verifiedRecords.set(key, fingerprint);
+  if (verifiedRecords.size > 256) verifiedRecords.delete(verifiedRecords.keys().next().value!);
+}
+
 async function load(query: GroupQuery, groupId: string, key: string): Promise<unknown | null> {
   const rows = z.array(z.object({ payload: z.unknown() })).parse(await query("SELECT payload FROM wf_group_data WHERE groupId = ? AND recordId = ?", [groupId, key]));
   return rows.length === 0 ? null : jsonValue(rows[0]?.payload);
@@ -57,7 +74,7 @@ async function loadMeta(query: GroupQuery, groupId: string): Promise<Meta> {
   if (new Set(ids).size !== ids.length) throw new Error("小组图顺序身份重复");
   return meta;
 }
-function decode(value: unknown, graphId: string) {
+function decode(value: unknown, groupId: string, graphId: string) {
   const envelope = EnvelopeSchema.parse(value);
   if (envelope.kind === "purged") {
     if (envelope.graphId !== graphId) throw new Error("小组图墓碑身份不一致");
@@ -65,12 +82,12 @@ function decode(value: unknown, graphId: string) {
   }
   const record = GroupGraphRecordSchema.parse(JSON.parse(envelope.recordJson) as unknown);
   if (record.document.id !== graphId) throw new Error("小组图存档身份不一致");
-  restoreGroupHistory(record.history, record.document);
+  verifyHistory(groupId, envelope.recordJson, record);
   return { kind: "graph" as const, record };
 }
 async function loadRecord(query: GroupQuery, groupId: string, graphId: string) {
   const value = await load(query, groupId, graphKey(graphId));
-  return value === null ? null : decode(value, graphId);
+  return value === null ? null : decode(value, groupId, graphId);
 }
 /** 调用方已在同一事务内核验组成员；搜索只读取活跃目标，不从旧草稿或删除栈复活。 */
 export async function readActiveGroupGraph(query: GroupQuery, groupId: string, graphId: string, expectedRevision?: number): Promise<GroupGraphRecord> {
@@ -93,7 +110,7 @@ export async function readGroupWorkspaceSnapshot(query: GroupQuery, group: Group
     const envelope = EnvelopeSchema.parse(jsonValue(value.payload));
     if (envelope.kind !== "graph") throw new Error("小组图记录类型不一致");
     const record = GroupGraphRecordSchema.parse(JSON.parse(envelope.recordJson) as unknown);
-    restoreGroupHistory(record.history, record.document);
+    verifyHistory(group.groupId, envelope.recordJson, record);
     return record;
   });
   const ids = [...meta.activeOrder, ...meta.deletedIds];

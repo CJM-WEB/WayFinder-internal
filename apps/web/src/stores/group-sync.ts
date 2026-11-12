@@ -18,11 +18,12 @@ export function createGroupSync(api: GroupApi = groupApi, timing: Readonly<{
   const heartbeatMs = timing.heartbeatMs ?? 6_000, leaseMs = timing.leaseMs ?? 35_000;
   const retryMs = timing.retryMs ?? 250, maxFailures = timing.maxFailures ?? 3, recoveryMs = timing.recoveryMs ?? 40_000;
   let writableUntil = 0, networkOnline = true;
+  let awaitingRevision = 0;
   let epoch = 0, lifetime: AbortController | undefined, connection: AbortController | undefined;
   const store = createStore<GroupSyncState>()(() => ({ userId: null, groupId: null, state: "closed", snapshot: null,
     connectionId: null, error: null, lastReceipt: null }));
   const stop = (clear: boolean): void => {
-    ++epoch; writableUntil = 0; lifetime?.abort(); connection?.abort(); lifetime = undefined; connection = undefined;
+    ++epoch; writableUntil = 0; awaitingRevision = 0; lifetime?.abort(); connection?.abort(); lifetime = undefined; connection = undefined;
     store.setState({ state: clear ? "closed" : "offline", connectionId: null, ...(clear ? { userId: null, groupId: null, snapshot: null, lastReceipt: null, error: null } : {}) });
   };
   /** 搜索等同源动作遇到明确连接拒绝时共用撤权；迟到旧证明不能关闭新连接。 */
@@ -44,6 +45,7 @@ export function createGroupSync(api: GroupApi = groupApi, timing: Readonly<{
     const run = async (): Promise<void> => {
       let failures = 0, failedAt: number | null = null;
       while (current === epoch && !active.signal.aborted) {
+        awaitingRevision = 0;
         connection = new AbortController(); const attempt = connection;
         const attemptExpires = Date.now() + Math.min(leaseMs, failedAt === null ? leaseMs : Math.max(1, recoveryMs - (Date.now() - failedAt)));
         const signal = AbortSignal.any([active.signal, attempt.signal, AbortSignal.timeout(Math.max(1, attemptExpires - Date.now()))]);
@@ -83,7 +85,10 @@ export function createGroupSync(api: GroupApi = groupApi, timing: Readonly<{
             const known = store.getState().snapshot;
             if (known !== null && event.workspace.revision < known.workspace.revision) fail();
             connectionId = event.connectionId;
-            store.setState({ snapshot: { details: event.details, workspace: event.workspace }, connectionId, state: "online", error: null });
+            // 较早在途快照可以更新已读内容，但不能提前放行尚未追平HTTP确认版本的连接。
+            const caughtUp = event.workspace.revision >= awaitingRevision;
+            if (caughtUp) awaitingRevision = 0;
+            store.setState({ snapshot: { details: event.details, workspace: event.workspace }, connectionId, state: caughtUp ? "online" : "syncing", error: null });
           }
           if (event.type === "heartbeat" || event.type === "snapshot" && sequence >= 0) ++liveMessageCount;
           sequence = event.sequence; arm();
@@ -152,7 +157,20 @@ export function createGroupSync(api: GroupApi = groupApi, timing: Readonly<{
       const { userId, groupId } = store.getState();
       if (!online) stop(false); else if (userId !== null && groupId !== null) connect(userId, groupId);
     },
-    write: (input: GroupGraphAction) => send(input.groupId, (userId, connectionId, signal) => api.write(userId, input, connectionId, signal), input.mutationId),
+    write: async (input: GroupGraphAction) => {
+      const generation = epoch, lease = connection;
+      const result = await send(input.groupId, (userId, connectionId, signal) => api.write(userId, input, connectionId, signal), input.mutationId);
+      const live = store.getState();
+      // HTTP确认可能先于权威推送到达；此间服务端proof尚未重新就绪，不能提前启用下一次写入并触发失联重连。
+      // 保留当前图与同一连接，等正常snapshot追平，不重放动作，也不用ACK冒充实时快照。
+      if (generation === epoch && lease !== undefined && connection === lease && !lease.signal.aborted
+        && live.groupId === input.groupId && live.connectionId !== null && live.snapshot !== null
+        && live.snapshot.workspace.revision < result.workspace.revision) {
+        awaitingRevision = Math.max(awaitingRevision, result.workspace.revision);
+        store.setState({ state: "syncing" });
+      }
+      return result;
+    },
     manage: (input: Exclude<GroupAction, { action: "create" | "join" }>) => send(input.groupId,
       (userId, connectionId, signal) => api.manage(userId, input, signal, connectionId)),
   };

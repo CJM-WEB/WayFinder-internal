@@ -65,7 +65,10 @@ export function createGroupApi(fetcher: typeof fetch = (input, init) => globalTh
     write: (userId: string, input: GroupGraphAction, connectionId: string, signal: AbortSignal) => {
       if (!connectionId) return Promise.reject(new GroupRequestError("GROUP_OFFLINE"));
       return request("/api/group-workspace", userId, signal, raw => {
-        const result = GroupGraphWriteResponseSchema.parse(raw); workspace(result.workspace, input.groupId); return result;
+        // 外层Schema已经完整校验workspace；这里只核对归属，避免把整组历史再次解析和复制。
+        const result = GroupGraphWriteResponseSchema.parse(raw);
+        if (result.workspace.groupId !== input.groupId) throw new GroupRequestError("GROUP_FORBIDDEN");
+        return result;
       }, input, connectionId);
     },
     receipt: (userId: string, mutationId: string, signal: AbortSignal) => request(`/api/group-receipt?mutationId=${encodeURIComponent(mutationId)}`, userId, signal, raw => {

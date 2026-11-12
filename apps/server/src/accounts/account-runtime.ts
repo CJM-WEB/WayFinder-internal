@@ -13,7 +13,7 @@ import { createAccountKeyStorage, type AccountKeyStorage } from "./key-storage.j
 import { createAccountProfileStorage, type AccountProfileStorage } from "./profile-storage.js";
 import { createGroupStorage, type GroupStorage } from "../groups/storage.js";
 import { createGroupWorkspaceStorage, type GroupWorkspaceStorage } from "../groups/workspace-storage.js";
-import { createGroupSync, readGroupSyncSnapshot, type GroupSyncRuntime } from "../groups/sync.js";
+import { createGroupSync, readGroupSyncDetails, readGroupSyncSnapshot, type GroupSyncRuntime } from "../groups/sync.js";
 import { createGroupSearch, type GroupSearchAccess } from "../groups/search.js";
 
 export const ACCOUNT_ENVIRONMENT_VARIABLES = Object.freeze([
@@ -65,7 +65,9 @@ export async function loadAccountRuntime(
       mailer: createSmtpAccountMailer(config.smtp), onDeliveryFailure,
     });
     await auth.initialize(databaseOperation(new AbortController().signal));
-    const groupSync = createGroupSync({ auth, readSnapshot: (userId, groupId, operation) => readGroupSyncSnapshot(database, userId, groupId, operation) });
+    const groupSync = createGroupSync({ auth,
+      readSnapshot: (userId, groupId, operation) => readGroupSyncSnapshot(database, userId, groupId, operation),
+      readDetails: (userId, groupId, operation) => readGroupSyncDetails(database, userId, groupId, operation) });
     const groupSearch = createGroupSearch({ database, auth, sync: groupSync, secret: config.secret, publicOrigin: config.origin });
     return { auth, database, workspace: createWorkspaceStorage(database), keys: createAccountKeyStorage(database, environment.WAYFINDER_KEY_ENCRYPTION_KEY), profile: createAccountProfileStorage(database), groups: createGroupStorage(database),
       groupWorkspace: createGroupWorkspaceStorage(database, { search: groupSearch }), groupSync, groupSearch };
