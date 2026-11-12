@@ -3,6 +3,7 @@ import process from "node:process";
 import { AccountDatabase, loadDatabaseConfig, databaseOperation, migrateAccountData } from "./database.js";
 import { createAccountAuth } from "./auth.js";
 import { normalizePublicOrigin } from "../settings/request-origin.js";
+import { migrateGroupData } from "../groups/database.js";
 
 const raw = process.env.WAYFINDER_DATABASE_URL;
 if (!raw) {
@@ -18,6 +19,7 @@ if (!raw) {
     const secret = process.env.WAYFINDER_AUTH_SECRET ?? "";
     if (origin === null || secret.length < 32) throw new Error("账号配置不完整");
     await migrateAccountData(database, operation);
+    await migrateGroupData(database, operation);
     // 认证表结构由固定版本库管理；迁移不需要SMTP配置，更不能发送邮件。
     const auth = createAccountAuth({ database, origin, secret,
       mailer: { sendOTP: async () => { throw new Error("迁移禁止发信"); } } });

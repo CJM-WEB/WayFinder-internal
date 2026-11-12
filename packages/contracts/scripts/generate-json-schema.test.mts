@@ -44,6 +44,17 @@ const expectedFileNames = [
   "cloud-graph-write-request.schema.json",
   "cloud-graph-write-response.schema.json",
   "cloud-workspace-error-response.schema.json",
+  "account-profile-action.schema.json",
+  "account-profile-response.schema.json",
+  "group-action.schema.json",
+  "group-action-response.schema.json",
+  "group-list-response.schema.json",
+  "group-error-response.schema.json",
+  "group-graph-history.schema.json",
+  "group-workspace-response.schema.json",
+  "group-graph-action.schema.json",
+  "group-graph-write-response.schema.json",
+  "group-sync-event.schema.json",
 ] as const;
 
 const temporaryDirectories: string[] = [];

@@ -35,6 +35,17 @@ import {
   StreamEventSchema,
   StoredGraphHistorySchema,
   UserIdSchema,
+  AccountProfileActionSchema,
+  AccountProfileResponseSchema,
+  GroupActionSchema,
+  GroupActionResponseSchema,
+  GroupListResponseSchema,
+  GroupErrorResponseSchema,
+  GroupGraphHistorySchema,
+  GroupWorkspaceResponseSchema,
+  GroupGraphActionSchema,
+  GroupGraphWriteResponseSchema,
+  GroupSyncEventSchema,
 } from "../src/index.ts";
 
 export interface JsonSchemaArtifact {
@@ -144,6 +155,17 @@ const jsonSchemaRoots = [
   { schemaName: "CloudGraphWriteRequestSchema", fileName: "cloud-graph-write-request.schema.json", schema: CloudGraphWriteRequestSchema },
   { schemaName: "CloudGraphWriteResponseSchema", fileName: "cloud-graph-write-response.schema.json", schema: CloudGraphWriteResponseSchema },
   { schemaName: "CloudWorkspaceErrorResponseSchema", fileName: "cloud-workspace-error-response.schema.json", schema: CloudWorkspaceErrorResponseSchema },
+  { schemaName: "AccountProfileActionSchema", fileName: "account-profile-action.schema.json", schema: AccountProfileActionSchema },
+  { schemaName: "AccountProfileResponseSchema", fileName: "account-profile-response.schema.json", schema: AccountProfileResponseSchema },
+  { schemaName: "GroupActionSchema", fileName: "group-action.schema.json", schema: GroupActionSchema },
+  { schemaName: "GroupActionResponseSchema", fileName: "group-action-response.schema.json", schema: GroupActionResponseSchema },
+  { schemaName: "GroupListResponseSchema", fileName: "group-list-response.schema.json", schema: GroupListResponseSchema },
+  { schemaName: "GroupErrorResponseSchema", fileName: "group-error-response.schema.json", schema: GroupErrorResponseSchema },
+  { schemaName: "GroupGraphHistorySchema", fileName: "group-graph-history.schema.json", schema: GroupGraphHistorySchema },
+  { schemaName: "GroupWorkspaceResponseSchema", fileName: "group-workspace-response.schema.json", schema: GroupWorkspaceResponseSchema },
+  { schemaName: "GroupGraphActionSchema", fileName: "group-graph-action.schema.json", schema: GroupGraphActionSchema },
+  { schemaName: "GroupGraphWriteResponseSchema", fileName: "group-graph-write-response.schema.json", schema: GroupGraphWriteResponseSchema },
+  { schemaName: "GroupSyncEventSchema", fileName: "group-sync-event.schema.json", schema: GroupSyncEventSchema },
 ] as const satisfies readonly JsonSchemaRoot[];
 
 const defaultOutputDirectory = fileURLToPath(

@@ -10,6 +10,7 @@ import { createSmtpAccountMailer, SmtpAccountConfigSchema } from "./mail.js";
 import { normalizePublicOrigin } from "../settings/request-origin.js";
 import { createWorkspaceStorage, type WorkspaceStorage } from "./workspace-storage.js";
 import { createAccountKeyStorage, type AccountKeyStorage } from "./key-storage.js";
+import { createAccountProfileStorage, type AccountProfileStorage } from "./profile-storage.js";
 
 export const ACCOUNT_ENVIRONMENT_VARIABLES = Object.freeze([
   "WAYFINDER_AUTH_SECRET", "SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASSWORD", "SMTP_FROM",
@@ -44,7 +45,7 @@ export function parseAccountEnvironment(
   } catch { throw new AccountConfigError(); }
 }
 
-export type AccountRuntime = Readonly<{ auth: AccountAuth; database: AccountDatabase; workspace: WorkspaceStorage; keys: AccountKeyStorage | null }>;
+export type AccountRuntime = Readonly<{ auth: AccountAuth; database: AccountDatabase; workspace: WorkspaceStorage; keys: AccountKeyStorage | null; profile: AccountProfileStorage }>;
 
 export async function loadAccountRuntime(
   environment: Readonly<Record<string, string | undefined>>,
@@ -60,7 +61,7 @@ export async function loadAccountRuntime(
       mailer: createSmtpAccountMailer(config.smtp), onDeliveryFailure,
     });
     await auth.initialize(databaseOperation(new AbortController().signal));
-    return { auth, database, workspace: createWorkspaceStorage(database), keys: createAccountKeyStorage(database, environment.WAYFINDER_KEY_ENCRYPTION_KEY) };
+    return { auth, database, workspace: createWorkspaceStorage(database), keys: createAccountKeyStorage(database, environment.WAYFINDER_KEY_ENCRYPTION_KEY), profile: createAccountProfileStorage(database) };
   } catch {
     await database.close();
     throw new AccountConfigError();

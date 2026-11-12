@@ -11,6 +11,7 @@
     "accounts:test:workspace": "pnpm run build && node dist/accounts/workspace-check.js",
     "accounts:test:keys": "pnpm run build && node dist/accounts/keys-check.js",
     "experience:configure": "pnpm run build && node --env-file-if-exists=../../.env dist/settings/configure-experience.js",
+    "groups:test:mysql": "pnpm run build && node dist/groups/mysql-check.js",
     "eval:golden": "pnpm run build && node dist/eval/run-planner-golden.js",
     "eval:h2-baseline": "pnpm run build && node dist/eval/run-h2-retrieval-baseline.js",
     "eval:quality": "pnpm run build && node dist/eval/run-quality-eval.js",
