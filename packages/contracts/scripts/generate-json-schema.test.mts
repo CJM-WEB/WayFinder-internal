@@ -220,7 +220,10 @@ describe("JSON Schema 文件与 CLI 边界", () => {
     const after = await Promise.all(expectedFileNames.map(
       fileName => fs.readFile(path.join(directory, fileName)),
     ));
-    expect(after).toEqual(before);
+    // 字节不变性：使用原生比较保留逐字节校验，避免对大型 Buffer 逐属性深比拖慢 CI。
+    for (const [index, expected] of before.entries()) {
+      expect(after[index]?.equals(expected), expectedFileNames[index]).toBe(true);
+    }
   });
 
   it("按稳定顺序报告缺失、内容变化和额外产物", async () => {
