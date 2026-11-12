@@ -28,6 +28,7 @@ import { registerAccountRoutes } from "./routes/account.js";
 import { registerWorkspaceRoutes } from "./routes/workspace.js";
 import { registerAccountKeyRoutes } from "./routes/account-keys.js";
 import { registerProfileRoutes } from "./routes/profile.js";
+import { registerGroupRoutes } from "./routes/groups.js";
 
 export type ProductionBaseProviders = Readonly<{
   searchProvider: SearchProvider;
@@ -43,7 +44,7 @@ export type BuildProductionServerInput = Readonly<{
   /** 仅作为确定性测试接缝，验证不同请求实际解析出的 Key；没有生产环境开关。 */
   providerFactory?: (keys: EffectiveProviderKeys, beforeSearchAttempt: (signal: AbortSignal) => Promise<void>) => ProductionBaseProviders;
   /** 仅由显式启动工厂提供；未配置时账号路由失败闭合，不隐式连接数据库。 */
-  accounts?: Readonly<{ auth: AccountRuntime["auth"]; database: Pick<AccountRuntime["database"], "close">; workspace?: AccountRuntime["workspace"]; keys?: AccountRuntime["keys"]; profile?: AccountRuntime["profile"] }>;
+  accounts?: Readonly<{ auth: AccountRuntime["auth"]; database: Pick<AccountRuntime["database"], "close">; workspace?: AccountRuntime["workspace"]; keys?: AccountRuntime["keys"]; profile?: AccountRuntime["profile"]; groups?: AccountRuntime["groups"] }>;
 }>;
 
 function createBaseProviders(
@@ -79,6 +80,8 @@ export async function buildProductionServer(
 
   registerAccountRoutes(server, { auth: input.accounts?.auth ?? null, publicOrigin: input.config.publicOrigin });
   registerProfileRoutes(server, { auth: input.accounts?.auth ?? null, storage: input.accounts?.profile ?? null,
+    publicOrigin: input.config.publicOrigin });
+  registerGroupRoutes(server, { auth: input.accounts?.auth ?? null, storage: input.accounts?.groups ?? null,
     publicOrigin: input.config.publicOrigin });
   registerWorkspaceRoutes(server, { auth: input.accounts?.auth ?? null, storage: input.accounts?.workspace ?? null,
     publicOrigin: input.config.publicOrigin });

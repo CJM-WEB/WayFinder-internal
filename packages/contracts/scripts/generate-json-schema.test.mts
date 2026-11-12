@@ -55,6 +55,8 @@ const expectedFileNames = [
   "group-graph-action.schema.json",
   "group-graph-write-response.schema.json",
   "group-sync-event.schema.json",
+  "group-read-query.schema.json",
+  "group-details.schema.json",
 ] as const;
 
 const temporaryDirectories: string[] = [];

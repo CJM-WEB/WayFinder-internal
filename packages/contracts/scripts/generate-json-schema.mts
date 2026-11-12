@@ -46,6 +46,8 @@ import {
   GroupGraphActionSchema,
   GroupGraphWriteResponseSchema,
   GroupSyncEventSchema,
+  GroupReadQuerySchema,
+  GroupDetailsSchema,
 } from "../src/index.ts";
 
 export interface JsonSchemaArtifact {
@@ -166,6 +168,8 @@ const jsonSchemaRoots = [
   { schemaName: "GroupGraphActionSchema", fileName: "group-graph-action.schema.json", schema: GroupGraphActionSchema },
   { schemaName: "GroupGraphWriteResponseSchema", fileName: "group-graph-write-response.schema.json", schema: GroupGraphWriteResponseSchema },
   { schemaName: "GroupSyncEventSchema", fileName: "group-sync-event.schema.json", schema: GroupSyncEventSchema },
+  { schemaName: "GroupReadQuerySchema", fileName: "group-read-query.schema.json", schema: GroupReadQuerySchema },
+  { schemaName: "GroupDetailsSchema", fileName: "group-details.schema.json", schema: GroupDetailsSchema },
 ] as const satisfies readonly JsonSchemaRoot[];
 
 const defaultOutputDirectory = fileURLToPath(

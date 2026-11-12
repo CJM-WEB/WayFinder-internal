@@ -1444,6 +1444,9 @@ export const GroupListResponseSchema = z.strictObject({ groups: z.array(GroupSum
   }
 });
 export type GroupListResponse = z.infer<typeof GroupListResponseSchema>;
+/** 列表和详情共用只读入口；查询不能携带邀请码或伪造账号归属。 */
+export const GroupReadQuerySchema = z.strictObject({ groupId: UserIdSchema.optional() });
+export type GroupReadQuery = z.infer<typeof GroupReadQuerySchema>;
 
 /** 小组管理动作不接收角色、创建者邮箱或操作者标识，避免客户端借额外字段授予自己权限。 */
 const groupMutationFields = { mutationId: UserIdSchema };
