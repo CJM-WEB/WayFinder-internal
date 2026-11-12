@@ -44,6 +44,24 @@ const expectedFileNames = [
   "cloud-graph-write-request.schema.json",
   "cloud-graph-write-response.schema.json",
   "cloud-workspace-error-response.schema.json",
+  "account-profile-action.schema.json",
+  "account-profile-response.schema.json",
+  "group-action.schema.json",
+  "group-action-response.schema.json",
+  "group-list-response.schema.json",
+  "group-error-response.schema.json",
+  "group-graph-history.schema.json",
+  "group-workspace-response.schema.json",
+  "group-graph-action.schema.json",
+  "group-graph-write-response.schema.json",
+  "group-sync-event.schema.json",
+  "group-read-query.schema.json",
+  "group-details.schema.json",
+  "group-workspace-query.schema.json",
+  "group-graph-receipt-query.schema.json",
+  "group-graph-receipt-response.schema.json",
+  "group-search-target.schema.json",
+  "group-search-receipt.schema.json",
 ] as const;
 
 const temporaryDirectories: string[] = [];
@@ -202,7 +220,10 @@ describe("JSON Schema 文件与 CLI 边界", () => {
     const after = await Promise.all(expectedFileNames.map(
       fileName => fs.readFile(path.join(directory, fileName)),
     ));
-    expect(after).toEqual(before);
+    // 字节不变性：使用原生比较保留逐字节校验，避免对大型 Buffer 逐属性深比拖慢 CI。
+    for (const [index, expected] of before.entries()) {
+      expect(after[index]?.equals(expected), expectedFileNames[index]).toBe(true);
+    }
   });
 
   it("按稳定顺序报告缺失、内容变化和额外产物", async () => {

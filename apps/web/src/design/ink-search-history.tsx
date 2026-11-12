@@ -10,6 +10,8 @@ import { getMessages } from "../i18n/messages.js";
 import { workspaceStore } from "../stores/workspace-store.js";
 import { workspacePersistenceStore } from "../stores/workspace-persistence.js";
 import { InkCloudSync } from "./ink-cloud-sync.js";
+import { InkGroups } from "./ink-groups.js";
+import { getGroupMessages } from "../i18n/group-messages.js";
 import { InkUndoPanel } from "./ink-undo-panel.js";
 import { InkSettingsPanel } from "./ink-settings.js";
 import { useInkPresence } from "./ink-presence.js";
@@ -24,6 +26,9 @@ type Props = Readonly<{
   onSelectGraph: (graphId: string) => Promise<void>;
   undoOpen: boolean; undoDisabled: boolean;
   onOpenUndo: () => void; onCloseUndo: (restoreFocus: boolean) => void;
+  groupOpen?: boolean; onOpenGroup?: () => void; onCloseGroup?: (restoreFocus: boolean) => void;
+  onNewGroupSearch?: () => void;
+  onSelectGroupGraph?: (graphId: string) => void | Promise<void>;
   settingsOpen: boolean; onOpenSettings: () => void; onCloseSettings: (restoreFocus: boolean) => void;
 }>;
 
@@ -87,7 +92,8 @@ function HistoryRecord({ id, title, language, disabled, onDelete, onSelect, sele
 }
 
 export function InkSearchHistory({ open, available, language, onOpen, onClose, onNewSearch, onSelectGraph,
-  undoOpen, undoDisabled, onOpenUndo, onCloseUndo, settingsOpen, onOpenSettings, onCloseSettings }: Props) {
+  undoOpen, undoDisabled, onOpenUndo, onCloseUndo, settingsOpen, onOpenSettings, onCloseSettings,
+  groupOpen = false, onOpenGroup = () => {}, onCloseGroup = () => {}, onSelectGroupGraph = () => {}, onNewGroupSearch = () => {} }: Props) {
   const drawer = useRef<HTMLDivElement>(null);
   const panel = useRef<HTMLElement>(null);
   const toggle = useRef<HTMLButtonElement>(null);
@@ -100,7 +106,7 @@ export function InkSearchHistory({ open, available, language, onOpen, onClose, o
     const milliseconds = Number.parseFloat(duration) * (duration.endsWith("ms") ? 1 : 1000);
     setDrawerDuration(Number.isFinite(milliseconds) ? milliseconds : 0);
   }, []);
-  const present = useInkPresence(open ? "history" : undoOpen ? "undo" : settingsOpen ? "settings" : null, drawerDuration);
+  const present = useInkPresence(open ? "history" : groupOpen ? "groups" : undoOpen ? "undo" : settingsOpen ? "settings" : null, drawerDuration);
   const [dockHovered, setDockHovered] = useState(false);
   const [dockFocused, setDockFocused] = useState(false);
   const [touchExpanded, setTouchExpanded] = useState(false);
@@ -158,12 +164,12 @@ export function InkSearchHistory({ open, available, language, onOpen, onClose, o
         onMouseEnter={() => setDockHovered(true)} onMouseLeave={() => setDockHovered(false)}
         onPointerDownCapture={event => {
           setDockFocused(false);
-          // 触屏没有悬浮：首次点箭头只展开三个选项，第二次明确选择，不误开历史。
+          // 触屏没有悬浮：首次点箭头只展开四个选项，第二次明确选择，不误开历史。
           expandTouchOnly.current = event.pointerType === "touch" && !dockExpanded;
           if (event.pointerType === "touch") setTouchExpanded(true);
         }}
         onFocusCapture={event => setDockFocused(event.target.matches(":focus-visible"))} onBlur={event => {
-          // 三个胶囊之间保留父层命中桥；键盘在按钮间移动时也不提前收拢。
+          // 四个胶囊之间保留父层命中桥；键盘在按钮间移动时也不提前收拢。
           if (!event.currentTarget.contains(event.relatedTarget)) setDockFocused(false);
         }} onClick={event => {
           // 透明圆角/间隔只补主入口的命中，子按钮事件仍由各自处理，不能误触撤销入口。
@@ -178,6 +184,9 @@ export function InkSearchHistory({ open, available, language, onOpen, onClose, o
         <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20V5m-6 6 6-6 6 6" /></svg>
         <span aria-hidden="true">{messages.inkStudy.searchHistory}</span>
       </button>
+      <button type="button" className="ink-study__pill ink-study__group-toggle" inert={!dockExpanded}
+        aria-label={getGroupMessages(language).title} aria-expanded={groupOpen} aria-controls="ink-groups"
+        onClick={() => groupOpen ? onCloseGroup(true) : onOpenGroup()}>{getGroupMessages(language).title}</button>
       <button type="button" className="ink-study__pill ink-study__undo-toggle" inert={!dockExpanded}
         aria-label={messages.editor.undo} aria-expanded={undoOpen} aria-controls="ink-undo-history"
         onClick={() => undoOpen ? onCloseUndo(true) : onOpenUndo()}>{messages.editor.undo}</button>
@@ -214,12 +223,14 @@ export function InkSearchHistory({ open, available, language, onOpen, onClose, o
           <button type="button" className="ink-study__pill" onClick={() => { void persistence.retry(); }}>{messages.workspace.retry}</button>
         </div>}
       </section>
+      <InkGroups open={groupOpen} presented={present.value === "groups"} available={available} language={language}
+        onClose={onCloseGroup} onOpenSettings={onOpenSettings} onSelectGraph={onSelectGroupGraph} onNewSearch={onNewGroupSearch} />
       <InkUndoPanel open={undoOpen} presented={present.value === "undo"} available={available}
         disabled={undoDisabled} language={language} onClose={onCloseUndo} />
       <InkSettingsPanel open={settingsOpen} presented={present.value === "settings"} language={language} onClose={onCloseSettings} />
       {/* 底条属于抽屉，随同退场；关闭即隔离交互，指针／键盘进入它不算面板外点击。 */}
       {filing !== "" && present.value !== null ? <footer className="ink-study__history-filing"
-        inert={!(open || undoOpen || settingsOpen)} aria-hidden={!(open || undoOpen || settingsOpen)}
+        inert={!(open || groupOpen || undoOpen || settingsOpen)} aria-hidden={!(open || groupOpen || undoOpen || settingsOpen)}
         onPointerDown={event => event.stopPropagation()} onFocus={event => event.stopPropagation()}
         onKeyDown={event => {
           // 设置面板的键盘监听仅在其section内，底条需补同一关闭动作；其余面板沿用document监听。

@@ -239,6 +239,11 @@ export function GraphView({ presentationMode, language, graph, selectedNodeId: p
       inert={!interactionReady}
       aria-hidden={!interactionReady}
       aria-label={messages.canvasAria[presentationMode]}
+      onKeyDownCapture={event => {
+        // 方向键位移没有DragStart，必须在库处理按键前捕获同一操作基线，不能漏掉组内键盘移动。
+        if (onMoveNode !== undefined && ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(event.key)
+          && event.target instanceof Element && event.target.closest("input, textarea, [contenteditable='true']") === null) onInteractionStart?.();
+      }}
     >
       <ReactFlow<GraphFlowNode, GraphFlowEdge>
         {...(flowId === undefined ? {} : { id: flowId })}

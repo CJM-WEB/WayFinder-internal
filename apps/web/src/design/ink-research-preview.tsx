@@ -9,7 +9,10 @@ import { useStore } from "zustand";
 import { researchStore, type ResearchPreview } from "../api/research.js";
 import { ResearchPreviewView } from "../components/Workspace/WorkspaceResearchPreview.js";
 import { getMessages } from "../i18n/messages.js";
-import { selectCurrentGraph, workspaceStore } from "../stores/workspace-store.js";
+import { selectCurrentGraph } from "../stores/workspace-store.js";
+import { activeWorkspaceStore as workspaceStore, workspaceContextStore } from "../stores/workspace-context.js";
+import { groupSearch } from "../api/group-search.js";
+import { getGroupMessages, groupErrorMessage } from "../i18n/group-messages.js";
 import { useInkPresence } from "./ink-presence.js";
 import { InkNotice } from "./ink-notice.js";
 import "./ink-research-preview.css";
@@ -31,9 +34,25 @@ export function clearRetiredResearchInput(previousGraphId: string | null, graphI
 }
 
 export default function InkResearchPreview({ language, active = true, suspended = false, onVisibilityChange }: InkResearchPreviewProps) {
-  const research = useStore(researchStore, state => state);
+  const personalResearch = useStore(researchStore, state => state);
+  const groupState = useStore(groupSearch.store, state => state);
+  const context = useStore(workspaceContextStore, state => state);
+  const groupMode = context.kind === "group";
+  const groupPreview = groupState.autoApply && groupState.error === null ? null : groupState.preview;
+  const applyGroup = (mode: "append" | "replace"): void => {
+    if (!context.writable || context.busy || context.failedAction !== null || groupState.applying) return;
+    const confirmed = groupState.error === "GROUP_CONFLICT";
+    if (confirmed && !window.confirm(getGroupMessages(language).searchConfirm)) return;
+    void groupSearch.apply(mode, confirmed);
+  };
+  const research = groupMode ? { preview: groupPreview, inputError: null, runStore: groupSearch.runStore,
+    cancel: groupSearch.cancel, cancelPending: groupSearch.cancelPending, dismiss: groupSearch.dismiss, apply: applyGroup } : personalResearch;
+  const currentPreview = (): ResearchPreview | null => {
+    if (!groupMode) return researchStore.getState().preview;
+    const latest = groupSearch.store.getState(); return latest.autoApply && latest.error === null ? null : latest.preview;
+  };
   const { preview,inputError } = research;
-  const selectedNodeId = useStore(researchStore.getState().runStore, state => state.selectedNodeId);
+  const selectedNodeId = useStore(research.runStore, state => state.selectedNodeId);
   const documentGraph = useStore(workspaceStore, selectCurrentGraph);
   const graphId = documentGraph?.id ?? null;
   const previousGraphId = useRef(graphId);
@@ -46,27 +65,28 @@ export default function InkResearchPreview({ language, active = true, suspended 
   const previousFocus = useRef<HTMLElement | null>(null);
   const idPrefix = `ink-research-${useId().replaceAll(":", "")}-`;
   // 页面卸载时也释放纯人工图的待检查意图和运行，不依赖前台搜索是否曾加载取消回调。
-  useEffect(() => () => researchStore.getState().cancel(), []);
-  const notice = useMemo(() => !active || suspended || inputError === null ? null
-    : { message: inputError === "target" ? getMessages(language).research.missingTarget : getMessages(language).research.invalidInput },
-  [active,suspended,inputError,language]);
+  useEffect(() => () => { researchStore.getState().cancel(); groupSearch.cancel(); }, []);
+  const notice = useMemo(() => !active || suspended ? null : groupMode
+    ? groupState.error === null ? null : { message: groupErrorMessage(groupState.error, language) }
+    : inputError === null ? null : { message: inputError === "target" ? getMessages(language).research.missingTarget : getMessages(language).research.invalidInput },
+  [active,suspended,inputError,language,groupMode,groupState.error]);
 
   useLayoutEffect(() => {
     const previous = previousGraphId.current;
     previousGraphId.current = graphId;
-    clearRetiredResearchInput(previous,graphId,research);
-  }, [graphId,research]);
+    if (!groupMode) clearRetiredResearchInput(previous,graphId,personalResearch);
+  }, [graphId,personalResearch,groupMode]);
   useLayoutEffect(() => {
     if (requested !== null && previousFocus.current === null && document.activeElement instanceof HTMLElement) previousFocus.current = document.activeElement;
   }, [requested]);
   useLayoutEffect(() => { onVisibilityChange?.(valid); }, [valid,onVisibilityChange]);
   useEffect(() => {
     // 纯人工图首次重搜可能仍停在资格检查，尚无preview可供下面的身份门禁识别。
-    if (!active) researchStore.getState().cancelPending();
+    if (!active) research.cancelPending();
     // 目标失效时取消；精确核对当前对象，旧 effect 不能误取消后来建立的新预览。
-    if ((preview !== null && !valid && researchStore.getState().preview === preview) ||
-      (!active && inputError !== null && researchStore.getState().inputError === inputError)) researchStore.getState().cancel();
-  }, [preview,valid,active,inputError]);
+    if ((preview !== null && !valid && currentPreview() === preview) ||
+      (!active && inputError !== null && !groupMode && researchStore.getState().inputError === inputError)) research.cancel();
+  }, [preview,valid,active,inputError,groupMode]);
 
   const present = presence.value !== null;
   useEffect(() => {
@@ -88,16 +108,16 @@ export default function InkResearchPreview({ language, active = true, suspended 
   const interactive = presence.open && valid && !suspended && shownPreview === preview;
   /** 受控选择仅依赖预览身份与交互门禁，不能因 selectedNodeId 更新而重放旧选择事件。 */
   const selectNode = useCallback((nodeId: string | null): void => {
-    if (interactive && shownPreview !== undefined && researchStore.getState().preview === shownPreview) {
-      researchStore.getState().runStore.getState().selectNode(nodeId);
+    if (interactive && shownPreview !== undefined && currentPreview() === shownPreview) {
+      research.runStore.getState().selectNode(nodeId);
     }
-  }, [interactive,shownPreview]);
+  }, [interactive,shownPreview,groupMode]);
   if (shown === null) return <InkNotice notice={notice} />;
-  const owned = (): boolean => interactive && researchStore.getState().preview === shown.preview;
+  const owned = (): boolean => interactive && currentPreview() === shown.preview;
   const close = (): void => {
     if (!owned()) return;
-    if (shown.preview.status === "searching") researchStore.getState().cancel();
-    else researchStore.getState().dismiss();
+    if (shown.preview.status === "searching") research.cancel();
+    else research.dismiss();
   };
   return <><InkNotice notice={notice} /><div className="ink-research-preview" data-ink-overlay data-ink-control data-open={presence.open}
     data-research-status={shown.preview.status} data-research-graph={shown.preview.graphId}
@@ -107,11 +127,11 @@ export default function InkResearchPreview({ language, active = true, suspended 
         if (!interactive) return;
         if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); close(); return; }
       }}>
-      <ResearchPreviewView language={language} preview={shown.preview} selectedNodeId={shown.selectedNodeId} disabled={!interactive} idPrefix={idPrefix}
+      <ResearchPreviewView language={language} preview={shown.preview} selectedNodeId={shown.selectedNodeId} disabled={!interactive} applyDisabled={groupMode && (!context.writable || context.busy || context.failedAction !== null || groupState.applying)} idPrefix={idPrefix}
         onSelectNode={selectNode}
-        onCancel={() => { if (owned()) researchStore.getState().cancel(); }}
-        onDismiss={() => { if (owned()) researchStore.getState().dismiss(); }}
-        onApply={mode => { if (owned()) researchStore.getState().apply(mode); }} />
+        onCancel={() => { if (owned()) research.cancel(); }}
+        onDismiss={() => { if (owned()) research.dismiss(); }}
+        onApply={mode => { if (owned()) research.apply(mode); }} />
     </div>
   </div></>;
 }

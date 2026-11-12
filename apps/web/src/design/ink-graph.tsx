@@ -19,6 +19,7 @@ type Props = Readonly<{
   onScene: (scene: InkScene) => void;
   positions: Readonly<Record<string, XYPosition>>;
   onMoveNode: (nodeId: string, position: XYPosition) => void;
+  movable?: boolean;
   selectedNodeId: string | null;
   onSelectNode: (nodeId: string | null) => void;
   animate: boolean;
@@ -28,7 +29,7 @@ type Props = Readonly<{
   labelSnapshots?: Readonly<Record<string, GraphNodeData>>;
 }> & Pick<GraphViewProps, "editableGraphId" | "onContextRequest" | "onInteractionStart" | "onPaneClick" | "onEditProblem">;
 
-export default function InkGraph({ graphId, nodes, edges, language, presentationMode, onScene, positions, onMoveNode, selectedNodeId, onSelectNode, animate, active = true,
+export default function InkGraph({ graphId, nodes, edges, language, presentationMode, onScene, positions, onMoveNode, selectedNodeId, onSelectNode, animate, active = true, movable = true,
   transferMoving = false, labelSnapshots = {}, editableGraphId, ...interactionProps }: Props) {
   // 只按结构重新播种，ready/partial/failed 与资源数量更新始终直接呈现。
   const signature = JSON.stringify([nodes.map(node => [node.id, node.nodeType]), edges]);
@@ -85,7 +86,7 @@ export default function InkGraph({ graphId, nodes, edges, language, presentation
   }, [timeline, active, animate, editSettled]);
 
   return <GraphView appearance="ink" presentationMode={presentationMode} language={language} graph={{ nodes, edges, positions }}
-    onMoveNode={onMoveNode} selectedNodeId={selectedNodeId} onSelectNode={onSelectNode}
+    {...(movable ? { onMoveNode } : {})} selectedNodeId={selectedNodeId} onSelectNode={onSelectNode}
     {...(editableGraphId === undefined ? {} : { editableGraphId })} {...interactionProps}
     visibleNodeIds={visibleNodes} visibleEdgeIds={visibleEdges} revealSettled={revealSettled}
     interactionReady={active && (layoutReady || nodes.length === 0) && !transferMoving} labelSnapshots={labelSnapshots}

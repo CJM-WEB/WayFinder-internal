@@ -1847,6 +1847,60 @@
                 "meta"
               ],
               "additionalProperties": false
+            },
+            "groupSearchReceipt": {
+              "type": "object",
+              "properties": {
+                "version": {
+                  "type": "string",
+                  "const": "groupSearch.v1"
+                },
+                "target": {
+                  "type": "object",
+                  "properties": {
+                    "groupId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 128,
+                      "pattern": "^[A-Za-z0-9_-]+$"
+                    },
+                    "graphId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "expectedRevision": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 9007199254740991
+                    },
+                    "nodeId": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "required": [
+                    "groupId",
+                    "graphId",
+                    "expectedRevision"
+                  ],
+                  "additionalProperties": false
+                },
+                "runId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "signature": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                }
+              },
+              "required": [
+                "version",
+                "target",
+                "runId",
+                "signature"
+              ],
+              "additionalProperties": false
             }
           },
           "required": [

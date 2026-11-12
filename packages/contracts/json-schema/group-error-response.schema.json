@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "code": {
+      "type": "string",
+      "enum": [
+        "ACCOUNT_REQUIRED",
+        "GROUP_INVALID",
+        "GROUP_NOT_FOUND",
+        "GROUP_FORBIDDEN",
+        "GROUP_CONFLICT",
+        "GROUP_UNAVAILABLE",
+        "NICKNAME_REQUIRED",
+        "GROUP_OFFLINE",
+        "GROUP_DEPENDENCY",
+        "GROUP_CONSTRAINT"
+      ]
+    }
+  },
+  "required": [
+    "code"
+  ],
+  "additionalProperties": false
+}

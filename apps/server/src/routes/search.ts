@@ -21,6 +21,8 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 
 import { CredentialsAccessError } from "../settings/experience-authorization.js";
 import { sendCredentialsAccessError } from "./experience.js";
+import { GroupAccessError } from "../groups/errors.js";
+import { sendGroupAccessError } from "./group-session.js";
 
 import {
   createRunEventWriter,
@@ -156,6 +158,8 @@ export function registerSearchRoute(
       if (!reply.sent && !reply.raw.headersSent && !reply.raw.destroyed && !controller.signal.aborted) {
         if (error instanceof CredentialsAccessError) {
           await sendCredentialsAccessError(reply, error);
+        } else if (error instanceof GroupAccessError) {
+          sendGroupAccessError(reply, error);
         } else {
           await reply.code(500).send();
         }

@@ -420,6 +420,16 @@ describe("StreamEvent Run 结束事件与双入口一致性", () => {
     }
   });
 
+  it("小组完成收据绑定唯一Run，普通完成事件仍无需收据", () => {
+    const receipt = { version: "groupSearch.v1", target: { groupId: "group", graphId: "graph", expectedRevision: 1 },
+      runId: validResultGraph.runId, signature: "a".repeat(64) };
+    const data = { ...validCompletePayload.data, groupSearchReceipt: receipt };
+    expect(StreamEventPayloadSchema.safeParse({ ...validCompletePayload, data }).success).toBe(true);
+    for (const bad of [{ ...receipt, runId: "another-run" }, { ...receipt, signature: "private-data" }]) {
+      expect(StreamEventPayloadSchema.safeParse({ ...validCompletePayload, data: { ...data, groupSearchReceipt: bad } }).success).toBe(false);
+    }
+  });
+
   it("complete 复用严格 ResultGraph 与严格 data 形状", () => {
     for (const input of [
       {

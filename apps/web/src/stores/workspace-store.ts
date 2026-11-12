@@ -5,9 +5,7 @@
  */
 import {
   EditableGraphSchema,
-  ResultGraphSchema,
   type EditableGraph,
-  type ResultGraph,
   type SearchLanguage,
 } from "@wayfinder/contracts";
 import { createStore } from "zustand/vanilla";
@@ -61,28 +59,8 @@ export const createEmptyGraph = (
   nodes: [], edges: [], positions: {},
 });
 
-/** 真实结果只在此边界转换；来源和失败信息保持原样，不让编辑协议反向放宽搜索结果。 */
-export const fromResultGraph = (result: ResultGraph, graphId: string): EditableGraph => {
-  const validated = ResultGraphSchema.parse(result);
-  return EditableGraphSchema.parse({
-    version: "workspace.v1",
-    id: graphId,
-    title: validated.query.raw,
-    query: validated.query.raw,
-    language: validated.query.language,
-    presentationMode: validated.analysis.presentationMode,
-    analysis: validated.analysis,
-    createdAt: validated.meta.createdAt,
-    updatedAt: validated.meta.createdAt,
-    lastRunId: validated.runId,
-    nodes: validated.graph.nodes.map(node => ({
-      ...node,
-      resources: node.resources.map(resource => ({ ...resource, origin: "search" as const })),
-    })),
-    edges: validated.graph.edges,
-    positions: {},
-  });
-};
+/** 搜索结果投影由协议工程共享，个人图与组图保持同一来源语义。 */
+export { fromResultGraph } from "@wayfinder/contracts";
 
 /** 当前图始终由稳定 ID 查找，不维护会随增删操作失效的数组下标。 */
 export const selectCurrentGraph = (state: WorkspaceStoreState): EditableGraph | null =>

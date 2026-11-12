@@ -229,6 +229,22 @@ export const SearchRequestSchema = z.strictObject({
 });
 export type SearchRequest = z.infer<typeof SearchRequestSchema>;
 
+/** 小组搜索只携带公开目标；身份与会话始终由服务端冻结，连接证明不占用40秒运行信号。 */
+const editableGraphIdSchema = z.string().min(1);
+const graphRevisionSchema = z.number().int().min(1);
+export const GROUP_SEARCH_TARGET_HEADER = "x-wayfinder-group-search-target";
+export const GroupSearchTargetSchema = z.strictObject({
+  groupId: UserIdSchema, graphId: editableGraphIdSchema, expectedRevision: graphRevisionSchema,
+  nodeId: z.string().min(1).optional(),
+});
+export type GroupSearchTarget = z.infer<typeof GroupSearchTargetSchema>;
+/** 收据只证明真实完成结果；应用还须重新校验会话、成员代际和当前版本，不能作为访问凭据。 */
+export const GroupSearchReceiptSchema = z.strictObject({
+  version: z.literal("groupSearch.v1"), target: GroupSearchTargetSchema,
+  runId: SearchRequestSchema.shape.runId, signature: z.string().regex(/^[a-f0-9]{64}$/),
+});
+export type GroupSearchReceipt = z.infer<typeof GroupSearchReceiptSchema>;
+
 /** Graph（图）结构词表由计划图与最终结果图共同使用。 */
 export const NodeTypeSchema = z.enum([
   "primary",
@@ -1052,8 +1068,12 @@ const completeStreamEventDataSchema = z
   .strictObject({
     finalStatus: z.enum(["complete", "partial"]),
     result: ResultGraphSchema,
+    groupSearchReceipt: GroupSearchReceiptSchema.optional(),
   })
   .superRefine((data, context) => {
+    if (data.groupSearchReceipt !== undefined && data.groupSearchReceipt.runId !== data.result.runId) {
+      context.addIssue({ code: "custom", path: ["groupSearchReceipt", "runId"], message: "小组搜索收据与结果运行身份不一致" });
+    }
     const expectedStatus = data.result.meta.partial
       ? "partial"
       : "complete";
@@ -1149,7 +1169,7 @@ const editablePositionSchema = z.strictObject({
  */
 export const EditableGraphSchema = z.strictObject({
   version: z.literal("workspace.v1"),
-  id: z.string().min(1),
+  id: editableGraphIdSchema,
   title: z.string().min(1),
   query: z.string().max(2000),
   language: SearchLanguageSchema,
@@ -1298,8 +1318,10 @@ export type StoredGraphHistory = Readonly<Omit<StoredGraphHistoryValue, "base"> 
 
 /** 预期账号仅用于拒绝错号的待提交操作；权限始终来自服务端验证的会话。 */
 export const CLOUD_ACCOUNT_HEADER = "x-wayfinder-account";
+/** 仅绑定同会话已追平的小组连接；成员权限仍由服务端事务校验。 */
+export const GROUP_CONNECTION_HEADER = "x-wayfinder-group-connection";
 const cloudGraphIdSchema = EditableGraphSchema.shape.id;
-const cloudRevisionSchema = z.number().int().min(1);
+const cloudRevisionSchema = graphRevisionSchema;
 const cloudGraphFields = {
   document: EditableGraphSchema, history: StoredGraphHistorySchema, revision: cloudRevisionSchema,
 };
@@ -1396,3 +1418,270 @@ export const AccountKeysErrorResponseSchema = z.strictObject({
   code: z.enum(["KEY_INVALID", "KEY_CONFLICT", "KEY_UNAVAILABLE", "ACCOUNT_REQUIRED"]), service: CredentialServiceSchema.optional(),
 });
 export type AccountKeysErrorResponse = z.infer<typeof AccountKeysErrorResponseSchema>;
+
+/**
+ * D12 账号资料：昵称独立于既有邮箱认证，所有小组共用；不把昵称当作权限或唯一身份。
+ * 没有昵称的旧账号保持可读，创建／加入小组的门禁由可信服务端执行。
+ */
+export const AccountNicknameSchema = z.string().trim().min(1);
+export const AccountProfileSchema = z.strictObject({ userId: UserIdSchema, nickname: AccountNicknameSchema.nullable() });
+export type AccountProfile = z.infer<typeof AccountProfileSchema>;
+export const AccountProfileActionSchema = z.strictObject({ nickname: AccountNicknameSchema });
+export type AccountProfileAction = z.infer<typeof AccountProfileActionSchema>;
+export const AccountProfileResponseSchema = z.strictObject({ profile: AccountProfileSchema });
+export type AccountProfileResponse = z.infer<typeof AccountProfileResponseSchema>;
+
+/**
+ * 邀请码编码：创建者完整邮箱、# 分隔符及恰20位随机字母数字后缀。
+ * 从固定后缀位置读取分隔符，不对邮箱里的 + 或 # 任意拆分；完整码还须由数据库唯一约束保护。
+ * 此校验只检查表示法；创建者邮箱、成员资格及邀请码匹配均必须由服务端确定。
+ */
+export const GroupInvitationCodeSchema = z.string().regex(/^.+#[A-Za-z0-9]{20}$/).refine(value => value.length > 21 && value.at(-21) === "#"
+  && /^[A-Za-z0-9]{20}$/.test(value.slice(-20)) && z.email().safeParse(value.slice(0, -21)).success,
+{ message: "小组邀请码须包含创建者邮箱及20位随机字母数字后缀" });
+export type GroupInvitationCode = z.infer<typeof GroupInvitationCodeSchema>;
+
+export const GroupSummarySchema = z.strictObject({
+  groupId: UserIdSchema, name: z.string().trim().min(1), description: z.string(),
+  ownerUserId: UserIdSchema, revision: cloudRevisionSchema,
+});
+export type GroupSummary = z.infer<typeof GroupSummarySchema>;
+export const GroupMemberSchema = z.strictObject({
+  userId: UserIdSchema, nickname: AccountNicknameSchema, role: z.enum(["owner", "member"]),
+});
+export type GroupMember = z.infer<typeof GroupMemberSchema>;
+export const GroupDetailsSchema = z.strictObject({
+  group: GroupSummarySchema, members: z.array(GroupMemberSchema), invitationCode: GroupInvitationCodeSchema.nullable(),
+}).superRefine((value, context) => {
+  const owners = value.members.filter(member => member.role === "owner");
+  if (new Set(value.members.map(member => member.userId)).size !== value.members.length
+    || owners.length !== 1 || owners[0]?.userId !== value.group.ownerUserId) {
+    context.addIssue({ code: "custom", message: "小组成员或创建者身份不一致" });
+  }
+});
+export type GroupDetails = z.infer<typeof GroupDetailsSchema>;
+export const GroupListResponseSchema = z.strictObject({ groups: z.array(GroupSummarySchema) }).superRefine((value, context) => {
+  if (new Set(value.groups.map(group => group.groupId)).size !== value.groups.length) {
+    context.addIssue({ code: "custom", message: "小组列表不能重复" });
+  }
+});
+export type GroupListResponse = z.infer<typeof GroupListResponseSchema>;
+/** 列表和详情共用只读入口；查询不能携带邀请码或伪造账号归属。 */
+export const GroupReadQuerySchema = z.strictObject({ groupId: UserIdSchema.optional() });
+export type GroupReadQuery = z.infer<typeof GroupReadQuerySchema>;
+
+/** 小组管理动作不接收角色、创建者邮箱或操作者标识，避免客户端借额外字段授予自己权限。 */
+const groupMutationFields = { mutationId: UserIdSchema };
+const groupTargetFields = { ...groupMutationFields, groupId: UserIdSchema };
+export const GroupActionSchema = z.discriminatedUnion("action", [
+  z.strictObject({ action: z.literal("create"), ...groupMutationFields, name: GroupSummarySchema.shape.name, description: z.string() }),
+  z.strictObject({ action: z.literal("join"), ...groupMutationFields, invitationCode: GroupInvitationCodeSchema }),
+  z.strictObject({ action: z.literal("update"), ...groupTargetFields, name: GroupSummarySchema.shape.name,
+    description: z.string(), expectedRevision: cloudRevisionSchema }),
+  z.strictObject({ action: z.literal("leave"), ...groupTargetFields }),
+  z.strictObject({ action: z.literal("dissolve"), ...groupTargetFields, expectedRevision: cloudRevisionSchema }),
+]);
+export type GroupAction = z.infer<typeof GroupActionSchema>;
+export const GroupActionResponseSchema = z.strictObject({ groups: z.array(GroupSummarySchema), details: GroupDetailsSchema.nullable() });
+export type GroupActionResponse = z.infer<typeof GroupActionResponseSchema>;
+export const GroupErrorCodeSchema = z.enum([
+  "ACCOUNT_REQUIRED", "GROUP_INVALID", "GROUP_NOT_FOUND", "GROUP_FORBIDDEN", "GROUP_CONFLICT", "GROUP_UNAVAILABLE",
+  "NICKNAME_REQUIRED", "GROUP_OFFLINE", "GROUP_DEPENDENCY", "GROUP_CONSTRAINT",
+]);
+export type GroupErrorCode = z.infer<typeof GroupErrorCodeSchema>;
+export const GroupErrorResponseSchema = z.strictObject({ code: GroupErrorCodeSchema });
+export type GroupErrorResponse = z.infer<typeof GroupErrorResponseSchema>;
+
+/**
+ * 小组历史沿用既有基线与事件快照，只增加服务端作者及是否仍在本人100步窗口内的标识。
+ * 不能给全组事件数组加100条上限：早期不可撤销事件仍可能支撑另一成员保留事件的因果重放。
+ * 窗口之外的连续前缀可由历史算法折入基线；这里校验作者窗口、事件标识和个人重做归属。
+ */
+export const GroupGraphHistoryEventSchema = StoredGraphHistoryEventSchema.extend({ actorUserId: UserIdSchema, undoable: z.boolean() });
+export type GroupGraphHistoryEvent = z.infer<typeof GroupGraphHistoryEventSchema>;
+export const GroupGraphHistorySchema = z.strictObject({
+  version: z.literal("groupHistory.v1"), base: StoredGraphHistoryBaseSchema,
+  events: z.array(GroupGraphHistoryEventSchema), redoIdsByUser: z.record(UserIdSchema, z.array(historyIdSchema)),
+}).superRefine((value, context) => {
+  const byId = new Map(value.events.map(event => [event.id, event]));
+  const counts = new Map<string, number>();
+  if (byId.size !== value.events.length) context.addIssue({ code: "custom", message: "小组历史事件标识不能重复" });
+  for (const event of value.events) {
+    if (event.undoable) counts.set(event.actorUserId, (counts.get(event.actorUserId) ?? 0) + 1);
+  }
+  if ([...counts.values()].some(count => count > 100)) {
+    context.addIssue({ code: "custom", message: "每位成员每张图最多保留100条可撤销记录" });
+  }
+  for (const [userId, ids] of Object.entries(value.redoIdsByUser)) {
+    if (new Set(ids).size !== ids.length || ids.some(id => {
+      const event = byId.get(id);
+      return event === undefined || event.actorUserId !== userId || !event.undoable || event.active;
+    })) context.addIssue({ code: "custom", message: "重做队列只能引用本人仍保留的已撤销事件" });
+  }
+});
+export type GroupGraphHistory = z.infer<typeof GroupGraphHistorySchema>;
+const groupGraphFields = { document: EditableGraphSchema, history: GroupGraphHistorySchema, revision: cloudRevisionSchema };
+export const GroupGraphRecordSchema = z.discriminatedUnion("status", [
+  z.strictObject({ ...groupGraphFields, status: z.literal("active"), originalIndex: z.null() }),
+  z.strictObject({ ...groupGraphFields, status: z.literal("deleted"), originalIndex: z.number().int().min(0) }),
+]);
+export type GroupGraphRecord = z.infer<typeof GroupGraphRecordSchema>;
+export const GroupWorkspaceResponseSchema = z.strictObject({
+  groupId: UserIdSchema, revision: cloudRevisionSchema, ...cloudOrderFields, graphs: z.array(GroupGraphRecordSchema),
+}).superRefine((value, context) => {
+  const rows = new Map(value.graphs.map(record => [record.document.id, record]));
+  const ids = [...value.activeOrder, ...value.deletedIds];
+  if (rows.size !== value.graphs.length || new Set(ids).size !== ids.length || rows.size !== ids.length
+    || value.activeOrder.some(id => rows.get(id)?.status !== "active")
+    || value.deletedIds.some(id => rows.get(id)?.status !== "deleted")) {
+    context.addIssue({ code: "custom", message: "小组图记录、活动顺序与删除栈不一致" });
+  }
+});
+export type GroupWorkspaceResponse = z.infer<typeof GroupWorkspaceResponseSchema>;
+
+/**
+ * 编辑只表达本次前后变化，服务端在最新图上合并并校验，不接受客户端填写历史或作者。
+ * 跨归属复制仅提交来源标识／版本；实际内容读取、新身份和空历史均由服务端建立。
+ */
+const groupGraphTargetFields = { ...groupTargetFields, graphId: cloudGraphIdSchema, expectedRevision: cloudRevisionSchema };
+export const GroupGraphActionSchema = z.discriminatedUnion("action", [
+  z.strictObject({ action: z.literal("create"), ...groupTargetFields, document: EditableGraphSchema }),
+  z.strictObject({ action: z.literal("edit"), ...groupGraphTargetFields, before: EditableGraphSchema, after: EditableGraphSchema,
+    kind: WorkspaceHistoryKindSchema.exclude(["graph.search", "node.search"]), subject: z.string() }),
+  // 搜索正文必须与服务端完成收据绑定，不能利用普通整图编辑绕过可信来源与预览版本检查。
+  z.strictObject({ action: z.literal("applySearch"), ...groupGraphTargetFields, receipt: GroupSearchReceiptSchema,
+    result: ResultGraphSchema, mode: z.enum(["append", "replace"]), positions: EditableGraphSchema.shape.positions.optional(),
+    confirmedRevision: cloudRevisionSchema.optional() }),
+  z.strictObject({ action: z.literal("delete"), ...groupGraphTargetFields }),
+  z.strictObject({ action: z.literal("restore"), ...groupGraphTargetFields }),
+  z.strictObject({ action: z.literal("undo"), ...groupGraphTargetFields, eventId: historyIdSchema }),
+  z.strictObject({ action: z.literal("redo"), ...groupGraphTargetFields }),
+  z.strictObject({ action: z.literal("copyIn"), ...groupTargetFields, sourceGraphId: cloudGraphIdSchema, sourceRevision: cloudRevisionSchema }),
+  z.strictObject({ action: z.literal("copyOut"), ...groupGraphTargetFields }),
+]).superRefine((value, context) => {
+  if (value.action === "edit" && (value.before.id !== value.graphId || value.after.id !== value.graphId)) {
+    context.addIssue({ code: "custom", message: "编辑前后图标识必须与目标图一致" });
+  }
+  if (value.action === "applySearch" && (value.receipt.target.groupId !== value.groupId
+    || value.receipt.target.graphId !== value.graphId || value.receipt.runId !== value.result.runId
+    || value.receipt.target.nodeId === undefined && value.mode !== "replace")) {
+    context.addIssue({ code: "custom", message: "搜索应用与原小组、图、运行或作用域不一致" });
+  }
+});
+export type GroupGraphAction = z.infer<typeof GroupGraphActionSchema>;
+export const GroupGraphWriteResponseSchema = z.strictObject({ workspace: GroupWorkspaceResponseSchema, personalGraph: CloudGraphRecordSchema.optional() });
+export type GroupGraphWriteResponse = z.infer<typeof GroupGraphWriteResponseSchema>;
+
+/** 组图快照须指定小组；确认丢失则按本人操作标识查回，不能依赖仍有源组访问权。 */
+export const GroupWorkspaceQuerySchema = GroupReadQuerySchema.required();
+export type GroupWorkspaceQuery = z.infer<typeof GroupWorkspaceQuerySchema>;
+export const GroupGraphReceiptQuerySchema = z.strictObject({ mutationId: UserIdSchema });
+export type GroupGraphReceiptQuery = z.infer<typeof GroupGraphReceiptQuerySchema>;
+export const GroupGraphReceiptResponseSchema = z.strictObject({
+  mutationId: UserIdSchema, applied: z.boolean(), groupId: UserIdSchema.nullable(),
+  graphId: cloudGraphIdSchema.nullable(), personalGraphId: cloudGraphIdSchema.nullable(),
+}).superRefine((value, context) => {
+  if (value.applied ? value.groupId === null || value.graphId === null
+    : value.groupId !== null || value.graphId !== null || value.personalGraphId !== null) {
+    context.addIssue({ code: "custom", message: "操作确认状态与目标标识不一致" });
+  }
+});
+export type GroupGraphReceiptResponse = z.infer<typeof GroupGraphReceiptResponseSchema>;
+
+/** 同步流只发布服务端权威快照与连接信号；退出／解散不能继续靠旧快照恢复写权限。 */
+export const GroupConnectionStateSchema = z.enum(["connecting", "syncing", "online", "offline", "reconnecting", "closed"]);
+export type GroupConnectionState = z.infer<typeof GroupConnectionStateSchema>;
+export const GroupSyncEventSchema = z.discriminatedUnion("type", [
+  z.strictObject({ type: z.literal("snapshot"), sequence: z.number().int().min(0), details: GroupDetailsSchema, workspace: GroupWorkspaceResponseSchema,
+    connectionId: UserIdSchema }),
+  z.strictObject({ type: z.literal("heartbeat"), sequence: z.number().int().min(0) }),
+  z.strictObject({ type: z.literal("renew"), sequence: z.number().int().min(0) }),
+  z.strictObject({ type: z.literal("revoked"), code: GroupErrorCodeSchema }),
+]).superRefine((value, context) => {
+  if (value.type === "snapshot" && (value.details.group.groupId !== value.workspace.groupId
+    || value.details.group.revision !== value.workspace.revision)) {
+    context.addIssue({ code: "custom", message: "同步快照的小组身份或版本不一致" });
+  }
+});
+export type GroupSyncEvent = z.infer<typeof GroupSyncEventSchema>;
+
+/** 共享确定性搜索投影不包含网络、布局库或身份状态。 */
+
+/** 真实结果只在此边界转换；来源和失败信息保持原样，不让编辑协议反向放宽搜索结果。 */
+export const fromResultGraph = (result: ResultGraph, graphId: string): EditableGraph => {
+  const validated = ResultGraphSchema.parse(result);
+  return EditableGraphSchema.parse({
+    version: "workspace.v1",
+    id: graphId,
+    title: validated.query.raw,
+    query: validated.query.raw,
+    language: validated.query.language,
+    presentationMode: validated.analysis.presentationMode,
+    analysis: validated.analysis,
+    createdAt: validated.meta.createdAt,
+    updatedAt: validated.meta.createdAt,
+    lastRunId: validated.runId,
+    nodes: validated.graph.nodes.map(node => ({
+      ...node,
+      resources: node.resources.map(resource => ({ ...resource, origin: "search" as const })),
+    })),
+    edges: validated.graph.edges,
+    positions: {},
+  });
+};
+
+const MAX_NEW_RESOURCES_PER_NODE = 6;
+
+export function applyNodeSearchResult(
+  graph: EditableGraph, nodeId: string, input: ResultGraph, mode: "append" | "replace", at = new Date().toISOString(),
+): EditableGraph {
+  const result = ResultGraphSchema.parse(input);
+  const previous = graph.nodes.find(node => node.id === nodeId);
+  const incoming = result.graph.nodes.find(node => node.id === nodeId);
+  if (previous === undefined || incoming === undefined || incoming.status === "failed") return graph;
+
+  // 追加检查全图；替换排除即将覆盖的本节点，但仍尊重其他节点现有 URL 所有权。
+  const occupied = new Set(graph.nodes
+    .filter(node => mode === "append" || node.id !== nodeId)
+    .flatMap(node => node.resources.map(resource => resource.canonicalUrl)));
+  const kept = mode === "append" ? previous.resources : [];
+  const ids = new Set(kept.map(resource => resource.id));
+  const additions: EditableResource[] = [];
+  for (const resource of incoming.resources.slice(0, MAX_NEW_RESOURCES_PER_NODE)) {
+    if (occupied.has(resource.canonicalUrl)) continue;
+    occupied.add(resource.canonicalUrl);
+    // 不同搜索运行可能重用候选 ID；新资源拥有独立身份，旧资源 ID 保持不变。
+    const prefix = `${result.runId}:${resource.id}`;
+    let id = prefix;
+    let suffix = 1;
+    while (ids.has(id)) id = `${prefix}:${suffix++}`;
+    ids.add(id);
+    additions.push({ ...resource, id, origin: "search" });
+  }
+  if (additions.length === 0) return graph;
+
+  const node: EditableNode = {
+    ...previous, status: incoming.status, warnings: incoming.warnings,
+    searchPlan: incoming.searchPlan,
+    resources: [...kept, ...additions].map((resource, index) => ({ ...resource, rank: index + 1 })),
+  };
+  delete node.error;
+  return EditableGraphSchema.parse({
+    ...graph, lastRunId: result.runId, updatedAt: at,
+    nodes: graph.nodes.map(current => current.id === nodeId ? node : current),
+  });
+}
+
+/** 全图明确替换保留身份／标题与创建时间；坐标仅能引用本次结果已有节点。 */
+export function applyGraphSearchResultContent(graph: EditableGraph, input: ResultGraph,
+  positions: EditableGraph["positions"] = {}, at = new Date().toISOString()): EditableGraph {
+  const result = ResultGraphSchema.parse(input);
+  if (!result.graph.nodes.some(node => node.resources.length > 0)) return graph;
+  const generated = fromResultGraph(result, graph.id);
+  return EditableGraphSchema.parse({
+    ...generated, id: graph.id, title: graph.title, createdAt: graph.createdAt,
+    ...(graph.engine === undefined ? {} : { engine: graph.engine }),
+    nodes: generated.nodes.map(node => ({ ...node, resources: node.resources.slice(0, MAX_NEW_RESOURCES_PER_NODE) })),
+    positions, updatedAt: at,
+  });
+}

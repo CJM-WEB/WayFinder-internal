@@ -13,7 +13,7 @@ import {
   type CloudWorkspaceErrorResponse, type CloudWorkspaceResponse,
   type CloudWorkspaceImportRequest,
 } from "@wayfinder/contracts";
-import { remapGraphHistoryIdentity, restoreGraphHistory } from "@wayfinder/contracts/graph-history";
+import { createGraphHistory, remapGraphHistoryIdentity, restoreGraphHistory, storeGraphHistory } from "@wayfinder/contracts/graph-history";
 
 import { AccountDatabase, type DatabaseOperation } from "./database.js";
 
@@ -48,6 +48,9 @@ const ImportReceiptSchema = z.strictObject({
 type Metadata = z.infer<typeof MetaSchema>;
 type Envelope = z.infer<typeof PurgedEnvelopeSchema> | (Omit<z.infer<typeof GraphEnvelopeSchema>, "recordJson"> & { record: CloudGraphRecord });
 type Query = Parameters<Parameters<AccountDatabase["transaction"]>[1]>[0];
+/** 供组图复制组合事务使用：业务拒绝不抛数据库异常，由调用方映射到所属协议。 */
+export type CloudGraphCopyResult = Readonly<{ ok: true; record: CloudGraphRecord }>
+  | Readonly<{ ok: false; reason: "missing" | "conflict" }>;
 type Outcome = Readonly<{ ok: true; value: CloudGraphWriteResponse }> | Readonly<{ ok: false; code: CloudWorkspaceErrorResponse["code"] }>;
 type ImportOutcome = Readonly<{ ok: true; value: CloudWorkspaceResponse }> | Readonly<{ ok: false; code: CloudWorkspaceErrorResponse["code"] }>;
 const emptyMeta = (): Metadata => ({ kind: "workspace", activeOrder: [], deletedIds: [] });
@@ -92,6 +95,31 @@ function success(userId: string, record: CloudGraphRecord, meta: Metadata): Outc
 }
 function envelope(record: CloudGraphRecord, mutationId: string, fingerprint: string): z.infer<typeof GraphEnvelopeSchema> {
   return { kind: "graph", recordJson: JSON.stringify(record), lastMutationId: mutationId, requestFingerprint: fingerprint };
+}
+
+/** 同一组合事务锁读个人源图；已删除或版本变化时拒绝，不把旧快照当作用户要复制的内容。 */
+export async function readCloudGraphForCopy(query: Query, trustedUserId: string, graphId: string, expectedRevision: number): Promise<CloudGraphCopyResult> {
+  const userId = UserIdSchema.parse(trustedUserId);
+  const current = checkedEnvelope(await load(query, userId, graphKey(graphId), true), graphId);
+  if (current === null || current.kind !== "graph" || current.record.status !== "active") return { ok: false, reason: "missing" };
+  if (current.record.revision !== expectedRevision) return { ok: false, reason: "conflict" };
+  return { ok: true, record: current.record };
+}
+
+/**
+ * 只用于人员明确的“当前内容复制”：新身份和空历史，与旧冲突副本／访客导入保留历史的语义分开。
+ * 调用方已经锁定小组并持有同一事务；此处再锁个人顺序，不能调用另开事务的公开write造成半份副本。
+ */
+export async function appendCloudGraphCopy(query: Query, trustedUserId: string, document: CloudGraphRecord["document"], mutationId: string): Promise<CloudGraphCopyResult> {
+  const userId = UserIdSchema.parse(trustedUserId), meta = await lockMetadata(query, userId), key = graphKey(document.id);
+  if (await load(query, userId, key, true) !== null || [...meta.activeOrder, ...meta.deletedIds].includes(document.id)) return { ok: false, reason: "conflict" };
+  const record = CloudGraphRecordSchema.parse({ document, history: storeGraphHistory(createGraphHistory(document)),
+    status: "active", originalIndex: null, revision: 1 });
+  const fingerprint = createHash("sha256").update(JSON.stringify(["groupContentCopy", userId, mutationId, document.id])).digest("hex");
+  await store(query, userId, key, envelope(record, mutationId, fingerprint));
+  meta.activeOrder.push(document.id);
+  await store(query, userId, META_KEY, MetaSchema.parse(meta));
+  return { ok: true, record };
 }
 
 /** 普通读取沿用RR快照；导入及其重试使用当前锁读，返回同一事务中的完整结果。 */

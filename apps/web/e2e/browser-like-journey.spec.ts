@@ -1901,7 +1901,7 @@ test("两类历史逐条S曲线上滑且撤销行退场消失，底部胶囊分�
     const history = await historyButton.boundingBox(), undo = await undoButton.boundingBox();
     return history === null || undo === null ? 0 : undo.x - history.x - history.width;
   }).toBeGreaterThan(10);
-  await expect(dock).toHaveCSS("width", "262px");
+  await expect(dock).toHaveCSS("width", "336px");
   const historyBounds = await historyButton.boundingBox(), undoBounds = await undoButton.boundingBox();
   if (historyBounds === null || undoBounds === null) throw new Error("缺少展开胶囊");
   // 从两按钮间的透明留白穿过，命中桥保持展开，不抖动收回。
@@ -1996,14 +1996,14 @@ test("两类历史逐条S曲线上滑且撤销行退场消失，底部胶囊分�
   await expect(panel.locator("[data-ink-undo-event]").first()).toHaveCSS("--ink-history-delay", "0ms");
   await expect(panel.locator("[data-ink-undo-event]").first()).toHaveCSS("translate", "none");
   await dock.hover();
-  await expect(dock).toHaveCSS("width", "262px");
+  await expect(dock).toHaveCSS("width", "336px");
   await page.screenshot({ path: testInfo.outputPath("ink-history-pills-and-undo.png"), animations: "disabled" });
   await writeFile(testInfo.outputPath("ink-history-motion.json"), JSON.stringify({ historyFrames, undoFrames, leave }, null, 2));
   expect(await readFixtureSnapshots(page)).toHaveLength(0);
 });
 
 /** 连体背景跟随父抽屉完整下滑；逐 RAF 排除 360ms 内层淡出掩盖半程运动的回归。 */
-test("历史与撤销面板连接三个按钮并随共同箭头完整滑出，关闭期间不提前淡出", async ({ page }, testInfo) => {
+test("历史与撤销面板连接四个按钮并随共同箭头完整滑出，关闭期间不提前淡出", async ({ page }, testInfo) => {
   await openInkWorkspace(page);
   await openInkNodeMenu(page);
   await page.getByRole("menuitem", { name: "编辑节点", exact: true }).click();
@@ -2015,16 +2015,18 @@ test("历史与撤销面板连接三个按钮并随共同箭头完整滑出，�
   const dock = page.locator(".ink-study__history-dock");
   const drawer = page.locator(".ink-study__history-drawer");
   const evidence: Record<string, unknown> = {};
-  type SplitFrame = Readonly<{ at: number; panelTop: number; dockBottom: number; historyBottom: number; undoBottom: number; gap: number }>;
+  type SplitFrame = Readonly<{ at: number; panelTop: number; dockBottom: number; historyBottom: number; groupBottom: number; undoBottom: number; settingsBottom: number; gap: number }>;
   const sampleSplit = async (expanded: boolean): Promise<readonly SplitFrame[]> => {
     const pending = page.evaluate(({ expanded, timeoutMs }) => new Promise<readonly SplitFrame[]>((resolve, reject) => {
       const dock = document.querySelector(".ink-study__history-dock"), drawer = dock?.parentElement;
-      const history = dock?.querySelector(".ink-study__history-toggle"), undo = dock?.querySelector(".ink-study__undo-toggle");
+      const history = dock?.querySelector(".ink-study__history-toggle"), group = dock?.querySelector(".ink-study__group-toggle"),
+        undo = dock?.querySelector(".ink-study__undo-toggle"), settings = dock?.querySelector(".ink-study__settings-toggle");
       if (!(dock instanceof HTMLElement) || drawer === null || drawer === undefined || history === null || history === undefined
-          || undo === null || undo === undefined) throw new Error("缺少分裂按钮的真实几何");
+          || group === null || group === undefined || undo === null || undo === undefined || settings === null || settings === undefined) throw new Error("缺少分裂按钮的真实几何");
       const read = (at: number): SplitFrame => ({ at, panelTop: drawer.getBoundingClientRect().top,
         dockBottom: dock.getBoundingClientRect().bottom, historyBottom: history.getBoundingClientRect().bottom,
-        undoBottom: undo.getBoundingClientRect().bottom, gap: undo.getBoundingClientRect().left - history.getBoundingClientRect().right });
+        groupBottom: group.getBoundingClientRect().bottom, undoBottom: undo.getBoundingClientRect().bottom, settingsBottom: settings.getBoundingClientRect().bottom,
+        gap: group.getBoundingClientRect().left - history.getBoundingClientRect().right });
       const frames: SplitFrame[] = [read(0)];
       let raf = 0;
       const timeout = window.setTimeout(() => { observer.disconnect(); cancelAnimationFrame(raf); reject(new Error("按钮分裂/合回未开始")); }, timeoutMs);
@@ -2063,7 +2065,9 @@ test("历史与撤销面板连接三个按钮并随共同箭头完整滑出，�
     for (const [index, frame] of frames.entries()) {
       expect(Math.abs(frame.panelTop - frame.dockBottom)).toBeLessThan(1);
       expect(Math.abs(frame.panelTop - frame.historyBottom)).toBeLessThan(1);
+      expect(Math.abs(frame.panelTop - frame.groupBottom)).toBeLessThan(1);
       expect(Math.abs(frame.panelTop - frame.undoBottom)).toBeLessThan(1);
+      expect(Math.abs(frame.panelTop - frame.settingsBottom)).toBeLessThan(1);
       const previous = frames[index - 1];
       if (previous === undefined) continue;
       const change = frame.gap - previous.gap;
@@ -2091,7 +2095,7 @@ test("历史与撤销面板连接三个按钮并随共同箭头完整滑出，�
     await page.mouse.move(0, 0);
     await expect(dock).toHaveCSS("width", "40px");
     const split = await sampleSplit(true);
-    await expect(dock).toHaveCSS("width", "262px");
+    await expect(dock).toHaveCSS("width", "336px");
     const connection = await dock.evaluate((element, kind) => {
       const panel = element.parentElement?.querySelector(kind === "history" ? "#ink-search-history" : "#ink-undo-history");
       const history = element.querySelector(".ink-study__history-toggle"), undo = element.querySelector(".ink-study__undo-toggle");

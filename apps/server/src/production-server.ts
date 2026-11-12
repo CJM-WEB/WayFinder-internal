@@ -27,6 +27,12 @@ import { createAbsoluteRunDeadline } from "./orchestrator/absolute-run-deadline.
 import { registerAccountRoutes } from "./routes/account.js";
 import { registerWorkspaceRoutes } from "./routes/workspace.js";
 import { registerAccountKeyRoutes } from "./routes/account-keys.js";
+import { registerProfileRoutes } from "./routes/profile.js";
+import { registerGroupRoutes } from "./routes/groups.js";
+import { registerGroupWorkspaceRoutes } from "./routes/group-workspace.js";
+import { registerGroupSyncRoutes } from "./routes/group-sync.js";
+import { GROUP_SEARCH_TARGET_HEADER } from "@wayfinder/contracts";
+import { GroupAccessError } from "./groups/errors.js";
 
 export type ProductionBaseProviders = Readonly<{
   searchProvider: SearchProvider;
@@ -42,7 +48,7 @@ export type BuildProductionServerInput = Readonly<{
   /** 仅作为确定性测试接缝，验证不同请求实际解析出的 Key；没有生产环境开关。 */
   providerFactory?: (keys: EffectiveProviderKeys, beforeSearchAttempt: (signal: AbortSignal) => Promise<void>) => ProductionBaseProviders;
   /** 仅由显式启动工厂提供；未配置时账号路由失败闭合，不隐式连接数据库。 */
-  accounts?: Readonly<{ auth: AccountRuntime["auth"]; database: Pick<AccountRuntime["database"], "close">; workspace?: AccountRuntime["workspace"]; keys?: AccountRuntime["keys"] }>;
+  accounts?: Readonly<{ auth: AccountRuntime["auth"]; database: Pick<AccountRuntime["database"], "close">; workspace?: AccountRuntime["workspace"]; keys?: AccountRuntime["keys"]; profile?: AccountRuntime["profile"]; groups?: AccountRuntime["groups"]; groupWorkspace?: AccountRuntime["groupWorkspace"]; groupSync?: AccountRuntime["groupSync"]; groupSearch?: AccountRuntime["groupSearch"] }>;
 }>;
 
 function createBaseProviders(
@@ -77,6 +83,14 @@ export async function buildProductionServer(
   const server = buildServer({ trustLocalProxy: true });
 
   registerAccountRoutes(server, { auth: input.accounts?.auth ?? null, publicOrigin: input.config.publicOrigin });
+  registerProfileRoutes(server, { auth: input.accounts?.auth ?? null, storage: input.accounts?.profile ?? null,
+    publicOrigin: input.config.publicOrigin, sync: input.accounts?.groupSync ?? null });
+  registerGroupRoutes(server, { auth: input.accounts?.auth ?? null, storage: input.accounts?.groups ?? null,
+    publicOrigin: input.config.publicOrigin, sync: input.accounts?.groupSync ?? null });
+  registerGroupWorkspaceRoutes(server, { auth: input.accounts?.auth ?? null, storage: input.accounts?.groupWorkspace ?? null,
+    publicOrigin: input.config.publicOrigin, sync: input.accounts?.groupSync ?? null });
+  registerGroupSyncRoutes(server, { auth: input.accounts?.auth ?? null, sync: input.accounts?.groupSync ?? null,
+    publicOrigin: input.config.publicOrigin });
   registerWorkspaceRoutes(server, { auth: input.accounts?.auth ?? null, storage: input.accounts?.workspace ?? null,
     publicOrigin: input.config.publicOrigin });
   registerAccountKeyRoutes(server, { auth: input.accounts?.auth ?? null, storage: input.accounts?.keys ?? null,
@@ -99,7 +113,14 @@ export async function buildProductionServer(
       try {
         const scope = await prepareSearchCredentialScope(request, input.config, runScope.signal,
           input.accounts?.auth ?? null, runScope.deadlineAt, input.accounts?.keys ?? null, runScope.requirePositiveRemainingMs);
-        const beforeSearchAttempt = (signal: AbortSignal) => scope.assertService("serpapi", signal);
+        if (request.headers[GROUP_SEARCH_TARGET_HEADER] !== undefined && input.accounts?.groupSearch === undefined) throw new GroupAccessError("GROUP_UNAVAILABLE");
+        const groupSearch = await input.accounts?.groupSearch?.prepare(request, runScope.signal, runScope.deadlineAt, runScope.requirePositiveRemainingMs) ?? null;
+        // 每种凭据来源都独立核验组发起者；组资格不会借用创建者的云Key或作者体验资格。
+        const assertService = async (service: "deepseek" | "serpapi", signal: AbortSignal): Promise<void> => {
+          await groupSearch?.assertActive(signal);
+          await scope.assertService(service, signal);
+        };
+        const beforeSearchAttempt = (signal: AbortSignal) => assertService("serpapi", signal);
         const base = input.providerFactory?.(scope.keys, beforeSearchAttempt) ?? input.baseProviders
           ?? createBaseProviders(input.config, scope.keys, beforeSearchAttempt);
         connectionSignal.throwIfAborted();
@@ -108,16 +129,16 @@ export async function buildProductionServer(
           searchProvider: {
             id: base.searchProvider.id, capabilities: [...base.searchProvider.capabilities],
             search: async (searchRequest, signal) => {
-              await scope.assertService("serpapi", signal);
+              await assertService("serpapi", signal);
               const result = await base.searchProvider.search(searchRequest, signal);
-              await scope.assertService("serpapi", signal);
+              await assertService("serpapi", signal);
               return result;
             },
           },
           llmProvider: {
             id: base.llmProvider.id,
             structured: (structuredInput, options) => callAuthorizedLLM(
-              base.llmProvider, structuredInput, options, signal => scope.assertService("deepseek", signal),
+              base.llmProvider, structuredInput, options, signal => assertService("deepseek", signal),
             ),
           },
         };
@@ -133,9 +154,9 @@ export async function buildProductionServer(
           searchProvider: {
             id: cachedSearch.id, capabilities: [...cachedSearch.capabilities],
             search: async (searchRequest: Parameters<SearchProvider["search"]>[0], signal: AbortSignal) => {
-              await scope.assertService("serpapi", signal);
+              await assertService("serpapi", signal);
               const result = await cachedSearch.search(searchRequest, signal);
-              await scope.assertService("serpapi", signal);
+              await assertService("serpapi", signal);
               return result;
             },
           },
@@ -153,7 +174,10 @@ export async function buildProductionServer(
           ...(runLogSink === undefined ? {} : { runLogSink }),
         });
         return searchInput => handle({
-          ...searchInput, signal: AbortSignal.any([searchInput.signal, scope.signal]),
+          ...searchInput, input: groupSearch?.input ?? searchInput.input,
+          signal: AbortSignal.any([searchInput.signal, scope.signal, ...(groupSearch === null ? [] : [groupSearch.signal])]),
+          emit: payload => searchInput.emit(groupSearch !== null && payload.type === "complete"
+            ? { ...payload, data: { ...payload.data, groupSearchReceipt: groupSearch.receipt(payload.data.result) } } : payload),
         });
       } catch (error: unknown) { runScope.dispose(); throw error; }
     } },

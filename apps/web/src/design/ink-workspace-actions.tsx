@@ -1,6 +1,6 @@
 /**
  * 模块职责：为既有节点/资源/关系编辑提供右键菜单和轻量表单，不复制编辑或搜索实现。
- * 事务边界：提交时重新读取当前图；草图、换图和失效目标不写入，布局与内容合为一次撤销步骤。
+ * 事务边界：小组表单保留打开时版本，个人表单读取最新图；草图、换组和失效目标不写入。
  */
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { useStore } from "zustand";
@@ -12,7 +12,9 @@ import { getMessages } from "../i18n/messages.js";
 import { researchStore } from "../api/research.js";
 import { addNode, updateNode, deleteNode, addResource, updateResource, deleteResource, moveResource, moveNode,
   deleteEdge, updateEdge } from "../stores/workspace-edits.js";
-import { createEmptyGraph, workspaceStore } from "../stores/workspace-store.js";
+import { createEmptyGraph } from "../stores/workspace-store.js";
+import { activeWorkspaceStore as workspaceStore, workspaceContext, workspaceContextStore, type CapturedWorkspaceEdit } from "../stores/workspace-context.js";
+import { groupSearch } from "../api/group-search.js";
 import { useInkPresence } from "./ink-presence.js";
 import { InkNotice } from "./ink-notice.js";
 import "./ink-workspace.css";
@@ -23,6 +25,7 @@ export type InkActionTarget = (GraphContextRequest | Readonly<{
 type Dialog = Readonly<{
   kind: "node.add" | "node.edit" | "resource.add" | "resource.edit" | "graph.search";
   owner: InkActionTarget; title: string; description: string; url: string; summary: string; whySelected: string;
+  capture: CapturedWorkspaceEdit | null; contextKey: string;
 }>;
 type Props = Readonly<{
   target: InkActionTarget | null; language: SearchLanguage; enabled: boolean; allowCreate: boolean;
@@ -52,6 +55,11 @@ export default function InkWorkspaceActions({ target, language, enabled, allowCr
   const documents = useStore(workspaceStore, state => state.documents);
   const graph = documents.find(document => document.id === currentId);
   const researching = useStore(researchStore, state => state.preview?.status === "searching");
+  const groupResearching = useStore(groupSearch.store, state => state.preview?.status === "searching");
+  const contextKey = useStore(workspaceContextStore, state => state.contextKey);
+  const groupMode = useStore(workspaceContextStore, state => state.kind === "group");
+  const contextWritable = useStore(workspaceContextStore, state => state.writable);
+  const saving = useStore(workspaceContextStore, state => state.busy || state.failedAction !== null);
   const [dialog, setDialog] = useState<Dialog | null>(null);
   const [fields, setFields] = useState({ title: "", description: "", url: "", summary: "", whySelected: "" });
   const menu = useInkPresence(target);
@@ -62,18 +70,18 @@ export default function InkWorkspaceActions({ target, language, enabled, allowCr
   const node = held !== null && "nodeId" in held ? graph?.nodes.find(item => item.id === held.nodeId) : undefined;
   const resource = held?.kind === "resource" ? node?.resources.find(item => item.id === held.resourceId) : undefined;
   const edge = held?.kind === "edge" ? graph?.edges.find(item => item.id === held.edgeId) : undefined;
-  const writable = enabled && held?.graphId === currentId && graph !== undefined;
+  const writable = enabled && !saving && (!groupMode || contextWritable) && held?.graphId === currentId && graph !== undefined;
   const nodeEngine = graph === undefined ? null : resolveSearchEngine(graph.language, node?.engine ?? graph.engine);
 
   useEffect(() => {
     if (!active) { onClose(); setDialog(null); edit.clearProblem(); }
-    if (dialog !== null && dialog.owner.graphId !== currentId) setDialog(null);
-  }, [active, currentId, dialog?.owner.graphId, onClose, edit.clearProblem]);
+    if (dialog !== null && (dialog.owner.graphId !== currentId || dialog.contextKey !== contextKey)) setDialog(null);
+  }, [active, currentId, contextKey, dialog?.owner.graphId, dialog?.contextKey, onClose, edit.clearProblem]);
   useEffect(() => { if (target === null && dialog === null) edit.clearProblem(); }, [target, dialog, edit.clearProblem]);
   useEffect(() => {
     if (dialog?.kind !== "graph.search" || !interactive) return;
     // 关闭主题表单撤销仍待配置检查的意图，不能在迟到成功后偷偷启动搜索。
-    return () => researchStore.getState().cancelPending();
+    return () => workspaceContext.cancelPendingResearch();
   }, [dialog, interactive]);
 
   useLayoutEffect(() => {
@@ -106,7 +114,8 @@ export default function InkWorkspaceActions({ target, language, enabled, allowCr
     return () => { document.removeEventListener("pointerdown", outside); document.removeEventListener("keydown", escape); };
   }, [menu.open, form.open, onClose, interactive]);
 
-  const commit = (owner: InkActionTarget, operation: (document: EditableGraph) => EditableGraph, preserveLayout = false): boolean => edit.commit(document => {
+  const commit = (owner: InkActionTarget, operation: (document: EditableGraph) => EditableGraph, preserveLayout = false,
+    capture = edit.captureEdit()): Promise<boolean> => edit.commitCaptured(capture, document => {
     if (!enabled || workspaceStore.getState().currentId !== owner.graphId || document.id !== owner.graphId) throw new Error("编辑目标已失效");
     assertTargetExists(document, owner);
     return operation(preserveLayout ? withMeasuredPositions(document, owner) : document);
@@ -116,23 +125,42 @@ export default function InkWorkspaceActions({ target, language, enabled, allowCr
     const next: Dialog = { kind, owner: held, title: kind === "node.add" || kind === "graph.search" ? ""
       : kind === "resource.edit" ? resource?.title ?? "" : node?.title ?? "",
       description: kind === "node.add" ? "" : node?.description ?? "", url: kind === "resource.edit" ? resource?.url ?? "" : "",
-      summary: resource?.summary ?? "", whySelected: resource?.whySelected ?? "" };
+      summary: resource?.summary ?? "", whySelected: resource?.whySelected ?? "", capture: edit.captureEdit(), contextKey };
     setFields(next); setDialog(next); onClose();
   };
   const runAction = (operation: (document: EditableGraph) => EditableGraph, preserveLayout = false): void => {
-    if (held !== null && commit(held, operation, preserveLayout)) onClose();
+    if (held !== null) void commit(held, operation, preserveLayout).then(success => { if (success) onClose(); });
   };
   const startResearch = (nodeId?: string): void => {
-    if (!writable || graph === undefined || researching) return;
+    if (!writable || graph === undefined || (groupMode ? groupResearching : researching)) return;
     if (nodeId === undefined && !graph.query.trim()) { openDialog("graph.search"); return; }
-    onClose(); void researchStore.getState().start(graph.id, nodeId);
+    onClose(); void workspaceContext.startResearch(graph.id, nodeId).catch(() => {});
   };
-  const save = (event: FormEvent): void => {
+  const save = async (event: FormEvent): Promise<void> => {
     event.preventDefault();
-    if (dialog === null || !interactive) return;
+    const latestContext = workspaceContextStore.getState();
+    if (dialog === null || !interactive || saving || dialog.contextKey !== latestContext.contextKey
+      || latestContext.kind === "group" && (!latestContext.writable || latestContext.busy || latestContext.failedAction !== null)) return;
     const owner = dialog.owner;
     let success = false;
     if (dialog.kind === "node.add") {
+      if (groupMode) {
+        // 空组只发一次包含新节点的create；不能先建立空图再用尚未确认的客户端ID编辑。
+        const id = crypto.randomUUID();
+        const add = (base: EditableGraph): EditableGraph => {
+          let next = addNode(base, fields.title.trim(), fields.description, id);
+          if (owner.kind === "pane") next = moveNode(next, id, owner.flowPoint);
+          return next;
+        };
+        if (dialog.capture === null && owner.graphId === null && allowCreate) {
+          try {
+            const newId = await workspaceContext.createGraph(add(createEmptyGraph(crypto.randomUUID(), messages.editor.manualGraphTitle, language)));
+            if (workspaceContextStore.getState().contextKey === dialog.contextKey && workspaceStore.getState().currentId === newId) {
+              workspaceStore.getState().selectNode(id); success = true;
+            }
+          } catch { /* 失败动作及原ID由上下文保留，表单草稿继续显示。 */ }
+        } else success = await commit(owner, add, true, dialog.capture);
+      } else {
       success = edit.execute(() => {
         const state = workspaceStore.getState();
         if (!(enabled || allowCreate) || state.currentId !== owner.graphId) throw new Error("编辑目标已失效");
@@ -146,21 +174,22 @@ export default function InkWorkspaceActions({ target, language, enabled, allowCr
         if (existing === undefined) state.addGraph(base);
         state.replaceGraph(next); state.selectNode(id);
       });
+      }
     } else if (dialog.kind === "graph.search") {
       if (enabled && graph?.id === owner.graphId && fields.title.trim()) {
         const submitted = dialog;
         // 缺少凭据时保留人工主题；真正开始后才关闭仍属于本次提交的表单。
-        void researchStore.getState().start(graph.id, undefined, fields.title.trim(), () => {
+        void workspaceContext.startResearch(graph.id, undefined, fields.title.trim(), () => {
           setDialog(current => current === submitted ? null : current);
-        });
+        }).catch(() => {});
       }
     } else if ("nodeId" in owner) {
       const nodeId = owner.nodeId;
-      success = commit(owner, document => dialog.kind === "node.edit"
+      success = await commit(owner, document => dialog.kind === "node.edit"
         ? updateNode(document, nodeId, { title: fields.title.trim(), description: fields.description })
         : dialog.kind === "resource.add" ? addResource(document, nodeId, fields.url)
           : owner.kind === "resource" ? updateResource(document, nodeId, owner.resourceId,
-            { title: fields.title.trim(), url: fields.url, summary: fields.summary, whySelected: fields.whySelected }) : document);
+            { title: fields.title.trim(), url: fields.url, summary: fields.summary, whySelected: fields.whySelected }) : document, false, dialog.capture);
     }
     if (success) setDialog(null);
   };
@@ -196,8 +225,8 @@ export default function InkWorkspaceActions({ target, language, enabled, allowCr
         buttons[next]?.focus();
       }}>
       {held.kind === "pane" ? <>
-        {option(messages.editor.addNode, () => openDialog("node.add"), !(writable || allowCreate))}
-        {option(messages.research.startGraph, () => startResearch(), !writable || researching)}
+        {option(messages.editor.addNode, () => openDialog("node.add"), !(writable || allowCreate && !saving && (!groupMode || contextWritable)))}
+        {option(messages.research.startGraph, () => startResearch(), !writable || (groupMode ? groupResearching : researching))}
         {graph === undefined ? null : <><div className="ink-workspace-menu__label">{messages.searchEngine.label}</div>
           {SearchEngineSchema.options.map(engine => <div key={engine}>{option(messages.searchEngine.labels[engine],
             () => runAction(document => ({ ...document, engine, updatedAt: new Date().toISOString() })), !writable,
@@ -205,7 +234,7 @@ export default function InkWorkspaceActions({ target, language, enabled, allowCr
       </> : held.kind === "node" ? <>
         {option(messages.editor.editNode, () => openDialog("node.edit"), !writable || node === undefined)}
         {option(messages.editor.addResource, () => openDialog("resource.add"), !writable || node === undefined)}
-        {option(messages.research.startNode, () => startResearch(held.nodeId), !writable || researching || node === undefined)}
+        {option(messages.research.startNode, () => startResearch(held.nodeId), !writable || (groupMode ? groupResearching : researching) || node === undefined)}
         <div className="ink-workspace-menu__label">{messages.searchEngine.nodeLabel}</div>
         {SearchEngineSchema.options.map(engine => <div key={engine}>{option(messages.searchEngine.labels[engine], () => runAction(document => ({
           ...document, updatedAt: new Date().toISOString(), nodes: document.nodes.map(item => item.id === held.nodeId ? { ...item, engine } : item),
@@ -238,7 +267,7 @@ export default function InkWorkspaceActions({ target, language, enabled, allowCr
       data-open={interactive && form.open} inert={!interactive || !form.open} aria-hidden={!interactive || !form.open} data-ink-overlay data-ink-control
       onKeyDown={event => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); setDialog(null); onClose(); } }}>
       <header><h2>{formTitle}</h2><button className="ink-workspace-close" aria-label={messages.inkStudy.closePanel} onClick={() => setDialog(null)}>×</button></header>
-      <form onSubmit={save}>
+      <form onSubmit={save} data-workspace-context={groupMode ? "group" : "personal"}>
         {form.value.kind !== "resource.add" ? <label>{form.value.kind === "graph.search" ? messages.research.topicLabel
           : form.value.kind === "resource.edit" ? messages.editor.resourceTitle : messages.editor.nodeTitle}
           <input maxLength={form.value.kind === "graph.search" ? 2000 : undefined} value={fields.title} onChange={event => setFields(previous => ({ ...previous, title: event.target.value }))} /></label> : null}
@@ -252,7 +281,7 @@ export default function InkWorkspaceActions({ target, language, enabled, allowCr
         </> : null}
         {form.value.kind === "graph.search" ? <p className="ink-workspace-hint">{messages.research.topicHint}</p> : null}
         <footer><button type="button" className="ink-study__pill ink-workspace-secondary" onClick={() => setDialog(null)}>{messages.editor.cancel}</button>
-          <button type="submit" className="ink-study__pill" disabled={invalid}>{form.value.kind === "graph.search" ? messages.research.startGraph
+          <button type="submit" className="ink-study__pill" data-workspace-save disabled={invalid || saving || groupMode && !contextWritable}>{form.value.kind === "graph.search" ? messages.research.startGraph
             : form.value.kind === "node.add" ? messages.editor.addNode : form.value.kind === "node.edit" ? messages.editor.saveNode
               : form.value.kind === "resource.add" ? messages.editor.addResource : messages.editor.saveResource}</button></footer>
       </form>
