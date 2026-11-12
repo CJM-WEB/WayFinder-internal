@@ -5,6 +5,7 @@
  */
 import type { EditableNode, EditableResource, Resource, SearchLanguage } from "@wayfinder/contracts";
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useStore } from "zustand";
 
 import { buildResourcePanelModel, selectVisibleResources, type ResourcePanelModel } from "../components/ResourcePanel/ResourcePanel.js";
 import { useGraphEdit } from "../components/Workspace/use-graph-edit.js";
@@ -12,7 +13,7 @@ import { getMessages } from "../i18n/messages.js";
 import { requestSafeUrlOpen, resolveSafeHttpUrl } from "../lib/url.js";
 import type { GraphStoreNode } from "../stores/graph-store.js";
 import { moveResource } from "../stores/workspace-edits.js";
-import { workspaceStore } from "../stores/workspace-store.js";
+import { activeWorkspaceStore as workspaceStore, workspaceContextStore, type CapturedWorkspaceEdit } from "../stores/workspace-context.js";
 import { InkNotice } from "./ink-notice.js";
 
 import "./ink-resources.css";
@@ -132,13 +133,14 @@ function ResourceStrip({ resource, language, index, count, editable, onResourceC
 }
 
 /** 以图与节点的联合身份重建展开状态，避免两张图重用同一业务 nodeId 时串内容。 */
-function ResourceSelection({ model, language, reduced, onClose, onResourceContext, onMoveResource }: {
+function ResourceSelection({ model, language, reduced, onClose, onResourceContext, onMoveResource, onMoveStart }: {
   model: SelectedModel;
   language: SearchLanguage;
   reduced: boolean;
   onClose: () => void;
   onResourceContext: InkResourcesProps["onResourceContext"];
   onMoveResource: ((sourceId: string, targetId: string) => void) | undefined;
+  onMoveStart: () => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const dragged = useRef<string | null>(null);
@@ -171,6 +173,7 @@ function ResourceSelection({ model, language, reduced, onClose, onResourceContex
         }
         // 本面板私有引用作为排序身份，不接收外部 DataTransfer（拖放数据）伪造的资源 ID。
         dragged.current = sourceId;
+        onMoveStart();
         suppressDragClick.current = true;
         event.dataTransfer.effectAllowed = "move";
         event.dataTransfer.setData("text/plain", sourceId);
@@ -200,8 +203,12 @@ function ResourceSelection({ model, language, reduced, onClose, onResourceContex
 export default function InkResources({ graphId, node, language, visible, editable = false, onClose, onResourceContext }: InkResourcesProps) {
   const reduced = useReducedMotion();
   const edit = useGraphEdit(graphId, language);
+  const contextKey = useStore(workspaceContextStore, state => state.contextKey);
+  const contextWritable = useStore(workspaceContextStore, state => state.kind === "personal" || state.writable && !state.busy && state.failedAction === null);
+  const moveCapture = useRef<CapturedWorkspaceEdit | null>(null);
   const requested = useMemo<Selection | null>(() => !visible || graphId === null || node === null ? null
-    : { owner: JSON.stringify([graphId, node.id]), node }, [visible, graphId, node]);
+    : { owner: JSON.stringify([contextKey, graphId, node.id]), node }, [visible, contextKey, graphId, node]);
+  useEffect(() => { moveCapture.current = null; }, [contextKey, graphId, node?.id]);
   const desired = useRef(requested);
   const panel = useRef<HTMLElement>(null);
   const [display, setDisplay] = useState<Display | null>(() => requested === null ? null : { ...requested, phase: reduced ? "visible" : "preparing" });
@@ -252,10 +259,12 @@ export default function InkResources({ graphId, node, language, visible, editabl
       if (event.key === "Escape" && interactive) { event.preventDefault(); event.stopPropagation(); onClose(); }
     }}>
     <div className="ink-resources__scroll"><ResourceSelection key={display.owner} model={model} language={language} reduced={reduced}
-      onMoveResource={!interactive || !editable ? undefined : (sourceId, targetId) => {
-        // 完成拖拽时再读取当前图；切图或删除目标后的迟到释放不能改写旧记录。
+      onMoveStart={() => { moveCapture.current = edit.captureEdit(); }}
+      onMoveResource={!interactive || !editable || !contextWritable ? undefined : (sourceId, targetId) => {
+        // 保留拖动开始时的版本；同字段远端修改交给服务端冲突门禁，不能在drop时隐式重基线。
         if (workspaceStore.getState().currentId !== graphId) return;
-        edit.commit(graph => moveResource(graph, display.node.id, sourceId, targetId));
+        const capture = moveCapture.current; moveCapture.current = null;
+        void edit.commitCaptured(capture, graph => moveResource(graph, display.node.id, sourceId, targetId));
       }}
       onClose={onClose} onResourceContext={onResourceContext} /></div>
   </aside></>;

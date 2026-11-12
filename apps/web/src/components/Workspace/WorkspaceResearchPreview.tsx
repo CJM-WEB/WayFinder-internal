@@ -20,6 +20,7 @@ export type ResearchPreviewViewProps = Readonly<{
   onDismiss: () => void;
   onApply: (mode: "append" | "replace") => void;
   disabled?: boolean;
+  applyDisabled?: boolean;
   idPrefix?: string;
 }>;
 
@@ -28,7 +29,7 @@ const ignoreSelection = (): void => {};
 
 /** 纯呈现入口共享原图/资源模型；操作由调用方绑定原 store，不复制搜索、校验或应用流程。 */
 export function ResearchPreviewView({ language, preview, selectedNodeId, onSelectNode, onCancel, onDismiss, onApply,
-  disabled = false, idPrefix = "" }: ResearchPreviewViewProps) {
+  disabled = false, applyDisabled = false, idPrefix = "" }: ResearchPreviewViewProps) {
   const document = useMemo(() => {
     if (preview.result === null) return null;
     const converted = fromResultGraph(preview.result, preview.graphId);
@@ -54,8 +55,8 @@ export function ResearchPreviewView({ language, preview, selectedNodeId, onSelec
       <p>{preview.nodeId === null ? messages.fullHint : messages.nodeHint}</p>
       <div className="workspace-edit-actions">
         <button type="button" disabled={disabled} onClick={() => { if (!disabled) onDismiss(); }}>{messages.dismiss}</button>
-        {preview.nodeId === null ? null : <button type="button" disabled={disabled} onClick={() => { if (!disabled) onApply("append"); }}>{messages.append}</button>}
-        <button type="button" disabled={disabled} onClick={() => { if (!disabled) onApply("replace"); }}>{messages.replace}</button>
+        {preview.nodeId === null ? null : <button type="button" disabled={disabled || applyDisabled} onClick={() => { if (!disabled && !applyDisabled) onApply("append"); }}>{messages.append}</button>}
+        <button type="button" disabled={disabled || applyDisabled} onClick={() => { if (!disabled && !applyDisabled) onApply("replace"); }}>{messages.replace}</button>
       </div>
       {document === null ? null : <div className={`workspace-preview-content${preview.nodeId === null ? " workspace-preview-content--graph" : ""}`}>
         {preview.nodeId === null ? <GraphView

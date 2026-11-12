@@ -84,6 +84,13 @@ describe("小组实时生命周期", () => {
     attempts[0]!.event(syncFixture()); await sync.manage(input); expect(manage).toHaveBeenCalledWith("user-fixture", input, expect.any(AbortSignal), "connection-fixture");
     sync.setNetworkOnline(false); await expect(sync.manage(input)).rejects.toThrow("GROUP_OFFLINE"); expect(manage).toHaveBeenCalledTimes(1); sync.disconnect();
   });
+  it("已知浏览器离线时进入组零连接；恢复网络须先取得新快照", async () => {
+    const { sync, attempts, api } = setup(); sync.setNetworkOnline(false); sync.connect("user-fixture", "group-fixture");
+    expect(attempts).toHaveLength(0); expect(sync.store.getState().state).toBe("offline");
+    await expect(sync.write(action)).rejects.toThrow("GROUP_OFFLINE"); expect(api.write).not.toHaveBeenCalled();
+    sync.setNetworkOnline(true); expect(attempts).toHaveLength(1); expect(sync.store.getState().state).not.toBe("online");
+    attempts[0]!.event(syncFixture()); expect(sync.store.getState().state).toBe("online"); sync.disconnect();
+  });
   it("换号和撤销资格清空旧数据，迟到回调不能恢复权限", () => {
     const { sync, attempts } = setup(); sync.connect("user-fixture", "group-fixture"); attempts[0]!.event(syncFixture());
     sync.connect("other-user", "other-group"); attempts[0]!.event(syncFixture(1, 2)); expect(sync.store.getState().snapshot).toBeNull();

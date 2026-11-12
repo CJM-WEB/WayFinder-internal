@@ -23,7 +23,14 @@ import type { GraphNodeData } from "../components/Graph/graph-layout.js";
 import type { GraphContextRequest, GraphEditProblem } from "../components/Graph/GraphView.js";
 import type { InkActionTarget } from "./ink-workspace-actions.js";
 import { InkNotice } from "./ink-notice.js";
-import { selectCurrentGraph, workspaceStore } from "../stores/workspace-store.js";
+import { selectCurrentGraph, createEmptyGraph } from "../stores/workspace-store.js";
+import { activeWorkspaceStore as workspaceStore, workspaceContextStore, workspaceContext, type CapturedWorkspaceEdit } from "../stores/workspace-context.js";
+import { groupSearch } from "../api/group-search.js";
+import { groupSync } from "../stores/group-sync.js";
+import { accountKeysStore } from "../stores/account-keys.js";
+import { prepareSearchCredentials } from "../api/credentials.js";
+import { GroupRequestError } from "../api/groups.js";
+import { getGroupMessages, groupErrorMessage, groupConnectionLabel } from "../i18n/group-messages.js";
 import { moveNode } from "../stores/workspace-edits.js";
 import { workspacePersistenceStore } from "../stores/workspace-persistence.js";
 import "./ink-study.css";
@@ -65,10 +72,16 @@ export default function InkApp() {
   const latestSubmission = useRef(0);
   const latestSearchIntent = useRef(0);
   const ownedRun = useRef<string | null>(null);
-  const searchCoordinator = useRef<StreamingSearch | null>(null);
+  const searchCoordinator = useRef<Pick<StreamingSearch, "cancel" | "cancelPending"> | null>(null);
   const pendingCredentials = useRef<AbortController | null>(null);
   const cancelResearch = useRef<(() => void) | null>(null);
-  const runtime = useStore(graphStore, state => state);
+  const workspaceContextState = useStore(workspaceContextStore, state => state);
+  const groupSearchState = useStore(groupSearch.store, state => state);
+  const groupConnection = useStore(groupSync.store, state => state.state);
+  const groupMode = workspaceContextState.kind === "group";
+  const runtimeStore = groupMode ? groupSearch.runStore : graphStore;
+  const runtime = useStore(runtimeStore, state => state);
+  const dragCapture = useRef<CapturedWorkspaceEdit | null>(null);
   const currentDocument = useStore(workspaceStore, selectCurrentGraph);
   const documents = useStore(workspaceStore, state => state.documents);
   const selectedNodes = useStore(workspaceStore, state => state.selectedNodeIds);
@@ -94,6 +107,7 @@ export default function InkApp() {
   const entered = phase === "morphing" || phase === "ready";
   const ready = phase === "ready";
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [groupOpen, setGroupOpen] = useState(false);
   const [undoOpen, setUndoOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const credentialProblem = useStore(credentialSettingsStore, state => state.notice);
@@ -110,9 +124,12 @@ export default function InkApp() {
   // 界面语言即时切换；文档和请求的生成语言、已生成标题说明均保持原始内容。
   const renderLanguage = language;
   const messages = getMessages(renderLanguage);
-  const storageBlocked = persistence.status === "loading" || persistence.error === "load";
+  const storageBlocked = groupMode ? !workspaceContextState.writable || workspaceContextState.busy || workspaceContextState.failedAction !== null
+    : persistence.status === "loading" || persistence.error === "load";
   const engine = resolveSearchEngine(language, engineOverride);
-  const isCurrentRun = currentDocument !== null && runtime.activeRunId !== null && currentDocument.lastRunId === runtime.activeRunId;
+  const isCurrentRun = currentDocument !== null && runtime.activeRunId !== null && (groupMode
+    ? groupSearchState.autoApply && groupSearchState.preview?.graphId === currentDocument.id && groupSearchState.preview.runId === runtime.activeRunId
+    : currentDocument.lastRunId === runtime.activeRunId);
   // 完成图从持久文档恢复；未完成/已取消的真实草图仍取原运行，不能把草图伪装成已完成文档。
   const showsDraft = isCurrentRun && runtime.nodes.length > 0 &&
     (runtime.isSearching || (!runtime.hasCompleted && currentDocument.nodes.length === 0));
@@ -136,7 +153,7 @@ export default function InkApp() {
       (!(isCurrentRun && runtime.isSearching) && (showEmptyRecord || currentDocument.lastRunId === null || !isCurrentRun || runtime.hasCompleted))) ? "graph"
     : isCurrentRun && runtime.isSearching ? "loading" : "input";
   const acceptsInput = ready && searchState === "input";
-  const drawerOpen = historyOpen || undoOpen || settingsOpen;
+  const drawerOpen = historyOpen || groupOpen || undoOpen || settingsOpen;
   const movingGraph = labelTransfer?.graphId === currentDocument?.id && labelTransfer?.moving === true;
   const canEdit = ready && searchState === "graph" && !showsDraft && !pendingSearch &&
     !(isCurrentRun && runtime.isSearching) && !storageBlocked && !movingGraph && !drawerOpen && !researchOpen;
@@ -144,7 +161,7 @@ export default function InkApp() {
   const resourceNode = displayedNodes.find(node => node.id === displayedSelection) ?? null;
   const resourcesVisible = searchState === "graph" && !drawerOpen && !movingGraph && !researchOpen && resourceNode !== null;
   const closeResources = useCallback(() => {
-    if (showsDraft) graphStore.getState().selectNode(null);
+    if (showsDraft) runtimeStore.getState().selectNode(null);
     else workspaceStore.getState().selectNode(null);
   }, [showsDraft]);
   useEffect(() => {
@@ -167,7 +184,7 @@ export default function InkApp() {
   }, []);
   const graphContext = useCallback((request: GraphContextRequest): void => {
     if (request.kind !== "node") closeResources();
-    else if (showsDraft) graphStore.getState().selectNode(request.nodeId);
+    else if (showsDraft) runtimeStore.getState().selectNode(request.nodeId);
     else workspaceStore.getState().selectNode(request.nodeId);
     void showActions({ ...request, graphId: currentDocument?.id ?? null });
   }, [closeResources, showsDraft, currentDocument?.id, showActions]);
@@ -220,17 +237,41 @@ export default function InkApp() {
           ]);
           // 非法输入或 Direct 只改变反馈，不能取消之前已经确认的有效搜索意图。
           if (latestSearchIntent.current !== intent || credentialIntent.signal.aborted) return;
-          searchCoordinator.current = startWorkspaceSearch;
-          cancelResearch.current = () => researchStore.getState().cancel();
-          researchStore.getState().cancelPending();
-          await startWorkspaceSearch(input, { signal: credentialIntent.signal, onStart: runId => {
+          const started = (runId: string): void => {
             if (latestSearchIntent.current !== intent) return;
             pendingCredentials.current = null;
             researchStore.getState().cancel();
             loadingStartedAt.current = performance.now();
             setPendingSearch(false); setHasSearched(true); setShowEmptyRecord(false);
             ownedRun.current = runId; setAnimateRunId(runId);
-          } });
+          };
+          const context = workspaceContextStore.getState();
+          if (context.kind === "group") {
+            const key = context.contextKey, groupId = context.groupId;
+            if (groupId === null || !context.writable) throw new GroupRequestError("GROUP_OFFLINE");
+            searchCoordinator.current = groupSearch; cancelResearch.current = groupSearch.cancel;
+            const generations = accountKeysStore.getState().serviceGenerations;
+            const credentials = await prepareSearchCredentials(credentialIntent.signal);
+            const assertIntent = (): void => {
+              credentialIntent.signal.throwIfAborted();
+              if (latestSearchIntent.current !== intent || workspaceContextStore.getState().contextKey !== key) throw new GroupRequestError("GROUP_OFFLINE");
+              if ((["deepseek", "serpapi"] as const).some(service => credentials[service].source === "cloud" && generations[service] !== accountKeysStore.getState().serviceGenerations[service])) {
+                throw new CredentialsConfigurationError({ code: "CLOUD_KEY_REVOKED" });
+              }
+            };
+            assertIntent();
+            const id = await workspaceContext.createGraph({ ...createEmptyGraph(crypto.randomUUID(), input.query, input.language), query: input.query,
+              engine: resolveSearchEngine(input.language, input.engine) });
+            assertIntent();
+            const row = groupSync.store.getState().snapshot?.workspace.graphs.find(record => record.document.id === id && record.status === "active");
+            if (row === undefined) throw new GroupRequestError("GROUP_UNAVAILABLE");
+            await groupSearch.start({ groupId, graphId: id, expectedRevision: row.revision }, input, true,
+              { credentials, signal: credentialIntent.signal, onStart: started });
+          } else {
+            searchCoordinator.current = startWorkspaceSearch; cancelResearch.current = () => researchStore.getState().cancel();
+            researchStore.getState().cancelPending();
+            await startWorkspaceSearch(input, { signal: credentialIntent.signal, onStart: started });
+          }
         } finally {
           if (latestSearchIntent.current === intent) {
             setPendingSearch(false);
@@ -316,6 +357,22 @@ export default function InkApp() {
 
   /** 运行中只能暂存位置；完成文档已含真实节点后，再以同一 graphId/runId 承接坐标。 */
   useEffect(() => {
+    // 浏览器提示只提前禁写；恢复仍须认证快照，个人离线工作区不受此连接控制。
+    const offline = (): void => groupSync.setNetworkOnline(false);
+    const online = (): void => groupSync.setNetworkOnline(true);
+    window.addEventListener("offline", offline); window.addEventListener("online", online);
+    if (navigator.onLine) online(); else offline();
+    return () => { window.removeEventListener("offline", offline); window.removeEventListener("online", online); };
+  }, []);
+
+  useLayoutEffect(() => {
+    // 归属变化废弃界面意图，不能让同ID图、旧拖拽或迟到资格检查落到新上下文。
+    ++latestSubmission.current; ++latestSearchIntent.current; pendingCredentials.current?.abort(); pendingCredentials.current = null;
+    setPendingSearch(false); setDraftLayouts({}); dragCapture.current = null; closeActions(); setGraphProblem(null);
+    labelTransferRef.current = null; setLabelTransfer(null); setAnimateRunId(null); setFeedback(null);
+  }, [workspaceContextState.contextKey, closeActions]);
+
+  useEffect(() => {
     const remaining: Record<string, DraftLayout> = {};
     let changed = false;
     for (const [graphId, draft] of Object.entries(draftLayouts)) {
@@ -337,7 +394,13 @@ export default function InkApp() {
     const state = workspaceStore.getState();
     const document = state.documents.find(item => item.id === currentDocument.id);
     if (document === undefined) return;
-    if (document.nodes.some(node => node.id === nodeId)) state.replaceGraph(moveNode(document, nodeId, position));
+    if (document.nodes.some(node => node.id === nodeId)) {
+      if (workspaceContextStore.getState().kind === "group") {
+        const capture = dragCapture.current; dragCapture.current = null;
+        if (capture !== null) void workspaceContext.commitCaptured(capture, graph => moveNode(graph, nodeId, position))
+          .catch(() => { /* 待处理动作由上下文保存并提示，不能把网络／冲突异常留成未处理拒绝。 */ });
+      } else state.replaceGraph(moveNode(document, nodeId, position));
+    }
     else if (document.lastRunId !== null && document.lastRunId === runtime.activeRunId && runtime.nodes.some(node => node.id === nodeId)) {
       const runId = document.lastRunId;
       setDraftLayouts(previous => {
@@ -389,22 +452,34 @@ export default function InkApp() {
 
   const openHistory = useCallback((): void => {
     setOpenControl(null);
-    setUndoOpen(false); setSettingsOpen(false);
+    setGroupOpen(false); setUndoOpen(false); setSettingsOpen(false);
     closeActions();
     setHistoryOpen(true);
   }, [closeActions]);
+  const openGroup = useCallback((): void => {
+    setOpenControl(null); setHistoryOpen(false); setUndoOpen(false); setSettingsOpen(false); closeActions(); setGroupOpen(true);
+  }, [closeActions]);
+  const closeGroup = useCallback((restoreFocus: boolean): void => {
+    restoreSearchFocus.current = restoreFocus; setGroupOpen(false);
+  }, []);
   const openUndo = useCallback((): void => {
-    setOpenControl(null); setHistoryOpen(false); setSettingsOpen(false); closeActions(); setUndoOpen(true);
+    setOpenControl(null); setHistoryOpen(false); setGroupOpen(false); setSettingsOpen(false); closeActions(); setUndoOpen(true);
   }, [closeActions]);
   const closeUndo = useCallback((restoreFocus: boolean): void => {
     restoreSearchFocus.current = restoreFocus; setUndoOpen(false);
   }, []);
   const openSettings = useCallback((): void => {
-    setOpenControl(null); setHistoryOpen(false); setUndoOpen(false); closeActions(); setSettingsOpen(true);
+    setOpenControl(null); setHistoryOpen(false); setGroupOpen(false); setUndoOpen(false); closeActions(); setSettingsOpen(true);
   }, [closeActions]);
   const closeSettings = useCallback((restoreFocus: boolean): void => {
     restoreSearchFocus.current = restoreFocus; setSettingsOpen(false);
   }, []);
+  const groupLabels = getGroupMessages(renderLanguage);
+  const groupNotice = useMemo(() => !groupMode || groupOpen ? null : workspaceContextState.error === null && workspaceContextState.failedAction === null ? null : {
+    message: groupErrorMessage(workspaceContextState.error ?? "GROUP_UNAVAILABLE", renderLanguage),
+    action: <button className="ink-study__pill" type="button" onClick={openGroup}>{groupLabels.title}</button>,
+  }, [groupMode, groupOpen, workspaceContextState.error, workspaceContextState.failedAction, renderLanguage, openGroup]);
+
   const credentialNotice = useMemo(() => credentialProblem === null || settingsOpen || !entered || !ready ? null : {
     message: `${credentialProblem.service === undefined ? "" : credentialProblem.service === "deepseek" ? "DeepSeek: " : "SerpAPI: "}${messages.settings.problems[credentialProblem.code]}`,
     action: <button type="button" className="ink-study__pill" onClick={openSettings}>{messages.settings.open}</button>,
@@ -424,14 +499,14 @@ export default function InkApp() {
     ++latestSubmission.current;
     ++latestSearchIntent.current;
     pendingCredentials.current?.abort(); pendingCredentials.current = null;
-    if (ownedRun.current !== null && graphStore.getState().activeRunId === ownedRun.current) searchCoordinator.current?.cancel();
+    if (ownedRun.current !== null && runtimeStore.getState().activeRunId === ownedRun.current) searchCoordinator.current?.cancel();
     cancelResearch.current?.();
     ownedRun.current = null;
     setPendingSearch(false);
     setFeedback(null);
     setHasSearched(false);
     setAnimateRunId(null);
-    setUndoOpen(false); setSettingsOpen(false); closeActions();
+    setGroupOpen(false); setUndoOpen(false); setSettingsOpen(false); closeActions();
   };
 
   const stopSearch = (): void => {
@@ -442,7 +517,8 @@ export default function InkApp() {
   };
 
   const newSearch = (): void => {
-    if (!ready || storageBlocked) return;
+    if (!ready || (persistence.status === "loading" || persistence.error === "load")) return;
+    workspaceContext.leaveGroup();
     resetSearch();
     ++historySelectionIntent.current;
     setShowEmptyRecord(false);
@@ -452,29 +528,37 @@ export default function InkApp() {
     closeHistory(true);
   };
 
+  const newGroupSearch = (): void => {
+    if (!ready || storageBlocked || !groupMode) return;
+    resetSearch(); workspaceContext.selectGraph(null); setShowEmptyRecord(false); setDraftLayouts({});
+    if (searchInput.current !== null) searchInput.current.value = "";
+    closeGroup(true);
+  };
+
   const returnHome = (): void => {
     resetSearch();
     ++historySelectionIntent.current;
     restoreHomeFocus.current = true;
     restoreSearchFocus.current = false;
-    setHistoryOpen(false);
+    setHistoryOpen(false); setGroupOpen(false); workspaceContext.leaveGroup();
     setOpenControl(null);
     setPhase("returning");
   };
 
-  const restoreHistory = async (graphId: string): Promise<void> => {
-    if (storageBlocked) return;
-    const intent = ++historySelectionIntent.current;
+  const restoreHistory = async (graphId: string, group = false): Promise<void> => {
+    if (!group) workspaceContext.leaveGroup();
+    if (group ? !workspaceContextStore.getState().writable : persistence.status === "loading" || persistence.error === "load") return;
+    const intent = ++historySelectionIntent.current, key = workspaceContextStore.getState().contextKey;
     try {
       // 冷启动也先加载显示模块；失败时保留原图与原记录，不让 lazy 抛到整页。
       await import("./ink-graph.js");
-      if (historySelectionIntent.current !== intent) return;
+      if (historySelectionIntent.current !== intent || workspaceContextStore.getState().contextKey !== key) return;
       const document = workspaceStore.getState().documents.find(item => item.id === graphId);
       if (document === undefined) return;
       // 已在查看同一图时只合上历史，不重置入场时钟或提前揭示尚在生长的节点。
       if (workspaceStore.getState().currentId === graphId && !pendingSearch && searchState !== "input") {
         setFeedback(null);
-        closeHistory(true);
+        closeHistory(true); closeGroup(true);
         return;
       }
       // 选择历史撤销尚未发出的新查询；已经运行的旧图仍可在后台完成自己的保存。
@@ -487,11 +571,11 @@ export default function InkApp() {
       setAnimateRunId(null);
       setHasSearched(false);
       setFeedback(null);
-      closeHistory(true);
+      closeHistory(true); closeGroup(true);
     } catch {
-      if (historySelectionIntent.current !== intent) return;
+      if (historySelectionIntent.current !== intent || workspaceContextStore.getState().contextKey !== key) return;
       setFeedback("graph_failure");
-      closeHistory(true);
+      closeHistory(true); closeGroup(true);
     }
   };
 
@@ -565,7 +649,7 @@ export default function InkApp() {
       pendingCredentials.current?.abort(); pendingCredentials.current = null;
       ++historySelectionIntent.current;
       // 只取消本页发起且仍拥有的请求，沿用协调器的 AbortSignal 和迟到事件门禁。
-      if (ownedRun.current !== null && graphStore.getState().activeRunId === ownedRun.current) searchCoordinator.current?.cancel();
+      if (ownedRun.current !== null && runtimeStore.getState().activeRunId === ownedRun.current) searchCoordinator.current?.cancel();
     };
   }, [onTransfer]);
 
@@ -689,15 +773,15 @@ export default function InkApp() {
           data-returning={phase === "returning"} data-resuming={!(isCurrentRun && animateRunId === runtime.activeRunId)}
           data-ink-graph-id={currentDocument.id} data-ink-control>
           <Suspense fallback={null}>
-            <InkGraph key={currentDocument.id} graphId={currentDocument.id} nodes={displayedNodes} edges={displayedEdges} positions={displayedPositions}
+            <InkGraph key={`${workspaceContextState.contextKey}:${currentDocument.id}`} graphId={currentDocument.id} nodes={displayedNodes} edges={displayedEdges} positions={displayedPositions}
               presentationMode={showsDraft ? runtime.presentationMode ?? currentDocument.presentationMode : currentDocument.presentationMode}
-              language={renderLanguage} onScene={setInkScene} onMoveNode={moveDisplayedNode}
+              language={renderLanguage} onScene={setInkScene} onMoveNode={moveDisplayedNode} movable={!groupMode || !storageBlocked}
               selectedNodeId={displayedSelection}
-              onSelectNode={showsDraft ? graphStore.getState().selectNode : workspaceStore.getState().selectNode}
+              onSelectNode={showsDraft ? runtimeStore.getState().selectNode : workspaceStore.getState().selectNode}
               animate={isCurrentRun && animateRunId === runtime.activeRunId} active={searchState === "graph"}
               onPaneClick={closeResources}
               {...(canEdit && currentDocument !== null ? { editableGraphId: currentDocument.id } : {})}
-              onContextRequest={graphContext} onInteractionStart={closeActions} onEditProblem={setGraphProblem}
+              onContextRequest={graphContext} onInteractionStart={() => { closeActions(); dragCapture.current = !groupMode || currentDocument === null ? null : workspaceContext.captureEdit(currentDocument.id); }} onEditProblem={setGraphProblem}
               transferMoving={labelTransfer?.graphId === currentDocument.id && labelTransfer.moving}
               labelSnapshots={labelTransfer?.graphId === currentDocument.id ? labelTransfer.labels : EMPTY_LABELS} />
           </Suspense>
@@ -713,7 +797,11 @@ export default function InkApp() {
           suspended={settingsOpen} onClose={closeActions} />
           <InkResearchPreview language={renderLanguage} active={entered} suspended={drawerOpen} onVisibilityChange={setResearchOpen} />
         </Suspense> : null}
-        <InkNotice notice={credentialNotice ?? graphNotice} />
+        <InkNotice notice={groupNotice ?? credentialNotice ?? graphNotice} />
+        {!entered || !groupMode ? null : <div className="ink-group-status" data-ink-control data-ink-group-notice>
+          <span>{workspaceContextState.groupName ?? groupLabels.title} · {groupConnectionLabel(groupConnection, renderLanguage)}</span>
+          <button type="button" className="ink-study__pill" onClick={() => { workspaceContext.leaveGroup(); }}>{groupLabels.personal}</button>
+        </div>}
 
         <button type="button" className="ink-study__pill ink-study__back" onClick={returnHome}
           inert={!entered} aria-hidden={!entered} aria-label={messages.inkStudy.backHome}>
@@ -723,10 +811,11 @@ export default function InkApp() {
         </button>
 
         <InkSearchHistory open={historyOpen} available={ready} language={renderLanguage}
+          groupOpen={groupOpen} onOpenGroup={openGroup} onCloseGroup={closeGroup} onSelectGroupGraph={id => restoreHistory(id, true)} onNewGroupSearch={newGroupSearch}
           undoOpen={undoOpen} undoDisabled={storageBlocked || showsDraft || pendingSearch || movingGraph || researchOpen || (isCurrentRun && runtime.isSearching)}
           onOpenUndo={openUndo} onCloseUndo={closeUndo}
           settingsOpen={settingsOpen} onOpenSettings={openSettings} onCloseSettings={closeSettings}
-          onOpen={openHistory} onClose={closeHistory} onNewSearch={newSearch} onSelectGraph={restoreHistory} />
+          onOpen={openHistory} onClose={closeHistory} onNewSearch={newSearch} onSelectGraph={id => restoreHistory(id)} />
 
         {/* 披露面板使用普通按钮与自然 Tab 顺序，避免模拟系统下拉框或改变语言协议。 */}
         <div className="ink-study__language" ref={languageControl} data-ink-control

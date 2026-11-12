@@ -17,7 +17,7 @@ export function createGroupSync(api: GroupApi = groupApi, timing: Readonly<{
 }> = {}) {
   const heartbeatMs = timing.heartbeatMs ?? 6_000, leaseMs = timing.leaseMs ?? 35_000;
   const retryMs = timing.retryMs ?? 250, maxFailures = timing.maxFailures ?? 3, recoveryMs = timing.recoveryMs ?? 40_000;
-  let writableUntil = 0;
+  let writableUntil = 0, networkOnline = true;
   let epoch = 0, lifetime: AbortController | undefined, connection: AbortController | undefined;
   const store = createStore<GroupSyncState>()(() => ({ userId: null, groupId: null, state: "closed", snapshot: null,
     connectionId: null, error: null, lastReceipt: null }));
@@ -40,6 +40,7 @@ export function createGroupSync(api: GroupApi = groupApi, timing: Readonly<{
     // 同组手动重连只撤销写权限，不能经临时空身份误清已完成的搜索预览。
     stop(!sameContext); const current = epoch; lifetime = new AbortController(); const active = lifetime;
     store.setState({ userId, groupId, state: "connecting", snapshot: retained, error: null });
+    if (!networkOnline) { store.setState({ state: "offline", error: "GROUP_OFFLINE" }); return; }
     const run = async (): Promise<void> => {
       let failures = 0, failedAt: number | null = null;
       while (current === epoch && !active.signal.aborted) {
@@ -147,6 +148,7 @@ export function createGroupSync(api: GroupApi = groupApi, timing: Readonly<{
     disconnect: (): void => stop(true),
     /** 浏览器失联只作提前禁写；恢复网络仍须重新鉴权和取得快照。 */
     setNetworkOnline: (online: boolean): void => {
+      networkOnline = online;
       const { userId, groupId } = store.getState();
       if (!online) stop(false); else if (userId !== null && groupId !== null) connect(userId, groupId);
     },

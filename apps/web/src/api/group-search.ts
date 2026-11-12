@@ -3,15 +3,15 @@
  * 版本冲突保留预览，只有人员显式确认当前版本才允许重新应用；断线不排队或自动重搜。
  */
 import { createStore } from "zustand/vanilla";
-import { resolveSearchEngine, type GroupGraphAction, type GroupSearchReceipt, type GroupSearchTarget, type SearchRequest, type CredentialService } from "@wayfinder/contracts";
+import { resolveSearchEngine, type GroupGraphAction, type GroupSearchReceipt, type GroupSearchTarget, type SearchRequest, type CredentialService, type SearchCredentials } from "@wayfinder/contracts";
 import { createStartStreamingSearch, type SearchCoordinatorDependencies, type StartStreamingSearchInput } from "./search.js";
 import type { ResearchPreview } from "./research.js";
+import { prepareSearchCredentials } from "./credentials.js";
 import { GroupRequestError } from "./groups.js";
 import { createGraphStore } from "../stores/graph-store.js";
 import { accountStore } from "../stores/account.js";
 import { accountKeysStore } from "../stores/account-keys.js";
 import { groupSync, type createGroupSync } from "../stores/group-sync.js";
-import { applyGraphSearchResult } from "../stores/workspace-research.js";
 
 type ApplyAction = Extract<GroupGraphAction, { action: "applySearch" }>;
 type SearchContext = { userId: string; target: GroupSearchTarget; autoApply: boolean; preview: ResearchPreview;
@@ -21,6 +21,7 @@ type Dependencies = Pick<SearchCoordinatorDependencies, "fetchImplementation" | 
 export function createGroupSearchController(sync: ReturnType<typeof createGroupSync> = groupSync, dependencies: Dependencies = {}) {
   const runStore = createGraphStore(), store = createStore<GroupSearchState>()(() => ({ preview: null, error: null, applying: false, autoApply: false }));
   let intent = 0, active: SearchContext | null = null;
+  let preparedCredentials: SearchCredentials | undefined;
   const currentRecord = (context: SearchContext) => sync.store.getState().snapshot?.workspace.graphs
     .find(record => record.document.id === context.target.graphId && record.status === "active");
   const contextHeaders = (context: SearchContext) => {
@@ -35,19 +36,24 @@ export function createGroupSearchController(sync: ReturnType<typeof createGroupS
     return { userId: context.userId, connectionId: state.connectionId, target: context.target };
   };
   const clear = (): void => {
-    ++intent; active = null; search.cancelPending(); search.cancel();
+    ++intent; active = null; preparedCredentials = undefined; search.cancelPending(); search.cancel();
     store.setState({ preview: null, error: null, applying: false, autoApply: false });
   };
   const apply = async (mode: "append" | "replace", confirmed = false): Promise<boolean> => {
     const context = active;
     if (context === null || context.receipt === null || context.preview.result === null || context.preview.status !== "ready" || store.getState().applying) return false;
+    store.setState({ applying: true, error: null });
     try {
       contextHeaders(context);
       const record = currentRecord(context); if (record === undefined) throw new GroupRequestError("GROUP_NOT_FOUND");
       if (context.target.nodeId === undefined && mode !== "replace") return false;
       if (context.pending === null) {
         if (record.revision !== context.target.expectedRevision && !confirmed) throw new GroupRequestError("GROUP_CONFLICT");
-        const projected = context.target.nodeId === undefined ? applyGraphSearchResult(record.document, context.preview.result) : null;
+        // 布局只在真正应用时加载，首页／只查看组列表不提前拉入Dagre和图画布。
+        const projection = context.target.nodeId === undefined ? await import("../stores/workspace-research.js") : null;
+        if (active !== context) return false;
+        contextHeaders(context);
+        const projected = projection === null ? null : projection.applyGraphSearchResult(record.document, context.preview.result);
         context.pending = { action: "applySearch", groupId: context.target.groupId, graphId: context.target.graphId,
           expectedRevision: record.revision, mutationId: crypto.randomUUID(), receipt: context.receipt, result: context.preview.result, mode,
           ...(projected === null ? {} : { positions: projected.positions }),
@@ -68,11 +74,16 @@ export function createGroupSearchController(sync: ReturnType<typeof createGroupS
         store.setState({ applying: false, error: code });
       }
       return false;
-    }
+    } finally { if (active === context) store.setState({ applying: false }); }
   };
   let starting: SearchContext | null = null;
   const search = createStartStreamingSearch({
     ...dependencies, store: runStore,
+    // 新组图可在凭据检查后建立，随后只消费这一份检查快照；秘密不留在预览状态中。
+    prepareCredentials: signal => {
+      const prepared = preparedCredentials; preparedCredentials = undefined;
+      return prepared === undefined ? (dependencies.prepareCredentials ?? prepareSearchCredentials)(signal) : Promise.resolve(prepared);
+    },
     groupContext: () => {
       if (starting === null) throw new GroupRequestError("GROUP_OFFLINE");
       const context = contextHeaders(starting); starting.sentConnectionId = context.connectionId; return context;
@@ -100,17 +111,20 @@ export function createGroupSearchController(sync: ReturnType<typeof createGroupS
   });
   return {
     store, runStore, apply, cancel: clear, dismiss: clear,
+    cancelPending: (): void => { search.cancelPending(); },
     cancelForCloudKeyChange: (services: readonly CredentialService[]): boolean => {
       if (!search.cancelForCloudKeyChange(services)) return false;
       clear(); return true;
     },
-    start: async (target: GroupSearchTarget, input: StartStreamingSearchInput, autoApply = false): Promise<void> => {
+    start: async (target: GroupSearchTarget, input: StartStreamingSearchInput, autoApply = false,
+      options: Readonly<{ onStart?: (runId: string) => void; credentials?: SearchCredentials; signal?: AbortSignal }> = {}): Promise<void> => {
       const state = sync.store.getState(); if (state.userId === null) throw new GroupRequestError("ACCOUNT_REQUIRED");
       const context: SearchContext = { userId: state.userId, target, autoApply, receipt: null, sentConnectionId: null, pending: null,
         preview: { graphId: target.graphId, nodeId: target.nodeId ?? null, runId: null, query: input.query,
           language: input.language, engine: resolveSearchEngine(input.language, input.engine), status: "searching", result: null } };
       contextHeaders(context); const current = ++intent; starting = context;
-      try { await search(input); }
+      preparedCredentials = options.credentials;
+      try { await search(input, { ...(options.onStart === undefined ? {} : { onStart: options.onStart }), ...(options.signal === undefined ? {} : { signal: options.signal }) }); }
       catch (error: unknown) {
         if (current === intent) {
           const code = error instanceof GroupRequestError ? error.code : "GROUP_UNAVAILABLE";
@@ -124,7 +138,7 @@ export function createGroupSearchController(sync: ReturnType<typeof createGroupS
         }
         throw error;
       } finally {
-        if (starting === context) starting = null;
+        if (starting === context) { starting = null; preparedCredentials = undefined; }
         if (active === context && context.preview.status === "searching") {
           context.preview = { ...context.preview, status: "failed" }; store.setState({ preview: context.preview });
         }

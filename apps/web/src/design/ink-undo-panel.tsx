@@ -7,7 +7,7 @@ import { useStore } from "zustand";
 import type { SearchLanguage } from "@wayfinder/contracts";
 import { getMessages } from "../i18n/messages.js";
 import { workspacePersistenceStore } from "../stores/workspace-persistence.js";
-import { selectWorkspaceHistory, workspaceStore } from "../stores/workspace-store.js";
+import { activeWorkspaceStore as workspaceStore, workspaceContextStore, selectActiveWorkspaceHistory, selectActiveWorkspaceRedoCount } from "../stores/workspace-context.js";
 import type { WorkspaceHistoryEventView, WorkspaceHistoryKind, WorkspaceHistoryResult } from "../stores/workspace-history.js";
 import { InkNotice } from "./ink-notice.js";
 
@@ -48,12 +48,14 @@ function UndoEvent({ event, index, disabled, name, date, reason, undoLabel, onUn
 
 export function InkUndoPanel({ open, presented, available, disabled, language, onClose }: Props) {
   const panel = useRef<HTMLElement>(null);
+  const context = useStore(workspaceContextStore, state => state);
+  const redoCount = useStore(workspaceStore, selectActiveWorkspaceRedoCount);
   const graphId = useStore(workspaceStore, state => state.currentId);
   const history = useStore(workspaceStore, state => state.histories[state.currentId ?? ""]);
   const deleted = useStore(workspaceStore, state => state.deletedGraphs);
   const persistence = useStore(workspacePersistenceStore, state => state);
   const messages = getMessages(language);
-  const events = useMemo(() => selectWorkspaceHistory(workspaceStore.getState()), [history, graphId]);
+  const events = useMemo(() => selectActiveWorkspaceHistory(workspaceStore.getState()), [history, graphId, context.contextKey]);
   const activeCount = events.filter(event => event.active).length;
   // 已撤销事件只为重做保留，不占用可见队列的错峰序号，避免剩余条目等待空白行。
   let entryIndex = 0;
@@ -71,10 +73,10 @@ export function InkUndoPanel({ open, presented, available, disabled, language, o
     : code === "constraint" ? messages.inkStudy.undoConstraint : messages.inkStudy.undoUnavailable;
   const date = useMemo(() => new Intl.DateTimeFormat(language, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" }), [language]);
   // 抽屉打开时搜索层已离屏，保存失败必须在当前可见层保留重试入口。
-  const notice = useMemo(() => !open ? null : persistence.error !== null ? {
+  const notice = useMemo(() => !open ? null : context.kind !== "group" && persistence.error !== null ? {
     message: persistence.error === "load" ? messages.workspace.loadFailure : messages.workspace.saveFailure,
     action: <button className="ink-study__pill" type="button" onClick={() => { panel.current?.focus({ preventScroll: true }); void persistence.retry(); }}>{messages.workspace.retry}</button>,
-  } : failure === null ? null : { message: reason(failure) }, [failure, open, language, persistence.error, persistence.retry]);
+  } : failure === null ? null : { message: reason(failure) }, [failure, open, language, persistence.error, persistence.retry, context.kind]);
   useEffect(() => { setFailure(null); }, [graphId]);
   // 父抽屉的视觉选择提交后面板才可聚焦；保持真实可见性和业务开启同时成立。
   useEffect(() => { if (open && presented) panel.current?.focus({ preventScroll: true }); }, [open, presented]);
@@ -94,14 +96,14 @@ export function InkUndoPanel({ open, presented, available, disabled, language, o
   return <><section className="ink-study__history-panel ink-undo-panel" ref={panel} tabIndex={-1} id="ink-undo-history"
     data-active={open} inert={!open || !available} aria-hidden={!open || !available} aria-labelledby="ink-undo-title" data-ink-overlay>
     <header className="ink-study__history-header"><div><h2 id="ink-undo-title">{messages.inkStudy.undoHistory}</h2><span>{activeCount}</span></div>
-      <div className="ink-undo-actions"><button className="ink-study__pill" type="button" disabled={disabled || !history?.future.length}
+      <div className="ink-undo-actions"><button className="ink-study__pill" type="button" disabled={disabled || redoCount === 0}
         onClick={() => { workspaceStore.getState().redo(); setFailure(null); }}>{messages.editor.redo}</button>
         <button className="ink-study__pill" type="button" disabled={disabled || deleted.length === 0}
           title={deleted.at(-1)?.document.title} onClick={() => { onClose(false); workspaceStore.getState().restoreDeletedGraph(); }}>{messages.inkStudy.restoreGraph}</button></div>
     </header>
     <p className="ink-workspace-hint">{messages.inkStudy.undoHint}</p>
     <ul className="ink-undo-list">{entries.map(({ event, index }) => <UndoEvent key={event.id}
-      event={event} index={index} disabled={disabled} name={names[event.kind]} date={date} reason={reason}
+      event={event} index={index} disabled={disabled} name={context.kind === "group" ? `${names[event.kind]} · ${context.groupName ?? ""}` : names[event.kind]} date={date} reason={reason}
       undoLabel={messages.editor.undo} onUndo={id => {
         const result = workspaceStore.getState().undoEvent(id);
         setFailure(result.ok ? null : result.reason);
