@@ -1298,6 +1298,8 @@ export type StoredGraphHistory = Readonly<Omit<StoredGraphHistoryValue, "base"> 
 
 /** 预期账号仅用于拒绝错号的待提交操作；权限始终来自服务端验证的会话。 */
 export const CLOUD_ACCOUNT_HEADER = "x-wayfinder-account";
+/** 仅绑定同会话已追平的小组连接；成员权限仍由服务端事务校验。 */
+export const GROUP_CONNECTION_HEADER = "x-wayfinder-group-connection";
 const cloudGraphIdSchema = EditableGraphSchema.shape.id;
 const cloudRevisionSchema = z.number().int().min(1);
 const cloudGraphFields = {
@@ -1561,12 +1563,15 @@ export type GroupGraphReceiptResponse = z.infer<typeof GroupGraphReceiptResponse
 export const GroupConnectionStateSchema = z.enum(["connecting", "syncing", "online", "offline", "reconnecting", "closed"]);
 export type GroupConnectionState = z.infer<typeof GroupConnectionStateSchema>;
 export const GroupSyncEventSchema = z.discriminatedUnion("type", [
-  z.strictObject({ type: z.literal("snapshot"), sequence: z.number().int().min(0), details: GroupDetailsSchema, workspace: GroupWorkspaceResponseSchema }),
+  z.strictObject({ type: z.literal("snapshot"), sequence: z.number().int().min(0), details: GroupDetailsSchema, workspace: GroupWorkspaceResponseSchema,
+    connectionId: UserIdSchema }),
   z.strictObject({ type: z.literal("heartbeat"), sequence: z.number().int().min(0) }),
+  z.strictObject({ type: z.literal("renew"), sequence: z.number().int().min(0) }),
   z.strictObject({ type: z.literal("revoked"), code: GroupErrorCodeSchema }),
 ]).superRefine((value, context) => {
-  if (value.type === "snapshot" && value.details.group.groupId !== value.workspace.groupId) {
-    context.addIssue({ code: "custom", message: "同步快照的小组身份不一致" });
+  if (value.type === "snapshot" && (value.details.group.groupId !== value.workspace.groupId
+    || value.details.group.revision !== value.workspace.revision)) {
+    context.addIssue({ code: "custom", message: "同步快照的小组身份或版本不一致" });
   }
 });
 export type GroupSyncEvent = z.infer<typeof GroupSyncEventSchema>;

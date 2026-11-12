@@ -101,6 +101,8 @@ async function details(query: GroupQuery, userId: string, group: GroupSummary): 
     members: rows.map(member => ({ userId: member.userId, nickname: NicknameSchema.parse(jsonValue(member.profile)).nickname,
       role: member.userId === group.ownerUserId ? "owner" : "member" })) });
 }
+/** 同步读取复用同一事务的详情投影，避免另开事务读出与组图不一致的成员／版本。 */
+export { details as readGroupDetailsSnapshot };
 async function response(query: GroupQuery, userId: string, groupId: string): Promise<GroupActionResponse> {
   const groups = await listGroups(query, userId);
   const group = groups.groups.find(value => value.groupId === groupId);

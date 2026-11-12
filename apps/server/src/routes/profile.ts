@@ -8,9 +8,11 @@ import type { AccountAuth } from "../accounts/auth.js";
 import type { AccountProfileStorage } from "../accounts/profile-storage.js";
 import { GroupAccessError } from "../groups/errors.js";
 import { registerGroupSessionRoutes } from "./group-session.js";
+import type { GroupSyncRuntime } from "../groups/sync.js";
 
 export function registerProfileRoutes(server: FastifyInstance, options: Readonly<{
   auth: Pick<AccountAuth, "getIdentity"> | null; storage: AccountProfileStorage | null; publicOrigin: string | null;
+  sync?: GroupSyncRuntime | null;
 }>): void {
   registerGroupSessionRoutes(server, options, (routes, guard) => {
     routes.get("/api/profile", guard(async (_request, reply, identity, operation) => {
@@ -22,7 +24,9 @@ export function registerProfileRoutes(server: FastifyInstance, options: Readonly
       if (request.headers["content-type"]?.split(";", 1)[0]?.trim().toLowerCase() !== "application/json") throw new GroupAccessError("GROUP_INVALID");
       const input = AccountProfileActionSchema.safeParse(request.body);
       if (!input.success) throw new GroupAccessError("GROUP_INVALID");
-      return reply.send(AccountProfileResponseSchema.parse({ profile: await options.storage.write(identity.userId, input.data.nickname, operation) }));
+      const result = AccountProfileResponseSchema.parse({ profile: await options.storage.write(identity.userId, input.data.nickname, operation) });
+      options.sync?.notifyUser(identity.userId);
+      return reply.send(result);
     }));
   });
 }

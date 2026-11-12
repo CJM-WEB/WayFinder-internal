@@ -4,10 +4,12 @@ import type { FastifyInstance } from "fastify";
 import type { AccountAuth } from "../accounts/auth.js";
 import type { GroupStorage } from "../groups/storage.js";
 import { GroupAccessError } from "../groups/errors.js";
-import { registerGroupSessionRoutes } from "./group-session.js";
+import { authorizeGroupConnection, registerGroupSessionRoutes } from "./group-session.js";
+import type { GroupSyncRuntime } from "../groups/sync.js";
 
 export function registerGroupRoutes(server: FastifyInstance, options: Readonly<{
   auth: Pick<AccountAuth, "getIdentity"> | null; storage: GroupStorage | null; publicOrigin: string | null;
+  sync?: GroupSyncRuntime | null;
 }>): void {
   registerGroupSessionRoutes(server, options, (routes, guard) => {
     routes.get("/api/groups", guard(async (request, reply, identity, operation) => {
@@ -23,7 +25,12 @@ export function registerGroupRoutes(server: FastifyInstance, options: Readonly<{
       if (request.headers["content-type"]?.split(";", 1)[0]?.trim().toLowerCase() !== "application/json") throw new GroupAccessError("GROUP_INVALID");
       const input = GroupActionSchema.safeParse(request.body);
       if (!input.success) throw new GroupAccessError("GROUP_INVALID");
-      return reply.send(GroupActionResponseSchema.parse(await options.storage.write(identity, input.data, operation)));
+      const admitted = input.data.action === "create" || input.data.action === "join" ? operation
+        : authorizeGroupConnection(request, identity, input.data.groupId, operation, options.sync);
+      const result = GroupActionResponseSchema.parse(await options.storage.write(identity, input.data, admitted));
+      const groupId = input.data.action === "create" || input.data.action === "join" ? result.details?.group.groupId : input.data.groupId;
+      if (groupId !== undefined) options.sync?.notifyGroup(groupId);
+      return reply.send(result);
     }));
   });
 }

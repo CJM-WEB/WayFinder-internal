@@ -4,17 +4,27 @@
  * 仅在本注册域使用物理 Buffer 上界，避免框架默认正文额度暗中限制完整图和历史。
  */
 import { constants as bufferConstants } from "node:buffer";
-import { CLOUD_ACCOUNT_HEADER, GroupErrorResponseSchema, UserIdSchema } from "@wayfinder/contracts";
+import { CLOUD_ACCOUNT_HEADER, GROUP_CONNECTION_HEADER, GroupErrorResponseSchema, UserIdSchema } from "@wayfinder/contracts";
 import type { FastifyInstance, FastifyReply, FastifyRequest, RouteHandlerMethod } from "fastify";
 import type { AccountAuth, AccountIdentity } from "../accounts/auth.js";
 import { databaseOperation, type DatabaseOperation } from "../accounts/database.js";
 import { GroupAccessError } from "../groups/errors.js";
 import { isSameOriginRequest } from "../settings/request-origin.js";
 import { accountRequestHeaders } from "./account.js";
+import type { GroupSyncRuntime } from "../groups/sync.js";
 
 type SessionOptions = Readonly<{ auth: Pick<AccountAuth, "getIdentity"> | null; publicOrigin: string | null }>;
 type GroupRequestHandler = (request: FastifyRequest, reply: FastifyReply, identity: AccountIdentity, operation: DatabaseOperation) => Promise<unknown>;
 type Guard = (handler: GroupRequestHandler) => RouteHandlerMethod;
+
+/** 既有组写操作统一绑定已就绪实时连接；创建／加入尚无组连接是明确例外，收据只读也不需要。 */
+export function authorizeGroupConnection(request: FastifyRequest, identity: AccountIdentity, groupId: string,
+  operation: DatabaseOperation, sync: GroupSyncRuntime | null | undefined): DatabaseOperation {
+  const connectionId = request.headers[GROUP_CONNECTION_HEADER];
+  const duplicates = request.raw.rawHeaders.filter((name, index) => index % 2 === 0 && name.toLowerCase() === GROUP_CONNECTION_HEADER).length;
+  if (typeof connectionId !== "string" || duplicates > 1 || sync === null || sync === undefined) throw new GroupAccessError("GROUP_OFFLINE");
+  return sync.authorize(identity, groupId, connectionId, operation);
+}
 
 export function registerGroupSessionRoutes(server: FastifyInstance, options: SessionOptions,
   setup: (routes: FastifyInstance, guard: Guard) => void): void {

@@ -11,10 +11,12 @@ import type { FastifyInstance } from "fastify";
 import type { AccountAuth } from "../accounts/auth.js";
 import type { GroupWorkspaceStorage } from "../groups/workspace-storage.js";
 import { GroupAccessError } from "../groups/errors.js";
-import { registerGroupSessionRoutes } from "./group-session.js";
+import { authorizeGroupConnection, registerGroupSessionRoutes } from "./group-session.js";
+import type { GroupSyncRuntime } from "../groups/sync.js";
 
 export function registerGroupWorkspaceRoutes(server: FastifyInstance, options: Readonly<{
   auth: Pick<AccountAuth, "getIdentity"> | null; storage: GroupWorkspaceStorage | null; publicOrigin: string | null;
+  sync?: GroupSyncRuntime | null;
 }>): void {
   registerGroupSessionRoutes(server, options, (routes, guard) => {
     routes.get("/api/group-workspace", guard(async (request, reply, identity, operation) => {
@@ -28,7 +30,10 @@ export function registerGroupWorkspaceRoutes(server: FastifyInstance, options: R
       if (request.headers["content-type"]?.split(";", 1)[0]?.trim().toLowerCase() !== "application/json") throw new GroupAccessError("GROUP_INVALID");
       const input = GroupGraphActionSchema.safeParse(request.body);
       if (!input.success) throw new GroupAccessError("GROUP_INVALID");
-      return reply.send(GroupGraphWriteResponseSchema.parse(await options.storage.write(identity.userId, input.data, operation)));
+      const admitted = authorizeGroupConnection(request, identity, input.data.groupId, operation, options.sync);
+      const result = GroupGraphWriteResponseSchema.parse(await options.storage.write(identity.userId, input.data, admitted));
+      options.sync?.notifyGroup(input.data.groupId);
+      return reply.send(result);
     }));
     routes.get("/api/group-receipt", guard(async (request, reply, identity, operation) => {
       if (options.storage === null) throw new GroupAccessError("GROUP_UNAVAILABLE");

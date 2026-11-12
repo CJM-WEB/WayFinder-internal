@@ -1,10 +1,11 @@
 /** 小组路由使用假身份和假存储，验证可信身份传递、解析顺序及固定错误，不接真实服务。 */
 import { describe, expect, it, vi } from "vitest";
-import { CLOUD_ACCOUNT_HEADER } from "@wayfinder/contracts";
+import { CLOUD_ACCOUNT_HEADER, GROUP_CONNECTION_HEADER } from "@wayfinder/contracts";
 import { buildServer } from "../app.js";
 import { GroupAccessError } from "../groups/errors.js";
 import type { GroupStorage } from "../groups/storage.js";
 import { registerGroupRoutes } from "./groups.js";
+import type { GroupSyncRuntime } from "../groups/sync.js";
 
 const identity = { userId: "fixture_owner", email: "owner+tag@example.test", sessionId: "fixture_session" };
 const origin = "https://group.example";
@@ -16,8 +17,14 @@ function fixture() {
   const list = vi.fn<GroupStorage["list"]>(async () => ({ groups: [group] }));
   const read = vi.fn<GroupStorage["read"]>(async () => details);
   const write = vi.fn<GroupStorage["write"]>(async () => ({ groups: [group], details }));
-  registerGroupRoutes(server, { auth: { getIdentity }, storage: { list, read, write }, publicOrigin: origin });
-  return { server, getIdentity, list, read, write };
+  const authorize = vi.fn<GroupSyncRuntime["authorize"]>((_identity, _groupId, connectionId, operation) => {
+    if (connectionId !== "fixture_connection") throw new GroupAccessError("GROUP_OFFLINE");
+    return operation;
+  });
+  const notifyGroup = vi.fn();
+  const sync: GroupSyncRuntime = { authorize, notifyGroup, notifyUser: vi.fn(), close: vi.fn(), open: vi.fn() };
+  registerGroupRoutes(server, { auth: { getIdentity }, storage: { list, read, write }, publicOrigin: origin, sync });
+  return { server, getIdentity, list, read, write, authorize, notifyGroup };
 }
 
 describe("小组HTTP身份边界", () => {
@@ -32,6 +39,29 @@ describe("小组HTTP身份边界", () => {
       const input = { action: "create", mutationId: "fixture_create", name: "  学习小组  ", description: "资料" };
       expect((await f.server.inject({ method: "POST", url: "/api/groups", headers, payload: input })).statusCode).toBe(200);
       expect(f.write.mock.calls[0]?.slice(0, 2)).toEqual([identity, { ...input, name: "学习小组" }]);
+    } finally { await f.server.close(); }
+  });
+
+  it("改组名／退出／解散绑定在线组proof，创建／加入尚无连接可独立执行", async () => {
+    const f = fixture();
+    try {
+      const actions = [{ action: "update", groupId: group.groupId, mutationId: "update", expectedRevision: 1, name: "新组名", description: "" },
+        { action: "leave", groupId: group.groupId, mutationId: "leave" },
+        { action: "dissolve", groupId: group.groupId, mutationId: "dissolve", expectedRevision: 1 }];
+      for (const input of actions) {
+        expect((await f.server.inject({ method: "POST", url: "/api/groups", headers, payload: input })).statusCode).toBe(503);
+        expect((await f.server.inject({ method: "POST", url: "/api/groups", headers: { ...headers, [GROUP_CONNECTION_HEADER]: "closed" }, payload: input })).statusCode).toBe(503);
+      }
+      expect(f.write).not.toHaveBeenCalled(); expect(f.notifyGroup).not.toHaveBeenCalled();
+      for (const input of actions) expect((await f.server.inject({ method: "POST", url: "/api/groups",
+        headers: { ...headers, [GROUP_CONNECTION_HEADER]: "fixture_connection" }, payload: input })).statusCode).toBe(200);
+      expect(f.authorize.mock.calls.at(-1)?.slice(0, 3)).toEqual([identity, group.groupId, "fixture_connection"]);
+      f.authorize.mockClear();
+      for (const input of [{ action: "create", mutationId: "create", name: "组", description: "" },
+        { action: "join", mutationId: "join", invitationCode: details.invitationCode }]) {
+        expect((await f.server.inject({ method: "POST", url: "/api/groups", headers, payload: input })).statusCode).toBe(200);
+      }
+      expect(f.authorize).not.toHaveBeenCalled();
     } finally { await f.server.close(); }
   });
 

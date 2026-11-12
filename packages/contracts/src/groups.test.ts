@@ -120,9 +120,12 @@ describe("D12 本人历史与同步快照", () => {
     expect(GroupWorkspaceResponseSchema.safeParse(workspace).success).toBe(true);
     expect(GroupWorkspaceResponseSchema.safeParse({ ...workspace, deletedIds: [document.id] }).success).toBe(false);
     expect(GroupWorkspaceResponseSchema.safeParse({ ...workspace, activeOrder: [] }).success).toBe(false);
-    expect(GroupSyncEventSchema.safeParse({ type: "snapshot", sequence: 1, details, workspace }).success).toBe(true);
-    expect(GroupSyncEventSchema.safeParse({ type: "snapshot", sequence: 1, details,
+    expect(GroupSyncEventSchema.safeParse({ type: "snapshot", connectionId: "connection-1", sequence: 1, details, workspace }).success).toBe(true);
+    expect(GroupSyncEventSchema.safeParse({ type: "snapshot", connectionId: "connection-1", sequence: 1, details,
       workspace: { ...workspace, groupId: "another-group" } }).success).toBe(false);
+    expect(GroupSyncEventSchema.safeParse({ type: "snapshot", connectionId: "connection-1", sequence: 8, details,
+      workspace: { ...workspace, revision: 2 } }).success).toBe(false);
+    expect(GroupSyncEventSchema.safeParse({ type: "renew", sequence: 2 }).success).toBe(true);
     expect(GroupSyncEventSchema.safeParse({ type: "heartbeat", sequence: -1 }).success).toBe(false);
     expect(GroupSyncEventSchema.safeParse({ type: "revoked", code: "GROUP_FORBIDDEN", token: "not-allowed" }).success).toBe(false);
   });
