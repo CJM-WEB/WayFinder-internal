@@ -30,7 +30,7 @@ type Props = Readonly<{
 }>;
 
 const SLIDE_MS = 560;
-const FOCUSABLE = "button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex='0']";
+const FOCUSABLE = "button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex='0']";
 // 只有打开笔记才加载编辑器；图、资源和侧栏首屏不承担正文编辑依赖。
 const InkNoteEditor = lazy(() => import("./ink-note-editor.js").catch(() => ({ default: NoteEditorFallback })));
 const copy = {

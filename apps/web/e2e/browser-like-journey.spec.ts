@@ -4309,7 +4309,14 @@ test("可视化笔记的格式与两种网页链接保存后原样恢复", async
   const graph = await openInkWorkspace(page);
   const resource = graph.nodes[0]?.resources[1];
   if (resource === undefined) throw new Error("缺少节点资源链接夹具");
-  const manualUrl = "https://manual.example.test/guide?view=compact&keep=1#chapter";
+  const manualUrl = "https://MANUAL.example.test/guide?view=compact&keep=1#chapter";
+  const externalHosts = new Set([new URL(resource.url).hostname, new URL(manualUrl).hostname]);
+  const unexpectedNavigations: string[] = [];
+  // 即使真实锚点的默认行为意外落到浏览器，也拦截两个夹具站点，避免访问网络。
+  await page.context().route(url => externalHosts.has(url.hostname), async route => {
+    unexpectedNavigations.push(route.request().url());
+    await route.abort("blockedbyclient");
+  });
   const codeText = /function study\(\) \{\n {2}return 1;\n\x60{3}\n\}/;
   const savedLink = "[data-ink-note-link]";
   await page.locator('[data-ink-node="workspace-node-0"]').getByRole("heading").click();
@@ -4368,7 +4375,7 @@ test("可视化笔记的格式与两种网页链接保存后原样恢复", async
   await linkText.fill("手动参考");
   await linkUrl.fill("mailto:fixture@example.test");
   await addLink.click();
-  await expect(links.getByRole("alert")).toBeVisible();
+  await expect(links.getByRole("alert")).toHaveText("链接地址无效，请检查或修改链接。");
   await expect(editor.locator(savedLink)).toHaveCount(1);
   await linkUrl.fill(manualUrl);
   await addLink.click();
@@ -4423,9 +4430,12 @@ test("可视化笔记的格式与两种网页链接保存后原样恢复", async
   await resourceCard.click({ button: "right" });
   await page.getByRole("menuitem", { name: "删除资源", exact: true }).click();
   await expect(resourceCard).toHaveCount(0);
+  await expect.poll(async () => (await readStoredWorkspace(page))?.documents.find(document => document.id === graph.id)
+    ?.nodes[0]?.resources.some(item => item.id === resource.id)).toBe(false);
   await notesTab.click();
   await page.locator("[data-ink-note-open]").click();
-  const reopened = page.getByRole("dialog", { name: "笔记", exact: true }).getByRole("textbox", { name: "正文", exact: true });
+  const dialog = page.getByRole("dialog", { name: "笔记", exact: true });
+  const reopened = dialog.getByRole("textbox", { name: "正文", exact: true });
   await expect(reopened.getByRole("heading", { name: "学习记录", level: 2 })).toBeVisible();
   await expect(reopened.locator("ol > li")).toHaveText(["第一步", "第二步"]);
   await expect(reopened.locator("pre")).toHaveText(codeText);
@@ -4433,10 +4443,51 @@ test("可视化笔记的格式与两种网页链接保存后原样恢复", async
   await expect(reopened.getByRole("columnheader")).toHaveCount(columnCount);
   await expect(reopened.getByRole("columnheader").first()).toHaveText("复习");
   await expect(reopened.locator("strong")).toHaveText("粘贴的重点");
-  await expect(reopened.locator(savedLink).filter({ hasText: "来源资料" })).toHaveAttribute("data-ink-note-link", resource.url);
-  await expect(reopened.locator(savedLink).filter({ hasText: "手动参考" })).toHaveAttribute("data-ink-note-link", manualUrl);
+  const resourceLink = reopened.getByRole("link", { name: "来源资料", exact: true });
+  const manualLink = reopened.getByRole("link", { name: "手动参考", exact: true });
+  const openCalls = () => page.evaluate(() => window.__WAYFINDER_E2E__.openCalls());
+  for (const [anchor, original] of [[resourceLink, resource.url], [manualLink, manualUrl]] as const) {
+    await expect(anchor).toHaveAttribute("data-ink-note-link", original);
+    await expect(anchor).toHaveAttribute("href", new URL(original).href);
+    await expect(anchor).toHaveAttribute("target", "_blank");
+    await expect(anchor).toHaveAttribute("rel", "noopener noreferrer");
+  }
+  expect(await openCalls()).toEqual([]);
+  const beforeLinkOpen = await readStoredWorkspace(page);
+
+  const resourceOpen = [new URL(resource.url).href, "_blank", "noopener,noreferrer"];
+  const manualOpen = [new URL(manualUrl).href, "_blank", "noopener,noreferrer"];
+  await reopened.focus();
+  await expect(reopened).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(resourceLink).toBeFocused();
+  await page.keyboard.press("Enter");
+  expect(await openCalls()).toEqual([resourceOpen]);
+  await manualLink.click();
+  expect(await openCalls()).toEqual([resourceOpen, manualOpen]);
+  // 隔离模式下的空窗口句柄不代表打开失败，更不能据此判定目标页面失效。
+  await expect(dialog.getByRole("alert")).toHaveCount(0);
+
+  await page.evaluate(() => {
+    const fixtureOpen = window.open;
+    window.open = (...args: Parameters<typeof window.open>) => {
+      window.open = fixtureOpen;
+      fixtureOpen(...args);
+      throw new Error("夹具模拟浏览器拒绝打开");
+    };
+  });
+  await manualLink.click();
+  await expect(dialog.getByRole("alert")).toHaveText("浏览器无法打开链接。请重试或检查网址是否已变更。");
+  expect(await openCalls()).toEqual([resourceOpen, manualOpen, manualOpen]);
+  await manualLink.click();
+  await expect(dialog.getByRole("alert")).toHaveCount(0);
+  expect(await openCalls()).toEqual([resourceOpen, manualOpen, manualOpen, manualOpen]);
+
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  expect(await readStoredWorkspace(page)).toEqual(beforeLinkOpen);
   expect(await readFixtureSnapshots(page)).toHaveLength(0);
-  expect(await page.evaluate(() => window.__WAYFINDER_E2E__.openCalls())).toHaveLength(0);
+  expect(unexpectedNavigations).toEqual([]);
 });
 
 test("笔记首次落盘失败后保留原草稿，显式重试只留下一个撤销事件", async ({ page }) => {

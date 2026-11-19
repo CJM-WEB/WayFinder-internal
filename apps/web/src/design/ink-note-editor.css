@@ -28,7 +28,8 @@
   border-radius: 10px;
   background: #ffffff35;
 }
-.ink-note-editor__link p[role="alert"] { margin: 0; color: #6a2922; font-size: 12px; }
+.ink-note-editor__link p[role="alert"], .ink-note-editor__link-error { margin: 0; color: #6a2922; font-size: 12px; }
+.ink-note-editor__link-error { position: sticky; bottom: 0; padding: 6px 8px; border-radius: 8px; background: #f5f5f2; }
 .ink-note-editor__link select { width: 100%; min-width: 0; }
 .ink-note-editor__body {
   min-width: 0;
@@ -57,7 +58,8 @@
 .ink-note-editor__body .tiptap th { background: #d0d0c688; text-align: left; }
 .ink-note-editor__body .tiptap .selectedCell { background: #d3defe90; }
 .ink-note-editor__body .tiptap pre { padding: 8px 12px; overflow: auto; border-radius: 6px; background: #d0d0c688; }
-.ink-note-editor__body .tiptap [data-ink-note-link] { color: #254980; text-decoration: underline; }
+.ink-note-editor__body .tiptap [data-ink-note-link] { color: #254980; text-decoration: underline; cursor: pointer; }
+.ink-note-editor__body .tiptap [data-ink-note-link]:focus-visible { outline: 2px solid #145cf4; outline-offset: 2px; }
 @media (pointer: coarse) {
   .ink-note-editor button, .ink-note-editor select { min-height: 44px; }
 }

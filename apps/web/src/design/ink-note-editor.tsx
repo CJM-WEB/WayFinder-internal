@@ -1,6 +1,6 @@
 /**
  * 模块职责：按需加载排版式笔记编辑器；在编辑器内部维护选区与组合输入，向上层提交 Markdown。
- * 外部内容始终经过受支持的编辑器结构；链接保留用户确认的原网址，打开由独立功能负责。
+ * 外部内容始终经过受支持的编辑器结构；链接保留原网址，在用户主动打开时再次校验。
  */
 import { Editor, type JSONContent, type MarkdownParseHelpers, type MarkdownRendererHelpers, type MarkdownToken, type RenderContext } from "@tiptap/core";
 import { TableKit } from "@tiptap/extension-table";
@@ -8,10 +8,9 @@ import { Markdown } from "@tiptap/markdown";
 import { isInTable, rowIsHeader, selectedRect } from "@tiptap/pm/tables";
 import StarterKit from "@tiptap/starter-kit";
 import type { EditableResource, SearchLanguage } from "@wayfinder/contracts";
-import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
 
-import { getMessages } from "../i18n/messages.js";
-import { resolveSafeHttpUrl } from "../lib/url.js";
+import { requestSafeUrlOpen, resolveSafeHttpUrl } from "../lib/url.js";
 import "./ink-note-editor.css";
 
 type Props = Readonly<{
@@ -30,6 +29,7 @@ const text = {
     deleteRow: "删除行", deleteColumn: "删除列", code: "代码块", link: "链接", insertLink: "插入链接",
     manual: "手动输入", fromResource: "从节点资源选择", resource: "节点资源", choose: "选择资源",
     label: "链接文字", url: "网页地址", cancel: "取消",
+    invalidUrl: "链接地址无效，请检查或修改链接。", openingFailed: "浏览器无法打开链接。请重试或检查网址是否已变更。",
   },
   "en-US": {
     body: "Content", toolbar: "Note formatting", heading: "Heading level", paragraph: "Paragraph",
@@ -38,6 +38,7 @@ const text = {
     deleteRow: "Delete row", deleteColumn: "Delete column", code: "Code block", link: "Link", insertLink: "Insert link",
     manual: "Enter manually", fromResource: "Choose a node resource", resource: "Node resource", choose: "Choose a resource",
     label: "Link text", url: "Web address", cancel: "Cancel",
+    invalidUrl: "This link address is invalid. Check or edit it.", openingFailed: "The browser could not open this link. Try again or check whether its address has changed.",
   },
 } satisfies Record<SearchLanguage, Record<string, string | readonly string[]>>;
 const headings = [1, 2, 3] as const;
@@ -45,7 +46,7 @@ const markdownPattern = /(?:^|\n)[^\S\n]*(?:#{1,6}\s|[-+*]\s|\d+[.)]\s|\x60{3}|~
 
 /**
  * StarterKit 默认只在 HTML 和编辑命令侧验证链接，Markdown 导入仍会接受 token.href。
- * 同一校验守卫用于这条导入路径。此阶段只渲染无导航的标记，避免浏览器菜单绕过后续打开门禁。
+ * Markdown 导入、实时渲染和打开动作使用同一校验守卫，DOM 只挂载可打开的地址。
  */
 const NoteStarterKit = StarterKit.extend({
   addExtensions() {
@@ -91,9 +92,11 @@ const NoteStarterKit = StarterKit.extend({
         },
         renderHTML: ({ HTMLAttributes }: { HTMLAttributes: Record<string, unknown> }) => {
           const href = HTMLAttributes.href;
-          return typeof href === "string" && resolveSafeHttpUrl(href) !== null
-            ? ["span", { "data-ink-note-link": href }, 0]
-            : ["span", 0];
+          const safeUrl = resolveSafeHttpUrl(href);
+          // 可编辑正文里的后代默认可能被跳过，显式保留链接自身的顺序焦点。
+          return safeUrl === null ? ["span", 0] : ["a", {
+            href: safeUrl, target: "_blank", rel: "noopener noreferrer", tabindex: "0", "data-ink-note-link": href,
+          }, 0];
         },
       });
     });
@@ -133,6 +136,7 @@ export default function InkNoteEditor({ value, language, editable, resources, on
   const [editor, setEditor] = useState<Editor | null>(null);
   const [, setRevision] = useState(0);
   const [link, setLink] = useState<LinkDraft | null>(null);
+  const [linkError, setLinkError] = useState<"invalidUrl" | "openingFailed" | null>(null);
 
   useLayoutEffect(() => {
     latest.current = { editable, onChange, body: labels.body };
@@ -149,6 +153,20 @@ export default function InkNoteEditor({ value, language, editable, resources, on
       contentType: "markdown",
       editorProps: {
         attributes: { role: "textbox", "aria-multiline": "true", "aria-label": latest.current.body, tabindex: "0" },
+        handleDOMEvents: {
+          keydown: (_view, event) => {
+            if (event.isComposing) return false;
+            // 跳过文档的快捷键处理，让 Escape 继续冒泡到负责保存和关闭的对话框。
+            if (event.key === "Escape") return true;
+            if (event.key !== "Enter") return false;
+            const anchor = event.target;
+            if (!(anchor instanceof HTMLAnchorElement) || !anchor.hasAttribute("data-ink-note-link")) return false;
+            // 焦点在链接上时走点击同一门禁，避免编辑器先把 Enter 作为正文换行处理。
+            event.preventDefault();
+            if (!event.repeat) anchor.click();
+            return true;
+          },
+        },
         // 浏览器可能同时提供 HTML 与纯文本。只采纳纯文本及支持的 Markdown，避开 HTML 导入及远端附件。
         transformPastedHTML: () => "",
         handlePaste: (view, event): boolean => {
@@ -228,6 +246,18 @@ export default function InkNoteEditor({ value, language, editable, resources, on
       event.preventDefault(); event.stopPropagation(); insertLink();
     }
   };
+  const followLink = (event: MouseEvent<HTMLDivElement>): void => {
+    const anchor = event.target instanceof Element ? event.target.closest<HTMLAnchorElement>("a[data-ink-note-link]") : null;
+    if (anchor === null) return;
+    event.preventDefault();
+    try {
+      // 只转交用户触发的导航。浏览器返回空句柄可能是来源隔离的正常结果，无法据此判断站点失效。
+      const requested = requestSafeUrlOpen(anchor.dataset.inkNoteLink, (url, target, features) => window.open(url, target, features));
+      setLinkError(requested ? null : "invalidUrl");
+    } catch {
+      setLinkError("openingFailed");
+    }
+  };
 
   return <div className="ink-note-editor" data-ink-note-editor>
     <div className="ink-note-editor__toolbar" role="toolbar" aria-label={labels.toolbar}>
@@ -283,12 +313,13 @@ export default function InkNoteEditor({ value, language, editable, resources, on
       <label>{labels.url}<input ref={address} type="text" inputMode="url" value={link.url} aria-invalid={link.invalid}
         onChange={event => setLink({ ...link, url: event.target.value, invalid: false })} /></label>
       <label>{labels.label}<input value={link.label} onChange={event => setLink({ ...link, label: event.target.value })} /></label>
-      {link.invalid ? <p role="alert">{getMessages(language).editor.invalidUrl}</p> : null}
+      {link.invalid ? <p role="alert">{labels.invalidUrl}</p> : null}
       <div className="ink-note-editor__link-controls">
         <button type="button" onClick={cancelLink}>{labels.cancel}</button>
         <button type="button" onClick={insertLink}>{labels.insertLink}</button>
       </div>
     </div>}
-    <div className="ink-note-editor__body" ref={mount} />
+    <div className="ink-note-editor__body" ref={mount} onClick={followLink} />
+    {linkError === null ? null : <p className="ink-note-editor__link-error" role="alert">{labels[linkError]}</p>}
   </div>;
 }
