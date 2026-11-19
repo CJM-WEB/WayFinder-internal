@@ -501,6 +501,38 @@
                       ]
                     }
                   },
+                  "notes": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "title": {
+                          "type": "string"
+                        },
+                        "description": {
+                          "type": "string"
+                        },
+                        "markdown": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "title",
+                        "description",
+                        "markdown"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "noteGeneration": {
+                    "type": "string",
+                    "minLength": 1
+                  },
                   "warnings": {
                     "type": "array",
                     "items": {
@@ -1144,6 +1176,38 @@
                       ]
                     }
                   },
+                  "notes": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "title": {
+                          "type": "string"
+                        },
+                        "description": {
+                          "type": "string"
+                        },
+                        "markdown": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "title",
+                        "description",
+                        "markdown"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "noteGeneration": {
+                    "type": "string",
+                    "minLength": 1
+                  },
                   "warnings": {
                     "type": "array",
                     "items": {
@@ -1749,6 +1813,38 @@
                         }
                       ]
                     }
+                  },
+                  "notes": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "title": {
+                          "type": "string"
+                        },
+                        "description": {
+                          "type": "string"
+                        },
+                        "markdown": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "title",
+                        "description",
+                        "markdown"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "noteGeneration": {
+                    "type": "string",
+                    "minLength": 1
                   },
                   "warnings": {
                     "type": "array",

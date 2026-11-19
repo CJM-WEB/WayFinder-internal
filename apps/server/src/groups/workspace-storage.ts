@@ -140,7 +140,14 @@ export function createGroupWorkspaceStorage(database: AccountDatabase, options: 
   const now = options.now ?? (() => new Date().toISOString());
   const newDocument = (source: EditableGraph): EditableGraph => {
     const at = now();
-    return EditableGraphSchema.parse({ ...source, id: options.createId?.() ?? randomUUID(), createdAt: at, updatedAt: at });
+    // 在构建组图及空历史前排除私人笔记，避免同一正文经存档或同步快照进入小组。
+    const nodes = source.nodes.map(node => {
+      if (node.notes === undefined) return node;
+      const copy = { ...node };
+      delete copy.notes;
+      return copy;
+    });
+    return EditableGraphSchema.parse({ ...source, nodes, id: options.createId?.() ?? randomUUID(), createdAt: at, updatedAt: at });
   };
   return {
     read: (trustedUserId, inputGroupId, operation) => groupTransaction(database, operation, async query => {

@@ -68,6 +68,7 @@ export function InkUndoPanel({ open, presented, available, disabled, language, o
     "resource.add": messages.editor.addResource, "resource.edit": messages.editor.editResource, "resource.delete": messages.editor.deleteResource,
     "resource.move": messages.editor.dragResource, "edge.add": messages.editor.addConnection, "edge.edit": messages.editor.saveConnection,
     "edge.delete": messages.editor.deleteConnection, "engine.change": messages.searchEngine.label,
+    "note.add": messages.notes.add, "note.edit": messages.notes.edit, "note.delete": messages.notes.delete,
   };
   const reason = (code: string): string => code === "dependency" ? messages.inkStudy.undoDependency
     : code === "constraint" ? messages.inkStudy.undoConstraint : messages.inkStudy.undoUnavailable;

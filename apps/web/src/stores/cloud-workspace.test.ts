@@ -7,7 +7,7 @@ import { CloudWorkspaceError, type CloudWorkspaceApi } from "../api/cloud-worksp
 import { createCloudWorkspaceSync, type CloudWorkspaceState } from "./cloud-workspace.js";
 import { createEmptyGraph, createWorkspaceStore } from "./workspace-store.js";
 import { captureWorkspaceSnapshot, initializeWorkspacePersistence, type WorkspacePersistenceState, type WorkspaceSnapshot } from "./workspace-persistence.js";
-import { addNode } from "./workspace-edits.js";
+import { addNode, addNote } from "./workspace-edits.js";
 
 const cleanups: Array<() => void> = [];
 afterEach(() => { for (const cleanup of cleanups.splice(0)) cleanup(); });
@@ -166,7 +166,12 @@ describe("账号云同步协调", () => {
   });
 
   it("明确导入包含删除历史，丢ACK重试及再次确认不重复，不修改访客源", async () => {
-    const original = createWorkspaceStore(); original.getState().addGraph(graph("guest")); original.getState().renameGraph("guest", "访客修改"); original.getState().deleteGraph("guest");
+    const original = createWorkspaceStore();
+    const source = addNode(graph("guest"), "访客节点", "", "n");
+    const note = { title: "访客笔记", description: "学习说明", markdown: "学习记录" };
+    original.getState().addGraph(source);
+    original.getState().replaceGraph(addNote(source, "n", note, "note-id"));
+    original.getState().renameGraph("guest", "访客修改"); original.getState().deleteGraph("guest");
     const guest = captureWorkspaceSnapshot(original.getState());
     const f = await setup(); f.guest(guest); f.start(); await vi.waitFor(() => expect(f.feedback.getState().status).toBe("synced"));
     expect(f.api.import).not.toHaveBeenCalled();
@@ -177,7 +182,8 @@ describe("账号云同步协调", () => {
     expect(vi.mocked(f.api.import).mock.calls[1]?.[1]).toEqual(first);
     await f.feedback.getState().importGuest();
     expect(f.imports()).toBe(1); expect(f.api.import).toHaveBeenCalledTimes(2);
-    expect(f.remote().graphs[0]?.history.events).toHaveLength(1);
+    expect(f.remote().graphs[0]?.history.events.map(event => event.kind)).toEqual(["note.add", "graph.rename"]);
+    expect(f.remote().graphs[0]?.document.nodes[0]?.notes?.[0]).toEqual({ ...note, id: "note-id" });
     expect(f.remote().deletedIds).toHaveLength(1); expect(guest).toEqual(captureWorkspaceSnapshot(original.getState()));
     expect(JSON.stringify(first)).not.toContain("apiKey");
   });

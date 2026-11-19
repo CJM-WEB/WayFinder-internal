@@ -2,7 +2,7 @@
 import { describe, expect, it } from "vitest";
 import { ResultGraphSchema, type Resource } from "@wayfinder/contracts";
 import { pythonResultGraphFixture } from "../fixtures/python-result-graph.js";
-import { addNode, addResource, updateResource } from "./workspace-edits.js";
+import { addNode, addNote, addResource, updateResource } from "./workspace-edits.js";
 import { createEmptyGraph, createWorkspaceStore } from "./workspace-store.js";
 import { applyGraphSearchResult, applyNodeSearchResult } from "./workspace-research.js";
 
@@ -24,10 +24,13 @@ function searchResult(resources: Resource[], runId = "新运行") {
   });
 }
 const original = () => addResource(addNode(createEmptyGraph("图", "记录名", "zh-CN"), "当前标题", "当前说明", "target"), "target", "https://old.example.com/a", "old");
+const withNote = () => addNote(original(), "target", {
+  title: "读后笔记", description: "", markdown: "[来源](https://old.example.com/a?q=1#part)",
+}, "note");
 
 describe("重搜结果应用", () => {
   it("单节点追加保留人工内容与顺序，每次最多6项但累计可超过6，ID与来源保持真实", () => {
-    const graph = { ...original(), analysis: { ...pythonResultGraphFixture.analysis, presentationMode: "graph" as const } };
+    const graph = { ...withNote(), analysis: { ...pythonResultGraphFixture.analysis, presentationMode: "graph" as const } };
     const result = searchResult(Array.from({ length: 8 }, (_, index) => resource(`r${index}`, index + 1)));
     const next = applyNodeSearchResult(graph, "target", result, "append");
     expect(next.nodes[0]?.resources).toHaveLength(7);
@@ -35,13 +38,14 @@ describe("重搜结果应用", () => {
     expect(next.nodes[0]?.resources.slice(1).every(item => item.origin === "search" && item.engine === "google")).toBe(true);
     expect(next.nodes[0]?.resources.map(item => item.rank)).toEqual([1, 2, 3, 4, 5, 6, 7]);
     expect(next.nodes[0]).toMatchObject({ title: "当前标题", description: "当前说明" });
+    expect(next.nodes[0]?.notes).toEqual(graph.nodes[0]?.notes);
     expect(next.positions).toEqual(graph.positions);
     expect(next.analysis).toEqual(graph.analysis);
     expect(graph.nodes[0]?.resources).toHaveLength(1);
   });
 
   it("替换覆盖人工文本，允许本节点旧URL，但过滤其他节点已有URL", () => {
-    let graph = addNode(original(), "其他节点", "", "other");
+    let graph = addNode(withNote(), "其他节点", "", "other");
     graph = addResource(graph, "other", "https://other.example.com/b", "other-r");
     graph = updateResource(graph, "target", "old", { summary: "人工说明", whySelected: "人工理由" });
     const result = searchResult([
@@ -51,6 +55,7 @@ describe("重搜结果应用", () => {
     const next = applyNodeSearchResult(graph, "target", result, "replace");
     expect(next.nodes[0]?.resources).toHaveLength(1);
     expect(next.nodes[0]?.resources[0]).toMatchObject({ summary: "新网页说明", whySelected: "新选用理由", rank: 1 });
+    expect(next.nodes[0]?.notes).toEqual(graph.nodes[0]?.notes);
     expect(next.nodes[1]).toEqual(graph.nodes[1]);
     expect(next.edges).toEqual(graph.edges);
   });
@@ -75,12 +80,13 @@ describe("重搜结果应用", () => {
 
   it("全图整体替换不与旧图去重，可一次撤销恢复完整人工图", () => {
     const store = createWorkspaceStore();
-    const graph = { ...original(), engine: "baidu" as const, positions: { target: { x: -125, y: 456 } } };
+    const graph = { ...withNote(), engine: "baidu" as const, positions: { target: { x: -125, y: 456 } } };
     store.getState().addGraph(graph);
     const result = searchResult([resource("same", 1, "https://old.example.com/a")]);
-    store.getState().replaceGraph(applyGraphSearchResult(graph, result));
+    store.getState().replaceGraph(applyGraphSearchResult(graph, result), { kind: "graph.search", subject: graph.title, scope: { type: "graph.replace" } });
     expect(store.getState().documents[0]).toMatchObject({ id: graph.id, title: graph.title, engine: "baidu" });
     expect(store.getState().documents[0]?.nodes[0]?.title).toBe("搜索时标题");
+    expect(store.getState().documents[0]?.nodes[0]?.notes).toBeUndefined();
     expect(store.getState().histories[graph.id]?.past).toHaveLength(1);
     store.getState().undo();
     expect(store.getState().documents[0]).toEqual(graph);

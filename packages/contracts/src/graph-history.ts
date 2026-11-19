@@ -4,8 +4,8 @@
  * 边界：只输出可校验的本地存储数据，不执行搜索或引入通用命令系统；缺失依赖或非法图一律拒绝。
  */
 import {
-  EditableGraphSchema, EditableNodeSchema, EditableResourceSchema, GraphEdgeSchema, WorkspaceHistoryKindSchema,
-  type EditableGraph, type EditableNode, type EditableResource, type GraphEdge,
+  EditableGraphSchema, EditableNodeSchema, EditableNoteSchema, EditableResourceSchema, GraphEdgeSchema, WorkspaceHistoryKindSchema,
+  type EditableGraph, type EditableNode, type EditableNote, type EditableResource, type GraphEdge,
   type StoredGraphHistory, type WorkspaceHistoryKind, type WorkspaceHistoryScope,
 } from "./index.js";
 
@@ -36,6 +36,7 @@ type ReplayState = {
   graph: EditableGraph;
   nodes: Map<string, MissingEntity<EditableNode>>;
   resources: Map<string, Map<string, MissingEntity<EditableResource>>>;
+  notes: Map<string, Map<string, MissingEntity<EditableNote>>>;
   edges: Map<string, MissingEntity<GraphEdge>>;
   positions: Map<string, Position | undefined>;
   manualNodes: Set<string>;
@@ -62,7 +63,7 @@ export const onlyGraphLayoutChanged = (first: EditableGraph, second: EditableGra
   sameGraphContent({ ...first, positions: {} }, { ...second, positions: {} });
 
 export const createGraphHistory = (graph: EditableGraph): GraphHistory => ({
-  past: [], future: [], base: { graph, nodes: new Map(), resources: new Map(), edges: new Map(), positions: new Map(), manualNodes: new Set() },
+  past: [], future: [], base: { graph, nodes: new Map(), resources: new Map(), notes: new Map(), edges: new Map(), positions: new Map(), manualNodes: new Set() },
   events: [], redoIds: [],
 });
 
@@ -145,12 +146,23 @@ function changedEntities<T extends { id: string }>(
 }
 
 function changedNode(state: ReplayState, current: EditableNode, before: EditableNode, after: EditableNode): EditableNode {
-  const next = changedFields(current, before, after, ["resources"]);
+  const next = changedFields(current, before, after, ["resources", "notes"]);
   const missing = state.resources.get(current.id) ?? new Map<string, MissingEntity<EditableResource>>();
   state.resources.set(current.id, missing);
   next.resources = changedEntities(current.resources, before.resources, after.resources,
     (resource, previous, incoming) => changedFields(resource, previous, incoming, ["rank"]), missing)
     .map((resource, index) => ({ ...resource, rank: index + 1 }));
+  if (!same(before.notes, after.notes)) {
+    // 撤销全图替换后，同 ID 节点仍可能是旧节点，不能把后写笔记静默挂到旧节点上。
+    if (current.noteGeneration !== before.noteGeneration) throw new MissingHistoryDependency();
+    const missingNotes = state.notes.get(current.id) ?? new Map<string, MissingEntity<EditableNote>>();
+    const notes = changedEntities(current.notes ?? [], before.notes ?? [], after.notes ?? [],
+      (note, previous, incoming) => changedFields(note, previous, incoming), missingNotes);
+    if (missingNotes.size > 0) state.notes.set(current.id, missingNotes);
+    else state.notes.delete(current.id);
+    if (notes.length > 0 || after.notes !== undefined) next.notes = notes;
+    else delete next.notes;
+  }
   // 人工内容变更的状态依赖最终资源数量；重放不能把恢复了资源的节点仍标成 empty。
   if ((after.status === "edited" || after.status === "empty") &&
       (before.title !== after.title || before.description !== after.description || !same(before.resources, after.resources))) {
@@ -174,7 +186,7 @@ function applySearchScope(state: ReplayState, event: HistoryEntry): void {
     if (state.graph.engine === undefined) delete graph.engine;
     else graph.engine = state.graph.engine;
     state.graph = graph;
-    state.nodes.clear(); state.resources.clear(); state.edges.clear(); state.positions.clear(); state.manualNodes.clear();
+    state.nodes.clear(); state.resources.clear(); state.notes.clear(); state.edges.clear(); state.positions.clear(); state.manualNodes.clear();
     return;
   }
   const incoming = after.nodes.find(node => node.id === scope.nodeId);
@@ -214,7 +226,7 @@ function applyDifference(state: ReplayState, event: HistoryEntry): void {
   next.nodes = changedEntities(graph.nodes, before.nodes, after.nodes,
     (current, previous, incoming) => changedNode(state, current, previous, incoming), state.nodes);
   for (const node of before.nodes) if (!after.nodes.some(incoming => incoming.id === node.id)) {
-    state.resources.delete(node.id); state.manualNodes.delete(node.id);
+    state.resources.delete(node.id); state.notes.delete(node.id); state.manualNodes.delete(node.id);
   }
   next.edges = changedEntities(graph.edges, before.edges, after.edges,
     (edge, previous, incoming) => changedFields(edge, previous, incoming), state.edges);
@@ -243,7 +255,9 @@ function orderStillRequired<T extends { id: string }>(missing: MissingEntity<T>,
   return !same(original.filter(id => current.includes(id)), current.filter(id => original.includes(id)));
 }
 function nodeStillRequired(initial: EditableNode, current: EditableNode): boolean {
-  if (!same(without(initial, ["resources", "status", "warnings", "error", "searchPlan"]), without(current, ["resources", "status", "warnings", "error", "searchPlan"]))) return true;
+  const derived = ["resources", "notes", "status", "warnings", "error", "searchPlan"];
+  if (!same(without(initial, derived), without(current, derived))) return true;
+  if (current.notes?.some(note => !same(initial.notes?.find(old => old.id === note.id), note))) return true;
   // 删除本来属于缺失节点的内容不需要该节点继续存在；留下的新资源、编辑内容或顺序才是依赖。
   if (current.resources.some(resource => {
     const previous = initial.resources.find(old => old.id === resource.id);
@@ -268,6 +282,16 @@ function finalGraph(state: ReplayState): EditableGraph {
       return false;
     }).map((resource, index) => ({ ...resource, rank: index + 1 }));
     const current = { ...node, resources };
+    if (node.notes !== undefined) {
+      const missingNotes = state.notes.get(node.id);
+      const notes = node.notes.filter(note => {
+        const placeholder = missingNotes?.get(note.id);
+        if (placeholder === undefined) return true;
+        if (!same(placeholder.initial, note) || orderStillRequired(placeholder, node.notes ?? [])) throw new MissingHistoryDependency();
+        return false;
+      });
+      current.notes = notes;
+    }
     if (state.manualNodes.has(node.id)) {
       current.status = resources.length === 0 ? "empty" : "edited";
       current.warnings = []; delete current.error;
@@ -317,6 +341,7 @@ function copyReplay(state: ReplayState): ReplayState {
   const copyMissing = <T>(values: Map<string, MissingEntity<T>>) => new Map([...values].map(([id, value]) => [id, { ...value }]));
   return { graph: state.graph, nodes: copyMissing(state.nodes), edges: copyMissing(state.edges),
     resources: new Map([...state.resources].map(([id, missing]) => [id, copyMissing(missing)])),
+    notes: new Map([...state.notes].map(([id, missing]) => [id, copyMissing(missing)])),
     positions: new Map(state.positions), manualNodes: new Set(state.manualNodes) };
 }
 function replay(base: ReplayState, events: readonly HistoryEntry[], collectPast = false): { graph: EditableGraph; past: EditableGraph[] } {
@@ -403,6 +428,7 @@ export function storeGraphHistory(history: GraphHistory): StoredGraphHistory {
     version: "history.v1",
     base: { graph: history.base.graph, nodes: [...history.base.nodes], edges: [...history.base.edges],
       resources: [...history.base.resources].map(([id, missing]) => [id, [...missing]]),
+      ...(history.base.notes.size === 0 ? {} : { notes: [...history.base.notes].map(([id, missing]) => [id, [...missing]] as [string, [string, MissingEntity<EditableNote>][]]) }),
       positions: [...history.base.positions].map(([id, position]) => [id, position ?? null]),
       manualNodes: [...history.base.manualNodes] },
     events: history.events, redoIds: history.redoIds,
@@ -489,6 +515,8 @@ export function restoreGraphHistory(value: unknown, document: EditableGraph, lim
     graph,
     nodes: storedPairs(base.nodes, (value, id) => storedMissing(value, id, value => EditableNodeSchema.parse(value))),
     resources: storedPairs(base.resources, value => storedPairs(value, (value, id) => storedMissing(value, id, value => EditableResourceSchema.parse(value)))),
+    notes: base.notes === undefined ? new Map() : storedPairs(base.notes, value => storedPairs(value, (value, id) =>
+      storedMissing(value, id, note => EditableNoteSchema.parse(note)))),
     edges: storedPairs(base.edges, (value, id) => storedMissing(value, id, value => GraphEdgeSchema.parse(value))),
     positions: storedPairs(base.positions, value => value === null ? undefined : EditableGraphSchema.shape.positions.parse({ value }).value),
     manualNodes: new Set(storedIds(base.manualNodes)),
@@ -585,6 +613,12 @@ export function inferHistoryDescription(before: EditableGraph, after: EditableGr
       if (!same(previous.resources.map(item => item.id), node.resources.map(item => item.id))) return { kind: "resource.move", subject: node.title };
       const resource = node.resources.find(item => !same(previous.resources.find(old => old.id === item.id), item));
       if (resource !== undefined) return { kind: "resource.edit", subject: resource.title };
+      const addedNote = node.notes?.find(item => !previous.notes?.some(old => old.id === item.id));
+      const removedNote = previous.notes?.find(item => !node.notes?.some(next => next.id === item.id));
+      const editedNote = node.notes?.find(item => !same(previous.notes?.find(old => old.id === item.id), item));
+      if (addedNote !== undefined) return { kind: "note.add", subject: addedNote.title };
+      if (removedNote !== undefined) return { kind: "note.delete", subject: removedNote.title };
+      if (editedNote !== undefined) return { kind: "note.edit", subject: editedNote.title };
       return { kind: previous.engine !== node.engine ? "engine.change" : "node.edit", subject: node.title };
     }
   }

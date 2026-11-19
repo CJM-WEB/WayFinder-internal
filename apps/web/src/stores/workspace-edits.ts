@@ -5,7 +5,7 @@
  */
 import {
   canonicalizeHttpUrl, EditableGraphSchema, ResourceSchema,
-  type EditableGraph, type EditableNode, type EditableResource, type GraphEdge,
+  type EditableGraph, type EditableNode, type EditableNote, type EditableResource, type GraphEdge,
 } from "@wayfinder/contracts";
 
 export class InvalidResourceUrlError extends Error {
@@ -77,6 +77,30 @@ export function deleteNode(graph: EditableGraph, nodeId: string): EditableGraph 
     ...graph, nodes: graph.nodes.filter(node => node.id !== nodeId), positions,
     edges: graph.edges.filter(edge => edge.source !== nodeId && edge.target !== nodeId),
   });
+}
+
+type NoteFields = Omit<EditableNote, "id">;
+
+/** 笔记只更新所属节点的笔记集合，资源状态、搜索结论和布局保留。 */
+function replaceNotes(graph: EditableGraph, nodeId: string, change: (notes: EditableNote[]) => EditableNote[]): EditableGraph {
+  return finish(graph, { ...graph, nodes: graph.nodes.map(node => {
+    if (node.id !== nodeId) return node;
+    const notes = change(node.notes ?? []);
+    return notes.length === 0 && node.notes === undefined ? node : { ...node, notes };
+  }) });
+}
+
+export function addNote(graph: EditableGraph, nodeId: string, fields: NoteFields, id: string = crypto.randomUUID()): EditableGraph {
+  if (![fields.title, fields.description, fields.markdown].some(value => value.trim() !== "")) return graph;
+  return replaceNotes(graph, nodeId, notes => [...notes, { id, ...fields }]);
+}
+
+export function updateNote(graph: EditableGraph, nodeId: string, noteId: string, patch: Partial<NoteFields>): EditableGraph {
+  return replaceNotes(graph, nodeId, notes => notes.map(note => note.id === noteId ? { ...note, ...patch } : note));
+}
+
+export function deleteNote(graph: EditableGraph, nodeId: string, noteId: string): EditableGraph {
+  return replaceNotes(graph, nodeId, notes => notes.filter(note => note.id !== noteId));
 }
 export function addResource(graph: EditableGraph, nodeId: string, input: string, id: string = crypto.randomUUID()): EditableGraph {
   const url = resolveUrl(graph, input);

@@ -4,9 +4,12 @@
  */
 import type { PoolConnection } from "mysql2/promise";
 import { describe, expect, it, vi } from "vitest";
+import { EditableGraphSchema, GroupGraphActionSchema } from "@wayfinder/contracts";
+import { createGraphHistory, storeGraphHistory } from "@wayfinder/contracts/graph-history";
 import { AccountDatabase, databaseConfigFromUrl, databaseOperation } from "../accounts/database.js";
 import { GroupAccessError } from "./errors.js";
 import { createGroupStorage, groupTransaction } from "./storage.js";
+import { createGroupWorkspaceStorage } from "./workspace-storage.js";
 
 function fixture(rows: (sql: string, values: unknown[]) => unknown = () => []) {
   const database = new AccountDatabase(databaseConfigFromUrl("mysql://fixture:fake@127.0.0.1:1/wf_d12_test_storage"));
@@ -21,6 +24,15 @@ function fixture(rows: (sql: string, values: unknown[]) => unknown = () => []) {
   return { database, statements, cleanup: async () => { acquire.mockRestore(); await database.close(); } };
 }
 const operation = () => databaseOperation(new AbortController().signal);
+
+/** 使用真实个人存档和历史形状，确保共享测试不会因笔记夹具本身被协议拒绝而假绿。 */
+const note = { id: "fixture-note", title: "个人笔记标题", description: "个人笔记说明", markdown: "个人笔记正文" };
+const sourceDocument = () => EditableGraphSchema.parse({
+  version: "workspace.v1", id: "source-graph", title: "资料", query: "", language: "zh-CN",
+  presentationMode: "graph", createdAt: "2026-11-19T00:00:00.000Z", updatedAt: "2026-11-19T00:00:00.000Z",
+  lastRunId: null, nodes: [{ id: "node", title: "节点", description: "", nodeType: "primary", layer: 0, status: "empty",
+    resources: [], warnings: [], notes: [note] }], edges: [], positions: {},
+});
 
 describe("小组存储适配与事务错误", () => {
   it("写入后业务拒绝回滚保存点并保留明确错误码，不提交部分组状态", async () => {
@@ -62,5 +74,63 @@ describe("小组存储适配与事务错误", () => {
       expect(result.members.every(member => !Object.hasOwn(member, "email"))).toBe(true);
       expect(f.statements[0]).toBe("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ");
     } finally { await f.cleanup(); }
+  });
+
+  it("从个人图复制时组图文档、历史基线和持久化记录均不泄露笔记", async () => {
+    const source = sourceDocument();
+    const group = { groupId: "fixture_group", ownerUserId: "owner", name: "学习组", description: "", revision: 1 };
+    const record = { document: source, history: storeGraphHistory(createGraphHistory(source)),
+      revision: 1, status: "active", originalIndex: null };
+    const personalEnvelope = { kind: "graph", recordJson: JSON.stringify(record),
+      lastMutationId: "source-save", requestFingerprint: "a".repeat(64) };
+    const sharedRows = new Map<string, string>();
+    const personalGraphWrites: string[] = [];
+    // 只替换 SQL 执行层，复制、建空历史、持久化和响应投影均走正式存储入口。
+    const f = fixture((sql, values) => {
+      const key = String(values[1]);
+      if (sql.startsWith("SELECT groupId,")) return [{ groupId: group.groupId, ownerUserId: "owner",
+        invitationCode: null, payload: group }];
+      if (sql.startsWith("SELECT userId FROM wf_group_members")) return [{ userId: "owner" }];
+      if (sql.startsWith("SELECT payload FROM wf_user_data") && key.startsWith("g_")) return [{ payload: personalEnvelope }];
+      if (sql.startsWith("INSERT INTO wf_user_data") && key.startsWith("g_")) personalGraphWrites.push(key);
+      if (sql.startsWith("INSERT INTO wf_group_data")) sharedRows.set(key, String(values[2]));
+      if (sql.startsWith("SELECT payload FROM wf_group_data")) {
+        if (sql.includes("LEFT(recordId, 2)")) return [...sharedRows].filter(([id]) => id.startsWith("g_")).map(([, payload]) => ({ payload }));
+        const payload = sharedRows.get(key);
+        return payload === undefined ? [] : [{ payload }];
+      }
+      return [];
+    });
+    try {
+      const result = await createGroupWorkspaceStorage(f.database, { createId: () => "group-copy", now: () => source.updatedAt })
+        .write("owner", { action: "copyIn", mutationId: "copy-in", groupId: group.groupId,
+          sourceGraphId: source.id, sourceRevision: 1 }, operation());
+      const copy = result.workspace.graphs[0];
+      expect(copy?.document.id).toBe("group-copy");
+      expect(copy?.document.nodes.map(node => node.id)).toEqual(["node"]);
+      expect(copy?.document.nodes[0]?.notes ?? []).toEqual([]);
+      expect(copy?.history.base.graph.nodes[0]?.notes ?? []).toEqual([]);
+      expect(copy?.history.events).toEqual([]);
+      expect(source.nodes[0]?.notes).toEqual([note]);
+      expect(personalGraphWrites).toEqual([]);
+      expect([...sharedRows.keys()].some(key => key.startsWith("g_"))).toBe(true);
+      for (const privateValue of [note.title, note.description, note.markdown]) {
+        expect([...sharedRows.values()].join("\n")).not.toContain(privateValue);
+      }
+    } finally { await f.cleanup(); }
+  });
+
+  it("小组新建与普通编辑协议拒绝夹带个人笔记或笔记历史动作", () => {
+    const document = sourceDocument();
+    const empty = { ...document, nodes: [] };
+    const context = { groupId: "fixture_group", mutationId: "client-edit" };
+    const edit = { ...context, action: "edit", graphId: document.id, expectedRevision: 1,
+      before: empty, after: empty, kind: "graph.update", subject: "" };
+    expect(document.nodes[0]?.notes).toEqual([note]);
+    expect(GroupGraphActionSchema.safeParse(edit).success).toBe(true);
+    for (const input of [{ ...context, action: "create", document }, { ...edit, before: document },
+      { ...edit, after: document }, ...["note.add", "note.edit", "note.delete"].map(kind => ({ ...edit, kind }))]) {
+      expect(GroupGraphActionSchema.safeParse(input).success).toBe(false);
+    }
   });
 });

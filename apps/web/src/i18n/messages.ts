@@ -92,6 +92,10 @@ export type Messages = Readonly<{
     sourceNode: string; targetNode: string; relationType: string; addConnection: string;
     saveConnection: string; deleteConnection: string; invalidConnection: string; graphInstructions: string;
   }>;
+  notes: Readonly<{
+    add: string; edit: string; delete: string;
+    confirmDeleteNode: (count: number) => string; confirmReplaceGraph: (count: number) => string;
+  }>;
   app: Readonly<{
     slogan: string;
     summaryAria: string;
@@ -176,7 +180,7 @@ export const MESSAGES: Record<SearchLanguage, Messages> = {
     },
     cloud: {
       title: "云端工作区", importBlocked: "请先完成待提交同步或处理冲突，再导入访客图。", retry: "重试云端同步", conflict: "存在冲突，本地修改已保留", reload: "重新载入云端图", copy: "另存本地副本",
-      import: "导入访客图及历史", importNotice: "确认把本浏览器访客图、撤销历史及可恢复删除记录导入当前账号？不会上传 API Key，也不会删除访客源数据。",
+      import: "导入访客图及历史", importNotice: "确认把本浏览器访客图、笔记、撤销历史及可恢复删除记录导入当前账号？不会上传 API Key，也不会删除访客源数据。",
       confirmImport: "确认导入图及历史",
       statuses: { guest: "尚未启用云端同步", loading: "正在读取云端工作区…", saving: "正在同步到云端…", synced: "已同步到云端", offline: "当前离线，修改保留在本地", error: "云端同步未完成，本地修改已保留；请重试", conflict: "云端版本有冲突，请选择重新载入或另存副本" },
     },
@@ -244,6 +248,11 @@ export const MESSAGES: Record<SearchLanguage, Messages> = {
       invalidConnection: "连线无效：请连接现有节点的同类端口；推荐下一步不能形成环。",
       graphInstructions: "拖动节点调整位置；上下端口连接推荐顺序，左右端口连接相关主题。",
       locateDuplicate: "定位已有资源所在节点", invalidUrl: "请输入有效的完整 HTTP(S) 地址。", editFailure: "无法保存此次编辑，请检查输入。",
+    },
+    notes: {
+      add: "新建笔记", edit: "编辑笔记", delete: "删除笔记",
+      confirmDeleteNode: count => `此节点的 ${count} 条笔记会随节点删除，可通过撤销恢复。继续删除节点？`,
+      confirmReplaceGraph: count => `替换整张图会移除旧节点及其 ${count} 条笔记，可通过撤销恢复。继续替换？`,
     },
     app: {
       slogan: "Graph 即搜索结果页",
@@ -376,7 +385,7 @@ export const MESSAGES: Record<SearchLanguage, Messages> = {
     },
     cloud: {
       title: "Cloud workspace", importBlocked: "Finish pending sync or resolve conflicts before importing guest graphs.", retry: "Retry cloud sync", conflict: "Conflict: local changes are preserved", reload: "Reload cloud graph", copy: "Save local copy",
-      import: "Import guest graphs and history", importNotice: "Import this browser's guest graphs, undo history and recoverable deleted graphs into this account? API keys are excluded and guest source data stays intact.",
+      import: "Import guest graphs and history", importNotice: "Import this browser's guest graphs, notes, undo history and recoverable deleted graphs into this account? API keys are excluded and guest source data stays intact.",
       confirmImport: "Confirm graph and history import",
       statuses: { guest: "Cloud sync is not active", loading: "Loading cloud workspace…", saving: "Syncing to cloud…", synced: "Synced to cloud", offline: "Offline. Your changes are kept locally", error: "Cloud sync did not complete. Local changes are preserved; please retry", conflict: "Cloud version conflict. Reload or save a local copy" },
     },
@@ -444,6 +453,11 @@ export const MESSAGES: Record<SearchLanguage, Messages> = {
       invalidConnection: "Invalid connection. Use matching ports on existing nodes; recommended-next connections cannot form a cycle.",
       graphInstructions: "Drag nodes to move them. Top/bottom ports define recommended order; side ports connect related topics.",
       locateDuplicate: "Go to the existing resource's node", invalidUrl: "Enter a valid, complete HTTP(S) address.", editFailure: "Unable to save this edit. Check the input.",
+    },
+    notes: {
+      add: "Add note", edit: "Edit note", delete: "Delete note",
+      confirmDeleteNode: count => `Deleting this node also removes its notes (${count}). Undo can restore them. Delete the node?`,
+      confirmReplaceGraph: count => `Replacing this graph removes the previous nodes and their notes (${count}). Undo can restore them. Replace the graph?`,
     },
     app: {
       slogan: "The Graph is the search results page",

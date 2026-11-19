@@ -620,6 +620,38 @@
                                     ]
                                   }
                                 },
+                                "notes": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "object",
+                                    "properties": {
+                                      "id": {
+                                        "type": "string",
+                                        "minLength": 1
+                                      },
+                                      "title": {
+                                        "type": "string"
+                                      },
+                                      "description": {
+                                        "type": "string"
+                                      },
+                                      "markdown": {
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": [
+                                      "id",
+                                      "title",
+                                      "description",
+                                      "markdown"
+                                    ],
+                                    "additionalProperties": false
+                                  }
+                                },
+                                "noteGeneration": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
                                 "warnings": {
                                   "type": "array",
                                   "items": {
@@ -1236,6 +1268,38 @@
                                             ]
                                           }
                                         },
+                                        "notes": {
+                                          "type": "array",
+                                          "items": {
+                                            "type": "object",
+                                            "properties": {
+                                              "id": {
+                                                "type": "string",
+                                                "minLength": 1
+                                              },
+                                              "title": {
+                                                "type": "string"
+                                              },
+                                              "description": {
+                                                "type": "string"
+                                              },
+                                              "markdown": {
+                                                "type": "string"
+                                              }
+                                            },
+                                            "required": [
+                                              "id",
+                                              "title",
+                                              "description",
+                                              "markdown"
+                                            ],
+                                            "additionalProperties": false
+                                          }
+                                        },
+                                        "noteGeneration": {
+                                          "type": "string",
+                                          "minLength": 1
+                                        },
                                         "warnings": {
                                           "type": "array",
                                           "items": {
@@ -1655,6 +1719,38 @@
                                                 ]
                                               }
                                             },
+                                            "notes": {
+                                              "type": "array",
+                                              "items": {
+                                                "type": "object",
+                                                "properties": {
+                                                  "id": {
+                                                    "type": "string",
+                                                    "minLength": 1
+                                                  },
+                                                  "title": {
+                                                    "type": "string"
+                                                  },
+                                                  "description": {
+                                                    "type": "string"
+                                                  },
+                                                  "markdown": {
+                                                    "type": "string"
+                                                  }
+                                                },
+                                                "required": [
+                                                  "id",
+                                                  "title",
+                                                  "description",
+                                                  "markdown"
+                                                ],
+                                                "additionalProperties": false
+                                              }
+                                            },
+                                            "noteGeneration": {
+                                              "type": "string",
+                                              "minLength": 1
+                                            },
                                             "warnings": {
                                               "type": "array",
                                               "items": {
@@ -1965,6 +2061,84 @@
                                   "maxItems": 2
                                 }
                               },
+                              "notes": {
+                                "type": "array",
+                                "items": {
+                                  "type": "array",
+                                  "prefixItems": [
+                                    {
+                                      "type": "string",
+                                      "minLength": 1
+                                    },
+                                    {
+                                      "type": "array",
+                                      "items": {
+                                        "type": "array",
+                                        "prefixItems": [
+                                          {
+                                            "type": "string",
+                                            "minLength": 1
+                                          },
+                                          {
+                                            "type": "object",
+                                            "properties": {
+                                              "initial": {
+                                                "type": "object",
+                                                "properties": {
+                                                  "id": {
+                                                    "type": "string",
+                                                    "minLength": 1
+                                                  },
+                                                  "title": {
+                                                    "type": "string"
+                                                  },
+                                                  "description": {
+                                                    "type": "string"
+                                                  },
+                                                  "markdown": {
+                                                    "type": "string"
+                                                  }
+                                                },
+                                                "required": [
+                                                  "id",
+                                                  "title",
+                                                  "description",
+                                                  "markdown"
+                                                ],
+                                                "additionalProperties": false
+                                              },
+                                              "order": {
+                                                "type": "array",
+                                                "items": {
+                                                  "type": "string",
+                                                  "minLength": 1
+                                                }
+                                              },
+                                              "ownedResourceIds": {
+                                                "type": "array",
+                                                "items": {
+                                                  "type": "string",
+                                                  "minLength": 1
+                                                }
+                                              }
+                                            },
+                                            "required": [
+                                              "initial"
+                                            ],
+                                            "additionalProperties": false
+                                          }
+                                        ],
+                                        "items": false,
+                                        "minItems": 2,
+                                        "maxItems": 2
+                                      }
+                                    }
+                                  ],
+                                  "items": false,
+                                  "minItems": 2,
+                                  "maxItems": 2
+                                }
+                              },
                               "edges": {
                                 "type": "array",
                                 "items": {
@@ -2124,7 +2298,10 @@
                                     "edge.add",
                                     "edge.edit",
                                     "edge.delete",
-                                    "engine.change"
+                                    "engine.change",
+                                    "note.add",
+                                    "note.edit",
+                                    "note.delete"
                                   ]
                                 },
                                 "subject": {
@@ -2663,6 +2840,38 @@
                                                 }
                                               ]
                                             }
+                                          },
+                                          "notes": {
+                                            "type": "array",
+                                            "items": {
+                                              "type": "object",
+                                              "properties": {
+                                                "id": {
+                                                  "type": "string",
+                                                  "minLength": 1
+                                                },
+                                                "title": {
+                                                  "type": "string"
+                                                },
+                                                "description": {
+                                                  "type": "string"
+                                                },
+                                                "markdown": {
+                                                  "type": "string"
+                                                }
+                                              },
+                                              "required": [
+                                                "id",
+                                                "title",
+                                                "description",
+                                                "markdown"
+                                              ],
+                                              "additionalProperties": false
+                                            }
+                                          },
+                                          "noteGeneration": {
+                                            "type": "string",
+                                            "minLength": 1
                                           },
                                           "warnings": {
                                             "type": "array",
@@ -3269,6 +3478,38 @@
                                                 }
                                               ]
                                             }
+                                          },
+                                          "notes": {
+                                            "type": "array",
+                                            "items": {
+                                              "type": "object",
+                                              "properties": {
+                                                "id": {
+                                                  "type": "string",
+                                                  "minLength": 1
+                                                },
+                                                "title": {
+                                                  "type": "string"
+                                                },
+                                                "description": {
+                                                  "type": "string"
+                                                },
+                                                "markdown": {
+                                                  "type": "string"
+                                                }
+                                              },
+                                              "required": [
+                                                "id",
+                                                "title",
+                                                "description",
+                                                "markdown"
+                                              ],
+                                              "additionalProperties": false
+                                            }
+                                          },
+                                          "noteGeneration": {
+                                            "type": "string",
+                                            "minLength": 1
                                           },
                                           "warnings": {
                                             "type": "array",
@@ -3950,6 +4191,38 @@
                                     ]
                                   }
                                 },
+                                "notes": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "object",
+                                    "properties": {
+                                      "id": {
+                                        "type": "string",
+                                        "minLength": 1
+                                      },
+                                      "title": {
+                                        "type": "string"
+                                      },
+                                      "description": {
+                                        "type": "string"
+                                      },
+                                      "markdown": {
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": [
+                                      "id",
+                                      "title",
+                                      "description",
+                                      "markdown"
+                                    ],
+                                    "additionalProperties": false
+                                  }
+                                },
+                                "noteGeneration": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
                                 "warnings": {
                                   "type": "array",
                                   "items": {
@@ -4566,6 +4839,38 @@
                                             ]
                                           }
                                         },
+                                        "notes": {
+                                          "type": "array",
+                                          "items": {
+                                            "type": "object",
+                                            "properties": {
+                                              "id": {
+                                                "type": "string",
+                                                "minLength": 1
+                                              },
+                                              "title": {
+                                                "type": "string"
+                                              },
+                                              "description": {
+                                                "type": "string"
+                                              },
+                                              "markdown": {
+                                                "type": "string"
+                                              }
+                                            },
+                                            "required": [
+                                              "id",
+                                              "title",
+                                              "description",
+                                              "markdown"
+                                            ],
+                                            "additionalProperties": false
+                                          }
+                                        },
+                                        "noteGeneration": {
+                                          "type": "string",
+                                          "minLength": 1
+                                        },
                                         "warnings": {
                                           "type": "array",
                                           "items": {
@@ -4985,6 +5290,38 @@
                                                 ]
                                               }
                                             },
+                                            "notes": {
+                                              "type": "array",
+                                              "items": {
+                                                "type": "object",
+                                                "properties": {
+                                                  "id": {
+                                                    "type": "string",
+                                                    "minLength": 1
+                                                  },
+                                                  "title": {
+                                                    "type": "string"
+                                                  },
+                                                  "description": {
+                                                    "type": "string"
+                                                  },
+                                                  "markdown": {
+                                                    "type": "string"
+                                                  }
+                                                },
+                                                "required": [
+                                                  "id",
+                                                  "title",
+                                                  "description",
+                                                  "markdown"
+                                                ],
+                                                "additionalProperties": false
+                                              }
+                                            },
+                                            "noteGeneration": {
+                                              "type": "string",
+                                              "minLength": 1
+                                            },
                                             "warnings": {
                                               "type": "array",
                                               "items": {
@@ -5295,6 +5632,84 @@
                                   "maxItems": 2
                                 }
                               },
+                              "notes": {
+                                "type": "array",
+                                "items": {
+                                  "type": "array",
+                                  "prefixItems": [
+                                    {
+                                      "type": "string",
+                                      "minLength": 1
+                                    },
+                                    {
+                                      "type": "array",
+                                      "items": {
+                                        "type": "array",
+                                        "prefixItems": [
+                                          {
+                                            "type": "string",
+                                            "minLength": 1
+                                          },
+                                          {
+                                            "type": "object",
+                                            "properties": {
+                                              "initial": {
+                                                "type": "object",
+                                                "properties": {
+                                                  "id": {
+                                                    "type": "string",
+                                                    "minLength": 1
+                                                  },
+                                                  "title": {
+                                                    "type": "string"
+                                                  },
+                                                  "description": {
+                                                    "type": "string"
+                                                  },
+                                                  "markdown": {
+                                                    "type": "string"
+                                                  }
+                                                },
+                                                "required": [
+                                                  "id",
+                                                  "title",
+                                                  "description",
+                                                  "markdown"
+                                                ],
+                                                "additionalProperties": false
+                                              },
+                                              "order": {
+                                                "type": "array",
+                                                "items": {
+                                                  "type": "string",
+                                                  "minLength": 1
+                                                }
+                                              },
+                                              "ownedResourceIds": {
+                                                "type": "array",
+                                                "items": {
+                                                  "type": "string",
+                                                  "minLength": 1
+                                                }
+                                              }
+                                            },
+                                            "required": [
+                                              "initial"
+                                            ],
+                                            "additionalProperties": false
+                                          }
+                                        ],
+                                        "items": false,
+                                        "minItems": 2,
+                                        "maxItems": 2
+                                      }
+                                    }
+                                  ],
+                                  "items": false,
+                                  "minItems": 2,
+                                  "maxItems": 2
+                                }
+                              },
                               "edges": {
                                 "type": "array",
                                 "items": {
@@ -5454,7 +5869,10 @@
                                     "edge.add",
                                     "edge.edit",
                                     "edge.delete",
-                                    "engine.change"
+                                    "engine.change",
+                                    "note.add",
+                                    "note.edit",
+                                    "note.delete"
                                   ]
                                 },
                                 "subject": {
@@ -5993,6 +6411,38 @@
                                                 }
                                               ]
                                             }
+                                          },
+                                          "notes": {
+                                            "type": "array",
+                                            "items": {
+                                              "type": "object",
+                                              "properties": {
+                                                "id": {
+                                                  "type": "string",
+                                                  "minLength": 1
+                                                },
+                                                "title": {
+                                                  "type": "string"
+                                                },
+                                                "description": {
+                                                  "type": "string"
+                                                },
+                                                "markdown": {
+                                                  "type": "string"
+                                                }
+                                              },
+                                              "required": [
+                                                "id",
+                                                "title",
+                                                "description",
+                                                "markdown"
+                                              ],
+                                              "additionalProperties": false
+                                            }
+                                          },
+                                          "noteGeneration": {
+                                            "type": "string",
+                                            "minLength": 1
                                           },
                                           "warnings": {
                                             "type": "array",
@@ -6599,6 +7049,38 @@
                                                 }
                                               ]
                                             }
+                                          },
+                                          "notes": {
+                                            "type": "array",
+                                            "items": {
+                                              "type": "object",
+                                              "properties": {
+                                                "id": {
+                                                  "type": "string",
+                                                  "minLength": 1
+                                                },
+                                                "title": {
+                                                  "type": "string"
+                                                },
+                                                "description": {
+                                                  "type": "string"
+                                                },
+                                                "markdown": {
+                                                  "type": "string"
+                                                }
+                                              },
+                                              "required": [
+                                                "id",
+                                                "title",
+                                                "description",
+                                                "markdown"
+                                              ],
+                                              "additionalProperties": false
+                                            }
+                                          },
+                                          "noteGeneration": {
+                                            "type": "string",
+                                            "minLength": 1
                                           },
                                           "warnings": {
                                             "type": "array",

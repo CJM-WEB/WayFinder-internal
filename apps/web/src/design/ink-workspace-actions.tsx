@@ -239,7 +239,12 @@ export default function InkWorkspaceActions({ target, language, enabled, allowCr
         {SearchEngineSchema.options.map(engine => <div key={engine}>{option(messages.searchEngine.labels[engine], () => runAction(document => ({
           ...document, updatedAt: new Date().toISOString(), nodes: document.nodes.map(item => item.id === held.nodeId ? { ...item, engine } : item),
         })), !writable || node === undefined, nodeEngine === engine)}</div>)}
-        {option(messages.editor.deleteNode, () => runAction(document => deleteNode(document, held.nodeId), true))}
+        {option(messages.editor.deleteNode, () => {
+          const noteCount = node?.notes?.length ?? 0;
+          if (noteCount === 0 || window.confirm(messages.notes.confirmDeleteNode(noteCount))) {
+            runAction(document => deleteNode(document, held.nodeId), true);
+          }
+        })}
       </> : held.kind === "resource" ? <>
         {option(messages.editor.editResource, () => openDialog("resource.edit"), !writable || resource === undefined)}
         {option(messages.editor.addResource, () => openDialog("resource.add"), !writable || node === undefined)}

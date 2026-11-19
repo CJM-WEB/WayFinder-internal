@@ -224,7 +224,8 @@ export function createWorkspaceContext(dependencies: Dependencies = {}) {
     const after = EditableGraphSchema.parse(edit(capture.document));
     if (sameGraphContent(capture.document, after)) return true;
     const inferred = description ?? inferHistoryDescription(capture.document, after);
-    if (inferred.scope !== undefined || inferred.kind === "graph.search" || inferred.kind === "node.search") throw new GroupRequestError("GROUP_INVALID");
+    if (inferred.scope !== undefined || inferred.kind === "graph.search" || inferred.kind === "node.search"
+      || inferred.kind === "note.add" || inferred.kind === "note.edit" || inferred.kind === "note.delete") throw new GroupRequestError("GROUP_INVALID");
     await perform({ action: "edit", groupId: state.groupId!, graphId: capture.graphId, expectedRevision: capture.revision!,
       mutationId: createId(), before: capture.document, after, kind: inferred.kind, subject: inferred.subject });
     return true;

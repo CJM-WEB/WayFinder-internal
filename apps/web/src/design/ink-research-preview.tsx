@@ -131,7 +131,12 @@ export default function InkResearchPreview({ language, active = true, suspended 
         onSelectNode={selectNode}
         onCancel={() => { if (owned()) research.cancel(); }}
         onDismiss={() => { if (owned()) research.dismiss(); }}
-        onApply={mode => { if (owned()) research.apply(mode); }} />
+        onApply={mode => {
+          if (!owned()) return;
+          const noteCount = shown.preview.nodeId === null
+            ? documentGraph?.nodes.reduce((count, node) => count + (node.notes?.length ?? 0), 0) ?? 0 : 0;
+          if (noteCount === 0 || window.confirm(getMessages(language).notes.confirmReplaceGraph(noteCount))) research.apply(mode);
+        }} />
     </div>
   </div></>;
 }
