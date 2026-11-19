@@ -13,6 +13,10 @@ export type InkNoteSession = Readonly<{
   origin: { x: number; y: number; width: number; height: number };
   returnFocus: HTMLElement | null;
 }>;
+export type InkNoteRecovery = Readonly<{
+  message: string; label: string; disabled: boolean;
+  commit: () => Promise<boolean>; discard?: () => boolean; discardLabel: string;
+}>;
 
 type Props = Readonly<{
   session: InkNoteSession | null;
@@ -22,6 +26,7 @@ type Props = Readonly<{
   onSave: (session: InkNoteSession, note: EditableNote) => Promise<boolean>;
   onClose: () => void;
   onReturn: () => void;
+  recovery?: InkNoteRecovery;
 }>;
 
 const SLIDE_MS = 560;
@@ -47,7 +52,7 @@ function NoteEditorFallback({ value, language, editable, metadata, onChange }: C
   </div>;
 }
 
-export default function InkNoteDialog({ session, language, writable, resources, onSave, onClose, onReturn }: Props) {
+export default function InkNoteDialog({ session, language, writable, resources, onSave, onClose, onReturn, recovery }: Props) {
   const { value: shown, open } = useInkPresence(session, SLIDE_MS);
   const [draft, setDraft] = useState<Draft | null>(null);
   const [paintedOrigin, setPaintedOrigin] = useState<InkNoteSession | null>(null);
@@ -143,6 +148,7 @@ export default function InkNoteDialog({ session, language, writable, resources, 
   if (shown === null || (shown !== session && shown !== departing.current)) return null;
   const note = heldDraft?.note ?? shown.note;
   const status = heldDraft?.status ?? "idle";
+  const pendingRecovery = status === "failed" ? recovery : undefined;
   // 首次提交已进入工作区历史。落盘失败时保留并冻结本次提交内容，重试同一快照而不再产生编辑事件。
   const canChange = writable && status === "idle";
   const change = (patch: Partial<Pick<EditableNote, "title" | "description" | "markdown">>): void => {
@@ -166,14 +172,15 @@ export default function InkNoteDialog({ session, language, writable, resources, 
       close();
       return;
     }
-    if (!writable) {
+    if (pendingRecovery?.disabled) return;
+    if (!writable && pendingRecovery === undefined) {
       setDraft({ owner: shown, note, status: "failed" });
       return;
     }
     saving.current = shown;
     setDraft({ owner: shown, note, status: "saving" });
     try {
-      if (await onSave(shown, note)) {
+      if (await (pendingRecovery === undefined ? onSave(shown, note) : pendingRecovery.commit())) {
         if (active.current === shown) close();
         return;
       }
@@ -219,7 +226,9 @@ export default function InkNoteDialog({ session, language, writable, resources, 
         <div className="ink-note-dialog__contents">
           <header className="ink-note-dialog__header">
             <h2 id={id}>{shown.isNew ? labels.add : labels.note}</h2>
-            <button type="submit" className="ink-study__pill" aria-disabled={status === "saving"}>{status === "failed" ? labels.retry : labels.finish}</button>
+            <button type="submit" className="ink-study__pill" aria-disabled={status === "saving" || pendingRecovery?.disabled}>
+              {pendingRecovery?.label ?? (status === "failed" ? labels.retry : labels.finish)}
+            </button>
           </header>
           <Suspense fallback={<p role="status">{labels.loading}</p>}>
             <InkNoteEditor key={note.id} value={note.markdown} language={language} resources={resources} metadata={metadata}
@@ -227,7 +236,9 @@ export default function InkNoteDialog({ session, language, writable, resources, 
           </Suspense>
           <div className="ink-note-dialog__status">
             {status === "saving" ? <p role="status">{labels.saving}</p> : null}
-            {status === "failed" ? <p role="alert">{labels.failed}</p> : null}
+            {status === "failed" ? <p role="alert">{pendingRecovery?.message ?? labels.failed}</p> : null}
+            {pendingRecovery?.discard === undefined ? null : <button type="button" className="ink-study__pill"
+              onClick={() => { if (pendingRecovery.discard?.()) close(); }}>{pendingRecovery.discardLabel}</button>}
           </div>
         </div>
       </form>

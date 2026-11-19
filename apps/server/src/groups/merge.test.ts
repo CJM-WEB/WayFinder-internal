@@ -21,6 +21,7 @@ const rejected = (action: () => unknown, code: string): void => {
   try { action(); throw new Error("预期拒绝但操作成功"); }
   catch (error: unknown) { expect(error).toMatchObject({ code }); }
 };
+const note = (id: string) => ({ id, title: `笔记 ${id}`, description: "", markdown: `固定正文 ${id}` });
 
 describe("共享图确定性差异合并", () => {
   it.each([
@@ -92,6 +93,49 @@ describe("共享图确定性差异合并", () => {
     const before = graph(), current = { ...before, title: "甲" };
     rejected(() => mergeGroupEdit(current, before, { ...before, title: "乙" }), "GROUP_CONFLICT");
     expect(mergeGroupEdit(current, before, { ...before, title: "甲" }).title).toBe("甲");
+  });
+
+  it("同节点不同笔记及一条笔记的独立字段合并，保留其他资源和检索状态", () => {
+    const before = changed(graph(), copy => { copy.nodes[0]!.notes = [note("a"), note("b")]; });
+    const current = changed(before, copy => {
+      copy.nodes[0]!.notes![0]!.title = "甲改标题";
+      copy.nodes[0]!.notes![1]!.description = "甲补另一条说明";
+      copy.nodes[0]!.resources.push(resource("r2", undefined, 2));
+    });
+    const after = changed(before, copy => { copy.nodes[0]!.notes![0]!.markdown = "乙改正文"; });
+    const merged = mergeGroupEdit(current, before, after).nodes[0];
+    expect(merged?.notes).toEqual([{ ...note("a"), title: "甲改标题", markdown: "乙改正文" },
+      { ...note("b"), description: "甲补另一条说明" }]);
+    expect(merged?.resources).toEqual(current.nodes[0]?.resources);
+    expect(merged?.status).toBe(current.nodes[0]?.status);
+    expect(before.nodes[0]?.notes).toEqual([note("a"), note("b")]);
+  });
+
+  it("同字段冲突、删改冲突、过期笔记目标和重生成节点均不会复活原笔记", () => {
+    const before = changed(graph(), copy => { copy.nodes[0]!.notes = [note("a")]; });
+    const current = changed(before, copy => { copy.nodes[0]!.notes![0]!.title = "甲"; });
+    const edit = changed(before, copy => { copy.nodes[0]!.notes![0]!.title = "乙"; });
+    const remove = changed(before, copy => { copy.nodes[0]!.notes = []; });
+    rejected(() => mergeGroupEdit(current, before, edit), "GROUP_CONFLICT");
+    rejected(() => mergeGroupEdit(current, before, remove), "GROUP_CONFLICT");
+    rejected(() => mergeGroupEdit(remove, before, edit), "GROUP_CONFLICT");
+    expect(mergeGroupEdit(current, before, current)).toEqual(current);
+    const regenerated = changed(before, copy => { copy.nodes[0]!.noteGeneration = "trusted-new-generation"; });
+    rejected(() => mergeGroupEdit(regenerated, before, edit), "GROUP_CONFLICT");
+    expect(mergeGroupEdit(regenerated, regenerated,
+      changed(regenerated, copy => { copy.nodes[0]!.noteGeneration = "forged"; }))).toEqual(regenerated);
+  });
+
+  it("普通组图新建、未授权笔记标识与跨节点搬迁均不能引入组内笔记", () => {
+    const before = changed(graph(), copy => { copy.nodes[0]!.notes = [note("a")]; });
+    const injected = changed(before, copy => { copy.nodes[0]!.notes!.push(note("forged")); });
+    const moved = changed(before, copy => { copy.nodes[0]!.notes = []; copy.nodes[1]!.notes = [note("a")]; });
+    rejected(() => normalizeGroupCreate(before), "GROUP_CONSTRAINT");
+    rejected(() => mergeGroupEdit(before, before, injected), "GROUP_CONSTRAINT");
+    rejected(() => mergeGroupEdit(before, before, moved), "GROUP_CONSTRAINT");
+    const fabricatedBefore = changed(before, copy => { copy.nodes[1]!.notes = [note("fake-baseline")]; });
+    const fabricatedAfter = changed(fabricatedBefore, copy => { copy.nodes[1]!.notes![0]!.markdown = "伪造存档"; });
+    rejected(() => mergeGroupEdit(before, fabricatedBefore, fabricatedAfter), "GROUP_CONFLICT");
   });
 
   it("独立新增资源按既有相邻锚点合并并重新连续编号", () => {

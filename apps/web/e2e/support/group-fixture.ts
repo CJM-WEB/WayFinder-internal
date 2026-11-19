@@ -7,8 +7,8 @@ import { expect, type Page } from "@playwright/test";
 import {
   CLOUD_ACCOUNT_HEADER, GROUP_CONNECTION_HEADER, AccountProfileActionSchema, CloudGraphWriteRequestSchema,
   EditableGraphSchema, GroupActionSchema, GroupGraphActionSchema, GroupGraphHistorySchema, GroupSyncEventSchema,
-  type Account, type GroupGraphReceiptResponse, type CloudGraphRecord, type CloudWorkspaceResponse, type EditableGraph, type GroupDetails,
-  type GroupGraphHistory, type GroupGraphRecord, type GroupSyncEvent, type GroupWorkspaceResponse,
+  type Account, type GroupGraphReceiptResponse, type CloudGraphRecord, type CloudWorkspaceResponse, type EditableGraph, type EditableNote, type GroupDetails,
+  type GroupGraphHistory, type GroupGraphRecord, type GroupSyncEvent, type GroupWorkspaceResponse, type WorkspaceHistoryKind,
 } from "@wayfinder/contracts";
 import { appendHistory, createGraphHistory, restoreGraphHistory, storeGraphHistory, undoHistoryEvent } from "@wayfinder/contracts/graph-history";
 
@@ -36,7 +36,7 @@ function emptyHistory(document: EditableGraph): GroupGraphHistory {
   return GroupGraphHistorySchema.parse({ version: "groupHistory.v1", base: stored.base, events: [], redoIdsByUser: {} });
 }
 /** 复用共享历史差异算法；此样例没有并发合并或窗口裁剪的第二套实现。 */
-function append(record: GroupGraphRecord, after: EditableGraph, actor: string, subject: string, kind: "node.edit" | "graph.rename" = "node.edit"): GroupGraphRecord {
+function append(record: GroupGraphRecord, after: EditableGraph, actor: string, subject: string, kind: WorkspaceHistoryKind = "node.edit"): GroupGraphRecord {
   const restored = restoreGraphHistory({ version: "history.v1", base: record.history.base, events: record.history.events, redoIds: [] }, record.document, 100);
   const stored = storeGraphHistory(appendHistory(restored, record.document, after,
     { id: `fixture-event-${record.revision}`, occurredAt: AT, active: true, kind, subject }, 100));
@@ -57,12 +57,14 @@ function makeGroup(groupId: string, owner = FIXTURE_USER): RemoteGroup {
     workspace: { groupId, revision: 1, graphs: [record], activeOrder: [document.id], deletedIds: [] } };
 }
 
-export async function installGroupFixture(page: Page, options: { nickname?: string | null; empty?: boolean } = {}) {
+export async function installGroupFixture(page: Page, options: { nickname?: string | null; empty?: boolean; privateNote?: EditableNote } = {}) {
   const pageErrors: string[] = []; fixturePageErrors.set(page, pageErrors); page.on("pageerror", error => pageErrors.push(error.message));
   let account: Account | null = { userId: FIXTURE_USER, email: "owner@example.test" };
   let nickname = options.nickname === undefined ? "小甲" : options.nickname;
   const groups: Record<string, RemoteGroup> = options.empty ? {} : { [FIXTURE_GROUP]: makeGroup(FIXTURE_GROUP), [MEMBER_GROUP]: makeGroup(MEMBER_GROUP, OTHER_USER) };
-  const privateDocument = fixtureDocument("fixture-private-graph", "个人源图");
+  const privateSource = fixtureDocument("fixture-private-graph", "个人源图");
+  if (options.privateNote !== undefined) privateSource.nodes[0]!.notes = [options.privateNote];
+  const privateDocument = EditableGraphSchema.parse(privateSource);
   const privateHistory = storeGraphHistory(appendHistory(createGraphHistory(privateDocument), privateDocument, { ...privateDocument, title: "个人源图已改名" },
     { id: "fixture-private-event", occurredAt: AT, active: true, kind: "graph.rename", subject: "个人源图已改名" }, 100));
   const personal: CloudWorkspaceResponse = { userId: FIXTURE_USER, graphs: [{ document: { ...privateDocument, title: "个人源图已改名" }, history: privateHistory,
@@ -73,6 +75,12 @@ export async function installGroupFixture(page: Page, options: { nickname?: stri
   let heldManagement: { action: "leave" | "dissolve"; started: () => void; released: Promise<void> } | undefined;
   let serial = 0;
   const nextId = () => `fixture-generated-${++serial}`;
+  /** 复制假服务只按请求投影当前图；新身份、空历史和笔记独立性均可由浏览器观察。 */
+  const copyDocument = (source: EditableGraph, includeNotes?: boolean): EditableGraph => {
+    const document = structuredClone({ ...source, id: nextId() });
+    if (includeNotes !== true) for (const node of document.nodes) delete node.notes;
+    return EditableGraphSchema.parse(document);
+  };
   const publish = async () => {
     for (const remote of Object.values(groups)) GroupSyncEventSchema.parse({ type: "snapshot", sequence: 0, connectionId: "fixture-validation", ...remote });
     await page.evaluate(({ groups }) => {
@@ -190,14 +198,14 @@ export async function installGroupFixture(page: Page, options: { nickname?: stri
     if (action.action === "create" || action.action === "copyIn") {
       const source = action.action === "create" ? action.document : personal.graphs.find(record => record.document.id === action.sourceGraphId)?.document;
       if (!source) throw new Error("固定复制源缺失");
-      const document = { ...source, id: nextId() }; appliedGraphId = document.id;
+      const document = copyDocument(source, action.action === "copyIn" && action.includeNotes); appliedGraphId = document.id;
       remote.workspace.graphs.push({ document, history: emptyHistory(document), revision: 1, status: "active", originalIndex: null }); remote.workspace.activeOrder.push(document.id);
     } else {
       appliedGraphId = action.graphId;
       const record = remote.workspace.graphs.find(value => value.document.id === action.graphId); if (!record) throw new Error("固定图缺失");
-      if (action.action === "edit") remote.workspace.graphs = remote.workspace.graphs.map(value => value === record ? append(record, action.after, FIXTURE_USER, action.subject, action.kind === "graph.rename" ? "graph.rename" : "node.edit") : value);
+      if (action.action === "edit") remote.workspace.graphs = remote.workspace.graphs.map(value => value === record ? append(record, action.after, FIXTURE_USER, action.subject, action.kind) : value);
       else if (action.action === "copyOut") {
-        const document = { ...record.document, id: nextId() };
+        const document = copyDocument(record.document, action.includeNotes);
         personalGraph = { document, history: storeGraphHistory(createGraphHistory(document)), revision: 1, status: "active", originalIndex: null };
         personal.graphs.push(personalGraph); personal.activeOrder.push(document.id);
       } else if (action.action === "undo") {

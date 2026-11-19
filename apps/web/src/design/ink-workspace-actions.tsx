@@ -96,11 +96,11 @@ export default function InkWorkspaceActions({ target, language, enabled, allowCr
   const note = held?.kind === "note" ? node?.notes?.find(item => item.id === held.noteId) : undefined;
   const edge = held?.kind === "edge" ? graph?.edges.find(item => item.id === held.edgeId) : undefined;
   const writable = enabled && !saving && (!groupMode || contextWritable) && held?.graphId === currentId && graph !== undefined;
-  const noteWritable = writable && !groupMode && node !== undefined && node.noteGeneration === held?.noteGeneration;
+  const noteWritable = writable && node !== undefined && node.noteGeneration === held?.noteGeneration;
   const nodeEngine = graph === undefined ? null : resolveSearchEngine(graph.language, node?.engine ?? graph.engine);
   const dialogNoteOwner = dialog?.kind === "note.edit" && dialog.owner.kind === "note" ? dialog.owner : null;
   const dialogNoteNode = dialogNoteOwner === null ? undefined : graph?.nodes.find(item => item.id === dialogNoteOwner.nodeId);
-  const dialogNoteValid = dialogNoteOwner === null || !groupMode && dialogNoteNode !== undefined
+  const dialogNoteValid = dialogNoteOwner === null || dialogNoteNode !== undefined
     && dialogNoteNode.noteGeneration === dialogNoteOwner.noteGeneration && dialogNoteNode.notes?.some(item => item.id === dialogNoteOwner.noteId);
 
   useEffect(() => {
@@ -148,7 +148,6 @@ export default function InkWorkspaceActions({ target, language, enabled, allowCr
   const commit = (owner: InkActionTarget, operation: (document: EditableGraph) => EditableGraph, preserveLayout = false,
     capture = edit.captureEdit()): Promise<boolean> => edit.commitCaptured(capture, document => {
     if (!enabled || workspaceStore.getState().currentId !== owner.graphId || document.id !== owner.graphId) throw new Error("编辑目标已失效");
-    if (owner.kind === "note" && workspaceContextStore.getState().kind !== "personal") throw new Error("笔记编辑上下文已失效");
     assertTargetExists(document, owner);
     return operation(preserveLayout ? withMeasuredPositions(document, owner) : document);
   });
@@ -231,7 +230,7 @@ export default function InkWorkspaceActions({ target, language, enabled, allowCr
         }).catch(() => {});
       }
     } else if (dialog.kind === "note.edit") {
-      if (owner.kind !== "note" || latestContext.kind !== "personal" || !dialogNoteValid) return;
+      if (owner.kind !== "note" || !dialogNoteValid) return;
       success = await commit(owner, document => updateNote(document, owner.nodeId, owner.noteId,
         { title: fields.title, description: fields.description }), false, dialog.capture);
     } else if ("nodeId" in owner) {

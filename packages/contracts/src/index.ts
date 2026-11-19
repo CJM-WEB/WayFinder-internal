@@ -1554,13 +1554,13 @@ export type GroupWorkspaceResponse = z.infer<typeof GroupWorkspaceResponseSchema
 
 /**
  * 编辑只表达本次前后变化，服务端在最新图上合并并校验，不接受客户端填写历史或作者。
- * 跨归属复制仅提交来源标识／版本；实际内容读取、新身份和空历史均由服务端建立。
+ * 跨归属复制仅提交来源标识、版本和是否附带笔记；实际内容、新身份和空历史由服务端建立。
  */
 const groupGraphTargetFields = { ...groupTargetFields, graphId: cloudGraphIdSchema, expectedRevision: cloudRevisionSchema };
 export const GroupGraphActionSchema = z.discriminatedUnion("action", [
   z.strictObject({ action: z.literal("create"), ...groupTargetFields, document: EditableGraphSchema }),
   z.strictObject({ action: z.literal("edit"), ...groupGraphTargetFields, before: EditableGraphSchema, after: EditableGraphSchema,
-    kind: WorkspaceHistoryKindSchema.exclude(["graph.search", "node.search", "note.add", "note.edit", "note.delete"]), subject: z.string() }),
+    kind: WorkspaceHistoryKindSchema.exclude(["graph.search", "node.search", "note.add"]), subject: z.string() }),
   // 搜索正文必须与服务端完成收据绑定，不能利用普通整图编辑绕过可信来源与预览版本检查。
   z.strictObject({ action: z.literal("applySearch"), ...groupGraphTargetFields, receipt: GroupSearchReceiptSchema,
     result: ResultGraphSchema, mode: z.enum(["append", "replace"]), positions: EditableGraphSchema.shape.positions.optional(),
@@ -1569,13 +1569,13 @@ export const GroupGraphActionSchema = z.discriminatedUnion("action", [
   z.strictObject({ action: z.literal("restore"), ...groupGraphTargetFields }),
   z.strictObject({ action: z.literal("undo"), ...groupGraphTargetFields, eventId: historyIdSchema }),
   z.strictObject({ action: z.literal("redo"), ...groupGraphTargetFields }),
-  z.strictObject({ action: z.literal("copyIn"), ...groupTargetFields, sourceGraphId: cloudGraphIdSchema, sourceRevision: cloudRevisionSchema }),
-  z.strictObject({ action: z.literal("copyOut"), ...groupGraphTargetFields }),
+  z.strictObject({ action: z.literal("copyIn"), ...groupTargetFields, sourceGraphId: cloudGraphIdSchema, sourceRevision: cloudRevisionSchema,
+    includeNotes: z.boolean().optional() }),
+  z.strictObject({ action: z.literal("copyOut"), ...groupGraphTargetFields, includeNotes: z.boolean().optional() }),
 ]).superRefine((value, context) => {
-  // 个人笔记进入组图必须经显式复制；已有组写入入口不能顺带带入正文。
-  const documents = value.action === "create" ? [value.document] : value.action === "edit" ? [value.before, value.after] : [];
-  if (documents.some(document => document.nodes.some(node => (node.notes?.length ?? 0) > 0))) {
-    context.addIssue({ code: "custom", message: "当前组图写入不能携带个人笔记" });
+  // 笔记通过显式复制进入组图；普通新建组图不能直接附带笔记。
+  if (value.action === "create" && value.document.nodes.some(node => (node.notes?.length ?? 0) > 0)) {
+    context.addIssue({ code: "custom", message: "新建组图不能直接携带笔记" });
   }
   if (value.action === "edit" && (value.before.id !== value.graphId || value.after.id !== value.graphId)) {
     context.addIssue({ code: "custom", message: "编辑前后图标识必须与目标图一致" });

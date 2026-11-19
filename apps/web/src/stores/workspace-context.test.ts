@@ -14,6 +14,7 @@ import { createGroupApi, GroupRequestError } from "../api/groups.js";
 import { createGroupSearchController } from "../api/group-search.js";
 import { createResearchStore } from "../api/research.js";
 import { syncFixture } from "../testing/group-fixture.js";
+import { addNode, addNote, updateNote } from "./workspace-edits.js";
 
 const at = "2026-11-12T00:00:00.000Z";
 const graph = (id = "shared-id", title = "原始标题") => createEmptyGraph(id, title, "zh-CN", at);
@@ -117,6 +118,28 @@ describe("个人／小组工作区边界", () => {
       before: expect.objectContaining({ title: "别人标题" }), after: expect.objectContaining({ title: "我的标题", query: "别人查询" }) }));
   });
 
+  it("组笔记冲突显式确认只重放当前笔记，保留对方的其他笔记", async () => {
+    const test = setup();
+    const initial = addNote(addNote(addNode(graph(), "节点", "", "n"),
+      "n", { title: "笔记甲", description: "", markdown: "原正文" }, "note-a"),
+    "n", { title: "笔记乙", description: "", markdown: "" }, "note-b");
+    test.enter(snapshot(row(initial)));
+    const capture = test.workspaceContext.captureEdit(initial.id)!;
+    test.sync.write.mockRejectedValueOnce(new GroupRequestError("GROUP_CONFLICT"));
+    await expect(test.workspaceContext.commitCaptured(capture,
+      value => updateNote(value, "n", "note-a", { markdown: "我的正文" }))).rejects.toThrow("GROUP_CONFLICT");
+    const remote = updateNote(updateNote(initial, "n", "note-a", { markdown: "远端正文" }), "n", "note-b", { description: "独立改动" });
+    test.receive(snapshot(row(remote, 2)));
+    expect(test.sync.write).toHaveBeenCalledTimes(1);
+    test.sync.write.mockResolvedValueOnce({ workspace: snapshot(row(remote, 3)).workspace });
+    expect(await test.workspaceContext.confirmFailedEdit()).toBe(true);
+    expect(test.sync.write).toHaveBeenLastCalledWith(expect.objectContaining({
+      kind: "note.edit", expectedRevision: 2, after: expect.objectContaining({
+        nodes: [expect.objectContaining({ notes: [expect.objectContaining({ markdown: "我的正文" }), expect.objectContaining({ description: "独立改动" })] })],
+      }),
+    }));
+  });
+
   it("未知确认保留原ID，重试先查本人收据；失去组资格后仍能确认个人副本", async () => {
     const test = setup(); test.enter();
     test.sync.write.mockRejectedValueOnce(new GroupRequestError("GROUP_UNAVAILABLE"));
@@ -136,8 +159,9 @@ describe("个人／小组工作区边界", () => {
   it("明确未应用后重发原mutation和正文，不生成第二次创建", async () => {
     const test = setup(); test.enter();
     test.sync.write.mockRejectedValueOnce(new GroupRequestError("GROUP_OFFLINE"));
-    await expect(test.workspaceContext.copyOut("shared-id")).rejects.toThrow();
+    await expect(test.workspaceContext.copyOut("shared-id", true)).rejects.toThrow();
     const original = test.sync.write.mock.calls[0]![0];
+    expect(original).toMatchObject({ action: "copyOut", includeNotes: true });
     test.api.receipt.mockResolvedValueOnce({ mutationId: original.mutationId, applied: false, groupId: null, graphId: null, personalGraphId: null })
       .mockResolvedValueOnce({ mutationId: original.mutationId, applied: true, groupId: "group-fixture", graphId: "shared-id", personalGraphId: "copy" });
     test.sync.write.mockResolvedValueOnce({ workspace: snapshot(row(graph())).workspace });

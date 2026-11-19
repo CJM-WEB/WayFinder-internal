@@ -225,7 +225,7 @@ export function createWorkspaceContext(dependencies: Dependencies = {}) {
     if (sameGraphContent(capture.document, after)) return true;
     const inferred = description ?? inferHistoryDescription(capture.document, after);
     if (inferred.scope !== undefined || inferred.kind === "graph.search" || inferred.kind === "node.search"
-      || inferred.kind === "note.add" || inferred.kind === "note.edit" || inferred.kind === "note.delete") throw new GroupRequestError("GROUP_INVALID");
+      || inferred.kind === "note.add") throw new GroupRequestError("GROUP_INVALID");
     await perform({ action: "edit", groupId: state.groupId!, graphId: capture.graphId, expectedRevision: capture.revision!,
       mutationId: createId(), before: capture.document, after, kind: inferred.kind, subject: inferred.subject });
     return true;
@@ -336,7 +336,7 @@ export function createWorkspaceContext(dependencies: Dependencies = {}) {
       if (context.getState().kind === "personal") { personal.getState().addGraph(template); return template.id; }
       return (await perform({ action: "create", groupId: context.getState().groupId!, document: template, mutationId: createId() }))!;
     },
-    copyIn: async (personalGraphId: string): Promise<string> => {
+    copyIn: async (personalGraphId: string, includeNotes = false): Promise<string> => {
       const state = assertWritable(), key = state.contextKey, local = personal.getState().documents.find(item => item.id === personalGraphId);
       if (local === undefined || cloud.getState().status !== "synced" || cloud.getState().pending || cloud.getState().conflicts.includes(personalGraphId)) throw new GroupRequestError("GROUP_CONFLICT");
       const remote = await cloudApi.read(state.userId!, AbortSignal.timeout(10_000)); assertContext(key);
@@ -346,12 +346,14 @@ export function createWorkspaceContext(dependencies: Dependencies = {}) {
       if (source === undefined || latest === undefined || JSON.stringify(source.document) !== JSON.stringify(latest)
         || JSON.stringify(local) !== JSON.stringify(latest) || cloud.getState().pending || cloud.getState().status !== "synced") throw new GroupRequestError("GROUP_CONFLICT");
       return (await perform({ action: "copyIn", groupId: state.groupId!, sourceGraphId: personalGraphId,
-        sourceRevision: source.revision, mutationId: createId() }))!;
+        sourceRevision: source.revision, mutationId: createId(), ...(includeNotes ? { includeNotes } : {}) }))!;
     },
-    copyOut: async (graphId: string): Promise<string> => {
+    copyOut: async (graphId: string, includeNotes = false): Promise<string> => {
       const state = assertWritable(), row = record(graphId);
       if (row?.status !== "active") throw new GroupRequestError("GROUP_NOT_FOUND");
-      return (await perform({ action: "copyOut", groupId: state.groupId!, graphId, expectedRevision: row.revision, mutationId: createId() }))!;
+      // 未勾选继续使用原命令形状。勾选是收据绑定的一部分，重试也沿用原值。
+      return (await perform({ action: "copyOut", groupId: state.groupId!, graphId, expectedRevision: row.revision,
+        mutationId: createId(), ...(includeNotes ? { includeNotes } : {}) }))!;
     },
     retryFailedAction: async (): Promise<string | null> => {
       const failed = context.getState().failedAction;

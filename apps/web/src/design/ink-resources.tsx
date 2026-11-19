@@ -9,14 +9,15 @@ import { useStore } from "zustand";
 
 import { buildResourcePanelModel, selectVisibleResources, type ResourcePanelModel } from "../components/ResourcePanel/ResourcePanel.js";
 import { useGraphEdit } from "../components/Workspace/use-graph-edit.js";
+import { getGroupMessages, groupErrorMessage } from "../i18n/group-messages.js";
 import { getMessages } from "../i18n/messages.js";
 import { requestSafeUrlOpen, resolveSafeHttpUrl } from "../lib/url.js";
 import type { GraphStoreNode } from "../stores/graph-store.js";
 import { addNote, moveResource, updateNote } from "../stores/workspace-edits.js";
-import { activeWorkspaceStore as workspaceStore, workspaceContextStore, type CapturedWorkspaceEdit } from "../stores/workspace-context.js";
+import { activeWorkspaceStore as workspaceStore, workspaceContext, workspaceContextStore, type CapturedWorkspaceEdit } from "../stores/workspace-context.js";
 import { workspacePersistenceStore } from "../stores/workspace-persistence.js";
 import { InkNotice } from "./ink-notice.js";
-import InkNoteDialog, { type InkNoteSession } from "./ink-note-dialog.js";
+import InkNoteDialog, { type InkNoteRecovery, type InkNoteSession } from "./ink-note-dialog.js";
 
 import "./ink-resources.css";
 
@@ -211,6 +212,9 @@ export default function InkResources({ graphId, node, language, visible, editabl
   const labels = messages.notes;
   const contextKey = useStore(workspaceContextStore, state => state.contextKey);
   const groupMode = useStore(workspaceContextStore, state => state.kind === "group");
+  const failedAction = useStore(workspaceContextStore, state => state.failedAction);
+  const groupBusy = useStore(workspaceContextStore, state => state.busy);
+  const groupWritable = useStore(workspaceContextStore, state => state.writable);
   const contextWritable = useStore(workspaceContextStore, state => state.kind === "personal" || state.writable && !state.busy && state.failedAction === null);
   const moveCapture = useRef<CapturedWorkspaceEdit | null>(null);
   const generation = node !== null && "noteGeneration" in node ? node.noteGeneration : undefined;
@@ -231,9 +235,40 @@ export default function InkResources({ graphId, node, language, visible, editabl
   const owner = display?.owner;
   const sameOwner = visible && owner !== undefined && requested?.owner === owner;
   const interactive = sameOwner && display?.phase === "visible";
-  const noteWritable = editable && contextWritable && !groupMode;
+  const noteWritable = editable && contextWritable;
+  const noteCreatable = noteWritable && !groupMode;
   const activeEditor = sameOwner && editor?.owner === owner &&
     (editor.session.isNew || notes.some(note => note.id === editor.session.note.id)) ? editor : null;
+  let recovery: InkNoteRecovery | undefined;
+  // 只有本编辑器提交的组笔记动作可在遮罩内重试，复用原收据及冲突合并，不产生第二条写入。
+  if (groupMode && activeEditor !== null && failedAction?.action.action === "edit" &&
+    failedAction.action.kind === "note.edit" && failedAction.action.graphId === graphId) {
+    const pending = failedAction.action;
+    const noteId = activeEditor.session.note.id;
+    const readNote = (document: typeof pending.before) => document.nodes.find(target => target.id === activeEditor.nodeId)
+      ?.notes?.find(note => note.id === noteId);
+    if (JSON.stringify(readNote(pending.before)) !== JSON.stringify(readNote(pending.after))) {
+      const groupLabels = getGroupMessages(language);
+      const conflict = !failedAction.uncertain && failedAction.error === "GROUP_CONFLICT";
+      const ownsFailure = (): boolean => {
+        const latest = workspaceContextStore.getState();
+        return latest.contextKey === contextKey && latest.failedAction?.action.mutationId === pending.mutationId;
+      };
+      recovery = {
+        label: failedAction.uncertain ? groupLabels.confirmResult : conflict ? groupLabels.keepMine : groupLabels.retry,
+        message: groupErrorMessage(failedAction.error, language),
+        disabled: groupBusy || !failedAction.uncertain && !groupWritable,
+        commit: async () => {
+          if (!ownsFailure()) return false;
+          if (conflict) return window.confirm(groupLabels.conflictConfirm) && workspaceContext.confirmFailedEdit();
+          await workspaceContext.retryFailedAction();
+          return workspaceContextStore.getState().contextKey === contextKey;
+        },
+        discardLabel: groupLabels.discard,
+        ...(failedAction.uncertain ? {} : { discard: () => ownsFailure() && workspaceContext.discardFailedAction() }),
+      };
+    }
+  }
   // 回程先恢复位置，再恢复菜单与键盘交互；新笔记不能打断旧卡的归位。
   const panelInteractive = interactive && activeEditor === null && returning === null;
   const chooseTab = (next: PanelTab): void => {
@@ -243,7 +278,7 @@ export default function InkResources({ graphId, node, language, visible, editabl
   };
 
   const openEditor = (note: EditableNote | null, origin: HTMLElement, returnFocus: HTMLElement | null): void => {
-    if (!panelInteractive || owner === undefined || node === null || (note === null && !noteWritable)) return;
+    if (!panelInteractive || owner === undefined || node === null || (note === null && !noteCreatable)) return;
     const rect = origin.getBoundingClientRect();
     setSelection({ owner, tab: "notes" });
     setEditor({ owner, generation, nodeId: node.id, capture: edit.captureEdit(), session: {
@@ -351,11 +386,11 @@ export default function InkResources({ graphId, node, language, visible, editabl
     {notesEnabled ? <div className="ink-resources__mode ink-notes" data-kind="notes" role="tabpanel"
       id={`${tabsId}-panel-notes`} aria-labelledby={`${tabsId}-notes`} inert={tab !== "notes"} aria-hidden={tab !== "notes"}
       onContextMenu={event => {
-        if (!panelInteractive || !noteWritable || onNoteContext === undefined) return;
+        if (!panelInteractive || !noteCreatable || onNoteContext === undefined) return;
         event.preventDefault(); event.stopPropagation();
         onNoteContext(null, { x: event.clientX, y: event.clientY });
       }}>
-      {noteWritable ? <button type="button" className="ink-resources__more ink-notes__add" ref={noteAdd} data-ink-note-add
+      {noteCreatable ? <button type="button" className="ink-resources__more ink-notes__add" ref={noteAdd} data-ink-note-add
         onClick={event => openEditor(null, event.currentTarget, event.currentTarget)}>{labels.add}</button> : null}
       {notes.length === 0 ? <p className="ink-resources__empty" role="status">{labels.empty}</p> :
         <div className="ink-resources__list" role="list" aria-label={labels.tab}>
@@ -384,6 +419,7 @@ export default function InkResources({ graphId, node, language, visible, editabl
     </div></div>
   </aside>}
   <InkNoteDialog key={contextKey} session={activeEditor?.session ?? null} language={language} writable={noteWritable}
+    {...(recovery === undefined ? {} : { recovery })}
     resources={display !== null && "resources" in display.node ? display.node.resources : []}
     onClose={() => { setReturning(activeEditor); setEditor(null); }} onReturn={() => setReturning(null)}
     onSave={async (session, saved) => {
@@ -396,10 +432,12 @@ export default function InkResources({ graphId, node, language, visible, editabl
         const exists = target.notes?.some(note => note.id === id) ?? false;
         // 本地写入失败时编辑仍在内存中；以同一笔记 ID 重试，不重复新建或记录同值历史。
         if (exists) return updateNote(graph, target.id, id, fields);
-        if (!session.isNew) throw new Error("笔记目标已失效");
+        if (!session.isNew || groupMode) throw new Error("笔记目标已失效");
         return addNote(graph, target.id, fields, id);
       });
       if (!accepted || workspaceContextStore.getState().contextKey !== contextKey) return false;
+      // 组图等服务端确认，个人图等本地落盘；断网的个人笔记仍可按原同步队列补交。
+      if (groupMode) return true;
       const persistence = workspacePersistenceStore.getState();
       if (retrying && persistence.error === "save") await persistence.retry();
       else await persistence.awaitSave?.();

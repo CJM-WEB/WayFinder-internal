@@ -277,6 +277,106 @@ test("组内与个人复制只带内容布局，退出组上下文恢复个人�
   expect(JSON.stringify(fixture.requests)).not.toContain("fixture-group-llm");
 });
 
+test("个人与组图双向默认排除笔记，勾选后复制当前内容且改组内副本不回写个人源图", async ({ page }) => {
+  const privateGraphId = "fixture-private-graph";
+  const privateNote = { id: "fixture-private-note", title: "个人课堂笔记", description: "个人原始说明",
+    markdown: "## 原始正文\n\n[课件](https://lesson.example.test/path?part=2#overview)" };
+  const editedNote = { ...privateNote, title: "组员修改副本标题", description: "组员修改副本说明" };
+  const fixture = await installGroupFixture(page, { privateNote });
+  await enter(page);
+  const panel = await openGroup(page, MEMBER_GROUP);
+  const groupRows = () => fixture.groups[MEMBER_GROUP]!.workspace.graphs;
+  const source = panel.getByRole("combobox", { name: "选择个人图", exact: true });
+  const copyIn = panel.getByRole("button", { name: "复制个人图到小组", exact: true });
+  const copyInChoice = panel.locator('[data-ink-copy-notes="in"]').getByRole("checkbox", { name: "附带笔记", exact: true });
+
+  // 用非组主账号发起两次复制，验证私有笔记只有明确勾选才进入共享图。
+  await source.selectOption(privateGraphId);
+  await expect(copyInChoice).not.toBeChecked();
+  await copyIn.click();
+  await expect.poll(() => groupRows().length).toBe(2);
+  const excludedIn = groupRows().at(-1)!;
+  expect(excludedIn.document.nodes[0]?.notes).toBeUndefined();
+  expect(excludedIn.history.events).toHaveLength(0);
+  await expect(page.locator(".ink-study__graph")).toHaveAttribute("data-ink-graph-id", excludedIn.document.id);
+
+  await groups(page);
+  await source.selectOption(privateGraphId);
+  await expect(copyInChoice).not.toBeChecked();
+  await copyInChoice.check();
+  await copyIn.click();
+  await expect.poll(() => groupRows().length).toBe(3);
+  const includedIn = groupRows().at(-1)!;
+  const groupGraphId = includedIn.document.id;
+  expect(groupGraphId).not.toBe(privateGraphId);
+  expect(includedIn.document.nodes[0]?.notes).toEqual([privateNote]);
+  expect(includedIn.history.events).toHaveLength(0);
+  await expect(page.locator(".ink-study__graph")).toHaveAttribute("data-ink-graph-id", groupGraphId);
+
+  // 在浏览器中修改共享副本，核对确切的组图编辑与当前副本内容。
+  const openNotes = async () => {
+    await page.locator("[data-ink-node=fixture-node]").getByRole("heading").click();
+    await page.getByRole("tab", { name: "笔记", exact: true }).click();
+    return page.locator("[data-ink-note]");
+  };
+  const copiedCard = (await openNotes()).filter({ hasText: privateNote.title });
+  await expect(copiedCard).toContainText(privateNote.description);
+  await copiedCard.click({ button: "right" });
+  await page.getByRole("menuitem", { name: "编辑标题和说明", exact: true }).click();
+  const details = page.getByRole("dialog", { name: "编辑标题和说明", exact: true });
+  await details.getByRole("textbox", { name: "笔记标题", exact: true }).fill(editedNote.title);
+  await details.getByRole("textbox", { name: "笔记说明", exact: true }).fill(editedNote.description);
+  await details.getByRole("button", { name: "保存笔记", exact: true }).click();
+  await expect(page.locator("[data-ink-note]").filter({ hasText: editedNote.title })).toContainText(editedNote.description);
+  const shared = groupRows().find(record => record.document.id === groupGraphId)!;
+  expect(shared.document.nodes[0]?.notes).toEqual([editedNote]);
+  expect(shared.history.events).toMatchObject([{ actorUserId: FIXTURE_USER, kind: "note.edit" }]);
+
+  // 回到个人源图实际打开笔记，验证标题、说明、正文和原链接仍由个人图独立持有。
+  await page.locator(".ink-group-status").getByRole("button", { name: "返回个人图", exact: true }).click();
+  await page.locator(".ink-study__history-dock").hover();
+  await page.getByRole("button", { name: "搜索历史", exact: true }).click();
+  await page.getByRole("region", { name: "搜索历史", exact: true }).getByRole("button", { name: "个人源图已改名", exact: true }).click();
+  await expect(page.locator(".ink-study__graph")).toHaveAttribute("data-ink-graph-id", privateGraphId);
+  const privateCard = (await openNotes()).filter({ hasText: privateNote.title });
+  await expect(privateCard).toContainText(privateNote.description);
+  await privateCard.locator("[data-ink-note-open]").click();
+  const editor = page.getByRole("dialog", { name: "笔记", exact: true }).getByRole("textbox", { name: "正文", exact: true });
+  await expect(editor.getByRole("heading", { name: "原始正文", exact: true })).toBeVisible();
+  await expect(editor.locator("[data-ink-note-link]")).toHaveAttribute("data-ink-note-link", "https://lesson.example.test/path?part=2#overview");
+  await page.keyboard.press("Escape");
+
+  // 同一个组图的两次反向复制也分别验证默认和勾选，附带的应是编辑后的快照。
+  await openGroup(page, MEMBER_GROUP);
+  const copyOutSource = panel.locator(".ink-study__history-record").filter({ has: page.locator(`[data-ink-copy-notes="out"][data-ink-copy-source="${groupGraphId}"]`) });
+  const copyOut = copyOutSource.getByRole("button", { name: "复制到个人", exact: true });
+  const copyOutChoice = copyOutSource.getByRole("checkbox", { name: "附带笔记", exact: true });
+  await expect(copyOutChoice).not.toBeChecked();
+  await copyOut.click();
+  await expect.poll(() => fixture.personal.graphs.length).toBe(2);
+  const excludedOut = fixture.personal.graphs.at(-1)!;
+  expect(excludedOut.document.nodes[0]?.notes).toBeUndefined();
+  expect(excludedOut.history.events).toHaveLength(0);
+  await expect(copyOutChoice).toBeEnabled();
+  await copyOutChoice.check();
+  await copyOut.click();
+  await expect.poll(() => fixture.personal.graphs.length).toBe(3);
+  const includedOut = fixture.personal.graphs.at(-1)!;
+  expect(includedOut.document.id).not.toBe(groupGraphId);
+  expect(includedOut.document.nodes[0]?.notes).toEqual([editedNote]);
+  expect(includedOut.history.events).toHaveLength(0);
+  expect(fixture.personal.graphs.find(record => record.document.id === privateGraphId)?.document.nodes[0]?.notes).toEqual([privateNote]);
+
+  // 浏览器只提交来源与选择。笔记内容由服务端复制对应版本，不作为客户端写请求的载荷。
+  const copyRequests = fixture.requests.map(request => request.body as { action: string; includeNotes?: boolean })
+    .filter(body => body.action === "copyIn" || body.action === "copyOut");
+  expect(copyRequests.map(body => [body.action, body.includeNotes === true])).toEqual([
+    ["copyIn", false], ["copyIn", true], ["copyOut", false], ["copyOut", true],
+  ]);
+  expect(JSON.stringify(copyRequests)).not.toContain(privateNote.title);
+  expect(JSON.stringify(copyRequests)).not.toContain(editedNote.description);
+});
+
 test("浏览器断网后保留已读图但所有写入口阻断，重新快照后才恢复", async ({ page }) => {
   const fixture = await installGroupFixture(page); await enter(page); await openGroup(page); await selectGraph(page);
   await fixture.disconnect();

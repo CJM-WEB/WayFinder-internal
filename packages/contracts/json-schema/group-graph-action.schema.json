@@ -1986,7 +1986,9 @@
             "edge.add",
             "edge.edit",
             "edge.delete",
-            "engine.change"
+            "engine.change",
+            "note.edit",
+            "note.delete"
           ]
         },
         "subject": {
@@ -3251,6 +3253,9 @@
           "type": "integer",
           "minimum": 1,
           "maximum": 9007199254740991
+        },
+        "includeNotes": {
+          "type": "boolean"
         }
       },
       "required": [
@@ -3289,6 +3294,9 @@
           "type": "integer",
           "minimum": 1,
           "maximum": 9007199254740991
+        },
+        "includeNotes": {
+          "type": "boolean"
         }
       },
       "required": [

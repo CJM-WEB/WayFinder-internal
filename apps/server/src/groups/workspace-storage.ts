@@ -138,10 +138,10 @@ export function createGroupWorkspaceStorage(database: AccountDatabase, options: 
   createId?: () => string; now?: () => string; search?: Pick<GroupSearchAccess, "consume">;
 }> = {}): GroupWorkspaceStorage {
   const now = options.now ?? (() => new Date().toISOString());
-  const newDocument = (source: EditableGraph): EditableGraph => {
+  const newDocument = (source: EditableGraph, includeNotes = false): EditableGraph => {
     const at = now();
-    // 在构建组图及空历史前排除私人笔记，避免同一正文经存档或同步快照进入小组。
-    const nodes = source.nodes.map(node => {
+    // 在建立独立副本和历史基线前处理已获授权的源快照，未明确勾选时不带入任何笔记。
+    const nodes = includeNotes === true ? source.nodes : source.nodes.map(node => {
       if (node.notes === undefined) return node;
       const copy = { ...node };
       delete copy.notes;
@@ -184,7 +184,7 @@ export function createGroupWorkspaceStorage(database: AccountDatabase, options: 
             // 内容复制保留源的人工／搜索来源，但不能沿用被伪造的canonical或domain绕过实际URL去重。
             assertGroupResourceUrls(source);
           } else source = normalizeGroupCreate(input.document);
-          const document = newDocument(source); graphId = document.id;
+          const document = newDocument(source, input.action === "copyIn" && input.includeNotes === true); graphId = document.id;
           if (await loadRecord(query, group.groupId, graphId) !== null || [...meta.activeOrder, ...meta.deletedIds].includes(graphId)) throw new GroupAccessError("GROUP_CONFLICT");
           const record = GroupGraphRecordSchema.parse({ document, history: createGroupHistory(document), revision: 1, status: "active", originalIndex: null });
           await storeRecord(query, group.groupId, record); meta.activeOrder.push(graphId); changed = true;
@@ -199,7 +199,7 @@ export function createGroupWorkspaceStorage(database: AccountDatabase, options: 
           if (input.action === "copyOut") {
             if (current.status !== "active") throw new GroupAccessError("GROUP_CONFLICT");
             assertGroupResourceUrls(current.document);
-            const copied = await appendCloudGraphCopy(query, userId, newDocument(current.document), input.mutationId);
+            const copied = await appendCloudGraphCopy(query, userId, newDocument(current.document, input.includeNotes), input.mutationId);
             if (!copied.ok) throw new GroupAccessError("GROUP_CONFLICT");
             personalGraph = copied.record; personalGraphId = copied.record.document.id;
           } else if (input.action === "edit") {

@@ -64,6 +64,13 @@ function normalizedAfter(before: EditableGraph, after: EditableGraph): EditableG
     const node = { ...input };
     if (old?.searchPlan === undefined) delete node.searchPlan;
     else node.searchPlan = old.searchPlan;
+    // 节点代际只由真实整图替换建立。普通组编辑可改删该节点已有笔记，但不能凭手工载荷引入副本。
+    if (old?.noteGeneration === undefined) delete node.noteGeneration;
+    else node.noteGeneration = old.noteGeneration;
+    if (node.notes?.length) {
+      const existing = new Set(old?.notes?.map(note => note.id));
+      if (node.notes.some(note => !existing.has(note.id))) throw new GroupAccessError("GROUP_CONSTRAINT");
+    }
     const resources = node.resources.map(resource => manualResource(old?.resources.find(value => value.id === resource.id), resource));
     const changed = old === undefined || old.title !== node.title || old.description !== node.description || !same(old.resources, resources);
     if (!changed && old !== undefined) {
@@ -110,10 +117,15 @@ export function mergeGroupEdit(current: EditableGraph, before: EditableGraph, in
   const after = normalizedAfter(before, inputAfter);
   fields(current, before, after, ["id", "createdAt", "updatedAt", "nodes", "edges", "positions"]);
   entities(current.nodes, before.nodes, after.nodes, (present, old, incoming) => {
-    fields(present, old, incoming, ["resources", ...nodeDerived]);
+    fields(present, old, incoming, ["resources", "notes", ...nodeDerived]);
     entities(present.resources, old.resources, incoming.resources,
       (resource, previous, next) => fields(resource, previous, next,
         Object.keys({ ...previous, ...next }).filter(key => !resourceFields.includes(key))), resource => omit(resource, ["rank"]));
+    if (!same(old.notes, incoming.notes)) {
+      // 同一业务节点标识可能被新搜索重用；旧笔记编辑不能跟随该标识写入新节点。
+      if (present.noteGeneration !== old.noteGeneration) throw new GroupAccessError("GROUP_CONFLICT");
+      entities(present.notes ?? [], old.notes ?? [], incoming.notes ?? [], fields);
+    }
   }, nodeComparable);
   entities(current.edges, before.edges, after.edges, (present, old, incoming) => fields(present, old, incoming));
   for (const id of new Set([...Object.keys(before.positions), ...Object.keys(after.positions)])) {
