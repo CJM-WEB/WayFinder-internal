@@ -2,8 +2,8 @@
  * 模块职责：在节点笔记条和中央笔记之间往返，集中处理焦点、关闭和一次保存。
  * 上下文校验由工作区负责。失效会话立即隐藏，迟到写入结果不得关闭后来打开的笔记。
  */
-import type { EditableNote, SearchLanguage } from "@wayfinder/contracts";
-import { useId, useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
+import type { EditableNote, EditableResource, SearchLanguage } from "@wayfinder/contracts";
+import { lazy, Suspense, useCallback, useId, useLayoutEffect, useRef, useState, type ComponentProps, type KeyboardEvent } from "react";
 import { useInkPresence } from "./ink-presence.js";
 import "./ink-note-dialog.css";
 
@@ -18,23 +18,36 @@ type Props = Readonly<{
   session: InkNoteSession | null;
   language: SearchLanguage;
   writable: boolean;
+  resources: readonly Pick<EditableResource, "title" | "url">[];
   onSave: (session: InkNoteSession, note: EditableNote) => Promise<boolean>;
   onClose: () => void;
   onReturn: () => void;
 }>;
 
 const SLIDE_MS = 560;
-const FOCUSABLE = "button:not([disabled]), input:not([disabled]), textarea:not([disabled]), [tabindex='0']";
+const FOCUSABLE = "button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex='0']";
+// 只有打开笔记才加载编辑器；图、资源和侧栏首屏不承担正文编辑依赖。
+const InkNoteEditor = lazy(() => import("./ink-note-editor.js").catch(() => ({ default: NoteEditorFallback })));
 const copy = {
   "zh-CN": { add: "新建笔记", note: "笔记", title: "标题", description: "说明", body: "正文", finish: "完成",
-    saving: "正在保存笔记…", failed: "笔记未保存，草稿已保留。请重试。" },
+    saving: "正在保存笔记…", retry: "重试保存", loading: "正在加载正文编辑器…", failed: "笔记未保存，草稿已保留。请重试。" },
   "en-US": { add: "New note", note: "Note", title: "Title", description: "Description", body: "Content", finish: "Done",
-    saving: "Saving note…", failed: "The note could not be saved. Your draft is still here. Try again." },
+    saving: "Saving note…", retry: "Retry save", loading: "Loading the note editor…", failed: "The note could not be saved. Your draft is still here. Try again." },
 } satisfies Record<SearchLanguage, Record<string, string>>;
 
 type Draft = { owner: InkNoteSession; note: EditableNote; status: "idle" | "saving" | "failed" };
 
-export default function InkNoteDialog({ session, language, writable, onSave, onClose, onReturn }: Props) {
+/** 编辑器资源加载失败时继续保留草稿，避免侧栏或画布随模块错误卸载。 */
+function NoteEditorFallback({ value, language, editable, metadata, onChange }: ComponentProps<typeof import("./ink-note-editor.js")["default"]>) {
+  return <div>
+    {metadata}
+    <p role="alert">{language === "zh-CN" ? "排版编辑器加载失败，可继续编辑 Markdown 正文。" : "The visual editor could not load. You can still edit the Markdown."}</p>
+    <label>{copy[language].body}<textarea value={value} readOnly={!editable} rows={8}
+      onChange={event => onChange(event.target.value)} /></label>
+  </div>;
+}
+
+export default function InkNoteDialog({ session, language, writable, resources, onSave, onClose, onReturn }: Props) {
   const { value: shown, open } = useInkPresence(session, SLIDE_MS);
   const [draft, setDraft] = useState<Draft | null>(null);
   const [paintedOrigin, setPaintedOrigin] = useState<InkNoteSession | null>(null);
@@ -45,6 +58,10 @@ export default function InkNoteDialog({ session, language, writable, onSave, onC
   const destination = useRef<HTMLDivElement>(null);
   const surface = useRef<HTMLFormElement>(null);
   const firstInput = useRef<HTMLInputElement>(null);
+  const bindTitle = useCallback((element: HTMLInputElement | null) => {
+    firstInput.current = element;
+    if (element !== null && document.activeElement === surface.current) element.focus({ preventScroll: true });
+  }, []);
   const id = useId();
   const labels = copy[language];
   const measured = shown !== null && paintedOrigin === shown;
@@ -126,9 +143,18 @@ export default function InkNoteDialog({ session, language, writable, onSave, onC
   if (shown === null || (shown !== session && shown !== departing.current)) return null;
   const note = heldDraft?.note ?? shown.note;
   const status = heldDraft?.status ?? "idle";
+  // 首次提交已进入工作区历史。落盘失败时保留并冻结本次提交内容，重试同一快照而不再产生编辑事件。
+  const canChange = writable && status === "idle";
   const change = (patch: Partial<Pick<EditableNote, "title" | "description" | "markdown">>): void => {
+    if (!canChange) return;
     setDraft({ owner: shown, note: { ...note, ...patch }, status: "idle" });
   };
+  const metadata = <>
+    <label>{labels.title}<input ref={bindTitle} value={note.title} readOnly={!canChange}
+      onChange={event => change({ title: event.target.value })} /></label>
+    <label>{labels.description}<input value={note.description} readOnly={!canChange}
+      onChange={event => change({ description: event.target.value })} /></label>
+  </>;
   const close = (): void => {
     departing.current = shown;
     active.current = null;
@@ -136,7 +162,7 @@ export default function InkNoteDialog({ session, language, writable, onSave, onC
   };
   const finish = async (): Promise<void> => {
     if (!live || active.current !== shown || saving.current === shown) return;
-    if (note.title === shown.note.title && note.description === shown.note.description && note.markdown === shown.note.markdown) {
+    if (status === "idle" && note.title === shown.note.title && note.description === shown.note.description && note.markdown === shown.note.markdown) {
       close();
       return;
     }
@@ -193,14 +219,12 @@ export default function InkNoteDialog({ session, language, writable, onSave, onC
         <div className="ink-note-dialog__contents">
           <header className="ink-note-dialog__header">
             <h2 id={id}>{shown.isNew ? labels.add : labels.note}</h2>
-            <button type="submit" className="ink-study__pill" aria-disabled={status === "saving"}>{labels.finish}</button>
+            <button type="submit" className="ink-study__pill" aria-disabled={status === "saving"}>{status === "failed" ? labels.retry : labels.finish}</button>
           </header>
-          <label>{labels.title}<input ref={firstInput} value={note.title} readOnly={!writable || status === "saving"}
-            onChange={event => change({ title: event.target.value })} /></label>
-          <label>{labels.description}<input value={note.description} readOnly={!writable || status === "saving"}
-            onChange={event => change({ description: event.target.value })} /></label>
-          <label>{labels.body}<textarea className="ink-note-dialog__body" value={note.markdown} rows={8}
-            readOnly={!writable || status === "saving"} onChange={event => change({ markdown: event.target.value })} /></label>
+          <Suspense fallback={<p role="status">{labels.loading}</p>}>
+            <InkNoteEditor key={note.id} value={note.markdown} language={language} resources={resources} metadata={metadata}
+              editable={canChange} onChange={markdown => change({ markdown })} />
+          </Suspense>
           <div className="ink-note-dialog__status">
             {status === "saving" ? <p role="status">{labels.saving}</p> : null}
             {status === "failed" ? <p role="alert">{labels.failed}</p> : null}

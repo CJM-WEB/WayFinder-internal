@@ -64,7 +64,7 @@
 .ink-note-dialog__header button { min-height: 36px; padding: 0 14px; }
 .ink-note-dialog__header button[aria-disabled="true"] { opacity: .55; }
 .ink-note-dialog label { display: grid; gap: 5px; font-size: 13px; }
-.ink-note-dialog input, .ink-note-dialog textarea {
+.ink-note-dialog input, .ink-note-dialog select, .ink-note-dialog textarea {
   width: 100%;
   min-width: 0;
   padding: 9px 12px;
@@ -74,7 +74,6 @@
   color: inherit;
   font: inherit;
 }
-.ink-note-dialog .ink-note-dialog__body { resize: vertical; min-height: 90px; line-height: 1.55; }
 .ink-note-dialog__status { min-height: 1.3em; font-size: 13px; }
 .ink-note-dialog__status p { margin: 0; }
 .ink-note-dialog__status [role="alert"] { color: #6a2922; }

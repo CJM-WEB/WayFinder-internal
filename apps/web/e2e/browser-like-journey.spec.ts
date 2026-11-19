@@ -4182,7 +4182,7 @@ test("笔记右键入口按节点归属保存，信息条可编辑、删除和�
   await expect(newNote.getByRole("textbox", { name: "标题", exact: true })).toBeFocused();
   await newNote.getByRole("textbox", { name: "标题", exact: true }).fill("第二节点的笔记");
   await newNote.getByRole("textbox", { name: "说明", exact: true }).fill("初始说明");
-  await newNote.getByRole("textbox", { name: "正文", exact: true }).fill("## 正文\n保留这一段。");
+  await newNote.getByRole("textbox", { name: "正文", exact: true }).fill("保留这一段。");
   await newNote.getByRole("button", { name: "完成", exact: true }).click();
   await expect(newNote).toHaveCount(0);
   const secondCard = notes.locator("[data-ink-note]").filter({ hasText: "第二节点的笔记" });
@@ -4205,7 +4205,7 @@ test("笔记右键入口按节点归属保存，信息条可编辑、删除和�
   const opener = revisedCard.locator("[data-ink-note-open]");
   await expect(revisedCard).toContainText("修改后的说明");
   await opener.click();
-  await expect(noteEditor.getByRole("textbox", { name: "正文", exact: true })).toHaveValue("## 正文\n保留这一段。");
+  await expect(noteEditor.getByRole("textbox", { name: "正文", exact: true })).toHaveText("保留这一段。");
   await page.keyboard.press("Escape");
   await expect(opener).toBeFocused();
 
@@ -4302,6 +4302,191 @@ test("笔记信息条与中央编辑器沿同一路径往返", async ({ page }) 
     }
   }
   await expect(opener).toBeFocused();
+  expect(await readFixtureSnapshots(page)).toHaveLength(0);
+});
+
+test("可视化笔记的格式与两种网页链接保存后原样恢复", async ({ page }) => {
+  const graph = await openInkWorkspace(page);
+  const resource = graph.nodes[0]?.resources[1];
+  if (resource === undefined) throw new Error("缺少节点资源链接夹具");
+  const manualUrl = "https://manual.example.test/guide?view=compact&keep=1#chapter";
+  const codeText = /function study\(\) \{\n {2}return 1;\n\x60{3}\n\}/;
+  const savedLink = "[data-ink-note-link]";
+  await page.locator('[data-ink-node="workspace-node-0"]').getByRole("heading").click();
+  const notesTab = page.getByRole("tab", { name: "笔记", exact: true });
+  await notesTab.click();
+  await page.locator("[data-ink-note-add]").click();
+  const newNote = page.getByRole("dialog", { name: "新建笔记", exact: true });
+  const editor = newNote.getByRole("textbox", { name: "正文", exact: true });
+  const toolbar = newNote.getByRole("toolbar", { name: "笔记格式", exact: true });
+  await newNote.getByRole("textbox", { name: "标题", exact: true }).fill("可视化学习笔记");
+  await editor.fill("学习记录");
+  await toolbar.getByRole("combobox", { name: "标题级别", exact: true }).selectOption({ label: "二级标题" });
+  await expect(editor.getByRole("heading", { name: "学习记录", level: 2 })).toBeVisible();
+  await expect(editor).toBeFocused();
+  await page.keyboard.press("End");
+  await page.keyboard.press("Enter");
+
+  // 直接使用呈现后的编辑区和工具栏；按 Enter 自动续号，代码块保留换行与缩进。
+  await toolbar.getByRole("button", { name: "有序列表", exact: true }).click();
+  await expect(editor).toBeFocused();
+  await page.keyboard.insertText("第一步");
+  await page.keyboard.press("Enter");
+  await page.keyboard.insertText("第二步");
+  await expect(editor.locator("ol > li")).toHaveText(["第一步", "第二步"]);
+  await page.keyboard.press("Enter");
+  await page.keyboard.press("Enter");
+  await toolbar.getByRole("button", { name: "代码块", exact: true }).click();
+  await expect(editor).toBeFocused();
+  await page.keyboard.insertText("function study() {");
+  await page.keyboard.press("Enter");
+  await page.keyboard.insertText("  return 1;");
+  await page.keyboard.press("Enter");
+  await page.keyboard.insertText("\x60".repeat(3));
+  await page.keyboard.press("Enter");
+  await page.keyboard.insertText("}");
+  await expect(editor.locator("pre")).toHaveText(codeText);
+  await page.keyboard.press("ControlOrMeta+Enter");
+
+  const linkTool = toolbar.getByRole("button", { name: "链接", exact: true });
+  const links = newNote.getByRole("group", { name: "插入链接", exact: true });
+  const addLink = links.getByRole("button", { name: "插入链接", exact: true });
+  const linkText = links.getByRole("textbox", { name: "链接文字", exact: true });
+  const linkUrl = links.getByRole("textbox", { name: "网页地址", exact: true });
+  await linkTool.click();
+  await links.getByRole("button", { name: "从节点资源选择", exact: true }).click();
+  await links.getByRole("combobox", { name: "节点资源", exact: true }).selectOption({ label: resource.title });
+  await linkText.fill("来源资料");
+  await addLink.click();
+  await expect(editor.locator(savedLink).filter({ hasText: "来源资料" })).toHaveAttribute("data-ink-note-link", resource.url);
+  await expect(editor).toBeFocused();
+  await page.keyboard.press("End");
+  await page.keyboard.press("Enter");
+
+  await linkTool.click();
+  await links.getByRole("button", { name: "手动输入", exact: true }).click();
+  await linkText.fill("手动参考");
+  await linkUrl.fill("mailto:fixture@example.test");
+  await addLink.click();
+  await expect(links.getByRole("alert")).toBeVisible();
+  await expect(editor.locator(savedLink)).toHaveCount(1);
+  await linkUrl.fill(manualUrl);
+  await addLink.click();
+  await expect(editor.locator(savedLink).filter({ hasText: "手动参考" })).toHaveAttribute("data-ink-note-link", manualUrl);
+  await expect(editor).toBeFocused();
+  await page.keyboard.press("End");
+  await page.keyboard.press("Enter");
+
+  // 同一次剪贴板提供两种格式时，只从正文纯文本解释受支持的 Markdown。
+  await editor.evaluate(element => {
+    const clipboard = new DataTransfer();
+    clipboard.setData("text/plain", "**粘贴的重点**");
+    clipboard.setData("text/html", '<img src="data:,fixture" alt="不接受原始标记">');
+    element.dispatchEvent(new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData: clipboard }));
+  });
+  await expect(editor.locator("strong")).toHaveText("粘贴的重点");
+  await expect(editor.locator("img")).toHaveCount(0);
+  await page.keyboard.press("End");
+  await page.keyboard.press("Enter");
+
+  await toolbar.getByRole("button", { name: "插入表格", exact: true }).click();
+  const table = editor.getByRole("table");
+  await table.getByRole("columnheader").first().click();
+  await page.keyboard.insertText("项目");
+  await table.getByRole("cell").first().click();
+  await page.keyboard.insertText("复习");
+  const rowCount = await table.getByRole("row").count() + 1;
+  const columnCount = await table.getByRole("columnheader").count() + 1;
+  await toolbar.getByRole("button", { name: "在下方插入行", exact: true }).click();
+  await toolbar.getByRole("button", { name: "在右侧插入列", exact: true }).click();
+  await expect(table.getByRole("row")).toHaveCount(rowCount);
+  await expect(table.getByRole("columnheader")).toHaveCount(columnCount);
+  // 删除表头后首个剩余数据行成为新表头；保存时不为 GFM 凭空补回空行。
+  await table.getByRole("columnheader").first().click();
+  await toolbar.getByRole("button", { name: "删除行", exact: true }).click();
+  await expect(table.getByRole("row")).toHaveCount(rowCount - 1);
+  await expect(table.getByRole("columnheader").first()).toHaveText("复习");
+  await newNote.getByRole("button", { name: "完成", exact: true }).click();
+  await expect(newNote).toHaveCount(0);
+  const savedMarkdown = async (): Promise<string | undefined> => (await readStoredWorkspace(page))?.documents
+    .find(document => document.id === graph.id)?.nodes[0]?.notes?.[0]?.markdown;
+  await expect.poll(savedMarkdown).toContain(manualUrl);
+  const markdown = await savedMarkdown();
+  expect(markdown).toContain("## 学习记录");
+  expect(markdown).toContain(resource.url);
+  expect(markdown).toContain("  return 1;");
+  expect(markdown).not.toContain("mailto:");
+
+  // 删除来源资源再打开，已插入的 URL 快照和可编辑结构都仍存在。
+  await page.getByRole("tab", { name: "资源", exact: true }).click();
+  const resourceCard = page.locator(`[data-ink-resource="${resource.id}"]`);
+  await resourceCard.click({ button: "right" });
+  await page.getByRole("menuitem", { name: "删除资源", exact: true }).click();
+  await expect(resourceCard).toHaveCount(0);
+  await notesTab.click();
+  await page.locator("[data-ink-note-open]").click();
+  const reopened = page.getByRole("dialog", { name: "笔记", exact: true }).getByRole("textbox", { name: "正文", exact: true });
+  await expect(reopened.getByRole("heading", { name: "学习记录", level: 2 })).toBeVisible();
+  await expect(reopened.locator("ol > li")).toHaveText(["第一步", "第二步"]);
+  await expect(reopened.locator("pre")).toHaveText(codeText);
+  await expect(reopened.getByRole("row")).toHaveCount(rowCount - 1);
+  await expect(reopened.getByRole("columnheader")).toHaveCount(columnCount);
+  await expect(reopened.getByRole("columnheader").first()).toHaveText("复习");
+  await expect(reopened.locator("strong")).toHaveText("粘贴的重点");
+  await expect(reopened.locator(savedLink).filter({ hasText: "来源资料" })).toHaveAttribute("data-ink-note-link", resource.url);
+  await expect(reopened.locator(savedLink).filter({ hasText: "手动参考" })).toHaveAttribute("data-ink-note-link", manualUrl);
+  expect(await readFixtureSnapshots(page)).toHaveLength(0);
+  expect(await page.evaluate(() => window.__WAYFINDER_E2E__.openCalls())).toHaveLength(0);
+});
+
+test("笔记首次落盘失败后保留原草稿，显式重试只留下一个撤销事件", async ({ page }) => {
+  const title = "首次落盘失败的笔记", description = "失败后保留这段说明", content = "原始笔记正文，重试时必须保留";
+  await page.addInitScript(noteTitle => {
+    const put = IDBObjectStore.prototype.put;
+    let pendingFailure = true;
+    // 只中止第一次包含此笔记的真实 IndexedDB 事务，允许初始化和原快照重试正常完成。
+    IDBObjectStore.prototype.put = function (value: unknown, key?: IDBValidKey): IDBRequest<IDBValidKey> {
+      const request = put.call(this, value, key);
+      if (pendingFailure && this.name === "workspace" && key === "current" && JSON.stringify(value).includes(noteTitle)) {
+        pendingFailure = false;
+        this.transaction.abort();
+      }
+      return request;
+    };
+  }, title);
+  const graph = await openInkWorkspace(page);
+  await page.locator('[data-ink-node="workspace-node-0"]').getByRole("heading").click();
+  await page.getByRole("tab", { name: "笔记", exact: true }).click();
+  await page.locator("[data-ink-note-add]").click();
+  const note = page.getByRole("dialog", { name: "新建笔记", exact: true });
+  const titleField = note.getByRole("textbox", { name: "标题", exact: true });
+  const descriptionField = note.getByRole("textbox", { name: "说明", exact: true });
+  const body = note.getByRole("textbox", { name: "正文", exact: true });
+  await titleField.fill(title);
+  await descriptionField.fill(description);
+  await body.fill(content);
+  await note.getByRole("button", { name: "完成", exact: true }).click();
+
+  const storedNotes = async () => (await readStoredWorkspace(page))?.documents.find(document => document.id === graph.id)?.nodes[0]?.notes ?? [];
+  await expect(note.getByRole("alert")).toContainText("笔记未保存");
+  await expect(titleField).toHaveValue(title);
+  await expect(descriptionField).toHaveValue(description);
+  await expect(body).toHaveText(content);
+  await expect(titleField).not.toBeEditable();
+  await expect(descriptionField).not.toBeEditable();
+  await expect(body).not.toBeEditable();
+  expect(await storedNotes()).toEqual([]);
+
+  await titleField.click();
+  await page.keyboard.insertText("不得加入本次重试");
+  await expect(titleField).toHaveValue(title);
+  await note.getByRole("button", { name: "重试保存", exact: true }).click();
+  await expect(note).toHaveCount(0);
+  await expect.poll(storedNotes).toEqual([{ id: expect.any(String), title, description, markdown: content }]);
+  await openInkUndo(page);
+  const events = page.getByRole("region", { name: "撤销记录", exact: true }).locator("[data-ink-undo-event]");
+  await expect(events).toHaveCount(1);
+  await expect(events.getByRole("button", { name: `撤销：新建笔记 ${title}`, exact: true })).toBeVisible();
   expect(await readFixtureSnapshots(page)).toHaveLength(0);
 });
 

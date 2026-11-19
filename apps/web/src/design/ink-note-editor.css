@@ -1,0 +1,63 @@
+/* 工具栏与正文使用同一灰阶玻璃配色；窄屏允许工具换行，表格可横滚。 */
+.ink-note-editor { min-width: 0; display: grid; gap: 10px; }
+.ink-note-editor__toolbar, .ink-note-editor__link-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.ink-note-editor button, .ink-note-editor select {
+  min-height: 30px;
+  padding: 4px 10px;
+  border: 1px solid #ffffffa8;
+  border-radius: 10px;
+  background: #f6f6f390;
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+}
+.ink-note-editor button:not(:disabled) { cursor: pointer; }
+.ink-note-editor button[aria-pressed="true"], .ink-note-editor button[aria-expanded="true"] { background: #d0d0c6; }
+.ink-note-editor button:disabled, .ink-note-editor select:disabled { opacity: .5; }
+.ink-note-editor__link {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid #ffffffaa;
+  border-radius: 10px;
+  background: #ffffff35;
+}
+.ink-note-editor__link p[role="alert"] { margin: 0; color: #6a2922; font-size: 12px; }
+.ink-note-editor__link select { width: 100%; min-width: 0; }
+.ink-note-editor__body {
+  min-width: 0;
+  overflow: auto;
+  border: 1px solid #25252222;
+  border-radius: 10px;
+  background: #f5f5f280;
+}
+.ink-note-editor__body .tiptap {
+  min-height: 130px;
+  padding: 10px 14px;
+  outline: none;
+  overflow-wrap: anywhere;
+  line-height: 1.6;
+}
+.ink-note-editor__body:focus-within { outline: 2px solid #145cf4; outline-offset: 1px; }
+.ink-note-editor__body .tiptap p { margin: 0 0 .65em; }
+.ink-note-editor__body .tiptap p:last-child { margin-bottom: 0; }
+.ink-note-editor__body .tiptap table { width: 100%; table-layout: fixed; border-collapse: collapse; }
+.ink-note-editor__body .tiptap th, .ink-note-editor__body .tiptap td {
+  min-width: 72px;
+  padding: 6px 9px;
+  border: 1px solid #66665460;
+  vertical-align: top;
+}
+.ink-note-editor__body .tiptap th { background: #d0d0c688; text-align: left; }
+.ink-note-editor__body .tiptap .selectedCell { background: #d3defe90; }
+.ink-note-editor__body .tiptap pre { padding: 8px 12px; overflow: auto; border-radius: 6px; background: #d0d0c688; }
+.ink-note-editor__body .tiptap [data-ink-note-link] { color: #254980; text-decoration: underline; }
+@media (pointer: coarse) {
+  .ink-note-editor button, .ink-note-editor select { min-height: 44px; }
+}

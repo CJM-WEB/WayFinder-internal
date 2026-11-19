@@ -63,9 +63,11 @@ describe("本地搜索图持久化", () => {
     const source = addNode(document, "学习节点", "", "n");
     const noted = addNote(source, "n", { title: "学习记录", description: "", markdown: "## 正文" }, "note-id");
     store.getState().addGraph(noted);
+    await expect(feedback.getState().awaitSave?.()).rejects.toThrow("本地搜索图保存失败");
     await vi.waitFor(() => expect(feedback.getState().error).toBe("save"), WEB_WAIT_TIMEOUT_MS);
     expect(store.getState().documents).toEqual([noted]);
     await feedback.getState().retry();
+    await expect(feedback.getState().awaitSave?.()).resolves.toBeUndefined();
     expect(save.mock.calls.at(-1)?.[0]).toEqual(snapshot(store));
     expect(feedback.getState().status).toBe("ready");
     stop();

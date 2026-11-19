@@ -14,6 +14,7 @@ import { requestSafeUrlOpen, resolveSafeHttpUrl } from "../lib/url.js";
 import type { GraphStoreNode } from "../stores/graph-store.js";
 import { addNote, moveResource, updateNote } from "../stores/workspace-edits.js";
 import { activeWorkspaceStore as workspaceStore, workspaceContextStore, type CapturedWorkspaceEdit } from "../stores/workspace-context.js";
+import { workspacePersistenceStore } from "../stores/workspace-persistence.js";
 import { InkNotice } from "./ink-notice.js";
 import InkNoteDialog, { type InkNoteSession } from "./ink-note-dialog.js";
 
@@ -383,16 +384,26 @@ export default function InkResources({ graphId, node, language, visible, editabl
     </div></div>
   </aside>}
   <InkNoteDialog key={contextKey} session={activeEditor?.session ?? null} language={language} writable={noteWritable}
+    resources={display !== null && "resources" in display.node ? display.node.resources : []}
     onClose={() => { setReturning(activeEditor); setEditor(null); }} onReturn={() => setReturning(null)}
     onSave={async (session, saved) => {
       if (activeEditor?.session !== session || !noteWritable) return false;
-      return edit.commitCaptured(activeEditor.capture, graph => {
+      const retrying = workspacePersistenceStore.getState().error === "save";
+      const accepted = await edit.commitCaptured(activeEditor.capture, graph => {
         const target = graph.nodes.find(candidate => candidate.id === activeEditor.nodeId);
-        if (target === undefined || target.noteGeneration !== activeEditor.generation ||
-          (!session.isNew && !target.notes?.some(note => note.id === saved.id))) throw new Error("笔记目标已失效");
+        if (target === undefined || target.noteGeneration !== activeEditor.generation) throw new Error("笔记目标已失效");
         const { id, ...fields } = saved;
-        return session.isNew ? addNote(graph, target.id, fields, id) : updateNote(graph, target.id, id, fields);
+        const exists = target.notes?.some(note => note.id === id) ?? false;
+        // 本地写入失败时编辑仍在内存中；以同一笔记 ID 重试，不重复新建或记录同值历史。
+        if (exists) return updateNote(graph, target.id, id, fields);
+        if (!session.isNew) throw new Error("笔记目标已失效");
+        return addNote(graph, target.id, fields, id);
       });
+      if (!accepted || workspaceContextStore.getState().contextKey !== contextKey) return false;
+      const persistence = workspacePersistenceStore.getState();
+      if (retrying && persistence.error === "save") await persistence.retry();
+      else await persistence.awaitSave?.();
+      return true;
     }} />
   </>;
 }
