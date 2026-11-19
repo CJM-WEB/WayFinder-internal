@@ -94,6 +94,8 @@ export type Messages = Readonly<{
   }>;
   notes: Readonly<{
     add: string; edit: string; delete: string;
+    resources: string; tab: string; empty: string; untitled: string; moreActions: string;
+    editDetails: string; title: string; description: string; save: string;
     confirmDeleteNode: (count: number) => string; confirmReplaceGraph: (count: number) => string;
   }>;
   app: Readonly<{
@@ -251,6 +253,8 @@ export const MESSAGES: Record<SearchLanguage, Messages> = {
     },
     notes: {
       add: "新建笔记", edit: "编辑笔记", delete: "删除笔记",
+      resources: "资源", tab: "笔记", empty: "这个节点还没有笔记。", untitled: "未命名笔记", moreActions: "笔记操作",
+      editDetails: "编辑标题和说明", title: "笔记标题", description: "笔记说明", save: "保存笔记",
       confirmDeleteNode: count => `此节点的 ${count} 条笔记会随节点删除，可通过撤销恢复。继续删除节点？`,
       confirmReplaceGraph: count => `替换整张图会移除旧节点及其 ${count} 条笔记，可通过撤销恢复。继续替换？`,
     },
@@ -456,6 +460,8 @@ export const MESSAGES: Record<SearchLanguage, Messages> = {
     },
     notes: {
       add: "Add note", edit: "Edit note", delete: "Delete note",
+      resources: "Resources", tab: "Notes", empty: "This node has no notes yet.", untitled: "Untitled note", moreActions: "Note actions",
+      editDetails: "Edit title and description", title: "Note title", description: "Note description", save: "Save note",
       confirmDeleteNode: count => `Deleting this node also removes its notes (${count}). Undo can restore them. Delete the node?`,
       confirmReplaceGraph: count => `Replacing this graph removes the previous nodes and their notes (${count}). Undo can restore them. Replace the graph?`,
     },

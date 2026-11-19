@@ -25,6 +25,7 @@ import { buildGraphNodeData } from "../components/Graph/graph-labels.js";
 import type { GraphNodeData } from "../components/Graph/graph-layout.js";
 import type { GraphContextRequest, GraphEditProblem } from "../components/Graph/GraphView.js";
 import type { InkActionTarget } from "./ink-workspace-actions.js";
+import type { InkNoteRequest } from "./ink-resources.js";
 import { InkNotice } from "./ink-notice.js";
 import { selectCurrentGraph, createEmptyGraph } from "../stores/workspace-store.js";
 import { activeWorkspaceStore as workspaceStore, workspaceContextStore, workspaceContext, type CapturedWorkspaceEdit } from "../stores/workspace-context.js";
@@ -127,6 +128,7 @@ export default function InkApp() {
   const [actionsMounted, setActionsMounted] = useState(false);
   const [researchOpen, setResearchOpen] = useState(false);
   const [actionTarget, setActionTarget] = useState<InkActionTarget | null>(null);
+  const [noteRequest, setNoteRequest] = useState<InkNoteRequest | null>(null);
   const [graphProblem, setGraphProblem] = useState<GraphEditProblem>(null);
   const contextIntent = useRef(0);
   const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "failed">("idle");
@@ -198,9 +200,23 @@ export default function InkApp() {
     if (request.kind !== "node") closeResources();
     else if (showsDraft) runtimeStore.getState().selectNode(request.nodeId);
     else workspaceStore.getState().selectNode(request.nodeId);
-    void showActions({ ...request, graphId: currentDocument?.id ?? null });
-  }, [closeResources, showsDraft, currentDocument?.id, showActions]);
-  useEffect(() => { closeActions(); setGraphProblem(null); }, [currentDocument?.id, closeActions]);
+    void showActions({ ...request, graphId: currentDocument?.id ?? null, ...(request.kind !== "node" ? {} : {
+      noteGeneration: currentDocument?.nodes.find(node => node.id === request.nodeId)?.noteGeneration,
+    }) });
+  }, [closeResources, showsDraft, currentDocument, showActions]);
+  const requestNewNote = (nodeId: string): void => {
+    const current = workspaceStore.getState();
+    const graph = current.documents.find(document => document.id === current.currentId);
+    const target = graph?.nodes.find(node => node.id === nodeId);
+    if (graph === undefined || target === undefined) return;
+    setNoteRequest({ graphId: graph.id, nodeId, generation: target.noteGeneration, contextKey: workspaceContextState.contextKey });
+  };
+  useEffect(() => { closeActions(); setGraphProblem(null); setNoteRequest(null); }, [currentDocument?.id, workspaceContextState.contextKey, closeActions]);
+  useEffect(() => {
+    if ((actionTarget?.kind === "notes" || actionTarget?.kind === "note") &&
+      (!resourcesVisible || resourceNode?.id !== actionTarget.nodeId ||
+        !currentDocument?.nodes.some(node => node.id === actionTarget.nodeId && node.noteGeneration === actionTarget.noteGeneration))) closeActions();
+  }, [actionTarget, resourcesVisible, resourceNode?.id, currentDocument, closeActions]);
   const graphNotice = useMemo(() => graphProblem === null || !canEdit ? null : ({ message: graphProblem.message,
     ...(graphProblem.nodeId === null ? {} : { action: <button className="ink-study__pill" onClick={() => workspaceStore.getState().selectNode(graphProblem.nodeId)}>{messages.editor.locateDuplicate}</button> }),
   }), [graphProblem, canEdit, messages.editor.locateDuplicate]);
@@ -807,13 +823,20 @@ export default function InkApp() {
         </div> : null}
         {resourcesMounted ? <Suspense fallback={null}><InkResources graphId={currentDocument?.id ?? null}
           node={resourceNode} language={renderLanguage} visible={resourcesVisible} editable={canEdit} onClose={closeResources}
+          notesEnabled={!showsDraft} noteRequest={noteRequest} onNoteRequestHandled={() => setNoteRequest(null)} onTabChange={closeActions}
+          onNoteContext={(noteId, clientPoint) => {
+            const target = currentDocument?.nodes.find(node => node.id === resourceNode?.id);
+            if (target === undefined || currentDocument === null) return;
+            void showActions({ graphId: currentDocument.id, nodeId: target.id, noteGeneration: target.noteGeneration,
+              clientPoint, ...(noteId === null ? { kind: "notes" } : { kind: "note", noteId }) });
+          }}
           onResourceContext={(resourceId, clientPoint) => {
             if (resourceNode !== null) void showActions({ kind: "resource", graphId: currentDocument?.id ?? null,
               nodeId: resourceNode.id, resourceId, clientPoint });
           }} /></Suspense> : null}
         {actionsMounted ? <Suspense fallback={null}><InkWorkspaceActions target={actionTarget} language={renderLanguage}
           enabled={canEdit} allowCreate={canCreate} active={entered && (!drawerOpen || settingsOpen) && !researchOpen}
-          suspended={settingsOpen} onClose={closeActions} />
+          suspended={settingsOpen} onClose={closeActions} onCreateNote={requestNewNote} />
           <InkResearchPreview language={renderLanguage} active={entered} suspended={drawerOpen} onVisibilityChange={setResearchOpen} />
         </Suspense> : null}
         <InkNotice notice={groupNotice ?? credentialNotice ?? graphNotice} />
