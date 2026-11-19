@@ -4490,6 +4490,68 @@ test("可视化笔记的格式与两种网页链接保存后原样恢复", async
   expect(unexpectedNavigations).toEqual([]);
 });
 
+test("访客窄屏下替换节点资源后，笔记及原链接仍可操作", async ({ page }) => {
+  await page.setViewportSize({ width: 375, height: 780 });
+  const graph = await openInkWorkspace(page);
+  const original = graph.nodes[0], resource = original?.resources[0];
+  if (original === undefined || resource === undefined) throw new Error("缺少节点资源夹具");
+  const title = "重搜前的个人笔记";
+  const node = page.locator(`[data-ink-node="${original.id}"]`).getByRole("heading");
+  const notesTab = page.getByRole("tab", { name: "笔记", exact: true });
+  const finish = (editor: Locator) => editor.getByRole("button", { name: "完成", exact: true });
+  const storedNode = async () => (await readStoredWorkspace(page))?.documents
+    .find(document => document.id === graph.id)?.nodes.find(item => item.id === original.id);
+  const withinViewport = (element: Element) => {
+    const { left, right } = element.getBoundingClientRect();
+    return left >= -1 && right <= window.innerWidth + 1 && element.scrollWidth <= element.clientWidth + 1;
+  };
+  await expect(page.getByRole("button", { name: "登录", exact: true })).toBeVisible();
+  await node.click();
+  await notesTab.click();
+  await page.getByRole("button", { name: "新建笔记", exact: true }).click();
+  const draft = page.getByRole("dialog", { name: "新建笔记", exact: true });
+  await expect(finish(draft)).toBeInViewport({ ratio: 1 });
+  expect(await draft.evaluate(element => getComputedStyle(element).transitionDuration)).toBe("0s");
+  await draft.getByRole("textbox", { name: "标题", exact: true }).fill(title);
+  await draft.getByRole("button", { name: "链接", exact: true }).click();
+  const linkForm = draft.getByRole("group", { name: "插入链接", exact: true });
+  await linkForm.getByRole("button", { name: "从节点资源选择", exact: true }).click();
+  await linkForm.getByRole("combobox", { name: "节点资源", exact: true }).selectOption({ label: resource.title });
+  await linkForm.getByRole("button", { name: "插入链接", exact: true }).click();
+  await finish(draft).click();
+  await expect(draft).toHaveCount(0);
+  const notes = (await storedNode())?.notes;
+  expect(notes).toEqual([{ id: expect.any(String), title, description: "", markdown: `[${resource.title}](${resource.url})` }]);
+  await page.getByRole("button", { name: "收起资源", exact: true }).click();
+
+  // 真实预览与应用替换走假检索的完整流；只有资源换成新结果，不能连带改写笔记。
+  await openInkNodeMenu(page, original.id);
+  await page.getByRole("menuitem", { name: "重新搜索此节点", exact: true }).click();
+  await expect.poll(() => readFixtureSnapshots(page)).toMatchObject([{ nodeSearch: { node: { id: original.id } } }]);
+  await emitFixtureEvents(page, 0, createInkMotionEvents().map((_event, index) => index));
+  await page.evaluate(() => window.__WAYFINDER_E2E__.close(0));
+  const preview = page.getByRole("dialog", { name: "重搜预览", exact: true });
+  await preview.getByRole("button", { name: "应用替换", exact: true }).click();
+  await expect(preview).toHaveCount(0);
+  await expect.poll(async () => (await storedNode())?.resources[0]?.url).toBe("https://node-0.example.com/resource-0");
+  expect((await storedNode())?.resources.map(item => item.url)).not.toContain(resource.url);
+  expect((await storedNode())?.notes).toEqual(notes);
+
+  // 节点菜单已选中目标；预览退场后窄屏侧栏会遮住图节点，直接使用笔记标签。
+  await notesTab.click();
+  const notesPanel = page.getByRole("tabpanel", { name: "笔记", exact: true });
+  expect(await notesPanel.evaluate(withinViewport)).toBe(true);
+  await notesPanel.getByRole("button", { name: title, exact: true }).click();
+  const reopened = page.getByRole("dialog", { name: "笔记", exact: true });
+  await expect(reopened.getByRole("link", { name: resource.title, exact: true })).toHaveAttribute("href", resource.url);
+  expect(await reopened.locator(".ink-note-dialog__contents").evaluate(withinViewport)).toBe(true);
+  await expect(finish(reopened)).toBeInViewport({ ratio: 1 });
+  await finish(reopened).click();
+  await expect(reopened).toHaveCount(0);
+  expect(await readFixtureSnapshots(page)).toHaveLength(1);
+  expect(await page.evaluate(() => window.__WAYFINDER_E2E__.openCalls())).toHaveLength(0);
+});
+
 test("笔记首次落盘失败后保留原草稿，显式重试只留下一个撤销事件", async ({ page }) => {
   const title = "首次落盘失败的笔记", description = "失败后保留这段说明", content = "原始笔记正文，重试时必须保留";
   await page.addInitScript(noteTitle => {

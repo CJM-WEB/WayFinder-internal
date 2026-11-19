@@ -1,5 +1,5 @@
 /**
- * 显式D12跨层验收：真实生产组合根、隔离MySQL、三个独立Chromium账号；普通CI不执行。
+ * 显式D12／D13跨层验收：真实生产组合根、隔离MySQL、三个独立Chromium账号；普通CI不执行。
  * 邮件只在内存接收OTP，搜索恒用假Provider；浏览器只准访问本轮回环Origin，不读.env。
  * 失败只输出阶段码，不输出Cookie、密码、邀请码或原始响应；finally按本轮账号精确清理并核对。
  */
@@ -375,9 +375,9 @@ export async function checkGroupCollaboration() {
     const beforeOffline = requests.length;
     await a.context().setOffline(true); await expect(offlineForm.locator("[data-workspace-save]")).toBeDisabled();
     const reconnectReached = gate(), reconnectRelease = gate(); let holdReconnect = true;
-    await a.context().route("**/api/group-sync?*", async route => {
+    await a.context().route(`${origin}/api/group-sync?*`, async route => {
       if (holdReconnect) { holdReconnect = false; reconnectReached.release(); await reconnectRelease.promise; }
-      try { await route.continue(); } catch { /* 关闭测试上下文取消未发出的请求。 */ }
+      try { await route.fallback(); } catch { /* 关闭测试上下文取消未发出的请求。 */ }
     });
     await a.context().setOffline(false); await bounded(reconnectReached.promise);
     await expect(offlineForm.locator("[data-workspace-save]")).toBeDisabled();
@@ -388,15 +388,19 @@ export async function checkGroupCollaboration() {
     await expect(heading(b)).toHaveText("断网期间保留的草稿");
 
     stage = "COPYOUT_LOST_ACK";
+    // 后注册的拦截器可以直接发请求，必须限定本轮回环来源并禁止重定向。
+    const graphWritePath = `${origin}/api/group-workspace`, graphReceiptPath = `${origin}/api/group-receipt?*`;
     let dropped = false, receiptDropped = false, originalMutation;
-    await a.context().route("**/api/group-workspace", async route => {
+    await a.context().route(graphWritePath, async route => {
+      if (route.request().method() !== "POST") { await route.fallback(); return; }
       const action = GroupGraphActionSchema.safeParse(route.request().postDataJSON());
       if (!dropped && action.success && action.data.action === "copyOut") {
         dropped = true; originalMutation = action.data.mutationId;
-        const response = await route.fetch(); assert.equal(response.status(), 200); GroupGraphWriteResponseSchema.parse(await response.json()); await route.abort("failed");
+        const response = await route.fetch({ maxRedirects: 0, timeout: 10_000 });
+        assert.equal(response.status(), 200); GroupGraphWriteResponseSchema.parse(await response.json()); await route.abort("failed");
       } else await route.fallback();
     });
-    await a.context().route("**/api/group-receipt?*", async route => {
+    await a.context().route(graphReceiptPath, async route => {
       if (dropped && !receiptDropped) { receiptDropped = true; await route.abort("failed"); } else await route.fallback();
     });
     group = await panel(a, "小组"); const beforeCopy = requests.filter(action => action.action === "copyOut").length;
@@ -424,6 +428,148 @@ export async function checkGroupCollaboration() {
     assert.equal(copiedIn.history.events.length, 0); assert.notEqual(copiedIn.document.id, privateCopy.document.id);
     assert.deepEqual(copiedIn.document.nodes, privateCopy.document.nodes); assert.deepEqual(copiedIn.document.positions, privateCopy.document.positions);
     assert.deepEqual((await liveRecord(a, users[0].userId, groupId, graphId)).history, source.history);
+
+    stage = "PERSONAL_NOTE_CLOUD";
+    const initialNote = { title: "跨层个人学习笔记", description: "仅属于个人图的原始说明", markdown: "分享前写下的原始正文" };
+    const sharedEdit = { description: "组员修改后的副本说明", markdown: "组员通过中央编辑器保存的正文" };
+    const callsBeforeNotes = { ...providers.calls };
+    const personalCopyId = privateCopy.document.id;
+    const graphView = page => page.locator(".ink-study__graph");
+    const openNotes = async page => {
+      await heading(page).click();
+      await page.getByRole("tab", { name: "笔记", exact: true }).click();
+    };
+    const findPersonalCopy = async () => (await personalWorkspace(a, users[0].userId)).graphs.find(row => row.document.id === personalCopyId);
+
+    // 复用已存在的个人副本，在真实登录会话从中央编辑器新建。先等云端确认，复制才能绑定正确源版本。
+    group = await panel(a, "小组"); await group.getByRole("button", { name: "返回个人图", exact: true }).click();
+    const personalHistory = await panel(a, "搜索历史");
+    await personalHistory.getByRole("button", { name: privateCopy.document.title, exact: true }).click();
+    await expect(graphView(a)).toHaveAttribute("data-ink-graph-id", personalCopyId);
+    await openNotes(a);
+    await a.locator("[data-ink-note-add]").click();
+    const newNote = a.getByRole("dialog", { name: "新建笔记", exact: true });
+    await newNote.getByRole("textbox", { name: "标题", exact: true }).fill(initialNote.title);
+    await newNote.getByRole("textbox", { name: "说明", exact: true }).fill(initialNote.description);
+    await newNote.getByRole("textbox", { name: "正文", exact: true }).fill(initialNote.markdown);
+    await newNote.getByRole("button", { name: "完成", exact: true }).click(); await expect(newNote).toBeHidden();
+    await expect.poll(async () => (await findPersonalCopy())?.document.nodes[0]?.notes?.[0]).toMatchObject(initialNote);
+    const privateWithNote = await findPersonalCopy(); assert(privateWithNote);
+    const personalNote = privateWithNote.document.nodes[0]?.notes?.[0]; assert(personalNote);
+    assert.deepEqual(privateWithNote.history.events.map(event => event.kind), ["note.add"]);
+    assert.deepEqual(privateWithNote.document.nodes[0]?.resources, privateCopy.document.nodes[0]?.resources);
+    const syncedHistory = await panel(a, "搜索历史");
+    await expect(syncedHistory.getByText("已同步到云端", { exact: true })).toBeVisible(); await closePanel(a);
+
+    stage = "COPYIN_WITH_NOTE";
+    group = await openGroup(a);
+    await group.getByRole("combobox", { name: "选择个人图", exact: true }).selectOption(personalCopyId);
+    const includeNotes = group.locator('[data-ink-copy-notes="in"]').getByRole("checkbox", { name: "附带笔记", exact: true });
+    await expect(includeNotes).not.toBeChecked(); await includeNotes.check();
+    const beforeNoteCopy = requests.length, previousGraphIds = new Set(current.activeOrder);
+    await group.getByRole("button", { name: "复制个人图到小组", exact: true }).click();
+    await expect.poll(async () => (await workspace(a, users[0].userId, groupId)).activeOrder.length).toBe(3);
+    const copiedWithNote = (await workspace(a, users[0].userId, groupId)).graphs.find(row => !previousGraphIds.has(row.document.id));
+    assert(copiedWithNote);
+    const sharedGraphId = copiedWithNote.document.id;
+    assert.notEqual(sharedGraphId, personalCopyId);
+    assert.deepEqual(copiedWithNote.document.nodes, privateWithNote.document.nodes);
+    assert.deepEqual(copiedWithNote.document.positions, privateWithNote.document.positions);
+    assert.deepEqual(copiedWithNote.history.events, []);
+    const noteCopies = requests.slice(beforeNoteCopy).filter(action => action.action === "copyIn");
+    assert.equal(noteCopies.length, 1); assert.equal(noteCopies[0].includeNotes, true);
+    assert.equal(noteCopies[0].sourceGraphId, personalCopyId);
+    assert.equal((await api(outsider, `/api/group-workspace?groupId=${groupId}`, users[2].userId)).status, 403);
+    await expect(graphView(a)).toHaveAttribute("data-ink-graph-id", sharedGraphId);
+    await openNotes(a);
+    const sharedRow = (await panel(b, "小组")).locator(".ink-study__history-record").filter({
+      has: b.locator(`[data-ink-copy-notes="out"][data-ink-copy-source="${sharedGraphId}"]`),
+    });
+    await sharedRow.getByRole("button", { name: copiedWithNote.document.title, exact: true }).click();
+    await closePanel(b);
+    await expect(graphView(b)).toHaveAttribute("data-ink-graph-id", sharedGraphId);
+    await openNotes(b);
+    const noteCard = page => page.locator(`[data-ink-note="${personalNote.id}"]`);
+    await expect(noteCard(a)).toContainText(initialNote.description);
+    await expect(noteCard(b)).toContainText(initialNote.description);
+
+    stage = "NOTE_EDIT_LOST_ACK";
+    // 成员的正文更新真实落库，只丢写响应和同一操作的首次收据。创建者不刷新就收到提交后的快照。
+    let noteMutation;
+    const noteReceiptReads = [];
+    const dropNoteAcknowledgement = async route => {
+      const request = route.request();
+      if (request.method() !== "POST" || noteMutation !== undefined) { await route.fallback(); return; }
+      const parsed = GroupGraphActionSchema.safeParse(request.postDataJSON());
+      if (!parsed.success || parsed.data.action !== "edit" || parsed.data.kind !== "note.edit" || parsed.data.graphId !== sharedGraphId) {
+        await route.fallback(); return;
+      }
+      noteMutation = parsed.data.mutationId;
+      const response = await route.fetch({ maxRedirects: 0, timeout: 10_000 }); assert.equal(response.status(), 200);
+      GroupGraphWriteResponseSchema.parse(await response.json());
+      await route.abort("failed");
+    };
+    const observeNoteReceipt = async route => {
+      const mutationId = new URL(route.request().url()).searchParams.get("mutationId");
+      if (mutationId !== noteMutation) { await route.fallback(); return; }
+      noteReceiptReads.push(mutationId);
+      if (noteReceiptReads.length === 1) await route.abort("failed");
+      else await route.fallback();
+    };
+    await b.context().route(graphWritePath, dropNoteAcknowledgement);
+    await b.context().route(graphReceiptPath, observeNoteReceipt);
+    const beforeNoteEdit = requests.length;
+    await noteCard(b).locator("[data-ink-note-open]").click();
+    const editingNote = b.getByRole("dialog", { name: "笔记", exact: true });
+    const memberDescription = editingNote.getByRole("textbox", { name: "说明", exact: true });
+    const memberBody = editingNote.getByRole("textbox", { name: "正文", exact: true });
+    await expect(memberBody).toHaveText(initialNote.markdown);
+    await memberDescription.fill(sharedEdit.description); await memberBody.fill(sharedEdit.markdown);
+    await editingNote.getByRole("button", { name: "完成", exact: true }).click();
+    const confirmNote = editingNote.getByRole("button", { name: "核对上次结果", exact: true });
+    await expect(confirmNote).toBeEnabled();
+    await expect(memberDescription).toHaveValue(sharedEdit.description); await expect(memberBody).toHaveText(sharedEdit.markdown);
+    assert(noteMutation); assert.deepEqual(noteReceiptReads, [noteMutation]);
+    await expect(noteCard(a)).toContainText(sharedEdit.description);
+    await noteCard(a).locator("[data-ink-note-open]").click();
+    const observedNote = a.getByRole("dialog", { name: "笔记", exact: true });
+    await expect(observedNote.getByRole("textbox", { name: "正文", exact: true })).toHaveText(sharedEdit.markdown);
+    await a.keyboard.press("Escape"); await expect(observedNote).toBeHidden();
+
+    stage = "NOTE_RECEIPT_RECONCILE";
+    // 编辑器内核对只读取原收据。验证没有第二个编辑 POST，也不产生第二条历史。
+    const [receiptResponse] = await Promise.all([b.waitForResponse(response => {
+      const url = new URL(response.url());
+      return response.request().method() === "GET" && url.pathname === "/api/group-receipt" && url.searchParams.get("mutationId") === noteMutation;
+    }), confirmNote.click()]);
+    await expect(editingNote).toBeHidden();
+    assert.deepEqual(noteReceiptReads, [noteMutation, noteMutation]);
+    const noteEdits = requests.slice(beforeNoteEdit).filter(action => action.action === "edit" && action.kind === "note.edit");
+    assert.equal(noteEdits.length, 1); assert.equal(noteEdits[0].mutationId, noteMutation);
+    assert.equal(receiptResponse.status(), 200);
+    const noteReceipt = GroupGraphReceiptResponseSchema.parse(await receiptResponse.json());
+    assert(noteReceipt.applied); assert.equal(noteReceipt.graphId, sharedGraphId);
+    await b.context().unroute(graphWritePath, dropNoteAcknowledgement);
+    await b.context().unroute(graphReceiptPath, observeNoteReceipt);
+    const memberEdit = await liveRecord(a, users[0].userId, groupId, sharedGraphId);
+    assert.deepEqual(memberEdit.document.nodes[0]?.notes, [{ ...personalNote, ...sharedEdit }]);
+    assert.deepEqual(memberEdit.history.events.map(event => [event.kind, event.actorUserId]), [["note.edit", users[1].userId]]);
+
+    stage = "NOTE_DELETE_PRIVATE_ISOLATION";
+    // 删除共享副本后两名成员实时看到空列表，原资源与个人云存档保持完整。
+    await expect(noteCard(b).locator(".ink-notes__actions")).toBeVisible();
+    await noteCard(b).click({ button: "right" });
+    await b.getByRole("menuitem", { name: "删除笔记", exact: true }).click();
+    await expect(noteCard(a)).toHaveCount(0); await expect(noteCard(b)).toHaveCount(0);
+    const memberDelete = await liveRecord(a, users[0].userId, groupId, sharedGraphId);
+    assert.equal(memberDelete.document.nodes[0]?.notes?.length ?? 0, 0);
+    assert.deepEqual(memberDelete.document.nodes[0]?.resources, copiedWithNote.document.nodes[0]?.resources);
+    assert.deepEqual(memberDelete.history.events.map(event => [event.kind, event.actorUserId]), [
+      ["note.edit", users[1].userId], ["note.delete", users[1].userId],
+    ]);
+    assert.deepEqual(await findPersonalCopy(), privateWithNote);
+    assert.deepEqual(providers.calls, callsBeforeNotes);
+    console.info("GROUP_BROWSER_NOTE_COPY_RECEIPT_ISOLATION_OK");
 
     stage = "LEAVE_CONTRIBUTION";
     await selectGraph(b, QUERY);
@@ -500,7 +646,7 @@ export async function checkGroupCollaboration() {
     }
     if (directory !== undefined) await close(() => fs.rm(directory, { recursive: true, force: true }));
     if (cleanupFailed) console.error("GROUP_BROWSER_RESOURCE_OR_DATA_CLEANUP_FAILED");
-    if (succeeded && !cleanupFailed) console.info("GROUP_BROWSER_OK: 真实三会话／双DOM协作与冲突／本人撤销重做／假搜索预览／断网追平／原ID丢确认／双向复制／退出贡献／解散无备份");
+    if (succeeded && !cleanupFailed) console.info("GROUP_BROWSER_OK: 真实三会话／双DOM协作与冲突／本人撤销重做／假搜索预览／断网追平／原ID丢确认／双向复制／笔记隔离与收据恢复／退出贡献／解散无备份");
   }
 }
 

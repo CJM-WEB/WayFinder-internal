@@ -1,14 +1,16 @@
 /**
  * 显式组图 SQL 集成验证：只允许回环 wf_d12_test_ 库，不读取 .env，不调用检索或邮件。
- * 使用真实个人／小组服务验证复制事务、版本、历史、删除恢复、收据及解散竞争。
+ * 使用真实个人／小组服务验证复制事务、版本、笔记历史、删除恢复、收据及解散竞争。
  * 假身份和图标识均属于本轮；清理精确到这些身份／小组，不 DROP 表或数据库。
  */
 import assert from "node:assert/strict";
+import { Buffer } from "node:buffer";
 import { randomUUID } from "node:crypto";
+import { performance } from "node:perf_hooks";
 import process from "node:process";
 import { z } from "zod";
 import {
-  EditableGraphSchema, type EditableGraph, type GroupGraphRecord, type GroupWorkspaceResponse,
+  EditableGraphSchema, GroupSyncEventSchema, type EditableGraph, type EditableNote, type GroupGraphRecord, type GroupWorkspaceResponse,
 } from "@wayfinder/contracts";
 import { appendHistory, createGraphHistory, restoreGraphHistory, storeGraphHistory } from "@wayfinder/contracts/graph-history";
 
@@ -17,8 +19,10 @@ import {
 } from "../accounts/database.js";
 import { createAccountProfileStorage } from "../accounts/profile-storage.js";
 import { createWorkspaceStorage } from "../accounts/workspace-storage.js";
+import { createGroupEventEncoder } from "../routes/group-response-encoding.js";
 import { migrateGroupData } from "./database.js";
 import { createGroupStorage } from "./storage.js";
+import { readGroupSyncSnapshot } from "./sync.js";
 import { createGroupWorkspaceStorage } from "./workspace-storage.js";
 
 type Query = Parameters<Parameters<AccountDatabase["transaction"]>[1]>[0];
@@ -61,10 +65,40 @@ const latest = (workspace: GroupWorkspaceResponse): GroupGraphRecord => {
   assert.ok(id);
   return record(workspace, id);
 };
+const notesOf = (graph: EditableGraph): EditableNote[] => graph.nodes[0]?.notes ?? [];
+function withNotes(graph: EditableGraph, notes: EditableNote[]): EditableGraph {
+  const [first, ...remaining] = graph.nodes;
+  assert.ok(first);
+  return EditableGraphSchema.parse({ ...graph, nodes: [{ ...first, notes }, ...remaining] });
+}
 /** 这里只验证当前图能由组历史重放；本人撤销／重做行为在 WAY-148 单独验证。 */
 function assertReplay(value: GroupGraphRecord): void {
   restoreGraphHistory({ version: "history.v1", base: value.history.base, events: value.history.events, redoIds: [] },
     value.document, Math.max(100, value.history.events.length));
+}
+
+/** 以正式 RR 快照读取、校验和 gzip 首帧编码为计时边界，排除网络传输和浏览器渲染。 */
+async function measureNoteSnapshot(database: AccountDatabase, userId: string, groupId: string, operation: () => DatabaseOperation) {
+  const durations: number[] = [];
+  let sizes = { documentBytes: 0, storedGraphBytes: 0, historyBytes: 0, frameBytes: 0, gzipBytes: 0 };
+  for (let sample = 0; sample <= 7; sample++) {
+    const start = performance.now();
+    const snapshot = await readGroupSyncSnapshot(database, userId, groupId, operation());
+    const event = GroupSyncEventSchema.parse({ type: "snapshot", sequence: 0, ...snapshot, connectionId: "fixture-sync-notes" });
+    const frame = `${JSON.stringify(event)}\n`;
+    const encoder = createGroupEventEncoder();
+    try {
+      const gzip = await encoder.encode(frame);
+      if (sample > 0) durations.push(performance.now() - start);
+      const graph = latest(snapshot.workspace);
+      sizes = { documentBytes: Buffer.byteLength(JSON.stringify(graph.document)), storedGraphBytes: Buffer.byteLength(JSON.stringify(graph)),
+        historyBytes: Buffer.byteLength(JSON.stringify(graph.history)), frameBytes: Buffer.byteLength(frame), gzipBytes: gzip.byteLength };
+    } finally { encoder.destroy(); }
+  }
+  durations.sort((a, b) => a - b);
+  const median = durations[3];
+  assert.ok(median !== undefined);
+  return { ...sizes, medianMs: Number(median.toFixed(2)) };
 }
 
 let database: AccountDatabase | undefined;
@@ -121,8 +155,11 @@ try {
           domain: "fixture.example", title: "假网页", origin: "manual", sourceType: "user_added", summary: "假说明", whySelected: "", rank: 1,
         }] : [] })), edges: [{ id: "fixture_edge", source: "A", target: "B", type: "related_to" }],
       positions: { B: { x: 20, y: 30 }, A: { x: 40, y: 50 } } });
-    let source = { ...base, title: "个人已经编辑的图" };
-    let sourceHistory = appendHistory(createGraphHistory(base), base, source,
+    const privateNote: EditableNote = { id: "fixture-note", title: "个人学习笔记", description: "只随显式勾选分享",
+      markdown: "## 复习\n\n[假资料](https://fixture.example/source?part=2#example)" };
+    const personalBase = withNotes(base, [privateNote]);
+    let source = { ...personalBase, title: "个人已经编辑的图" };
+    let sourceHistory = appendHistory(createGraphHistory(personalBase), personalBase, source,
       { id: randomUUID(), kind: "graph.rename", subject: source.title, active: true, occurredAt: at }, 100);
     let savedSource = (await personal.write(member.userId, { action: "save", expectedRevision: 0, mutationId: mutation(),
       document: source, history: storeGraphHistory(sourceHistory) }, operation())).record;
@@ -133,7 +170,7 @@ try {
     assert.equal(copiedIn.history.events.length, 0);
     assert.deepEqual(copiedIn.history.redoIdsByUser, {});
     assert.deepEqual(Object.keys(copiedIn.document.positions), ["B", "A"]);
-    assert.deepEqual(copiedIn.document.nodes, source.nodes);
+    assert.deepEqual(copiedIn.document.nodes, base.nodes);
     assert.deepEqual(copiedIn.document.edges, source.edges);
     assertReplay(copiedIn);
     assert.equal(JSON.stringify((await personal.read(member.userId, operation())).graphs.find(value => value.document.id === source.id)?.history), sourceHistoryBeforeCopy);
@@ -190,6 +227,54 @@ try {
     await rejectCode(workspace.write(member.userId, { ...copyInAction, sourceRevision: savedSource.revision, mutationId: mutation() }, operation()), "GROUP_NOT_FOUND");
     savedSource = (await personal.write(member.userId, { action: "restore", graphId: source.id,
       expectedRevision: savedSource.revision, mutationId: mutation() }, operation())).record;
+
+    // 默认排除已在前面验证，此处显式附带当前版本。组成员只编辑共享副本，个人源仍归原账号。
+    const includeNotes = { ...copyInAction, includeNotes: true, sourceRevision: savedSource.revision, mutationId: mutation() };
+    await rejectCode(workspace.write(owner.userId, includeNotes, operation()), "GROUP_NOT_FOUND");
+    const sharedNote = latest((await workspace.write(member.userId, includeNotes, operation())).workspace);
+    assert.deepEqual(notesOf(sharedNote.document), [privateNote]);
+    assert.deepEqual(notesOf(sharedNote.history.base.graph), [privateNote]);
+    assert.equal(sharedNote.history.events.length, 0);
+    const sharedEdit = { action: "edit" as const, groupId: groupA, graphId: sharedNote.document.id,
+      expectedRevision: sharedNote.revision, before: sharedNote.document };
+    const revisedNote = { ...privateNote, title: "小组的笔记", markdown: `${privateNote.markdown}\n\n小组补了一段。` };
+    const editedNote = record((await workspace.write(member.userId, { ...sharedEdit,
+      after: withNotes(sharedNote.document, [revisedNote]), kind: "note.edit", subject: revisedNote.title, mutationId: mutation() }, operation())).workspace, sharedNote.document.id);
+    assert.deepEqual(notesOf(record(await workspace.read(owner.userId, groupA, operation()), sharedNote.document.id).document), [revisedNote]);
+    await rejectCode(workspace.write(owner.userId, { ...sharedEdit, after: withNotes(sharedNote.document, [{ ...privateNote, title: "另一标题" }]),
+      kind: "note.edit", subject: "同一字段抢写", mutationId: mutation() }, operation()), "GROUP_CONFLICT");
+
+    const copySharedNote = { action: "copyOut" as const, groupId: groupA, graphId: editedNote.document.id, expectedRevision: editedNote.revision };
+    const copyWithoutNote = (await workspace.write(owner.userId, { ...copySharedNote, mutationId: mutation() }, operation())).personalGraph;
+    assert.ok(copyWithoutNote);
+    assert.deepEqual(notesOf(copyWithoutNote.document), []);
+    assert.deepEqual(notesOf(copyWithoutNote.history.base.graph), []);
+    const copyWithNote = { ...copySharedNote, includeNotes: true, mutationId: mutation() };
+    const includedNote = (await workspace.write(owner.userId, copyWithNote, operation())).personalGraph;
+    assert.ok(includedNote);
+    assert.notEqual(includedNote.document.id, editedNote.document.id);
+    assert.deepEqual(notesOf(includedNote.document), [revisedNote]);
+    assert.equal(includedNote.history.events.length, 0);
+    assert.deepEqual(notesOf(includedNote.history.base.graph), [revisedNote]);
+    const receipt = await workspace.receipt(owner.userId, copyWithNote.mutationId, operation());
+    assert.equal(receipt.personalGraphId, includedNote.document.id);
+
+    // 删除与撤销经真实事务写入，作者以当前会话为准。另一成员或另一归属的记录不得被改动。
+    const deletedNote = record((await workspace.write(member.userId, { ...sharedEdit, expectedRevision: editedNote.revision,
+      before: editedNote.document, after: withNotes(editedNote.document, []), kind: "note.delete", subject: revisedNote.title,
+      mutationId: mutation() }, operation())).workspace, sharedNote.document.id);
+    assert.deepEqual(notesOf(deletedNote.document), []);
+    const deletion = deletedNote.history.events.at(-1);
+    assert.ok(deletion);
+    assert.equal(deletion.actorUserId, member.userId);
+    const undoNote = { action: "undo" as const, groupId: groupA, graphId: sharedNote.document.id,
+      expectedRevision: deletedNote.revision, eventId: deletion.id, mutationId: mutation() };
+    await rejectCode(workspace.write(owner.userId, undoNote, operation()), "GROUP_FORBIDDEN");
+    const restoredNote = record((await workspace.write(member.userId, undoNote, operation())).workspace, sharedNote.document.id);
+    assert.deepEqual(notesOf(restoredNote.document), [revisedNote]);
+    assertReplay(restoredNote);
+    assert.deepEqual((await personal.read(member.userId, operation())).graphs.find(row => row.document.id === source.id), savedSource);
+    assert.deepEqual((await personal.read(owner.userId, operation())).graphs.find(row => row.document.id === includedNote.document.id), includedNote);
 
     const copyOutAction = { action: "copyOut" as const, groupId: groupA, graphId: edited.document.id,
       expectedRevision: edited.revision, mutationId: mutation() };
@@ -325,6 +410,44 @@ try {
       }
       await rejectCode(workspace.read(member.userId, raceGroup, operation()), "GROUP_NOT_FOUND");
     }
+
+    // 固定同形图及 Markdown 样例，只改变正文和历史。全部通过真实存档和显式复制生成独立组图。
+    const longBody = Array.from({ length: 160 }, (_, index) => `${index}. Compare an example and record the useful details.\n`).join("").slice(0, 8_192);
+    assert.equal(Buffer.byteLength(longBody), 8_192);
+    const largeNote = { ...privateNote, id: "long-note", markdown: longBody };
+    const manyNotes = [largeNote, ...Array.from({ length: 7 }, (_, index) => ({ ...privateNote, id: `short-note-${index}`,
+      title: `练习 ${index + 1}`, markdown: longBody.slice(index * 100, index * 100 + 1_024) }))];
+    const noteSizes: Array<Awaited<ReturnType<typeof measureNoteSnapshot>> & { name: string }> = [];
+    for (const [name, notes] of [["baseline", []], ["long", [largeNote]], ["many", manyNotes]] as const) {
+      const targetGroup = await makeGroup("笔记存档用量样例");
+      const personalSample = withNotes({ ...base, id: randomUUID(), title: "笔记存档用量样例" }, [...notes]);
+      const personalRecord = (await personal.write(member.userId, { action: "save", expectedRevision: 0, mutationId: mutation(),
+        document: personalSample, history: storeGraphHistory(createGraphHistory(personalSample)) }, operation())).record;
+      let sample = latest((await workspace.write(member.userId, { action: "copyIn", includeNotes: notes.length > 0, groupId: targetGroup,
+        sourceGraphId: personalSample.id, sourceRevision: personalRecord.revision, mutationId: mutation() }, operation())).workspace);
+      noteSizes.push({ name, ...await measureNoteSnapshot(db, member.userId, targetGroup, operation) });
+      if (name === "many") {
+        for (let index = 1; index <= 12; index++) {
+          // 只修改长笔记，另外七条从未编辑，用于区分正文增长和历史累积造成的开销。
+          const text = `${longBody.slice(0, -2)}${String(index).padStart(2, "0")}`;
+          const after = withNotes(sample.document, [{ ...largeNote, markdown: text }, ...manyNotes.slice(1)]);
+          sample = latest((await workspace.write(member.userId, { action: "edit", groupId: targetGroup, graphId: sample.document.id,
+            expectedRevision: sample.revision, before: sample.document, after, kind: "note.edit", subject: "修改固定样例", mutationId: mutation() }, operation())).workspace);
+        }
+        assert.equal(sample.history.events.length, 12);
+        assert.deepEqual(notesOf(sample.document).slice(1), manyNotes.slice(1));
+        assertReplay(sample);
+        noteSizes.push({ name: "many-edited", ...await measureNoteSnapshot(db, member.userId, targetGroup, operation) });
+      }
+      const revision = (await groups.read(owner.userId, targetGroup, operation())).group.revision;
+      await groups.write(owner, { action: "dissolve", groupId: targetGroup, expectedRevision: revision, mutationId: mutation() }, operation());
+    }
+    const [baseline, long, many, editedMany] = noteSizes;
+    assert.ok(baseline && long && many && editedMany);
+    assert.ok(baseline.storedGraphBytes < long.storedGraphBytes && long.storedGraphBytes < many.storedGraphBytes);
+    assert.equal(editedMany.documentBytes, many.documentBytes);
+    assert.ok(editedMany.historyBytes > many.historyBytes && editedMany.frameBytes > many.frameBytes);
+    console.info("D13_NOTE_SNAPSHOT_COST", JSON.stringify(noteSizes));
   } finally {
     for (const release of releaseGates) release();
     const cleanup = await Promise.allSettled([
@@ -334,7 +457,7 @@ try {
     cleanupFailed = cleanup.some(result => result.status === "rejected");
   }
   if (cleanupFailed) throw new Error("本轮组图假数据未完全清理");
-  console.info("组图真实 SQL：多图／版本／图与历史重放／布局键序／双向空历史复制／源保留与独立编辑／收据幂等／100与101删除恢复／墓碑／组隔离／复制事务回滚／取消／复制与解散双向锁竞争通过");
+  console.info("组图真实 SQL：多图／版本／图与历史重放／布局键序／双向空历史复制／笔记隐私及组员改删／源保留与独立编辑／收据幂等／100与101删除恢复／墓碑／组隔离／复制事务回滚／取消／复制与解散双向锁竞争通过");
 } catch {
   console.error("组图 SQL 隔离验证失败；核对本地测试配置与组图服务，不输出原始异常或配置");
   process.exitCode = 1;
