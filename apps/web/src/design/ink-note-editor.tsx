@@ -8,7 +8,8 @@ import { Markdown } from "@tiptap/markdown";
 import { isInTable, rowIsHeader, selectedRect } from "@tiptap/pm/tables";
 import StarterKit from "@tiptap/starter-kit";
 import type { EditableResource, SearchLanguage } from "@wayfinder/contracts";
-import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState, type ComponentPropsWithRef, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 
 import { requestSafeUrlOpen, resolveSafeHttpUrl } from "../lib/url.js";
 import "./ink-note-editor.css";
@@ -43,6 +44,17 @@ const text = {
 } satisfies Record<SearchLanguage, Record<string, string | readonly string[]>>;
 const headings = [1, 2, 3] as const;
 const markdownPattern = /(?:^|\n)[^\S\n]*(?:#{1,6}\s|[-+*]\s|\d+[.)]\s|\x60{3}|~{3}|\|)|\*\*[^*]+\*\*|\[[^\]\n]+\]\([^\n]+\)/;
+const toolSymbols = { heading: "H", bold: "B", bullets: "", ordered: "", table: "", row: "▤+", column: "▥+",
+  deleteRow: "▤−", deleteColumn: "▥−", code: "‹/›", link: "" } as const;
+
+/** 工具栏用图形呈现；按钮保留可读名称与鼠标悬浮说明。 */
+function NoteTool({ icon, label, ...props }: ComponentPropsWithRef<"button"> & {
+  icon: keyof typeof toolSymbols; label: string;
+}) {
+  return <button {...props} type="button" className="ink-note-editor__tool" aria-label={label} title={label}>
+    <span aria-hidden="true" className="ink-note-editor__icon" data-icon={icon}>{toolSymbols[icon]}</span>
+  </button>;
+}
 
 /**
  * StarterKit 默认只在 HTML 和编辑命令侧验证链接，Markdown 导入仍会接受 token.href。
@@ -119,15 +131,21 @@ type LinkDraft = {
   label: string;
   url: string;
   selection: string;
+  range: { from: number; to: number };
   resource: string;
   invalid: boolean;
+  closing: boolean;
 };
 
 export default function InkNoteEditor({ value, language, editable, resources, onChange, metadata }: Props) {
   const labels = text[language];
   const id = useId();
   const mount = useRef<HTMLDivElement>(null);
+  const headingWrap = useRef<HTMLDivElement>(null);
+  const headingTrigger = useRef<HTMLButtonElement>(null);
   const linkTrigger = useRef<HTMLButtonElement>(null);
+  const linkDialog = useRef<HTMLDialogElement>(null);
+  const linkReturn = useRef<"body" | "trigger" | null>(null);
   const address = useRef<HTMLInputElement>(null);
   // 外层用笔记会话重建编辑器；会话内的 Markdown 回显不能覆盖较新的编辑事务或中文组合选区。
   const initialValue = useRef(value);
@@ -135,6 +153,7 @@ export default function InkNoteEditor({ value, language, editable, resources, on
   const published = useRef(value);
   const [editor, setEditor] = useState<Editor | null>(null);
   const [, setRevision] = useState(0);
+  const [headingOpen, setHeadingOpen] = useState(false);
   const [link, setLink] = useState<LinkDraft | null>(null);
   const [linkError, setLinkError] = useState<"invalidUrl" | "openingFailed" | null>(null);
 
@@ -207,43 +226,101 @@ export default function InkNoteEditor({ value, language, editable, resources, on
     editor.setEditable(editable, false);
     editor.view.dom.setAttribute("aria-readonly", String(!editable));
     editor.view.dom.setAttribute("aria-label", labels.body);
-    if (!editable) setLink(null);
+    if (!editable) { setHeadingOpen(false); setLink(null); }
   }, [editor, editable, labels.body]);
 
   const linkOpen = link !== null;
+  const linkClosing = link?.closing === true;
+  useLayoutEffect(() => {
+    const dialog = linkDialog.current;
+    if (linkOpen && dialog !== null) {
+      // 原生模态层将父笔记隔离为不可交互；宿主仍属于父对话框，焦点守卫不会把焦点拉回笔记。
+      dialog.showModal();
+      address.current?.focus({ preventScroll: true });
+      return () => { if (dialog.open) dialog.close(); };
+    }
+    const target = linkReturn.current;
+    linkReturn.current = null;
+    // 只有模态层释放后才能恢复父层焦点；成功插入回到正文，取消回到触发图标。
+    if (target === "body") editor?.commands.focus();
+    else if (target === "trigger") linkTrigger.current?.focus({ preventScroll: true });
+  }, [editor, linkOpen]);
   useEffect(() => {
-    if (linkOpen) address.current?.focus();
-  }, [linkOpen]);
+    if (!linkClosing) return;
+    const motion = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const finishWithoutMotion = (): void => { if (motion.matches) setLink(null); };
+    // 正常由面板的 S 型过渡收尾；浏览器未派发事件时也不能留下遮住父笔记的模态层。
+    const fallback = window.setTimeout(() => setLink(null), 330);
+    finishWithoutMotion();
+    motion.addEventListener("change", finishWithoutMotion);
+    return () => { window.clearTimeout(fallback); motion.removeEventListener("change", finishWithoutMotion); };
+  }, [linkClosing]);
 
   const heading = headings.find(level => editor?.isActive("heading", { level })) ?? 0;
   const inTable = editor?.isActive("table") ?? false;
   const ready = editor !== null && editable;
+  const showHeadings = headingOpen && ready && !inTable;
+  useLayoutEffect(() => {
+    if (!showHeadings) return;
+    headingWrap.current?.querySelector<HTMLButtonElement>('[aria-pressed="true"]')?.focus({ preventScroll: true });
+    const blockOutside = (event: Event): boolean => {
+      if (!(event.target instanceof Node) || headingWrap.current?.contains(event.target)) return false;
+      event.preventDefault(); event.stopPropagation(); return true;
+    };
+    // 捕获指针按下，避免浮层因失焦而提前卸载；再消费完整的点击，不能穿到父笔记触发自动保存。
+    const holdFocus = (event: PointerEvent): void => { if (event.button === 0) blockOutside(event); };
+    const closeOutside = (event: globalThis.MouseEvent): void => {
+      if (blockOutside(event)) { setHeadingOpen(false); headingTrigger.current?.focus({ preventScroll: true }); }
+    };
+    document.addEventListener("pointerdown", holdFocus, true);
+    document.addEventListener("click", closeOutside, true);
+    return () => {
+      document.removeEventListener("pointerdown", holdFocus, true);
+      document.removeEventListener("click", closeOutside, true);
+    };
+  }, [showHeadings]);
+
+  const formatHeading = (level: 0 | (typeof headings)[number]): void => {
+    const command = editor?.chain().focus();
+    if (level === 0) command?.setParagraph().run();
+    else command?.setHeading({ level }).run();
+    setHeadingOpen(false);
+  };
   const openLink = (): void => {
     if (editor === null) return;
     const href: unknown = editor.getAttributes("link").href;
     if (typeof href === "string") editor.commands.extendMarkRange("link");
     const { from, to } = editor.state.selection;
     const selection = editor.state.doc.textBetween(from, to, " ");
-    setLink({ mode: "manual", label: selection, url: typeof href === "string" ? href : "", selection, resource: "", invalid: false });
+    setLink({ mode: "manual", label: selection, url: typeof href === "string" ? href : "", selection, range: { from, to }, resource: "", invalid: false, closing: false });
   };
-  const cancelLink = (): void => { setLink(null); linkTrigger.current?.focus(); };
+  const closeLink = (target: "body" | "trigger"): void => {
+    if (link === null || linkReturn.current !== null) return;
+    linkReturn.current = target;
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) setLink(null);
+    else setLink({ ...link, closing: true });
+  };
   const insertLink = (): void => {
-    if (editor === null || link === null || !editable) return;
+    if (editor === null || link === null || !editable || linkReturn.current !== null) return;
     const href = link.url.trim();
     if (resolveSafeHttpUrl(href) === null) { setLink({ ...link, invalid: true }); return; }
     const label = link.label.trim() || href;
-    const command = editor.chain().focus();
+    // 子窗接管焦点期间正文不可编辑，恢复打开时的范围，再由原有 Markdown 命令插入或更新。
+    const command = editor.chain().setTextSelection(link.range);
     const changed = link.selection !== "" && label === link.selection
       ? command.setLink({ href }).run()
       : command.insertContent({ type: "text", text: label, marks: [{ type: "link", attrs: { href } }] }).run();
-    if (changed) setLink(null);
+    if (changed) closeLink("body");
   };
-  const onLinkKey = (event: KeyboardEvent<HTMLDivElement>): void => {
+  const onLinkKey = (event: KeyboardEvent<HTMLDialogElement>): void => {
+    // DOM 虽然仍在父表单之下，子窗的键盘事件由原生模态层或自己的控件处理。
+    event.stopPropagation();
+    if (linkClosing) { event.preventDefault(); return; }
     if (event.nativeEvent.isComposing) return;
     if (event.key === "Escape") {
-      event.preventDefault(); event.stopPropagation(); cancelLink();
+      event.preventDefault(); closeLink("trigger");
     } else if (event.key === "Enter" && event.target instanceof HTMLInputElement) {
-      event.preventDefault(); event.stopPropagation(); insertLink();
+      event.preventDefault(); insertLink();
     }
   };
   const followLink = (event: MouseEvent<HTMLDivElement>): void => {
@@ -259,66 +336,81 @@ export default function InkNoteEditor({ value, language, editable, resources, on
     }
   };
 
+  const linkHost = link === null ? null : mount.current?.closest<HTMLElement>(".ink-note-dialog");
   return <div className="ink-note-editor" data-ink-note-editor>
     <div className="ink-note-editor__toolbar" role="toolbar" aria-label={labels.toolbar}>
-      <select tabIndex={0} aria-label={labels.heading} disabled={!ready || inTable}
-        value={heading} onChange={event => {
-          const level = headings.find(item => String(item) === event.target.value);
-          const command = editor?.chain().focus();
-          if (level === undefined) command?.setParagraph().run();
-          else command?.setHeading({ level }).run();
-        }}>
-        <option value={0}>{labels.paragraph}</option>
-        {headings.map((level, index) => <option key={level} value={level}>{labels.levels[index]}</option>)}
-      </select>
-      <button type="button" disabled={!ready} aria-pressed={editor?.isActive("bold") ?? false}
-        onClick={() => editor?.chain().focus().toggleBold().run()}>{labels.bold}</button>
-      <button type="button" disabled={!ready} aria-pressed={editor?.isActive("bulletList") ?? false}
-        onClick={() => editor?.chain().focus().toggleBulletList().run()}>{labels.bullets}</button>
-      <button type="button" disabled={!ready} aria-pressed={editor?.isActive("orderedList") ?? false}
-        onClick={() => editor?.chain().focus().toggleOrderedList().run()}>{labels.ordered}</button>
-      <button type="button" disabled={!ready || inTable}
-        onClick={() => editor?.chain().focus().insertTable({ rows: 3, cols: 2, withHeaderRow: true }).run()}>{labels.table}</button>
+      <div className="ink-note-editor__heading" ref={headingWrap} onBlur={event => {
+        if (event.relatedTarget instanceof Node && !event.currentTarget.contains(event.relatedTarget)) setHeadingOpen(false);
+      }} onKeyDown={event => {
+        if (event.key !== "Escape" || !showHeadings || event.nativeEvent.isComposing) return;
+        event.preventDefault(); event.stopPropagation(); setHeadingOpen(false); headingTrigger.current?.focus({ preventScroll: true });
+      }}>
+        <NoteTool icon="heading" label={labels.heading} ref={headingTrigger} disabled={!ready || inTable}
+          aria-expanded={showHeadings} aria-controls={showHeadings ? `${id}-headings` : undefined} onClick={() => setHeadingOpen(!showHeadings)} />
+        {showHeadings ? <div className="ink-note-editor__heading-options" id={`${id}-headings`} role="group" aria-label={labels.heading}>
+          <button type="button" aria-pressed={heading === 0} onClick={() => formatHeading(0)}>{labels.paragraph}</button>
+          {headings.map((level, index) => <button key={level} type="button" aria-pressed={heading === level}
+            onClick={() => formatHeading(level)}>{labels.levels[index]}</button>)}
+        </div> : null}
+      </div>
+      <NoteTool icon="bold" label={labels.bold} disabled={!ready} aria-pressed={editor?.isActive("bold") ?? false}
+        onClick={() => editor?.chain().focus().toggleBold().run()} />
+      <NoteTool icon="bullets" label={labels.bullets} disabled={!ready} aria-pressed={editor?.isActive("bulletList") ?? false}
+        onClick={() => editor?.chain().focus().toggleBulletList().run()} />
+      <NoteTool icon="ordered" label={labels.ordered} disabled={!ready} aria-pressed={editor?.isActive("orderedList") ?? false}
+        onClick={() => editor?.chain().focus().toggleOrderedList().run()} />
+      <NoteTool icon="table" label={labels.table} disabled={!ready || inTable}
+        onClick={() => editor?.chain().focus().insertTable({ rows: 3, cols: 2, withHeaderRow: true }).run()} />
       {inTable ? <>
-        <button type="button" disabled={!ready} onClick={() => editor?.chain().focus().addRowAfter().run()}>{labels.row}</button>
-        <button type="button" disabled={!ready} onClick={() => editor?.chain().focus().addColumnAfter().run()}>{labels.column}</button>
-        <button type="button" disabled={!ready} onClick={() => deleteSelectedRows(editor)}>{labels.deleteRow}</button>
-        <button type="button" disabled={!ready} onClick={() => editor?.chain().focus().deleteColumn().run()}>{labels.deleteColumn}</button>
+        <NoteTool icon="row" label={labels.row} disabled={!ready} onClick={() => editor?.chain().focus().addRowAfter().run()} />
+        <NoteTool icon="column" label={labels.column} disabled={!ready} onClick={() => editor?.chain().focus().addColumnAfter().run()} />
+        <NoteTool icon="deleteRow" label={labels.deleteRow} disabled={!ready} onClick={() => deleteSelectedRows(editor)} />
+        <NoteTool icon="deleteColumn" label={labels.deleteColumn} disabled={!ready} onClick={() => editor?.chain().focus().deleteColumn().run()} />
       </> : null}
-      <button type="button" disabled={!ready || inTable} aria-pressed={editor?.isActive("codeBlock") ?? false}
-        onClick={() => editor?.chain().focus().toggleCodeBlock().run()}>{labels.code}</button>
-      <button type="button" ref={linkTrigger} disabled={!ready || editor?.isActive("codeBlock")} aria-expanded={linkOpen}
-        aria-controls={linkOpen ? id : undefined} onClick={linkOpen ? cancelLink : openLink}>{labels.link}</button>
+      <NoteTool icon="code" label={labels.code} disabled={!ready || inTable} aria-pressed={editor?.isActive("codeBlock") ?? false}
+        onClick={() => editor?.chain().focus().toggleCodeBlock().run()} />
+      <NoteTool icon="link" label={labels.link} ref={linkTrigger} disabled={!ready || editor?.isActive("codeBlock")} aria-expanded={linkOpen}
+        aria-haspopup="dialog" aria-controls={linkOpen ? id : undefined} onClick={openLink} />
     </div>
     {metadata}
-    {link === null ? null : <div className="ink-note-editor__link" id={id} role="group" aria-label={labels.insertLink} onKeyDown={onLinkKey}>
-      <div className="ink-note-editor__link-controls">
-        <button type="button" aria-pressed={link.mode === "manual"}
-          onClick={() => setLink({ ...link, mode: "manual" })}>{labels.manual}</button>
-        <button type="button" disabled={resources.length === 0} aria-pressed={link.mode === "resource"}
-          onClick={() => setLink({ ...link, mode: "resource" })}>{labels.fromResource}</button>
+    {link === null || linkHost == null ? null : createPortal(<dialog className="ink-note-editor__link-modal" ref={linkDialog} id={id}
+      aria-labelledby={`${id}-label`} data-closing={linkClosing} onKeyDown={onLinkKey} onCancel={event => event.preventDefault()} onClick={event => {
+        event.stopPropagation();
+        if (event.target === event.currentTarget) closeLink("trigger");
+      }}>
+      <div className="ink-note-editor__link" onTransitionEnd={event => {
+        if (linkClosing && event.target === event.currentTarget && event.propertyName === "opacity"
+          && getComputedStyle(event.currentTarget).opacity === "0") setLink(null);
+      }}>
+        <h3 id={`${id}-label`}>{labels.insertLink}</h3>
+        <div className="ink-note-editor__link-controls">
+          <button type="button" aria-pressed={link.mode === "manual"}
+            onClick={() => setLink({ ...link, mode: "manual" })}>{labels.manual}</button>
+          <button type="button" disabled={resources.length === 0} aria-pressed={link.mode === "resource"}
+            onClick={() => setLink({ ...link, mode: "resource" })}>{labels.fromResource}</button>
+        </div>
+        {link.mode !== "resource" ? null : <label>{labels.resource}<select value={link.resource}
+          onChange={event => {
+            const resource = event.target.value;
+            const selected = resource === "" ? undefined : resources[Number(resource)];
+            if (selected === undefined) { setLink({ ...link, resource }); return; }
+            const previous = link.resource === "" ? undefined : resources[Number(link.resource)];
+            setLink({ ...link, resource, url: selected.url, invalid: false,
+              label: link.label === "" || link.label === previous?.title ? selected.title : link.label });
+          }}>
+          <option value="">{labels.choose}</option>
+          {resources.map((resource, index) => <option key={resource.url} value={index}>{resource.title || resource.url}</option>)}
+        </select></label>}
+        <label>{labels.url}<input ref={address} type="text" inputMode="url" value={link.url} aria-invalid={link.invalid}
+          onChange={event => setLink({ ...link, url: event.target.value, invalid: false })} /></label>
+        <label>{labels.label}<input value={link.label} onChange={event => setLink({ ...link, label: event.target.value })} /></label>
+        {link.invalid ? <p role="alert">{labels.invalidUrl}</p> : null}
+        <div className="ink-note-editor__link-controls">
+          <button type="button" onClick={() => closeLink("trigger")}>{labels.cancel}</button>
+          <button type="button" onClick={insertLink}>{labels.insertLink}</button>
+        </div>
       </div>
-      {link.mode !== "resource" ? null : <label>{labels.resource}<select tabIndex={0} value={link.resource}
-        onChange={event => {
-          const resource = event.target.value;
-          const selected = resource === "" ? undefined : resources[Number(resource)];
-          if (selected === undefined) { setLink({ ...link, resource }); return; }
-          const previous = link.resource === "" ? undefined : resources[Number(link.resource)];
-          setLink({ ...link, resource, url: selected.url, invalid: false,
-            label: link.label === "" || link.label === previous?.title ? selected.title : link.label });
-        }}>
-        <option value="">{labels.choose}</option>
-        {resources.map((resource, index) => <option key={resource.url} value={index}>{resource.title || resource.url}</option>)}
-      </select></label>}
-      <label>{labels.url}<input ref={address} type="text" inputMode="url" value={link.url} aria-invalid={link.invalid}
-        onChange={event => setLink({ ...link, url: event.target.value, invalid: false })} /></label>
-      <label>{labels.label}<input value={link.label} onChange={event => setLink({ ...link, label: event.target.value })} /></label>
-      {link.invalid ? <p role="alert">{labels.invalidUrl}</p> : null}
-      <div className="ink-note-editor__link-controls">
-        <button type="button" onClick={cancelLink}>{labels.cancel}</button>
-        <button type="button" onClick={insertLink}>{labels.insertLink}</button>
-      </div>
-    </div>}
+    </dialog>, linkHost)}
     <div className="ink-note-editor__body" ref={mount} onClick={followLink} />
     {linkError === null ? null : <p className="ink-note-editor__link-error" role="alert">{labels[linkError]}</p>}
   </div>;

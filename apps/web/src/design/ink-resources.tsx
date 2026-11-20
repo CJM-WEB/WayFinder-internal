@@ -40,7 +40,7 @@ export type InkResourcesProps = Readonly<{
 }>;
 
 type SelectedModel = Extract<ResourcePanelModel, { kind: "selected" }>;
-type Selection = Readonly<{ owner: string; contextKey: string; node: GraphStoreNode | EditableNode }>;
+type Selection = Readonly<{ owner: string; contextKey: string; node: GraphStoreNode | EditableNode; canCreateNote: boolean }>;
 type Display = Selection & Readonly<{ phase: "preparing" | "entering" | "visible" | "leaving" }>;
 type PanelTab = "resources" | "notes";
 type NoteEditor = Readonly<{ session: InkNoteSession; owner: string; generation: string | undefined; nodeId: string; capture: CapturedWorkspaceEdit | null }>;
@@ -219,7 +219,8 @@ export default function InkResources({ graphId, node, language, visible, editabl
   const moveCapture = useRef<CapturedWorkspaceEdit | null>(null);
   const generation = node !== null && "noteGeneration" in node ? node.noteGeneration : undefined;
   const requested = useMemo<Selection | null>(() => !visible || graphId === null || node === null ? null
-    : { owner: JSON.stringify([contextKey, graphId, node.id, generation]), contextKey, node }, [visible, contextKey, graphId, node, generation]);
+    : { owner: JSON.stringify([contextKey, graphId, node.id, generation]), contextKey, node,
+      canCreateNote: editable && contextWritable && !groupMode }, [visible, contextKey, graphId, node, generation, editable, contextWritable, groupMode]);
   useEffect(() => { moveCapture.current = null; }, [contextKey, graphId, node?.id]);
   const desired = useRef(requested);
   const panel = useRef<HTMLElement>(null);
@@ -353,11 +354,8 @@ export default function InkResources({ graphId, node, language, visible, editabl
       if (event.key === "Escape" && panelInteractive) { event.preventDefault(); event.stopPropagation(); onClose(); }
     }}>
     <div className="ink-resources__scroll">
-    <OutcomeNotice notice={model.outcomeNotice} reduced={reduced} />
-    <header className="ink-resources__item ink-resources__header" style={itemStyle(0, Math.min(resourceCount, 3) + 2)}>
-      <div><p>{messages.resourcePanel.selectedNode}</p><h2>{model.nodeTitle}</h2></div>
-      <button type="button" className="ink-resources__close" aria-label={messages.inkStudy.closeResources} onClick={onClose}>×</button>
-      {notesEnabled ? <div className="ink-resources__tabs" role="tablist" aria-label={messages.resourcePanel.panelName}
+    {notesEnabled ? <div className="ink-resources__item ink-resources__tabs" role="tablist" aria-label={messages.resourcePanel.panelName}
+        style={itemStyle(0, Math.min(resourceCount, 3) + 3)}
         onKeyDown={event => {
           if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
           event.preventDefault(); event.stopPropagation();
@@ -369,8 +367,13 @@ export default function InkResources({ graphId, node, language, visible, editabl
           aria-selected={tab === kind} aria-controls={`${tabsId}-panel-${kind}`} tabIndex={tab === kind ? 0 : -1} data-tab={kind}
           onClick={() => chooseTab(kind)}>{kind === "resources" ? labels.resources : labels.tab}</button>)}
       </div> : null}
-      {tab === "resources" ? <div className="ink-resources__status"><span data-node-status={model.nodeStatus}>{model.nodeStatusLabel}</span><span>{messages.resourcePanel.resourceCount(model.resources.length)}</span></div> : null}
+    <header className="ink-resources__item ink-resources__header" style={itemStyle(1, Math.min(resourceCount, 3) + 3)}>
+      <div><p>{messages.resourcePanel.selectedNode}</p><h2>{model.nodeTitle}</h2></div>
+      <button type="button" className="ink-resources__close" aria-label={messages.inkStudy.closeResources} onClick={onClose}>×</button>
+      {display.node.description ? <p className="ink-resources__node-description">{display.node.description}</p> : null}
+      <div className="ink-resources__status"><span data-node-status={model.nodeStatus}>{model.nodeStatusLabel}</span><span>{messages.resourcePanel.resourceCount(model.resources.length)}</span></div>
     </header>
+    <OutcomeNotice notice={model.outcomeNotice} reduced={reduced} />
     <div className="ink-resources__modes" data-active={tab}>
     <div className="ink-resources__mode" data-kind="resources" id={`${tabsId}-panel-resources`} role={notesEnabled ? "tabpanel" : undefined}
       aria-labelledby={notesEnabled ? `${tabsId}-resources` : undefined} inert={tab !== "resources"} aria-hidden={tab !== "resources"}>
@@ -390,9 +393,12 @@ export default function InkResources({ graphId, node, language, visible, editabl
         event.preventDefault(); event.stopPropagation();
         onNoteContext(null, { x: event.clientX, y: event.clientY });
       }}>
-      {noteCreatable ? <button type="button" className="ink-resources__more ink-notes__add" ref={noteAdd} data-ink-note-add
+      {/* 退场沿用已呈现的权限快照，交互门禁仍即时关闭，避免按钮在动画开始前卸载。 */}
+      {display.canCreateNote ? <button type="button" className="ink-resources__item ink-resources__more ink-notes__add" ref={noteAdd} data-ink-note-add
+        data-note-transferred={(activeEditor?.session.isNew || returning?.owner === owner && returning?.session.isNew) || undefined}
+        style={itemStyle(1, 2)} disabled={!panelInteractive || !noteCreatable}
         onClick={event => openEditor(null, event.currentTarget, event.currentTarget)}>{labels.add}</button> : null}
-      {notes.length === 0 ? <p className="ink-resources__empty" role="status">{labels.empty}</p> :
+      {notes.length === 0 ? <p className="ink-resources__item ink-resources__empty" style={itemStyle(2, 3)} role="status">{labels.empty}</p> :
         <div className="ink-resources__list" role="list" aria-label={labels.tab}>
           {notes.map(note => <article className="ink-resources__item ink-resources__card ink-notes__card" role="listitem"
             data-ink-note={note.id} key={note.id} style={itemStyle(1, 2)}

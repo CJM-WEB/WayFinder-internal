@@ -4,7 +4,6 @@
  */
 import type { EditableNote, EditableResource, SearchLanguage } from "@wayfinder/contracts";
 import { lazy, Suspense, useCallback, useId, useLayoutEffect, useRef, useState, type ComponentProps, type KeyboardEvent } from "react";
-import { useInkPresence } from "./ink-presence.js";
 import "./ink-note-dialog.css";
 
 export type InkNoteSession = Readonly<{
@@ -29,7 +28,10 @@ type Props = Readonly<{
   recovery?: InkNoteRecovery;
 }>;
 
-const SLIDE_MS = 560;
+// 文字淡去、保持尺寸移动、居中展开各有独立阶段；回程严格倒序，总时长与保留 DOM 一致。
+const FADE_MS = 140;
+const MOVE_MS = 360;
+const RETURN_TIMEOUT_MS = 2_500;
 const FOCUSABLE = "button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex='0']";
 // 只有打开笔记才加载编辑器；图、资源和侧栏首屏不承担正文编辑依赖。
 const InkNoteEditor = lazy(() => import("./ink-note-editor.js").catch(() => ({ default: NoteEditorFallback })));
@@ -53,9 +55,14 @@ function NoteEditorFallback({ value, language, editable, metadata, onChange }: C
 }
 
 export default function InkNoteDialog({ session, language, writable, resources, onSave, onClose, onReturn, recovery }: Props) {
-  const { value: shown, open } = useInkPresence(session, SLIDE_MS);
+  // 保留到完整回程结算，不能用另一个固定计时器抢先释放仍在移动的信息条。
+  const [held, setHeld] = useState(session);
+  const shown = session ?? held;
+  const open = session !== null;
   const [draft, setDraft] = useState<Draft | null>(null);
   const [paintedOrigin, setPaintedOrigin] = useState<InkNoteSession | null>(null);
+  const [motion, setMotion] = useState<{ owner: InkNoteSession; step: "source" | "center" | "expanded"; ready: boolean; returned?: boolean } | null>(null);
+  const motionRef = useRef(motion);
   const active = useRef<InkNoteSession | null>(session);
   const saving = useRef<InkNoteSession | null>(null);
   const departing = useRef<InkNoteSession | null>(null);
@@ -70,11 +77,15 @@ export default function InkNoteDialog({ session, language, writable, resources, 
   const id = useId();
   const labels = copy[language];
   const measured = shown !== null && paintedOrigin === shown;
-  const live = shown !== null && shown === session && open && measured;
+  const live = shown !== null && shown === session && open && measured && motion?.owner === shown && motion.ready;
   const heldDraft = draft?.owner === shown ? draft : null;
+
+  useLayoutEffect(() => { motionRef.current = motion; }, [motion]);
 
   useLayoutEffect(() => {
     active.current = session;
+    if (session !== null) setHeld(session);
+    else if (departing.current === null) setHeld(null);
     return () => { active.current = null; };
   }, [session]);
   useLayoutEffect(() => {
@@ -105,6 +116,8 @@ export default function InkNoteDialog({ session, language, writable, resources, 
       const width = Math.max(1, origin.width), height = Math.max(1, origin.height);
       panel.style.setProperty("--ink-note-x", `${origin.x - rect.x}px`);
       panel.style.setProperty("--ink-note-y", `${origin.y - rect.y}px`);
+      panel.style.setProperty("--ink-note-center-x", `${(rect.width - width) / 2}px`);
+      panel.style.setProperty("--ink-note-center-y", `${(rect.height - height) / 2}px`);
       panel.style.setProperty("--ink-note-scale-x", String(width / rect.width));
       panel.style.setProperty("--ink-note-scale-y", String(height / rect.height));
       // 起点摘要抵消外壳缩放，让合起时的标题尺寸接近原信息条。
@@ -132,8 +145,75 @@ export default function InkNoteDialog({ session, language, writable, resources, 
   }, [shown]);
 
   useLayoutEffect(() => {
+    if (shown === null) { setMotion(null); return; }
+    const preference = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const timers: number[] = [];
+    const frames: number[] = [];
+    let cancelled = false;
+    let sequence = 0;
+    const clear = (): void => { timers.forEach(timer => window.clearTimeout(timer)); frames.forEach(frame => cancelAnimationFrame(frame)); };
+    /** 等待当前 CSS 段真实结束，帧调度或采样耗时不能挤占下一段。兜底只防浏览器漏结算。 */
+    const settled = async (element: Element | null, property: string, duration: number, token: number): Promise<boolean> => {
+      const deadline = performance.now() + duration + 100;
+      while (!cancelled && token === sequence) {
+        await new Promise<void>(resolve => frames.push(requestAnimationFrame(() => frames.push(requestAnimationFrame(() => resolve())))));
+        if (cancelled || token !== sequence) return false;
+        const transition = element?.getAnimations().find(animation => animation instanceof CSSTransition && animation.transitionProperty === property);
+        if (transition === undefined) return true;
+        const result = await Promise.race([
+          transition.finished.then(() => "finished", () => "replaced"),
+          new Promise<string>(resolve => timers.push(window.setTimeout(() => resolve("timeout"), Math.max(0, deadline - performance.now())))),
+        ]);
+        if (cancelled || token !== sequence) return false;
+        if (result === "finished") return true;
+        if (result === "timeout") {
+          // 挂起超过本段期限时明确落到终点，再放行下一段；窗口重测取消则继续跟踪替代过渡。
+          try { transition.finish(); return true; } catch { /* 已取消的旧对象由下一帧重新读取。 */ }
+        }
+      }
+      return false;
+    };
+    const update = (): void => {
+      const token = ++sequence;
+      clear();
+      if (preference.matches) {
+        setMotion({ owner: shown, step: open ? "expanded" : "source", ready: open, returned: !open });
+        if (!open) setHeld(null);
+        return;
+      }
+      if (!measured) { setMotion({ owner: shown, step: "source", ready: false }); return; }
+      setMotion(current => ({ owner: shown, step: current?.owner === shown ? current.step : "source", ready: false }));
+      const previous = motionRef.current;
+      void (async () => {
+        if (open) {
+          if (!await settled(surface.current?.querySelector(".ink-note-dialog__summary") ?? null, "opacity", FADE_MS, token)) return;
+          setMotion({ owner: shown, step: "center", ready: false });
+          if (!await settled(surface.current, "transform", MOVE_MS, token)) return;
+          setMotion({ owner: shown, step: "expanded", ready: false });
+          if (await settled(surface.current, "transform", MOVE_MS, token)) setMotion({ owner: shown, step: "expanded", ready: true });
+        } else {
+          if (previous?.owner === shown && previous.step === "expanded") {
+            if (previous.ready && !await settled(surface.current?.querySelector(".ink-note-dialog__contents") ?? null, "opacity", FADE_MS, token)) return;
+            setMotion({ owner: shown, step: "center", ready: false });
+            if (!await settled(surface.current, "transform", MOVE_MS, token)) return;
+          }
+          // 移动中取消立即折返。实际归位后才显文字，避免最后几帧文字随壳移动。
+          setMotion({ owner: shown, step: "source", ready: false });
+          if (!await settled(surface.current, "transform", MOVE_MS, token)) return;
+          setMotion({ owner: shown, step: "source", ready: false, returned: true });
+          if (await settled(surface.current?.querySelector(".ink-note-dialog__summary") ?? null, "opacity", FADE_MS, token)) setHeld(null);
+        }
+      })();
+    };
+    const reduce = (): void => { if (preference.matches) update(); };
+    update(); preference.addEventListener("change", reduce);
+    if (!open) timers.push(window.setTimeout(() => { if (departing.current === shown) setHeld(null); }, RETURN_TIMEOUT_MS));
+    return () => { cancelled = true; clear(); preference.removeEventListener("change", reduce); };
+  }, [shown, open, measured]);
+
+  useLayoutEffect(() => {
     if (!live) {
-      if (shown !== null && departing.current === shown) overlay.current?.focus({ preventScroll: true });
+      if (shown !== null) overlay.current?.focus({ preventScroll: true });
       return;
     }
     const focus = (): void => { (firstInput.current ?? surface.current)?.focus({ preventScroll: true }); };
@@ -156,10 +236,10 @@ export default function InkNoteDialog({ session, language, writable, resources, 
     setDraft({ owner: shown, note: { ...note, ...patch }, status: "idle" });
   };
   const metadata = <>
-    <label>{labels.title}<input ref={bindTitle} value={note.title} readOnly={!canChange}
-      onChange={event => change({ title: event.target.value })} /></label>
-    <label>{labels.description}<input value={note.description} readOnly={!canChange}
-      onChange={event => change({ description: event.target.value })} /></label>
+    <input className="ink-note-dialog__title" aria-label={labels.title} placeholder={labels.title}
+      ref={bindTitle} value={note.title} readOnly={!canChange} onChange={event => change({ title: event.target.value })} />
+    <input className="ink-note-dialog__description" aria-label={labels.description} placeholder={labels.description}
+      value={note.description} readOnly={!canChange} onChange={event => change({ description: event.target.value })} />
   </>;
   const close = (): void => {
     departing.current = shown;
@@ -167,7 +247,8 @@ export default function InkNoteDialog({ session, language, writable, resources, 
     onClose();
   };
   const finish = async (): Promise<void> => {
-    if (!live || active.current !== shown || saving.current === shown) return;
+    if (!open || !measured || active.current !== shown || saving.current === shown ||
+      (surface.current !== null && surface.current.querySelector("dialog[open]") !== null)) return;
     if (status === "idle" && note.title === shown.note.title && note.description === shown.note.description && note.markdown === shown.note.markdown) {
       close();
       return;
@@ -209,7 +290,8 @@ export default function InkNoteDialog({ session, language, writable, resources, 
   };
 
   return <div className="ink-note-overlay" ref={overlay} tabIndex={-1} data-ink-overlay data-ink-control
-    data-open={live} data-origin-ready={measured} onKeyDown={onKeyDown}
+    data-open={open && measured} data-step={motion?.owner === shown ? motion.step : "source"} data-ready={live}
+    data-returned={motion?.owner === shown && motion.returned === true} data-origin-ready={measured} onKeyDown={onKeyDown}
     onPointerDown={event => event.stopPropagation()} onContextMenu={event => { event.preventDefault(); event.stopPropagation(); }}
     onClick={event => {
       event.stopPropagation();
@@ -225,8 +307,8 @@ export default function InkNoteDialog({ session, language, writable, resources, 
         </div>
         <div className="ink-note-dialog__contents">
           <header className="ink-note-dialog__header">
-            <h2 id={id}>{shown.isNew ? labels.add : labels.note}</h2>
-            <button type="submit" className="ink-study__pill" aria-disabled={status === "saving" || pendingRecovery?.disabled}>
+            <h2 id={id} className="ink-note-dialog__accessible-title">{shown.isNew ? labels.add : labels.note}</h2>
+            <button type="submit" aria-disabled={status === "saving" || pendingRecovery?.disabled}>
               {pendingRecovery?.label ?? (status === "failed" ? labels.retry : labels.finish)}
             </button>
           </header>
