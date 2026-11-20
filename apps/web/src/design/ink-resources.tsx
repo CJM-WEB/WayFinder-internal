@@ -3,22 +3,26 @@
  * 业务边界：Top 3、状态、来源和 URL 校验继续复用共享模型；排序复用原编辑事务，不产生搜索。
  * 动效边界：退场立即失去交互，旧内容保留至结束；待展示目标只保留最后一次选择。
  */
-import type { EditableNode, EditableResource, Resource, SearchLanguage } from "@wayfinder/contracts";
+import type { EditableNode, EditableNote, EditableResource, Resource, SearchLanguage } from "@wayfinder/contracts";
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useStore } from "zustand";
 
 import { buildResourcePanelModel, selectVisibleResources, type ResourcePanelModel } from "../components/ResourcePanel/ResourcePanel.js";
 import { useGraphEdit } from "../components/Workspace/use-graph-edit.js";
+import { getGroupMessages, groupErrorMessage } from "../i18n/group-messages.js";
 import { getMessages } from "../i18n/messages.js";
 import { requestSafeUrlOpen, resolveSafeHttpUrl } from "../lib/url.js";
 import type { GraphStoreNode } from "../stores/graph-store.js";
-import { moveResource } from "../stores/workspace-edits.js";
-import { activeWorkspaceStore as workspaceStore, workspaceContextStore, type CapturedWorkspaceEdit } from "../stores/workspace-context.js";
+import { addNote, moveResource, updateNote } from "../stores/workspace-edits.js";
+import { activeWorkspaceStore as workspaceStore, workspaceContext, workspaceContextStore, type CapturedWorkspaceEdit } from "../stores/workspace-context.js";
+import { workspacePersistenceStore } from "../stores/workspace-persistence.js";
 import { InkNotice } from "./ink-notice.js";
+import InkNoteDialog, { type InkNoteRecovery, type InkNoteSession } from "./ink-note-dialog.js";
 
 import "./ink-resources.css";
 
 export type InkResourceClientPoint = Readonly<{ x: number; y: number }>;
+export type InkNoteRequest = Readonly<{ graphId: string; nodeId: string; generation: string | undefined; contextKey: string }>;
 export type InkResourcesProps = Readonly<{
   graphId: string | null;
   node: GraphStoreNode | EditableNode | null;
@@ -28,11 +32,19 @@ export type InkResourcesProps = Readonly<{
   editable?: boolean;
   onClose: () => void;
   onResourceContext?: (resourceId: string, point: InkResourceClientPoint) => void;
+  notesEnabled?: boolean;
+  noteRequest?: InkNoteRequest | null;
+  onNoteRequestHandled?: () => void;
+  onNoteContext?: (noteId: string | null, point: InkResourceClientPoint) => void;
+  onTabChange?: () => void;
 }>;
 
 type SelectedModel = Extract<ResourcePanelModel, { kind: "selected" }>;
-type Selection = Readonly<{ owner: string; node: GraphStoreNode | EditableNode }>;
+type Selection = Readonly<{ owner: string; contextKey: string; node: GraphStoreNode | EditableNode; canCreateNote: boolean }>;
 type Display = Selection & Readonly<{ phase: "preparing" | "entering" | "visible" | "leaving" }>;
+type PanelTab = "resources" | "notes";
+type NoteEditor = Readonly<{ session: InkNoteSession; owner: string; generation: string | undefined; nodeId: string; capture: CapturedWorkspaceEdit | null }>;
+const EMPTY_NOTES: readonly EditableNote[] = [];
 const SLIDE_MS = 560;
 const STAGGER_MS = 45;
 
@@ -133,11 +145,9 @@ function ResourceStrip({ resource, language, index, count, editable, onResourceC
 }
 
 /** 以图与节点的联合身份重建展开状态，避免两张图重用同一业务 nodeId 时串内容。 */
-function ResourceSelection({ model, language, reduced, onClose, onResourceContext, onMoveResource, onMoveStart }: {
+function ResourceSelection({ model, language, onResourceContext, onMoveResource, onMoveStart }: {
   model: SelectedModel;
   language: SearchLanguage;
-  reduced: boolean;
-  onClose: () => void;
   onResourceContext: InkResourcesProps["onResourceContext"];
   onMoveResource: ((sourceId: string, targetId: string) => void) | undefined;
   onMoveStart: () => void;
@@ -150,12 +160,6 @@ function ResourceSelection({ model, language, reduced, onClose, onResourceContex
   const hiddenCount = model.resources.length - resources.length;
   const count = resources.length + 2 + (hiddenCount > 0 ? 1 : 0);
   return <>
-    <OutcomeNotice notice={model.outcomeNotice} reduced={reduced} />
-    <header className="ink-resources__item ink-resources__header" style={itemStyle(0, count)}>
-      <div><p>{messages.resourcePanel.selectedNode}</p><h2>{model.nodeTitle}</h2></div>
-      <button type="button" className="ink-resources__close" aria-label={messages.inkStudy.closeResources} onClick={onClose}>×</button>
-      <div className="ink-resources__status"><span data-node-status={model.nodeStatus}>{model.nodeStatusLabel}</span><span>{messages.resourcePanel.resourceCount(model.resources.length)}</span></div>
-    </header>
     {resources.length === 0 && model.emptyMessage !== null ? <p className="ink-resources__item ink-resources__empty" role="status" style={itemStyle(1, count)}>{model.emptyMessage}</p> : null}
     <div className="ink-resources__list" role="list" aria-label={messages.resourcePanel.resourceListAria}
       onPointerDownCapture={() => { suppressDragClick.current = false; }}
@@ -200,30 +204,133 @@ function ResourceSelection({ model, language, reduced, onClose, onResourceContex
   </>;
 }
 
-export default function InkResources({ graphId, node, language, visible, editable = false, onClose, onResourceContext }: InkResourcesProps) {
+export default function InkResources({ graphId, node, language, visible, editable = false, onClose, onResourceContext,
+  notesEnabled = false, noteRequest = null, onNoteRequestHandled, onNoteContext, onTabChange }: InkResourcesProps) {
   const reduced = useReducedMotion();
   const edit = useGraphEdit(graphId, language);
+  const messages = getMessages(language);
+  const labels = messages.notes;
   const contextKey = useStore(workspaceContextStore, state => state.contextKey);
+  const groupMode = useStore(workspaceContextStore, state => state.kind === "group");
+  const failedAction = useStore(workspaceContextStore, state => state.failedAction);
+  const groupBusy = useStore(workspaceContextStore, state => state.busy);
+  const groupWritable = useStore(workspaceContextStore, state => state.writable);
   const contextWritable = useStore(workspaceContextStore, state => state.kind === "personal" || state.writable && !state.busy && state.failedAction === null);
   const moveCapture = useRef<CapturedWorkspaceEdit | null>(null);
+  const generation = node !== null && "noteGeneration" in node ? node.noteGeneration : undefined;
   const requested = useMemo<Selection | null>(() => !visible || graphId === null || node === null ? null
-    : { owner: JSON.stringify([contextKey, graphId, node.id]), node }, [visible, contextKey, graphId, node]);
+    : { owner: JSON.stringify([contextKey, graphId, node.id, generation]), contextKey, node,
+      canCreateNote: editable && contextWritable }, [visible, contextKey, graphId, node, generation, editable, contextWritable]);
   useEffect(() => { moveCapture.current = null; }, [contextKey, graphId, node?.id]);
   const desired = useRef(requested);
   const panel = useRef<HTMLElement>(null);
+  const noteAdd = useRef<HTMLButtonElement>(null);
+  const newNoteReturnFocus = useRef<string | null>(null);
+  const tabsId = useId();
   const [display, setDisplay] = useState<Display | null>(() => requested === null ? null : { ...requested, phase: reduced ? "visible" : "preparing" });
+  const [selection, setSelection] = useState<{ owner: string; tab: PanelTab } | null>(null);
+  const [editor, setEditor] = useState<NoteEditor | null>(null);
+  const [returning, setReturning] = useState<NoteEditor | null>(null);
   const model = useMemo(() => buildResourcePanelModel(display?.node ?? null, language), [display?.node, language]);
+  const tab = notesEnabled && selection !== null && selection.owner === display?.owner ? selection.tab : "resources";
+  const notes = display !== null && "notes" in display.node ? display.node.notes ?? EMPTY_NOTES : EMPTY_NOTES;
+  const owner = display?.owner;
+  const sameOwner = visible && owner !== undefined && requested?.owner === owner;
+  const interactive = sameOwner && display?.phase === "visible";
+  const noteWritable = editable && contextWritable;
+  const activeEditor = sameOwner && editor?.owner === owner &&
+    (editor.session.isNew || notes.some(note => note.id === editor.session.note.id)) ? editor : null;
+  let recovery: InkNoteRecovery | undefined;
+  // 只有本编辑器提交的组笔记动作可在遮罩内重试，复用原收据及冲突合并，不产生第二条写入。
+  if (groupMode && activeEditor !== null && failedAction?.action.action === "edit" &&
+    failedAction.action.kind === (activeEditor.session.isNew ? "note.add" : "note.edit") && failedAction.action.graphId === graphId) {
+    const pending = failedAction.action;
+    const noteId = activeEditor.session.note.id;
+    const readNote = (document: typeof pending.before) => document.nodes.find(target => target.id === activeEditor.nodeId)
+      ?.notes?.find(note => note.id === noteId);
+    if (JSON.stringify(readNote(pending.before)) !== JSON.stringify(readNote(pending.after))) {
+      const groupLabels = getGroupMessages(language);
+      const conflict = !failedAction.uncertain && failedAction.error === "GROUP_CONFLICT";
+      const ownsFailure = (): boolean => {
+        const latest = workspaceContextStore.getState();
+        return latest.contextKey === contextKey && latest.failedAction?.action.mutationId === pending.mutationId;
+      };
+      recovery = {
+        label: failedAction.uncertain ? groupLabels.confirmResult : conflict ? groupLabels.keepMine : groupLabels.retry,
+        message: groupErrorMessage(failedAction.error, language),
+        disabled: groupBusy || !failedAction.uncertain && !groupWritable,
+        commit: async () => {
+          if (!ownsFailure()) return false;
+          if (conflict) return window.confirm(groupLabels.conflictConfirm) && workspaceContext.confirmFailedEdit();
+          await workspaceContext.retryFailedAction();
+          return workspaceContextStore.getState().contextKey === contextKey;
+        },
+        discardLabel: groupLabels.discard,
+        ...(failedAction.uncertain ? {} : { discard: () => ownsFailure() && workspaceContext.discardFailedAction() }),
+      };
+    }
+  }
+  // 回程先恢复位置，再恢复菜单与键盘交互；新笔记不能打断旧卡的归位。
+  const panelInteractive = interactive && activeEditor === null && returning === null;
+  const newNoteTransferred = activeEditor?.session.isNew === true || returning?.owner === owner && returning?.session.isNew === true;
+  const chooseTab = (next: PanelTab): void => {
+    if (owner === undefined || next === tab) return;
+    onTabChange?.();
+    setSelection({ owner, tab: next });
+  };
+
+  const openEditor = (note: EditableNote | null, origin: HTMLElement, returnFocus: HTMLElement | null): void => {
+    if (!panelInteractive || owner === undefined || node === null || (note === null && !noteWritable)) return;
+    const rect = origin.getBoundingClientRect();
+    setSelection({ owner, tab: "notes" });
+    setEditor({ owner, generation, nodeId: node.id, capture: edit.captureEdit(), session: {
+      note: note ?? { id: crypto.randomUUID(), title: "", description: "", markdown: "" },
+      isNew: note === null, returnFocus, origin: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+    } });
+  };
+
+  // 请求与菜单的被点节点绑定；懒加载、切图或同标识重生成期间不沿用旧意图。
+  useLayoutEffect(() => {
+    if (selection !== null && display?.owner !== selection.owner) setSelection(null);
+    if (editor !== null && activeEditor === null) setEditor(null);
+    if (returning !== null && returning.owner !== display?.owner) setReturning(null);
+  }, [selection, display?.owner, editor, activeEditor, returning]);
+  useLayoutEffect(() => {
+    if (newNoteReturnFocus.current === null) return;
+    if (newNoteReturnFocus.current !== requested?.owner) { newNoteReturnFocus.current = null; return; }
+    // 收据恢复与回程结束可能隔一帧；只向同一节点重新启用后的当前按钮归还焦点。
+    if (panelInteractive && noteWritable && display?.canCreateNote && noteAdd.current !== null) {
+      newNoteReturnFocus.current = null;
+      noteAdd.current.focus({ preventScroll: true });
+    }
+  }, [requested?.owner, panelInteractive, noteWritable, display?.canCreateNote]);
+  useEffect(() => {
+    if (noteRequest === null) return;
+    if (!visible || noteRequest.graphId !== graphId || noteRequest.nodeId !== node?.id ||
+      noteRequest.generation !== generation || noteRequest.contextKey !== contextKey) {
+      onNoteRequestHandled?.();
+      return;
+    }
+    if (!interactive) return;
+    const anchor = tab === "notes" ? noteAdd.current : panel.current?.querySelector<HTMLElement>(".ink-resources__header");
+    if (anchor != null) openEditor(null, anchor, null);
+    onNoteRequestHandled?.();
+  }, [noteRequest, interactive, visible, graphId, node?.id, generation, contextKey, tab]);
 
   useLayoutEffect(() => {
+    const previousRequest = desired.current;
     desired.current = requested;
+    if (requested !== null && previousRequest === null) setSelection(null);
     setDisplay(previous => {
       if (reduced) return requested === null ? null : { ...requested, phase: "visible" };
+      // 身份变化立即丢弃旧笔记及资源，不能为退场动画跨账号保留内容。
+      if (previous !== null && previous.contextKey !== contextKey) return requested === null ? null : { ...requested, phase: "preparing" };
       if (requested === null) return previous === null || previous.phase === "leaving" ? previous : { ...previous, phase: "leaving" };
       if (previous === null) return { ...requested, phase: "preparing" };
       if (previous.owner !== requested.owner) return previous.phase === "leaving" ? previous : { ...previous, phase: "leaving" };
       return { ...requested, phase: previous.phase === "leaving" ? "entering" : previous.phase };
     });
-  }, [requested, reduced]);
+  }, [requested, reduced, contextKey]);
 
   // 一个呈现事务只读取最后目标；A→B→C 在旧条退出期间不会短暂挂载 B 的资源或定时器。
   const displayedOwner = display?.owner, phase = display?.phase;
@@ -250,22 +357,110 @@ export default function InkResources({ graphId, node, language, visible, editabl
     return () => { window.cancelAnimationFrame(firstFrame); window.cancelAnimationFrame(secondFrame); window.clearTimeout(timer); };
   }, [displayedOwner, phase, reduced, resourceCount]);
 
-  if (display === null || model.kind !== "selected") return null;
-  const interactive = visible && requested?.owner === display.owner && display.phase === "visible";
   return <><InkNotice notice={!interactive || edit.problem === null ? null : { message: edit.problem.message }} />
-  <aside className="ink-resources" ref={panel} data-ink-overlay data-ink-control data-phase={display.phase}
-    data-ink-resource-owner={display.owner} aria-label={getMessages(language).resourcePanel.panelName}
-    inert={!interactive} aria-hidden={!interactive} onKeyDown={event => {
-      if (event.key === "Escape" && interactive) { event.preventDefault(); event.stopPropagation(); onClose(); }
+  {display === null || display.contextKey !== contextKey || model.kind !== "selected" ? null : <aside className="ink-resources" ref={panel} data-ink-overlay data-ink-control data-phase={display.phase}
+    data-ink-resource-owner={display.owner} data-note-open={activeEditor !== null} aria-label={messages.resourcePanel.panelName}
+    inert={!panelInteractive} aria-hidden={!panelInteractive} onKeyDown={event => {
+      if (event.key === "Escape" && panelInteractive) { event.preventDefault(); event.stopPropagation(); onClose(); }
     }}>
-    <div className="ink-resources__scroll"><ResourceSelection key={display.owner} model={model} language={language} reduced={reduced}
+    <div className="ink-resources__scroll">
+    {notesEnabled ? <div className="ink-resources__item ink-resources__tabs" role="tablist" aria-label={messages.resourcePanel.panelName}
+        style={itemStyle(0, Math.min(resourceCount, 3) + 3)}
+        onKeyDown={event => {
+          if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+          event.preventDefault(); event.stopPropagation();
+          const next = tab === "resources" ? "notes" : "resources";
+          chooseTab(next);
+          event.currentTarget.querySelector<HTMLButtonElement>(`[data-tab="${next}"]`)?.focus();
+        }}>
+        {(["resources", "notes"] as const).map(kind => <button key={kind} type="button" role="tab" id={`${tabsId}-${kind}`}
+          aria-selected={tab === kind} aria-controls={`${tabsId}-panel-${kind}`} tabIndex={tab === kind ? 0 : -1} data-tab={kind}
+          onClick={() => chooseTab(kind)}>{kind === "resources" ? labels.resources : labels.tab}</button>)}
+      </div> : null}
+    <header className="ink-resources__item ink-resources__header" style={itemStyle(1, Math.min(resourceCount, 3) + 3)}>
+      <div><p>{messages.resourcePanel.selectedNode}</p><h2>{model.nodeTitle}</h2></div>
+      <button type="button" className="ink-resources__close" aria-label={messages.inkStudy.closeResources} onClick={onClose}>×</button>
+      {display.node.description ? <p className="ink-resources__node-description">{display.node.description}</p> : null}
+      <div className="ink-resources__status"><span data-node-status={model.nodeStatus}>{model.nodeStatusLabel}</span><span>{messages.resourcePanel.resourceCount(model.resources.length)}</span></div>
+    </header>
+    <OutcomeNotice notice={model.outcomeNotice} reduced={reduced} />
+    <div className="ink-resources__modes" data-active={tab}>
+    <div className="ink-resources__mode" data-kind="resources" id={`${tabsId}-panel-resources`} role={notesEnabled ? "tabpanel" : undefined}
+      aria-labelledby={notesEnabled ? `${tabsId}-resources` : undefined} inert={tab !== "resources"} aria-hidden={tab !== "resources"}>
+    <ResourceSelection key={display.owner} model={model} language={language}
       onMoveStart={() => { moveCapture.current = edit.captureEdit(); }}
-      onMoveResource={!interactive || !editable || !contextWritable ? undefined : (sourceId, targetId) => {
+      onMoveResource={!panelInteractive || tab !== "resources" || !editable || !contextWritable ? undefined : (sourceId, targetId) => {
         // 保留拖动开始时的版本；同字段远端修改交给服务端冲突门禁，不能在drop时隐式重基线。
         if (workspaceStore.getState().currentId !== graphId) return;
         const capture = moveCapture.current; moveCapture.current = null;
         void edit.commitCaptured(capture, graph => moveResource(graph, display.node.id, sourceId, targetId));
       }}
-      onClose={onClose} onResourceContext={onResourceContext} /></div>
-  </aside></>;
+      onResourceContext={onResourceContext} /></div>
+    {notesEnabled ? <div className="ink-resources__mode ink-notes" data-kind="notes" role="tabpanel"
+      id={`${tabsId}-panel-notes`} aria-labelledby={`${tabsId}-notes`} inert={tab !== "notes"} aria-hidden={tab !== "notes"}
+      onContextMenu={event => {
+        if (!panelInteractive || !noteWritable || onNoteContext === undefined) return;
+        event.preventDefault(); event.stopPropagation();
+        onNoteContext(null, { x: event.clientX, y: event.clientY });
+      }}>
+      {/* 保存或短暂断线不卸载借出的来源按钮，回程才能把焦点归还同一入口。 */}
+      {display.canCreateNote || newNoteTransferred ? <button type="button" className="ink-resources__item ink-resources__more ink-notes__add" ref={noteAdd} data-ink-note-add
+        data-note-transferred={newNoteTransferred || undefined}
+        style={itemStyle(1, 2)} disabled={!panelInteractive || !noteWritable}
+        onClick={event => openEditor(null, event.currentTarget, null)}>{labels.add}</button> : null}
+      {notes.length === 0 ? <p className="ink-resources__item ink-resources__empty" style={itemStyle(2, 3)} role="status">{labels.empty}</p> :
+        <div className="ink-resources__list" role="list" aria-label={labels.tab}>
+          {notes.map(note => <article className="ink-resources__item ink-resources__card ink-notes__card" role="listitem"
+            data-ink-note={note.id} key={note.id} style={itemStyle(1, 2)}
+            data-note-transferred={(activeEditor?.session.note.id === note.id ||
+              returning?.owner === owner && returning?.session.note.id === note.id) || undefined}
+            onContextMenu={event => {
+              if (!panelInteractive || !noteWritable || onNoteContext === undefined) return;
+              event.preventDefault(); event.stopPropagation();
+              onNoteContext(note.id, { x: event.clientX, y: event.clientY });
+            }}>
+            <button className="ink-notes__open" type="button" data-ink-note-open
+              onClick={event => openEditor(note, event.currentTarget.parentElement ?? event.currentTarget, event.currentTarget)}>
+              <span className="ink-resources__title">{note.title.trim() || labels.untitled}</span>
+              {note.description === "" ? null : <span className="ink-notes__description">{note.description}</span>}
+            </button>
+            {noteWritable && onNoteContext !== undefined ? <button className="ink-notes__actions" type="button" aria-label={labels.moreActions}
+              onClick={event => {
+                const button = event.currentTarget.getBoundingClientRect();
+                onNoteContext(note.id, { x: button.left, y: button.bottom });
+              }}>⋯</button> : null}
+          </article>)}
+        </div>}
+    </div> : null}
+    </div></div>
+  </aside>}
+  <InkNoteDialog key={contextKey} session={activeEditor?.session ?? null} language={language} writable={noteWritable}
+    {...(recovery === undefined ? {} : { recovery })}
+    resources={display !== null && "resources" in display.node ? display.node.resources : []}
+    onClose={() => { setReturning(activeEditor); setEditor(null); }} onReturn={() => {
+      if (returning?.session.isNew) newNoteReturnFocus.current = returning.owner;
+      setReturning(null);
+    }}
+    onSave={async (session, saved) => {
+      if (activeEditor?.session !== session || !noteWritable) return false;
+      const retrying = workspacePersistenceStore.getState().error === "save";
+      const accepted = await edit.commitCaptured(activeEditor.capture, graph => {
+        const target = graph.nodes.find(candidate => candidate.id === activeEditor.nodeId);
+        if (target === undefined || target.noteGeneration !== activeEditor.generation) throw new Error("笔记目标已失效");
+        const { id, ...fields } = saved;
+        const exists = target.notes?.some(note => note.id === id) ?? false;
+        // 个人落盘失败后可重试内存同一草稿；组内创建确认丢失则只按原操作收据恢复。
+        if (exists && (!groupMode || !session.isNew)) return updateNote(graph, target.id, id, fields);
+        if (!session.isNew || exists) throw new Error("笔记目标已失效");
+        return addNote(graph, target.id, fields, id);
+      });
+      if (!accepted || workspaceContextStore.getState().contextKey !== contextKey) return false;
+      // 组图等服务端确认，个人图等本地落盘；断网的个人笔记仍可按原同步队列补交。
+      if (groupMode) return true;
+      const persistence = workspacePersistenceStore.getState();
+      if (retrying && persistence.error === "save") await persistence.retry();
+      else await persistence.awaitSave?.();
+      return true;
+    }} />
+  </>;
 }

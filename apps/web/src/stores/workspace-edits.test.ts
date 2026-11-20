@@ -4,12 +4,32 @@ import { createEmptyGraph, createWorkspaceStore, fromResultGraph } from "./works
 import { pythonResultGraphFixture } from "../fixtures/python-result-graph.js";
 import {
   addNode, addResource, deleteNode, deleteResource, updateNode, updateResource,
-  moveResource, DuplicateResourceUrlError, InvalidResourceUrlError,
+  addNote, deleteNote, updateNote, moveResource, DuplicateResourceUrlError, InvalidResourceUrlError,
 } from "./workspace-edits.js";
 
 const empty = () => createEmptyGraph("图", "编辑图", "zh-CN", "2026-11-01T00:00:00Z");
 
 describe("确定性人工编辑", () => {
+  it("笔记保存、删除和恢复只影响笔记，空白及无效编辑不生成历史", () => {
+    const store = createWorkspaceStore();
+    const graph = fromResultGraph(pythonResultGraphFixture, "图");
+    const node = graph.nodes[0]!;
+    const fields = { title: "读后记录", description: "自己的说明", markdown: "[网页](https://example.com/path?q=x#part)" };
+    store.getState().addGraph(graph);
+    expect(addNote(graph, node.id, { title: "", description: " ", markdown: "\n" })).toBe(graph);
+    const noted = addNote(graph, node.id, fields, "note1");
+    expect(updateNote(noted, node.id, "note1", fields)).toBe(noted);
+    expect(deleteNote(noted, node.id, "缺失")).toBe(noted);
+    expect(noted.nodes[0]).toEqual({ ...node, notes: [{ id: "note1", ...fields }] });
+    store.getState().replaceGraph(noted);
+    store.getState().replaceGraph(deleteNode(noted, node.id));
+    store.getState().undo();
+    expect(store.getState().documents[0]?.nodes[0]?.notes).toEqual(noted.nodes[0]?.notes);
+    store.getState().deleteGraph(noted.id);
+    store.getState().restoreDeletedGraph();
+    expect(store.getState().documents[0]?.nodes[0]?.notes).toEqual(noted.nodes[0]?.notes);
+  });
+
   it("原样保存与不存在的资源操作保留搜索状态且不增加撤销步", () => {
     const store = createWorkspaceStore();
     const graph = fromResultGraph(pythonResultGraphFixture, "图");

@@ -2,9 +2,9 @@
  * 小组抽屉：复用现有信息条／父抽屉，分层呈现小组列表与组内动作。
  * 读取只按当前账号展示；所有组图动作由工作区适配层发送，管理动作复用已追平连接门禁。
  */
-import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useId, useRef, useState, type FormEvent } from "react";
 import { useStore } from "zustand";
-import type { GroupAction, GroupDetails, GroupSummary, SearchLanguage } from "@wayfinder/contracts";
+import type { EditableGraph, GroupAction, GroupDetails, GroupSummary, SearchLanguage } from "@wayfinder/contracts";
 import { groupApi, GroupRequestError } from "../api/groups.js";
 import { accountStore } from "../stores/account.js";
 import { accountProfileStore } from "../stores/account-profile.js";
@@ -17,6 +17,23 @@ import { getGroupMessages, groupConnectionLabel, groupErrorMessage } from "../i1
 
 type Props = { open: boolean; presented: boolean; available: boolean; language: SearchLanguage;
   onClose: (restoreFocus: boolean) => void; onOpenSettings: () => void; onSelectGraph: (id: string) => void | Promise<void>; onNewSearch: () => void };
+type CopyNotesChoice = Readonly<{
+  direction: "in" | "out"; source: EditableGraph; revision: number | null; contextKey: string; accountEpoch: number;
+}>;
+
+/** 同一份表单提示明确说明副本的读写范围，勾选与提交仍各自独立。 */
+function CopyNotesOption({ direction, sourceId, checked, disabled, label, description, onChange }: Readonly<{
+  direction: CopyNotesChoice["direction"]; sourceId: string; checked: boolean; disabled: boolean;
+  label: string; description: string; onChange: (checked: boolean) => void;
+}>) {
+  const hintId = useId();
+  return <div className="ink-group-copy-notes" data-ink-copy-notes={direction} data-ink-copy-source={sourceId}>
+    <label><input type="checkbox" checked={checked} disabled={disabled} aria-describedby={hintId}
+      onChange={event => onChange(event.target.checked)} />{label}</label>
+    <small id={hintId}>{description}</small>
+  </div>;
+}
+
 function GroupCard({ group, details, selected, language, reveal, enter }: { group: GroupSummary; details: GroupDetails | undefined;
   selected: boolean; language: SearchLanguage; reveal: () => void; enter: () => void }) {
   const [expanded, setExpanded] = useState(false);
@@ -91,6 +108,7 @@ export function InkGroups({ open, presented, available, language, onClose, onOpe
   const [name, setName] = useState(""), [description, setDescription] = useState(""), [invitation, setInvitation] = useState("");
   const [editingGroup, setEditingGroup] = useState<{ groupId: string; revision: number } | null>(null);
   const [source, setSource] = useState("");
+  const [copyNotes, setCopyNotes] = useState<CopyNotesChoice | null>(null);
   const renameCapture = useRef<ReturnType<typeof workspaceContext.captureEdit>>(null);
   const [renameId, setRenameId] = useState<string | null>(null), [renameTitle, setRenameTitle] = useState("");
   const [copyNotice, setCopyNotice] = useState<"copied" | "failed" | null>(null);
@@ -100,6 +118,26 @@ export function InkGroups({ open, presented, available, language, onClose, onOpe
   const writable = browserOnline && selected !== undefined && context.writable && !context.busy && context.failedAction === null && !busy;
   const owner = selected?.group.ownerUserId === account?.userId;
   const active = open && available;
+  const selectedSource = personal.find(document => document.id === source);
+  const copyRevision = (graphId: string): number | null =>
+    sync.snapshot?.workspace.graphs.find(record => record.document.id === graphId)?.revision ?? null;
+  // 个人版本没有直接暴露，复用本地文档对象身份；组图以稳定的服务端版本为准。
+  const choiceCurrent = active && inGroup && writable && copyNotes !== null && copyNotes.contextKey === context.contextKey
+    && copyNotes.accountEpoch === accountEpoch && (copyNotes.direction === "in" ? copyNotes.source === selectedSource
+      : copyNotes.revision !== null && copyNotes.revision === copyRevision(copyNotes.source.id));
+  const chooseCopyNotes = (direction: CopyNotesChoice["direction"], document: EditableGraph | undefined, checked: boolean): void => {
+    setCopyNotes(checked && document !== undefined
+      ? { direction, source: document, revision: direction === "out" ? copyRevision(document.id) : null,
+        contextKey: context.contextKey, accountEpoch }
+      : null);
+  };
+  const includeNotes = (direction: CopyNotesChoice["direction"], document: EditableGraph): boolean => {
+    if (!choiceCurrent || copyNotes.direction !== direction || copyNotes.source.id !== document.id
+      || workspaceContextStore.getState().contextKey !== copyNotes.contextKey || accountStore.getState().epoch !== copyNotes.accountEpoch) return false;
+    // 提交再查最新快照，确保刚才勾选的版本确实仍然是当前来源。
+    if (direction === "in") return workspaceStore.getState().documents.find(item => item.id === document.id) === copyNotes.source;
+    return groupSync.store.getState().snapshot?.workspace.graphs.find(record => record.document.id === document.id)?.revision === copyNotes.revision;
+  };
   const stillCurrent = (userId: string, epoch: number): boolean => accountStore.getState().account?.userId === userId && accountStore.getState().epoch === epoch;
   const fail = (caught: unknown): void => setError(caught instanceof GroupRequestError ? caught.code : "GROUP_UNAVAILABLE");
   const refresh = useCallback(async (): Promise<void> => {
@@ -115,7 +153,7 @@ export function InkGroups({ open, presented, available, language, onClose, onOpe
   useEffect(() => {
     ++readIntent.current; lifetime.current.abort(); lifetime.current = new AbortController(); for (const controller of requests.current.values()) controller.abort(); requests.current.clear();
     operation.current = null; setLoadedFor(null); setGroups([]); setDetails({}); setShowList(false);
-    setMode(null); setError(null); setNotice(null); setBusy(false); setCopyNotice(null); setRenameId(null);
+    setMode(null); setError(null); setNotice(null); setBusy(false); setCopyNotice(null); setRenameId(null); setSource(""); setCopyNotes(null);
     return () => { lifetime.current.abort(); for (const controller of requests.current.values()) controller.abort(); };
   }, [accountEpoch]);
   useEffect(() => { if (active && account !== null) void refresh(); }, [active, account?.userId, accountEpoch, refresh]);
@@ -125,6 +163,9 @@ export function InkGroups({ open, presented, available, language, onClose, onOpe
     setGroups(previous => previous.map(group => group.groupId === selected.group.groupId ? selected.group : group));
   }, [selected, scopeMatches]);
   useEffect(() => { setShowList(false); setRenameId(null); setMode(previous => previous === "update" ? null : previous); setEditingGroup(null); setCopyNotice(null); }, [context.groupId]);
+  useEffect(() => {
+    if (!choiceCurrent && copyNotes !== null) setCopyNotes(current => current === copyNotes ? null : current);
+  }, [choiceCurrent, copyNotes]);
   useEffect(() => { if (open && presented) panel.current?.focus({ preventScroll: true }); }, [open, presented]);
   useEffect(() => {
     if (!open) return;
@@ -277,16 +318,35 @@ export function InkGroups({ open, presented, available, language, onClose, onOpe
               if (capture !== null) void workspaceContext.commitCaptured(capture, graph => ({ ...graph, title: renameTitle.trim() }), { kind: "graph.rename", subject: document.title })
                 .then(ok => { if (ok && renameCapture.current === capture) setRenameId(null); }).catch(() => { /* 草稿与失败状态由上下文保留，表单继续显示供人员处理。 */ });
             }}><input aria-label={labels.renameGraph} value={renameTitle} onChange={event => setRenameTitle(event.target.value)} /><button className="ink-study__pill" type="submit" disabled={!writable}>{labels.save}</button></form>
-              : <h3><button className="ink-study__history-title" type="button" aria-current={currentId === document.id ? "true" : undefined} onClick={() => { workspaceContext.selectGraph(document.id); void onSelectGraph(document.id); }}>{document.title}</button></h3>}
+              : <h3><button className="ink-study__history-title" type="button" aria-current={currentId === document.id ? "true" : undefined} onClick={() => {
+                setCopyNotes(null); workspaceContext.selectGraph(document.id); void onSelectGraph(document.id);
+              }}>{document.title}</button></h3>}
               <div className="ink-group-actions"><button className="ink-study__pill" type="button" disabled={!writable} aria-label={`${labels.renameGraph}：${document.title}`}
                 onClick={() => { workspaceContext.selectGraph(document.id); renameCapture.current = workspaceContext.captureEdit(document.id); setRenameId(document.id); setRenameTitle(document.title); }}>{common.workspace.rename}</button>
                 <button className="ink-study__pill" type="button" disabled={!writable} aria-label={`${labels.deleteGraph}：${document.title}`} onClick={() => activeWorkspaceStore.getState().deleteGraph(document.id)}>{common.workspace.delete}</button>
-                <button className="ink-study__pill" type="button" disabled={!writable} onClick={() => { void run(() => workspaceContext.copyOut(document.id)); }}>{labels.copyOut}</button></div></div>
+                <button className="ink-study__pill" type="button" disabled={!writable} onClick={() => {
+                  const attached = includeNotes("out", document);
+                  setCopyNotes(null);
+                  void run(() => workspaceContext.copyOut(document.id, attached));
+                }}>{labels.copyOut}</button></div></div>
+            <CopyNotesOption direction="out" sourceId={document.id}
+              checked={choiceCurrent && copyNotes.direction === "out" && copyNotes.source.id === document.id}
+              disabled={!writable} label={labels.includeNotes} description={labels.copyOutNotesHint}
+              onChange={checked => chooseCopyNotes("out", document, checked)} />
           </li>)}</ul>
           {documents.length === 0 ? <p>{labels.emptyGraphs}</p> : null}
-          <div className="ink-group-form"><label>{labels.source}<select aria-label={labels.source} value={source} disabled={!writable} onChange={event => setSource(event.target.value)}>
+          <div className="ink-group-form"><label>{labels.source}<select aria-label={labels.source} value={source} disabled={!writable}
+            onChange={event => { setSource(event.target.value); setCopyNotes(null); }}>
             <option value="">{personal.length === 0 ? labels.noSource : labels.source}</option>{personal.map(document => <option key={document.id} value={document.id}>{document.title}</option>)}
-          </select></label><button className="ink-study__pill" type="button" disabled={!writable || !source} onClick={() => { void run(async () => { const id = await workspaceContext.copyIn(source); await onSelectGraph(id); }); }}>{labels.copyIn}</button></div>
+          </select></label><button className="ink-study__pill" type="button" disabled={!writable || selectedSource === undefined} onClick={() => {
+            if (selectedSource === undefined) return;
+            const attached = includeNotes("in", selectedSource);
+            setCopyNotes(null);
+            void run(async () => { const id = await workspaceContext.copyIn(selectedSource.id, attached); await onSelectGraph(id); });
+          }}>{labels.copyIn}</button>
+          <CopyNotesOption direction="in" sourceId={source} checked={choiceCurrent && copyNotes.direction === "in"}
+            disabled={!writable || selectedSource === undefined} label={labels.includeNotes} description={labels.copyInNotesHint}
+            onChange={checked => chooseCopyNotes("in", selectedSource, checked)} /></div>
         </>}
       </div>}
     </>}

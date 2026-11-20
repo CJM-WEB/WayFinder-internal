@@ -1146,12 +1146,20 @@ export type EditableResource = z.infer<typeof EditableResourceSchema>;
 export const EditableNodeStatusSchema = z.enum([
   "empty", "edited", ...ResultNodeStatusSchema.options,
 ]);
+/** 笔记属于可编辑工作区，正文及其链接始终以用户保存的 Markdown 为准。 */
+export const EditableNoteSchema = z.strictObject({
+  id: z.string().min(1), title: z.string(), description: z.string(), markdown: z.string(),
+});
+export type EditableNote = z.infer<typeof EditableNoteSchema>;
 export const EditableNodeSchema = GraphNodeCoreSchema.extend({
   description: z.string(),
   searchPlan: SearchPlanSchema.optional(),
   engine: SearchEngineSchema.optional(),
   status: EditableNodeStatusSchema,
   resources: z.array(EditableResourceSchema),
+  notes: z.array(EditableNoteSchema).optional(),
+  // 全图替换会重用业务节点 ID，用生成代际隔离新旧节点上的笔记。
+  noteGeneration: z.string().min(1).optional(),
   warnings: z.array(NodeWarningCodeSchema),
   error: AppErrorSchema.optional(),
 });
@@ -1196,6 +1204,9 @@ export const EditableGraphSchema = z.strictObject({
 
   const urls = new Set<string>();
   graph.nodes.forEach((node, nodeIndex) => {
+    for (const index of duplicateValueIndexes((node.notes ?? []).map(note => note.id))) {
+      reject(["nodes", nodeIndex, "notes", index, "id"], "节点内笔记标识必须唯一");
+    }
     for (const index of duplicateValueIndexes(node.resources.map(resource => resource.id))) {
       reject(["nodes", nodeIndex, "resources", index, "id"], "节点内资源标识必须唯一");
     }
@@ -1274,6 +1285,7 @@ export function canonicalizeHttpUrl(input: string): URL | null {
 export const WorkspaceHistoryKindSchema = z.enum([
   "graph.rename", "graph.update", "graph.search", "node.add", "node.edit", "node.delete", "node.search",
   "resource.add", "resource.edit", "resource.delete", "resource.move", "edge.add", "edge.edit", "edge.delete", "engine.change",
+  "note.add", "note.edit", "note.delete",
 ]);
 export type WorkspaceHistoryKind = z.infer<typeof WorkspaceHistoryKindSchema>;
 export const WorkspaceHistoryScopeSchema = z.discriminatedUnion("type", [
@@ -1297,6 +1309,7 @@ export const StoredGraphHistoryBaseSchema = z.strictObject({
   graph: z.strictObject(EditableGraphSchema.shape),
   nodes: historyPairsSchema(historyMissingSchema(EditableNodeSchema)),
   resources: historyPairsSchema(historyPairsSchema(historyMissingSchema(EditableResourceSchema))),
+  notes: historyPairsSchema(historyPairsSchema(historyMissingSchema(EditableNoteSchema))).optional(),
   edges: historyPairsSchema(historyMissingSchema(GraphEdgeSchema)),
   positions: historyPairsSchema(editablePositionSchema.nullable()),
   manualNodes: z.array(historyIdSchema),
@@ -1541,7 +1554,7 @@ export type GroupWorkspaceResponse = z.infer<typeof GroupWorkspaceResponseSchema
 
 /**
  * 编辑只表达本次前后变化，服务端在最新图上合并并校验，不接受客户端填写历史或作者。
- * 跨归属复制仅提交来源标识／版本；实际内容读取、新身份和空历史均由服务端建立。
+ * 跨归属复制仅提交来源标识、版本和是否附带笔记；实际内容、新身份和空历史由服务端建立。
  */
 const groupGraphTargetFields = { ...groupTargetFields, graphId: cloudGraphIdSchema, expectedRevision: cloudRevisionSchema };
 export const GroupGraphActionSchema = z.discriminatedUnion("action", [
@@ -1556,9 +1569,14 @@ export const GroupGraphActionSchema = z.discriminatedUnion("action", [
   z.strictObject({ action: z.literal("restore"), ...groupGraphTargetFields }),
   z.strictObject({ action: z.literal("undo"), ...groupGraphTargetFields, eventId: historyIdSchema }),
   z.strictObject({ action: z.literal("redo"), ...groupGraphTargetFields }),
-  z.strictObject({ action: z.literal("copyIn"), ...groupTargetFields, sourceGraphId: cloudGraphIdSchema, sourceRevision: cloudRevisionSchema }),
-  z.strictObject({ action: z.literal("copyOut"), ...groupGraphTargetFields }),
+  z.strictObject({ action: z.literal("copyIn"), ...groupTargetFields, sourceGraphId: cloudGraphIdSchema, sourceRevision: cloudRevisionSchema,
+    includeNotes: z.boolean().optional() }),
+  z.strictObject({ action: z.literal("copyOut"), ...groupGraphTargetFields, includeNotes: z.boolean().optional() }),
 ]).superRefine((value, context) => {
+  // 新建组图与在已有节点上新建笔记是独立动作；直接创建图时不能夹带笔记。
+  if (value.action === "create" && value.document.nodes.some(node => (node.notes?.length ?? 0) > 0)) {
+    context.addIssue({ code: "custom", message: "新建组图不能直接携带笔记" });
+  }
   if (value.action === "edit" && (value.before.id !== value.graphId || value.after.id !== value.graphId)) {
     context.addIssue({ code: "custom", message: "编辑前后图标识必须与目标图一致" });
   }
@@ -1681,7 +1699,7 @@ export function applyGraphSearchResultContent(graph: EditableGraph, input: Resul
   return EditableGraphSchema.parse({
     ...generated, id: graph.id, title: graph.title, createdAt: graph.createdAt,
     ...(graph.engine === undefined ? {} : { engine: graph.engine }),
-    nodes: generated.nodes.map(node => ({ ...node, resources: node.resources.slice(0, MAX_NEW_RESOURCES_PER_NODE) })),
+    nodes: generated.nodes.map(node => ({ ...node, noteGeneration: result.runId, resources: node.resources.slice(0, MAX_NEW_RESOURCES_PER_NODE) })),
     positions, updatedAt: at,
   });
 }

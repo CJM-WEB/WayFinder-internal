@@ -1,0 +1,188 @@
+/* 工具与正文直接铺在笔记表面。窄屏允许工具换行，表格与代码保持自身滚动。 */
+.ink-note-editor { display: flex; flex: 1; flex-direction: column; gap: 8px; min-width: 0; min-height: 0; }
+.ink-note-editor__toolbar, .ink-note-editor__link-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+.ink-note-editor__toolbar { padding-right: 64px; }
+.ink-note-editor__tool {
+  display: inline-grid;
+  width: 32px;
+  height: 36px;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: inherit;
+  font: inherit;
+}
+.ink-note-editor__tool:is(:hover, [aria-pressed="true"], [aria-expanded="true"]):not(:disabled) { background: #25252213; }
+.ink-note-editor__tool:focus-visible, .ink-note-editor__heading-options button:focus-visible {
+  outline: 2px solid #145cf4;
+  outline-offset: 1px;
+}
+.ink-note-editor__icon { position: relative; display: inline-grid; place-items: center; min-width: 18px; min-height: 18px; font-size: 15px; line-height: 1; }
+.ink-note-editor__icon:is([data-icon="heading"], [data-icon="bold"]) { font-family: Georgia, serif; font-weight: 700; }
+.ink-note-editor__icon:is([data-icon="bullets"], [data-icon="ordered"])::before {
+  position: absolute;
+  left: 0;
+  font: 7px/1.15 system-ui, sans-serif;
+  white-space: pre;
+}
+.ink-note-editor__icon[data-icon="bullets"]::before { content: '•\A•\A•'; }
+.ink-note-editor__icon[data-icon="ordered"]::before { content: '1\A 2\A 3'; }
+.ink-note-editor__icon:is([data-icon="bullets"], [data-icon="ordered"])::after {
+  position: absolute;
+  right: 0;
+  width: 11px;
+  height: 1px;
+  background: currentColor;
+  box-shadow: 0 -6px currentColor, 0 6px currentColor;
+  content: '';
+}
+.ink-note-editor__icon[data-icon="table"]::before {
+  width: 15px;
+  height: 12px;
+  border: 1px solid currentColor;
+  border-radius: 2px;
+  background: linear-gradient(currentColor, currentColor) center / 1px 100% no-repeat,
+    linear-gradient(currentColor, currentColor) center / 100% 1px no-repeat;
+  content: '';
+}
+.ink-note-editor__icon[data-icon="link"] { display: inline-flex; justify-content: center; align-items: center; transform: rotate(-35deg); }
+.ink-note-editor__icon[data-icon="link"]::before, .ink-note-editor__icon[data-icon="link"]::after {
+  width: 7px;
+  height: 5px;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  content: '';
+}
+.ink-note-editor__icon[data-icon="link"]::after { margin-left: -2px; }
+.ink-note-editor__heading { position: relative; }
+.ink-note-editor__heading-options {
+  position: absolute;
+  z-index: 2;
+  inset: calc(100% + 4px) auto auto 0;
+  display: grid;
+  gap: 2px;
+  width: max-content;
+  padding: 6px;
+  border-radius: 12px;
+  background: var(--ink-history-glass, #c8c8c280);
+  backdrop-filter: blur(12px);
+  box-shadow: 0 6px 20px #25252224;
+}
+.ink-note-editor__heading-options button {
+  min-height: 32px;
+  padding: 2px 9px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: start;
+}
+.ink-note-editor__heading-options button:is(:hover, [aria-pressed="true"]) { background: #25252212; }
+.ink-note-editor button:not(:disabled), .ink-note-editor__link button:not(:disabled) { cursor: pointer; }
+.ink-note-editor button:disabled, .ink-note-editor__link button:disabled { opacity: .5; }
+
+/* 原生子模态层覆盖视口；只有居中的灰色表面接收表单操作，空白处点击只关闭子层。 */
+.ink-note-editor__link-modal {
+  --ink-note-link-duration: 280ms;
+  position: fixed;
+  inset: 0;
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  padding: 14px;
+  border: 0;
+  background: transparent;
+  color: #252522;
+}
+.ink-note-editor__link-modal[open] { display: grid; place-items: center; }
+.ink-note-editor__link-modal::backdrop {
+  background: #25252226;
+  transition: background-color var(--ink-note-link-duration) var(--ink-slide-ease);
+}
+.ink-note-editor__link {
+  box-sizing: border-box;
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  width: min(100%, 440px);
+  max-height: 100%;
+  min-width: 0;
+  padding: clamp(16px, 5vw, 26px);
+  overflow: auto;
+  border-radius: 24px;
+  background: var(--ink-history-glass, #c8c8c280);
+  backdrop-filter: blur(16px);
+  box-shadow: 0 12px 36px #25252222;
+  opacity: 1;
+  transform: translateY(0) scale(1);
+  transition: opacity var(--ink-note-link-duration) var(--ink-slide-ease), transform var(--ink-note-link-duration) var(--ink-slide-ease);
+}
+.ink-note-editor__link-modal[data-closing="true"] .ink-note-editor__link { opacity: 0; transform: translateY(8px) scale(.98); pointer-events: none; }
+.ink-note-editor__link-modal[data-closing="true"]::backdrop { background: transparent; }
+@starting-style {
+  .ink-note-editor__link-modal[open] .ink-note-editor__link { opacity: 0; transform: translateY(8px) scale(.98); }
+  .ink-note-editor__link-modal[open]::backdrop { background: transparent; }
+}
+.ink-note-editor__link h3 { margin: 0; font-size: 16px; }
+.ink-note-editor__link label { display: grid; gap: 4px; min-width: 0; font-size: 13px; }
+.ink-note-editor__link button, .ink-note-editor__link input, .ink-note-editor__link select {
+  box-sizing: border-box;
+  min-height: 30px;
+  padding: 4px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: #eeeeea9c;
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+}
+.ink-note-editor__link button[aria-pressed="true"] { background: #2525221e; }
+.ink-note-editor__link p[role="alert"], .ink-note-editor__link-error { margin: 0; color: #6a2922; font-size: 12px; }
+.ink-note-editor__link input, .ink-note-editor__link select { width: 100%; min-width: 0; }
+.ink-note-editor__body {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+}
+.ink-note-editor__body .tiptap {
+  box-sizing: border-box;
+  min-height: 100%;
+  padding: 4px 0;
+  outline: none;
+  caret-color: #145cf4;
+  overflow-wrap: anywhere;
+  line-height: 1.6;
+}
+.ink-note-editor__body .tiptap p { margin: 0 0 .65em; }
+.ink-note-editor__body .tiptap p:last-child { margin-bottom: 0; }
+.ink-note-editor__body .tiptap table { width: 100%; table-layout: fixed; border-collapse: collapse; }
+.ink-note-editor__body .tiptap th, .ink-note-editor__body .tiptap td {
+  min-width: 72px;
+  padding: 6px 9px;
+  border: 1px solid #66665460;
+  vertical-align: top;
+}
+.ink-note-editor__body .tiptap th { background: #d0d0c688; text-align: left; }
+.ink-note-editor__body .tiptap .selectedCell { background: #d3defe90; }
+.ink-note-editor__body .tiptap pre { padding: 8px 12px; overflow: auto; border-radius: 6px; background: #d0d0c688; }
+.ink-note-editor__body .tiptap [data-ink-note-link] { color: #254980; text-decoration: underline; cursor: pointer; }
+.ink-note-editor__body .tiptap [data-ink-note-link]:focus-visible { outline: 2px solid #145cf4; outline-offset: 2px; }
+@media (pointer: coarse) {
+  .ink-note-editor__tool { width: 44px; height: 44px; }
+  .ink-note-editor__heading-options button, .ink-note-editor__link button, .ink-note-editor__link select { min-height: 44px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ink-note-editor__link, .ink-note-editor__link-modal::backdrop { transition: none; }
+}

@@ -23,6 +23,8 @@ export type WorkspacePersistenceState = {
   status: "loading" | "ready" | "saving" | "error";
   error: "load" | "save" | null;
   retry: () => Promise<void>;
+  /** 等待当前身份最近一次已排队的写入；编辑器可在真正落盘后关闭。 */
+  awaitSave?: () => Promise<void>;
 };
 export type WorkspacePersistenceHandle = (() => void) & { persist: () => Promise<void>; flush: () => Promise<void> };
 export const workspacePersistenceStore = createStore<WorkspacePersistenceState>(() => ({
@@ -200,10 +202,17 @@ export async function initializeWorkspacePersistence(
       report({ status: "error", error: "load" });
     }
   };
-  feedback.setState({ retry: async () => {
-    if (feedback.getState().error === "load") await load();
-    else await save();
-  } });
+  feedback.setState({
+    retry: async () => {
+      if (feedback.getState().error === "load") await load();
+      else await save();
+    },
+    awaitSave: () => {
+      if (stopped || options.isCurrent?.() === false) return Promise.reject(new Error("本地保存身份已失效"));
+      if (feedback.getState().error === "save") return Promise.reject(new Error("本地搜索图保存失败"));
+      return writes;
+    },
+  });
   const handle = Object.assign(() => { stopped = true; unsubscribe?.(); }, { persist: save, flush: () => writes.catch(() => {}) });
   await load();
   return handle;

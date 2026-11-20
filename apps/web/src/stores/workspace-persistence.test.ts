@@ -5,7 +5,7 @@ import { WEB_WAIT_TIMEOUT_MS } from "../../test-timing.js";
 import { createEmptyGraph, createWorkspaceStore, selectCurrentGraph, selectWorkspaceHistory } from "./workspace-store.js";
 import { createDeferred } from "../../../../tests/support/test-infrastructure.mjs";
 import { remapGraphHistoryIdentity } from "./workspace-history.js";
-import { addNode, addResource, deleteResource, moveNode, updateNode, updateResource } from "./workspace-edits.js";
+import { addNode, addNote, addResource, deleteResource, moveNode, updateNode, updateResource } from "./workspace-edits.js";
 import {
   captureWorkspaceSnapshot, initializeWorkspacePersistence, type WorkspacePersistenceHandle, type WorkspacePersistenceState,
   type WorkspaceSnapshot, type WorkspaceStorage,
@@ -60,10 +60,14 @@ describe("本地搜索图持久化", () => {
     const save = vi.fn().mockRejectedValueOnce(new Error("空间不足")).mockResolvedValue(undefined);
     const feedback = createFeedback();
     const stop = await initializeWorkspacePersistence(store, { load: async () => null, save }, feedback);
-    store.getState().addGraph(document);
+    const source = addNode(document, "学习节点", "", "n");
+    const noted = addNote(source, "n", { title: "学习记录", description: "", markdown: "## 正文" }, "note-id");
+    store.getState().addGraph(noted);
+    await expect(feedback.getState().awaitSave?.()).rejects.toThrow("本地搜索图保存失败");
     await vi.waitFor(() => expect(feedback.getState().error).toBe("save"), WEB_WAIT_TIMEOUT_MS);
-    expect(store.getState().documents).toEqual([document]);
+    expect(store.getState().documents).toEqual([noted]);
     await feedback.getState().retry();
+    await expect(feedback.getState().awaitSave?.()).resolves.toBeUndefined();
     expect(save.mock.calls.at(-1)?.[0]).toEqual(snapshot(store));
     expect(feedback.getState().status).toBe("ready");
     stop();

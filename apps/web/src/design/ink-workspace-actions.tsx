@@ -1,5 +1,5 @@
 /**
- * 模块职责：为既有节点/资源/关系编辑提供右键菜单和轻量表单，不复制编辑或搜索实现。
+ * 模块职责：为节点、资源、连线和笔记提供右键菜单和轻量表单，复用各自的编辑流程。
  * 事务边界：小组表单保留打开时版本，个人表单读取最新图；草图、换组和失效目标不写入。
  */
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from "react";
@@ -11,7 +11,7 @@ import { useGraphEdit } from "../components/Workspace/use-graph-edit.js";
 import { getMessages } from "../i18n/messages.js";
 import { researchStore } from "../api/research.js";
 import { addNode, updateNode, deleteNode, addResource, updateResource, deleteResource, moveResource, moveNode,
-  deleteEdge, updateEdge } from "../stores/workspace-edits.js";
+  deleteEdge, updateEdge, updateNote, deleteNote } from "../stores/workspace-edits.js";
 import { createEmptyGraph } from "../stores/workspace-store.js";
 import { activeWorkspaceStore as workspaceStore, workspaceContext, workspaceContextStore, type CapturedWorkspaceEdit } from "../stores/workspace-context.js";
 import { groupSearch } from "../api/group-search.js";
@@ -21,15 +21,19 @@ import "./ink-workspace.css";
 
 export type InkActionTarget = (GraphContextRequest | Readonly<{
   kind: "resource"; nodeId: string; resourceId: string; clientPoint: XYPosition;
-}>) & Readonly<{ graphId: string | null }>;
+}> | Readonly<{
+  kind: "notes"; nodeId: string; noteGeneration: string | undefined; clientPoint: XYPosition;
+}> | Readonly<{
+  kind: "note"; nodeId: string; noteId: string; noteGeneration: string | undefined; clientPoint: XYPosition;
+}>) & Readonly<{ graphId: string | null; noteGeneration?: string | undefined }>;
 type Dialog = Readonly<{
-  kind: "node.add" | "node.edit" | "resource.add" | "resource.edit" | "graph.search";
+  kind: "node.add" | "node.edit" | "resource.add" | "resource.edit" | "note.edit" | "graph.search";
   owner: InkActionTarget; title: string; description: string; url: string; summary: string; whySelected: string;
   capture: CapturedWorkspaceEdit | null; contextKey: string;
 }>;
 type Props = Readonly<{
   target: InkActionTarget | null; language: SearchLanguage; enabled: boolean; allowCreate: boolean;
-  active: boolean; suspended?: boolean; onClose: () => void;
+  active: boolean; suspended?: boolean; onClose: () => void; onCreateNote?: (nodeId: string) => void;
 }>;
 
 /** 空白处的世界坐标只用于新节点；既有人工坐标永远优先于菜单打开时的测量。 */
@@ -42,13 +46,33 @@ function withMeasuredPositions(graph: EditableGraph, target: InkActionTarget): E
 /** 先确认最新实体仍存在，再物化布局；无效旧菜单不能生成一条只有坐标变化的编辑。 */
 function assertTargetExists(graph: EditableGraph, target: InkActionTarget): void {
   if (graph.id !== target.graphId || (target.kind === "edge" && !graph.edges.some(edge => edge.id === target.edgeId))) throw new Error("编辑目标已失效");
-  if (target.kind === "node" || target.kind === "resource") {
+  if ("nodeId" in target) {
     const node = graph.nodes.find(item => item.id === target.nodeId);
-    if (node === undefined || (target.kind === "resource" && !node.resources.some(resource => resource.id === target.resourceId))) throw new Error("编辑目标已失效");
+    if (node === undefined || (target.kind === "resource" && !node.resources.some(resource => resource.id === target.resourceId))
+      || ((target.kind === "notes" || target.kind === "note") && node.noteGeneration !== target.noteGeneration)
+      || (target.kind === "note" && !node.notes?.some(note => note.id === target.noteId))) throw new Error("编辑目标已失效");
   }
 }
 
-export default function InkWorkspaceActions({ target, language, enabled, allowCreate, active, suspended = false, onClose }: Props) {
+/** 表单或菜单退场后回到对应笔记；删除后改回新建入口，切图和换号不抢夺焦点。 */
+function restoreNoteFocus(target: InkActionTarget | null, contextKey: string): void {
+  if ((target?.kind !== "note" && target?.kind !== "notes") || target.graphId === null) return;
+  const graphId = target.graphId;
+  requestAnimationFrame(() => {
+    const state = workspaceStore.getState();
+    const node = state.documents.find(graph => graph.id === graphId)?.nodes.find(item => item.id === target.nodeId);
+    if (workspaceContextStore.getState().contextKey !== contextKey || state.currentId !== graphId
+      || state.selectedNodeIds[graphId] !== target.nodeId || node === undefined || node.noteGeneration !== target.noteGeneration
+      || document.activeElement?.closest(".ink-workspace-menu[data-open=true], .ink-workspace-form[data-open=true]")) return;
+    const card = target.kind === "note" ? [...document.querySelectorAll<HTMLElement>("[data-ink-note]")]
+      .find(item => item.dataset.inkNote === target.noteId && item.closest("[inert]") === null) : undefined;
+    const add = [...document.querySelectorAll<HTMLButtonElement>("[data-ink-note-add]:not(:disabled)")]
+      .find(item => item.closest("[inert]") === null);
+    (card?.querySelector<HTMLButtonElement>("[data-ink-note-open]") ?? add)?.focus({ preventScroll: true });
+  });
+}
+
+export default function InkWorkspaceActions({ target, language, enabled, allowCreate, active, suspended = false, onClose, onCreateNote }: Props) {
   const interactive = active && !suspended;
   const messages = getMessages(language);
   const currentId = useStore(workspaceStore, state => state.currentId);
@@ -69,14 +93,20 @@ export default function InkWorkspaceActions({ target, language, enabled, allowCr
   const held = menu.value;
   const node = held !== null && "nodeId" in held ? graph?.nodes.find(item => item.id === held.nodeId) : undefined;
   const resource = held?.kind === "resource" ? node?.resources.find(item => item.id === held.resourceId) : undefined;
+  const note = held?.kind === "note" ? node?.notes?.find(item => item.id === held.noteId) : undefined;
   const edge = held?.kind === "edge" ? graph?.edges.find(item => item.id === held.edgeId) : undefined;
   const writable = enabled && !saving && (!groupMode || contextWritable) && held?.graphId === currentId && graph !== undefined;
+  const noteWritable = writable && node !== undefined && node.noteGeneration === held?.noteGeneration;
   const nodeEngine = graph === undefined ? null : resolveSearchEngine(graph.language, node?.engine ?? graph.engine);
+  const dialogNoteOwner = dialog?.kind === "note.edit" && dialog.owner.kind === "note" ? dialog.owner : null;
+  const dialogNoteNode = dialogNoteOwner === null ? undefined : graph?.nodes.find(item => item.id === dialogNoteOwner.nodeId);
+  const dialogNoteValid = dialogNoteOwner === null || dialogNoteNode !== undefined
+    && dialogNoteNode.noteGeneration === dialogNoteOwner.noteGeneration && dialogNoteNode.notes?.some(item => item.id === dialogNoteOwner.noteId);
 
   useEffect(() => {
     if (!active) { onClose(); setDialog(null); edit.clearProblem(); }
-    if (dialog !== null && (dialog.owner.graphId !== currentId || dialog.contextKey !== contextKey)) setDialog(null);
-  }, [active, currentId, contextKey, dialog?.owner.graphId, dialog?.contextKey, onClose, edit.clearProblem]);
+    if (dialog !== null && (dialog.owner.graphId !== currentId || dialog.contextKey !== contextKey || !dialogNoteValid)) setDialog(null);
+  }, [active, currentId, contextKey, dialog?.owner.graphId, dialog?.contextKey, dialogNoteValid, onClose, edit.clearProblem]);
   useEffect(() => { if (target === null && dialog === null) edit.clearProblem(); }, [target, dialog, edit.clearProblem]);
   useEffect(() => {
     if (dialog?.kind !== "graph.search" || !interactive) return;
@@ -109,10 +139,11 @@ export default function InkWorkspaceActions({ target, language, enabled, allowCr
       if (event.key !== "Escape" || event.defaultPrevented) return;
       event.preventDefault();
       onClose(); setDialog(null);
+      restoreNoteFocus(dialog?.owner ?? held, contextKey);
     };
     document.addEventListener("pointerdown", outside); document.addEventListener("keydown", escape);
     return () => { document.removeEventListener("pointerdown", outside); document.removeEventListener("keydown", escape); };
-  }, [menu.open, form.open, onClose, interactive]);
+  }, [menu.open, form.open, onClose, interactive, dialog, held, contextKey]);
 
   const commit = (owner: InkActionTarget, operation: (document: EditableGraph) => EditableGraph, preserveLayout = false,
     capture = edit.captureEdit()): Promise<boolean> => edit.commitCaptured(capture, document => {
@@ -120,17 +151,34 @@ export default function InkWorkspaceActions({ target, language, enabled, allowCr
     assertTargetExists(document, owner);
     return operation(preserveLayout ? withMeasuredPositions(document, owner) : document);
   });
+  const createNote = (): void => {
+    if (!interactive || !menu.open || !noteWritable || onCreateNote === undefined || (held?.kind !== "node" && held?.kind !== "notes")) return;
+    const state = workspaceStore.getState();
+    const latest = state.documents.find(document => document.id === held.graphId)?.nodes.find(item => item.id === held.nodeId);
+    const latestContext = workspaceContextStore.getState();
+    // 菜单留存期间全图替换可重用节点标识；只有原代际仍存在才把新建交给笔记面板。
+    if (state.currentId !== held.graphId || latest === undefined || latest.noteGeneration !== held.noteGeneration
+      || latestContext.contextKey !== contextKey
+      || latestContext.kind === "group" && (!latestContext.writable || latestContext.busy || latestContext.failedAction !== null)) return;
+    onClose();
+    onCreateNote(held.nodeId);
+  };
   const openDialog = (kind: Dialog["kind"]): void => {
     if (held === null) return;
+    if (kind === "note.edit" && (!interactive || !menu.open || !noteWritable || note === undefined)) return;
     const next: Dialog = { kind, owner: held, title: kind === "node.add" || kind === "graph.search" ? ""
-      : kind === "resource.edit" ? resource?.title ?? "" : node?.title ?? "",
-      description: kind === "node.add" ? "" : node?.description ?? "", url: kind === "resource.edit" ? resource?.url ?? "" : "",
+      : kind === "resource.edit" ? resource?.title ?? "" : kind === "note.edit" ? note?.title ?? "" : node?.title ?? "",
+      description: kind === "node.add" ? "" : kind === "note.edit" ? note?.description ?? "" : node?.description ?? "",
+      url: kind === "resource.edit" ? resource?.url ?? "" : "",
       summary: resource?.summary ?? "", whySelected: resource?.whySelected ?? "", capture: edit.captureEdit(), contextKey };
     setFields(next); setDialog(next); onClose();
   };
   const runAction = (operation: (document: EditableGraph) => EditableGraph, preserveLayout = false): void => {
-    if (held !== null) void commit(held, operation, preserveLayout).then(success => { if (success) onClose(); });
+    if (held !== null) void commit(held, operation, preserveLayout).then(success => {
+      if (success) { onClose(); restoreNoteFocus(held, contextKey); }
+    });
   };
+  const closeForm = (): void => { setDialog(null); restoreNoteFocus(dialog?.owner ?? null, contextKey); };
   const startResearch = (nodeId?: string): void => {
     if (!writable || graph === undefined || (groupMode ? groupResearching : researching)) return;
     if (nodeId === undefined && !graph.query.trim()) { openDialog("graph.search"); return; }
@@ -183,6 +231,10 @@ export default function InkWorkspaceActions({ target, language, enabled, allowCr
           setDialog(current => current === submitted ? null : current);
         }).catch(() => {});
       }
+    } else if (dialog.kind === "note.edit") {
+      if (owner.kind !== "note" || !dialogNoteValid) return;
+      success = await commit(owner, document => updateNote(document, owner.nodeId, owner.noteId,
+        { title: fields.title, description: fields.description }), false, dialog.capture);
     } else if ("nodeId" in owner) {
       const nodeId = owner.nodeId;
       success = await commit(owner, document => dialog.kind === "node.edit"
@@ -191,15 +243,20 @@ export default function InkWorkspaceActions({ target, language, enabled, allowCr
           : owner.kind === "resource" ? updateResource(document, nodeId, owner.resourceId,
             { title: fields.title.trim(), url: fields.url, summary: fields.summary, whySelected: fields.whySelected }) : document, false, dialog.capture);
     }
-    if (success) setDialog(null);
+    if (success) {
+      setDialog(current => current === dialog ? null : current);
+      restoreNoteFocus(owner, contextKey);
+    }
   };
 
   const formTitle = form.value?.kind === "node.add" ? messages.editor.addNode
     : form.value?.kind === "node.edit" ? messages.editor.editNode
       : form.value?.kind === "resource.add" ? messages.editor.addResource
-        : form.value?.kind === "resource.edit" ? messages.editor.editResource : messages.research.startGraph;
+        : form.value?.kind === "resource.edit" ? messages.editor.editResource
+          : form.value?.kind === "note.edit" ? messages.notes.editDetails : messages.research.startGraph;
   const invalid = dialog?.kind === "resource.add" ? !fields.url.trim()
-    : dialog?.kind === "resource.edit" ? !fields.title.trim() || !fields.url.trim() : !fields.title.trim();
+    : dialog?.kind === "resource.edit" ? !fields.title.trim() || !fields.url.trim()
+      : dialog?.kind !== "note.edit" && !fields.title.trim();
   const option = (label: string, action: () => void, disabled = !writable, selected?: boolean) =>
     <button type="button" role={selected === undefined ? "menuitem" : "menuitemradio"} aria-checked={selected}
       disabled={disabled} onClick={action}>{label}{selected ? <span aria-hidden="true">✓</span> : null}</button>;
@@ -214,8 +271,10 @@ export default function InkWorkspaceActions({ target, language, enabled, allowCr
   return <>
     {held === null ? null : <div className="ink-workspace-menu" ref={menuRef} role="menu" aria-label={messages.inkStudy.actionMenu}
       data-open={interactive && menu.open} inert={!interactive || !menu.open} aria-hidden={!interactive || !menu.open} data-ink-control data-ink-overlay
-      onContextMenu={event => event.preventDefault()} onKeyDown={event => {
-        if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); onClose(); setDialog(null); return; }
+      onContextMenu={event => { event.preventDefault(); event.stopPropagation(); }} onKeyDown={event => {
+        if (event.key === "Escape") {
+          event.preventDefault(); event.stopPropagation(); onClose(); setDialog(null); restoreNoteFocus(held, contextKey); return;
+        }
         if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
         event.preventDefault();
         const buttons = [...event.currentTarget.querySelectorAll<HTMLButtonElement>("button:not(:disabled)")];
@@ -234,12 +293,18 @@ export default function InkWorkspaceActions({ target, language, enabled, allowCr
       </> : held.kind === "node" ? <>
         {option(messages.editor.editNode, () => openDialog("node.edit"), !writable || node === undefined)}
         {option(messages.editor.addResource, () => openDialog("resource.add"), !writable || node === undefined)}
+        {onCreateNote === undefined ? null : option(messages.notes.add, createNote, !noteWritable)}
         {option(messages.research.startNode, () => startResearch(held.nodeId), !writable || (groupMode ? groupResearching : researching) || node === undefined)}
         <div className="ink-workspace-menu__label">{messages.searchEngine.nodeLabel}</div>
         {SearchEngineSchema.options.map(engine => <div key={engine}>{option(messages.searchEngine.labels[engine], () => runAction(document => ({
           ...document, updatedAt: new Date().toISOString(), nodes: document.nodes.map(item => item.id === held.nodeId ? { ...item, engine } : item),
         })), !writable || node === undefined, nodeEngine === engine)}</div>)}
-        {option(messages.editor.deleteNode, () => runAction(document => deleteNode(document, held.nodeId), true))}
+        {option(messages.editor.deleteNode, () => {
+          const noteCount = node?.notes?.length ?? 0;
+          if (noteCount === 0 || window.confirm(messages.notes.confirmDeleteNode(noteCount))) {
+            runAction(document => deleteNode(document, held.nodeId), true);
+          }
+        })}
       </> : held.kind === "resource" ? <>
         {option(messages.editor.editResource, () => openDialog("resource.edit"), !writable || resource === undefined)}
         {option(messages.editor.addResource, () => openDialog("resource.add"), !writable || node === undefined)}
@@ -254,6 +319,11 @@ export default function InkWorkspaceActions({ target, language, enabled, allowCr
           return other === undefined ? document : moveResource(document, held.nodeId, held.resourceId, other.id);
         }), !writable || resource === undefined || node?.resources.at(-1)?.id === resource.id)}
         {option(messages.editor.deleteResource, () => runAction(document => deleteResource(document, held.nodeId, held.resourceId)), !writable || resource === undefined)}
+      </> : held.kind === "notes" ? <>
+        {option(messages.notes.add, createNote, !noteWritable || onCreateNote === undefined)}
+      </> : held.kind === "note" ? <>
+        {option(messages.notes.editDetails, () => openDialog("note.edit"), !noteWritable || note === undefined)}
+        {option(messages.notes.delete, () => runAction(document => deleteNote(document, held.nodeId, held.noteId)), !noteWritable || note === undefined)}
       </> : <>
         <div className="ink-workspace-menu__label">{messages.editor.relationType}</div>
         {(["related_to", "recommended_next"] as const).map(type => <div key={type}>{option(messages.graph.edgeLabels[type],
@@ -263,15 +333,18 @@ export default function InkWorkspaceActions({ target, language, enabled, allowCr
       {graph !== undefined && (held.kind === "pane" || held.kind === "node")
         ? <p className="ink-engine-note" role="note">{messages.searchEngine.baiduRegionNotice}</p> : null}
     </div>}
-    {form.value === null ? null : <section className="ink-workspace-form" ref={formRef} role="dialog" aria-label={formTitle}
+    {form.value === null || (form.value.kind === "note.edit" && form.value.contextKey !== contextKey) ? null :
+    <section className="ink-workspace-form" ref={formRef} role="dialog" aria-label={formTitle}
       data-open={interactive && form.open} inert={!interactive || !form.open} aria-hidden={!interactive || !form.open} data-ink-overlay data-ink-control
-      onKeyDown={event => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); setDialog(null); onClose(); } }}>
-      <header><h2>{formTitle}</h2><button className="ink-workspace-close" aria-label={messages.inkStudy.closePanel} onClick={() => setDialog(null)}>×</button></header>
+      onKeyDown={event => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); closeForm(); onClose(); } }}>
+      <header><h2>{formTitle}</h2><button className="ink-workspace-close" aria-label={messages.inkStudy.closePanel} onClick={closeForm}>×</button></header>
       <form onSubmit={save} data-workspace-context={groupMode ? "group" : "personal"}>
         {form.value.kind !== "resource.add" ? <label>{form.value.kind === "graph.search" ? messages.research.topicLabel
-          : form.value.kind === "resource.edit" ? messages.editor.resourceTitle : messages.editor.nodeTitle}
+          : form.value.kind === "resource.edit" ? messages.editor.resourceTitle
+            : form.value.kind === "note.edit" ? messages.notes.title : messages.editor.nodeTitle}
           <input maxLength={form.value.kind === "graph.search" ? 2000 : undefined} value={fields.title} onChange={event => setFields(previous => ({ ...previous, title: event.target.value }))} /></label> : null}
-        {form.value.kind.startsWith("node.") ? <label>{messages.editor.nodeDescription}<textarea rows={3} value={fields.description}
+        {form.value.kind.startsWith("node.") || form.value.kind === "note.edit" ? <label>
+          {form.value.kind === "note.edit" ? messages.notes.description : messages.editor.nodeDescription}<textarea rows={3} value={fields.description}
           onChange={event => setFields(previous => ({ ...previous, description: event.target.value }))} /></label> : null}
         {form.value.kind.startsWith("resource.") ? <label>{messages.editor.resourceUrl}<input inputMode="url" value={fields.url}
           onChange={event => setFields(previous => ({ ...previous, url: event.target.value }))} /></label> : null}
@@ -280,10 +353,11 @@ export default function InkWorkspaceActions({ target, language, enabled, allowCr
           <label>{messages.editor.whySelected}<textarea rows={3} value={fields.whySelected} onChange={event => setFields(previous => ({ ...previous, whySelected: event.target.value }))} /></label>
         </> : null}
         {form.value.kind === "graph.search" ? <p className="ink-workspace-hint">{messages.research.topicHint}</p> : null}
-        <footer><button type="button" className="ink-study__pill ink-workspace-secondary" onClick={() => setDialog(null)}>{messages.editor.cancel}</button>
-          <button type="submit" className="ink-study__pill" data-workspace-save disabled={invalid || saving || groupMode && !contextWritable}>{form.value.kind === "graph.search" ? messages.research.startGraph
+        <footer><button type="button" className="ink-study__pill ink-workspace-secondary" onClick={closeForm}>{messages.editor.cancel}</button>
+          <button type="submit" className="ink-study__pill" data-workspace-save disabled={invalid || saving || !dialogNoteValid || groupMode && !contextWritable}>{form.value.kind === "graph.search" ? messages.research.startGraph
             : form.value.kind === "node.add" ? messages.editor.addNode : form.value.kind === "node.edit" ? messages.editor.saveNode
-              : form.value.kind === "resource.add" ? messages.editor.addResource : messages.editor.saveResource}</button></footer>
+              : form.value.kind === "resource.add" ? messages.editor.addResource
+                : form.value.kind === "note.edit" ? messages.notes.save : messages.editor.saveResource}</button></footer>
       </form>
     </section>}
     <InkNotice notice={notice} />

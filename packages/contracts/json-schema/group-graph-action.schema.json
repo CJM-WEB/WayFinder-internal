@@ -501,6 +501,38 @@
                       ]
                     }
                   },
+                  "notes": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "title": {
+                          "type": "string"
+                        },
+                        "description": {
+                          "type": "string"
+                        },
+                        "markdown": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "title",
+                        "description",
+                        "markdown"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "noteGeneration": {
+                    "type": "string",
+                    "minLength": 1
+                  },
                   "warnings": {
                     "type": "array",
                     "items": {
@@ -1144,6 +1176,38 @@
                       ]
                     }
                   },
+                  "notes": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "title": {
+                          "type": "string"
+                        },
+                        "description": {
+                          "type": "string"
+                        },
+                        "markdown": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "title",
+                        "description",
+                        "markdown"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "noteGeneration": {
+                    "type": "string",
+                    "minLength": 1
+                  },
                   "warnings": {
                     "type": "array",
                     "items": {
@@ -1750,6 +1814,38 @@
                       ]
                     }
                   },
+                  "notes": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "title": {
+                          "type": "string"
+                        },
+                        "description": {
+                          "type": "string"
+                        },
+                        "markdown": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "title",
+                        "description",
+                        "markdown"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "noteGeneration": {
+                    "type": "string",
+                    "minLength": 1
+                  },
                   "warnings": {
                     "type": "array",
                     "items": {
@@ -1890,7 +1986,10 @@
             "edge.add",
             "edge.edit",
             "edge.delete",
-            "engine.change"
+            "engine.change",
+            "note.add",
+            "note.edit",
+            "note.delete"
           ]
         },
         "subject": {
@@ -3155,6 +3254,9 @@
           "type": "integer",
           "minimum": 1,
           "maximum": 9007199254740991
+        },
+        "includeNotes": {
+          "type": "boolean"
         }
       },
       "required": [
@@ -3193,6 +3295,9 @@
           "type": "integer",
           "minimum": 1,
           "maximum": 9007199254740991
+        },
+        "includeNotes": {
+          "type": "boolean"
         }
       },
       "required": [

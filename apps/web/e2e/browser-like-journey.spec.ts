@@ -4162,6 +4162,628 @@ test("正式入口手动资源超过六条可编辑取消草稿、拖拽、撤�
   expect(await readFixtureSnapshots(page)).toHaveLength(0);
 });
 
+test("笔记右键入口按节点归属保存，信息条可编辑、删除和撤销", async ({ page }) => {
+  const original = await openInkWorkspace(page);
+  const node = (id: string): Locator => page.locator(`[data-ink-node="${id}"]`).getByRole("heading");
+  const noteTab = page.getByRole("tab", { name: "笔记", exact: true });
+  const resourceTab = page.getByRole("tab", { name: "资源", exact: true });
+  const notes = page.getByRole("tabpanel", { name: "笔记", exact: true });
+  const newNote = page.getByRole("dialog", { name: "新建笔记", exact: true });
+  const noteEditor = page.getByRole("dialog", { name: "笔记", exact: true });
+  await node("workspace-node-0").click();
+  await expect(resourceTab).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("tabpanel", { name: "资源", exact: true })).toContainText("资料链接 1");
+  await noteTab.click();
+  await expect(notes).toContainText("这个节点还没有笔记。");
+
+  // 右键未选中的第二节点，笔记必须归给右键目标而非刚才选中的资源节点。
+  await openInkNodeMenu(page, "workspace-node-1");
+  await page.getByRole("menuitem", { name: "新建笔记", exact: true }).click();
+  await expect(newNote.getByRole("textbox", { name: "标题", exact: true })).toBeFocused();
+  await newNote.getByRole("textbox", { name: "标题", exact: true }).fill("第二节点的笔记");
+  await newNote.getByRole("textbox", { name: "说明", exact: true }).fill("初始说明");
+  await newNote.getByRole("textbox", { name: "正文", exact: true }).fill("保留这一段。");
+  await newNote.getByRole("button", { name: "完成", exact: true }).click();
+  await expect(newNote).toHaveCount(0);
+  const secondCard = notes.locator("[data-ink-note]").filter({ hasText: "第二节点的笔记" });
+  await expect(secondCard).toBeVisible();
+  await expect.poll(async () => (await readStoredWorkspace(page))?.documents.find(graph => graph.id === original.id)
+    ?.nodes.map(item => [item.id, item.notes?.length ?? 0])).toEqual([
+    ["workspace-node-0", 0], ["workspace-node-1", 1], ["workspace-node-2", 0],
+  ]);
+
+  // 单条菜单必须优先于列表菜单，元数据表单保持 Markdown 正文不变。
+  await secondCard.click({ button: "right" });
+  await expect(noteEditor).toHaveCount(0);
+  await expect(page.getByRole("menuitem", { name: "新建笔记", exact: true })).toHaveCount(0);
+  await page.getByRole("menuitem", { name: "编辑标题和说明", exact: true }).click();
+  const metadata = page.getByRole("dialog", { name: "编辑标题和说明", exact: true });
+  await metadata.getByRole("textbox", { name: "笔记标题", exact: true }).fill("编辑后的第二节点笔记");
+  await metadata.getByRole("textbox", { name: "笔记说明", exact: true }).fill("修改后的说明");
+  await metadata.getByRole("button", { name: "保存笔记", exact: true }).click();
+  const revisedCard = notes.locator("[data-ink-note]").filter({ hasText: "编辑后的第二节点笔记" });
+  const opener = revisedCard.locator("[data-ink-note-open]");
+  await expect(revisedCard).toContainText("修改后的说明");
+  await opener.click();
+  await expect(noteEditor.getByRole("textbox", { name: "正文", exact: true })).toHaveText("保留这一段。");
+  await page.keyboard.press("Escape");
+  await expect(opener).toBeFocused();
+
+  // 切回第一节点时应回默认资源，笔记栏空状态也能创建，并从遮罩外点保存且保留节点。
+  await node("workspace-node-0").click();
+  await expect(resourceTab).toHaveAttribute("aria-selected", "true");
+  await noteTab.click();
+  await notes.getByRole("status").click({ button: "right" });
+  await page.getByRole("menuitem", { name: "新建笔记", exact: true }).click();
+  await newNote.getByRole("textbox", { name: "标题", exact: true }).fill("第一节点的笔记");
+  await page.locator(".ink-note-overlay").click({ position: { x: 8, y: 8 } });
+  const firstCard = notes.locator("[data-ink-note]").filter({ hasText: "第一节点的笔记" });
+  await expect(firstCard).toBeVisible();
+  await firstCard.click({ button: "right" });
+  await page.getByRole("menuitem", { name: "删除笔记", exact: true }).click();
+  await expect(firstCard).toHaveCount(0);
+  await undoInkEvent(page, "删除笔记", "第一节点的笔记");
+  await node("workspace-node-0").click();
+  await noteTab.click();
+  await expect(firstCard).toBeVisible();
+  expect(await readFixtureSnapshots(page)).toHaveLength(0);
+});
+
+test("笔记信息条与中央编辑器沿同一路径往返", async ({ page }) => {
+  await openInkWorkspace(page);
+  await page.locator('[data-ink-node="workspace-node-0"]').getByRole("heading").click();
+  const notesTab = page.getByRole("tab", { name: "笔记", exact: true });
+  const resourceTab = page.getByRole("tab", { name: "资源", exact: true });
+  const tabs = page.getByRole("tablist", { name: "资源面板", exact: true });
+  const sidebar = page.locator(".ink-resources");
+  const heading = sidebar.locator(".ink-resources__header");
+  const addNote = page.locator("[data-ink-note-add]");
+  await notesTab.click();
+  await addNote.click();
+  const newNote = page.getByRole("dialog", { name: "新建笔记", exact: true });
+  await newNote.getByRole("textbox", { name: "标题", exact: true }).fill("动效笔记");
+  await newNote.getByRole("textbox", { name: "说明", exact: true }).fill("标题和说明与信息条一起淡出");
+  await newNote.getByRole("button", { name: "完成", exact: true }).click();
+  await expect(newNote).toHaveCount(0);
+  await resourceTab.click();
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  const stage = page.locator(".ink-study__stage");
+  const viewportWidth = await page.evaluate(() => window.innerWidth);
+  await expect(heading.getByRole("tab")).toHaveCount(0);
+  const tabBox = await tabs.boundingBox(), headingBox = await heading.boundingBox();
+  if (tabBox === null || headingBox === null) throw new Error("缺少笔记侧栏头部");
+  expect(tabBox.y + tabBox.height).toBeLessThan(headingBox.y);
+  expect(await notesTab.evaluate(element => getComputedStyle(element).backdropFilter)).not.toBe("none");
+
+  // 记录真实 CSS 分段，抽样后恢复该段时间，避免手动加速改变下一阶段的起始位置。
+  await stage.evaluate(element => {
+    const order: string[] = [];
+    const capture = (event: Event): void => {
+      const moving = event.target;
+      if (!(event instanceof TransitionEvent) || !(moving instanceof HTMLElement)) return;
+      const overlay = moving.closest<HTMLElement>(".ink-note-overlay");
+      const summary = moving.matches(".ink-note-dialog__summary"), content = moving.matches(".ink-note-dialog__contents");
+      let key: string | undefined;
+      if (event.propertyName === "transform" && moving.matches(".ink-resources__mode")) {
+        key = `switch-${moving.parentElement?.dataset.active}-${moving.dataset.kind}`;
+      } else if (event.propertyName === "transform" && moving.matches("[data-ink-note-add]") &&
+        moving.closest(".ink-resources")?.getAttribute("data-phase") === "leaving") {
+        key = "add-exit";
+      } else if (overlay !== null) {
+        const direction = overlay.dataset.open === "true" ? "enter" : "exit";
+        if (moving.matches(".ink-note-dialog") && event.propertyName === "transform") key = `${direction}-${overlay.dataset.step}`;
+        else if ((summary || content) && event.propertyName === "opacity") key = `${direction}-${summary ? "summary" : "content"}`;
+      }
+      if (key === undefined) return;
+      if (event.type === "transitionstart") {
+        order.push(key);
+        element.setAttribute("data-note-transition-order", JSON.stringify(order));
+      }
+      // 摘要回程的透明度有延迟；从真正开始时采样才能同时取得正确的源条矩形。
+      if (event.type !== (summary || content ? "transitionstart" : "transitionrun")) return;
+      const animation = moving.getAnimations().find(candidate =>
+        candidate instanceof CSSTransition && candidate.transitionProperty === event.propertyName);
+      const timing = animation?.effect?.getTiming();
+      if (animation === undefined || typeof timing?.duration !== "number") return;
+      const startTime = animation.startTime, originalTime = animation.currentTime, duration = timing.duration;
+      const box = (summary || content ? overlay?.querySelector<HTMLElement>(".ink-note-dialog") : moving) ?? moving;
+      const tabs = element.querySelector(".ink-resources__tabs"), header = element.querySelector(".ink-resources__header");
+      // 在区间内贴近两端，避免读取终点时替浏览器触发 finished，误推进应用的下一段。
+      const samples = [.00001, .25, .5, .75, .99999].map(fraction => {
+        animation.currentTime = (timing.delay ?? 0) + duration * fraction;
+        const { x, y, width, height } = box.getBoundingClientRect();
+        return { x, y, width, height, opacity: Number(getComputedStyle(moving).opacity),
+          tabY: tabs?.getBoundingClientRect().y, headerY: header?.getBoundingClientRect().y,
+          inert: moving.closest("[inert]") !== null };
+      });
+      // 同一调用栈还原浏览器时间轴；pause / play 会推迟到下一 RAF，干扰阶段的真实接缝。
+      if (startTime === null) animation.currentTime = originalTime;
+      else animation.startTime = startTime;
+      element.setAttribute(`data-note-motion-${key}`, JSON.stringify(samples));
+    };
+    element.addEventListener("transitionrun", capture);
+    element.addEventListener("transitionstart", capture);
+  });
+  type Frame = { x: number; y: number; width: number; height: number; opacity: number; tabY?: number; headerY?: number; inert: boolean };
+  const motion = async (key: string): Promise<Frame[]> => {
+    const attribute = `data-note-motion-${key}`;
+    await expect(stage).toHaveAttribute(attribute, /^\[/, { timeout: 5_000 });
+    return JSON.parse(await stage.getAttribute(attribute) ?? "[]") as Frame[];
+  };
+  const waitForSidebarMotion = () => expect.poll(() => sidebar.locator(".ink-resources__mode").evaluateAll(modes =>
+    modes.some(mode => mode.getAnimations().some(animation => animation.playState === "running")))).toBe(false);
+  const verifySwitch = async (destination: "notes" | "resources", from: "notes" | "resources") => {
+    const outgoing = await motion(`switch-${destination}-${from}`);
+    const incoming = await motion(`switch-${destination}-${destination}`);
+    expect(outgoing[4]!.x).toBeGreaterThan(viewportWidth);
+    expect(incoming[0]!.x).toBeGreaterThan(viewportWidth);
+    expect(outgoing[4]!.x - outgoing[0]!.x).toBeGreaterThan(100);
+    expect(incoming[0]!.x - incoming[4]!.x).toBeGreaterThan(100);
+    expect(outgoing[2]!.inert).toBe(true);
+    for (const frame of [...outgoing, ...incoming]) {
+      expect(frame.tabY).toBeCloseTo(tabBox.y, 0);
+      expect(frame.headerY).toBeCloseTo(headingBox.y, 0);
+    }
+    await waitForSidebarMotion();
+  };
+  await notesTab.click();
+  await verifySwitch("notes", "resources");
+  await resourceTab.click();
+  await verifySwitch("resources", "notes");
+  // 清除上一轮的证据，第二次切同一方向仍等待这次实际动画完成。
+  await stage.evaluate(element => {
+    element.removeAttribute("data-note-motion-switch-notes-notes");
+    element.removeAttribute("data-note-motion-switch-notes-resources");
+  });
+  await notesTab.click();
+  await verifySwitch("notes", "resources");
+
+  const opener = page.locator("[data-ink-note-open]");
+  const origin = await page.locator("[data-ink-note]").boundingBox();
+  if (origin === null) throw new Error("缺少笔记信息条的位置");
+  await opener.click();
+  const sameRect = (actual: Pick<Frame, "x" | "y" | "width" | "height">, expected: Pick<Frame, "x" | "y" | "width" | "height">): void => {
+    for (const part of ["x", "y", "width", "height"] as const) expect(Math.abs(actual[part] - expected[part])).toBeLessThan(2);
+  };
+  const fade = await motion("enter-summary"), travel = await motion("enter-center");
+  const expansion = await motion("enter-expanded"), reveal = await motion("enter-content");
+  for (const frame of fade) sameRect(frame, origin);
+  expect(fade[0]!.opacity).toBeCloseTo(1, 4); expect(fade[4]!.opacity).toBeCloseTo(0, 4);
+  sameRect(travel[0]!, origin);
+  for (const frame of travel) {
+    expect(frame.width).toBeCloseTo(origin.width, 0);
+    expect(frame.height).toBeCloseTo(origin.height, 0);
+  }
+  expect(travel[0]!.x - travel[4]!.x).toBeGreaterThan(100);
+  const fraction = (index: number) => (travel[index]!.x - travel[0]!.x) / (travel[4]!.x - travel[0]!.x);
+  expect(fraction(1)).toBeLessThan(.25); expect(fraction(2)).toBeCloseTo(.5, 1); expect(fraction(3)).toBeGreaterThan(.75);
+  sameRect(expansion[0]!, travel[4]!);
+  expect(expansion[4]!.width).toBeGreaterThan(expansion[0]!.width);
+  expect(expansion[4]!.height).toBeGreaterThan(expansion[0]!.height);
+  const stageArea = await stage.evaluate(element => {
+    const { width, height } = element.getBoundingClientRect();
+    return width * height;
+  });
+  const areaRatio = expansion[4]!.width * expansion[4]!.height / stageArea;
+  expect(areaRatio).toBeGreaterThanOrEqual(.75);
+  expect(areaRatio).toBeLessThanOrEqual(.85);
+  expect(expansion[4]!.x + expansion[4]!.width / 2).toBeCloseTo(expansion[0]!.x + expansion[0]!.width / 2, 0);
+  expect(expansion[4]!.y + expansion[4]!.height / 2).toBeCloseTo(expansion[0]!.y + expansion[0]!.height / 2, 0);
+  for (const frame of reveal) sameRect(frame, expansion[4]!);
+  expect(reveal[0]!.opacity).toBeCloseTo(0, 4); expect(reveal[4]!.opacity).toBeCloseTo(1, 4);
+  await expect(page.getByRole("textbox", { name: "标题", exact: true })).toBeFocused();
+  await expect(page.locator(".ink-note-dialog__contents")).toHaveCSS("opacity", "1");
+  await page.keyboard.press("Escape");
+  await expect(sidebar).toHaveAttribute("inert", "", { timeout: 1_000 });
+  await page.keyboard.press("Tab");
+  expect(await sidebar.evaluate(element => element.contains(document.activeElement))).toBe(false);
+  for (const [key, forward] of [["exit-content", reveal], ["exit-center", expansion], ["exit-source", travel], ["exit-summary", fade]] as const) {
+    const reverse = await motion(key);
+    for (let index = 0; index < reverse.length; index++) {
+      const expected = forward[forward.length - 1 - index]!;
+      sameRect(reverse[index]!, expected);
+      expect(reverse[index]!.opacity).toBeCloseTo(expected.opacity, 1);
+    }
+  }
+  await expect(opener).toBeFocused();
+  const order = JSON.parse(await stage.getAttribute("data-note-transition-order") ?? "[]") as string[];
+  expect(order.filter(key => key.startsWith("switch-"))).toEqual([
+    "switch-notes-resources", "switch-notes-notes", "switch-resources-notes", "switch-resources-resources",
+    "switch-notes-resources", "switch-notes-notes",
+  ]);
+  expect(order.filter(key => !key.startsWith("switch-"))).toEqual([
+    "enter-summary", "enter-center", "enter-expanded", "enter-content",
+    "exit-content", "exit-center", "exit-source", "exit-summary",
+  ]);
+
+  const overlay = page.locator(".ink-note-overlay");
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await opener.click();
+  await expect(overlay).toHaveAttribute("data-ready", "true");
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  // 切回常规动效后，已打开且可编辑的笔记不重播，也不失去标题焦点。
+  await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+  await expect(overlay).toHaveAttribute("data-step", "expanded");
+  await expect(overlay).toHaveAttribute("data-ready", "true");
+  await expect(overlay.getByRole("textbox", { name: "标题", exact: true })).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(opener).toBeFocused();
+
+  // 停在真实 CSS 平移的中段，再用实际按键取消；下一段展开不能先于当前平移结束。
+  await stage.evaluate(element => {
+    const holdTravel = (event: Event): void => {
+      const target = event.target;
+      if (!(event instanceof TransitionEvent) || event.propertyName !== "transform" || !(target instanceof HTMLElement) ||
+        !target.matches(".ink-note-dialog") || target.closest(".ink-note-overlay")?.getAttribute("data-step") !== "center") return;
+      const animation = target.getAnimations().find(candidate =>
+        candidate instanceof CSSTransition && candidate.transitionProperty === "transform");
+      const duration = animation?.effect?.getTiming().duration;
+      if (animation === undefined || typeof duration !== "number") return;
+      element.removeEventListener("transitionrun", holdTravel);
+      animation.pause();
+      animation.currentTime = duration / 2;
+      element.setAttribute("data-note-paused-travel", String(target.getBoundingClientRect().x));
+    };
+    element.addEventListener("transitionrun", holdTravel);
+  });
+  await opener.click();
+  await expect(stage).toHaveAttribute("data-note-paused-travel", /^\d/, { timeout: 5_000 });
+  const partialX = Number(await stage.getAttribute("data-note-paused-travel"));
+  expect(partialX).toBeLessThan(origin.x);
+  expect(partialX).toBeGreaterThan(travel[4]!.x);
+  await expect(overlay).toHaveAttribute("data-step", "center");
+  await expect(overlay).toHaveAttribute("data-ready", "false");
+  await page.keyboard.press("Escape");
+  await expect(overlay).toHaveAttribute("data-step", "source");
+  await expect(overlay).toHaveCount(0);
+  await expect(opener).toBeFocused();
+
+  await sidebar.getByRole("button", { name: "收起资源", exact: true }).click();
+  const addExit = await motion("add-exit");
+  expect(addExit[2]!.inert).toBe(true);
+  expect(addExit[2]!.opacity).toBeGreaterThan(0);
+  expect(addExit[4]!.x).toBeGreaterThan(viewportWidth);
+  await expect(addNote).toHaveCount(0);
+  expect(await readFixtureSnapshots(page)).toHaveLength(0);
+});
+
+test("可视化笔记的格式与两种网页链接保存后原样恢复", async ({ page }) => {
+  const graph = await openInkWorkspace(page);
+  const resource = graph.nodes[0]?.resources[1];
+  if (resource === undefined) throw new Error("缺少节点资源链接夹具");
+  const manualUrl = "https://MANUAL.example.test/guide?view=compact&keep=1#chapter";
+  const externalHosts = new Set([new URL(resource.url).hostname, new URL(manualUrl).hostname]);
+  const unexpectedNavigations: string[] = [];
+  // 即使真实锚点的默认行为意外落到浏览器，也拦截两个夹具站点，避免访问网络。
+  await page.context().route(url => externalHosts.has(url.hostname), async route => {
+    unexpectedNavigations.push(route.request().url());
+    await route.abort("blockedbyclient");
+  });
+  const codeText = /function study\(\) \{\n {2}return 1;\n\x60{3}\n\}/;
+  const savedLink = "[data-ink-note-link]";
+  await page.locator('[data-ink-node="workspace-node-0"]').getByRole("heading").click();
+  const notesTab = page.getByRole("tab", { name: "笔记", exact: true });
+  await notesTab.click();
+  await page.locator("[data-ink-note-add]").click();
+  const newNote = page.getByRole("dialog", { name: "新建笔记", exact: true });
+  const editor = newNote.getByRole("textbox", { name: "正文", exact: true });
+  const toolbar = newNote.getByRole("toolbar", { name: "笔记格式", exact: true });
+  const title = newNote.getByRole("textbox", { name: "标题", exact: true });
+  const description = newNote.getByRole("textbox", { name: "说明", exact: true });
+  for (const element of [title, description, newNote.locator(".ink-note-editor__body"), newNote.getByRole("button", { name: "完成", exact: true })]) {
+    await expect(element).toHaveCSS("border-top-width", "0px");
+  }
+  const noteTitle = "可视化学习笔记", noteDescription = "Markdown 摘录与资料链接";
+  await title.fill(noteTitle);
+  await description.fill(noteDescription);
+  await editor.fill("学习记录");
+  const beforeDraftSave = await readStoredWorkspace(page);
+  const expectUnchangedDraft = async (body: string | null) => {
+    await expect(newNote).toBeVisible();
+    await expect(title).toHaveValue(noteTitle);
+    await expect(description).toHaveValue(noteDescription);
+    expect(await editor.textContent()).toBe(body);
+    expect(await readStoredWorkspace(page)).toEqual(beforeDraftSave);
+  };
+  const headingTool = toolbar.getByRole("button", { name: "标题级别", exact: true });
+  const headingOptions = toolbar.getByRole("group", { name: "标题级别", exact: true });
+  await expect(headingTool.locator('[data-icon="heading"]')).toBeVisible();
+  await headingTool.click();
+  await expect(headingOptions).toBeVisible();
+  // 首次外点位于中央笔记表面之外，标题浮层须独占事件，不能顺带提交父草稿。
+  await page.locator(".ink-note-overlay").click({ position: { x: 8, y: 8 } });
+  await expect(headingOptions).toHaveCount(0);
+  await expect(headingTool).toBeFocused();
+  await expectUnchangedDraft("学习记录");
+  await headingTool.click();
+  await headingOptions.getByRole("button", { name: "二级标题", exact: true }).click();
+  await expect(editor.getByRole("heading", { name: "学习记录", level: 2 })).toBeVisible();
+  await expect(editor).toBeFocused();
+  await page.keyboard.press("End");
+  await page.keyboard.press("Enter");
+
+  // 直接使用呈现后的编辑区和工具栏；按 Enter 自动续号，代码块保留换行与缩进。
+  await toolbar.getByRole("button", { name: "有序列表", exact: true }).click();
+  await expect(editor).toBeFocused();
+  await page.keyboard.insertText("第一步");
+  await page.keyboard.press("Enter");
+  await page.keyboard.insertText("第二步");
+  await expect(editor.locator("ol > li")).toHaveText(["第一步", "第二步"]);
+  await page.keyboard.press("Enter");
+  await page.keyboard.press("Enter");
+  await toolbar.getByRole("button", { name: "代码块", exact: true }).click();
+  await expect(editor).toBeFocused();
+  await page.keyboard.insertText("function study() {");
+  await page.keyboard.press("Enter");
+  await page.keyboard.insertText("  return 1;");
+  await page.keyboard.press("Enter");
+  await page.keyboard.insertText("\x60".repeat(3));
+  await page.keyboard.press("Enter");
+  await page.keyboard.insertText("}");
+  await expect(editor.locator("pre")).toHaveText(codeText);
+  await page.keyboard.press("ControlOrMeta+Enter");
+
+  const linkTool = toolbar.getByRole("button", { name: "链接", exact: true });
+  const links = page.getByRole("dialog", { name: "插入链接", exact: true });
+  const addLink = links.getByRole("button", { name: "插入链接", exact: true });
+  const linkText = links.getByRole("textbox", { name: "链接文字", exact: true });
+  const linkUrl = links.getByRole("textbox", { name: "网页地址", exact: true });
+  const beforeLinkOutside = await editor.textContent();
+  await linkTool.click();
+  await expect(links).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(links).toHaveCount(0);
+  await expect(linkTool).toBeFocused();
+  await linkTool.click();
+  await linkUrl.fill("https://unused.example.test/draft");
+  // 子模态层覆盖视口；点在子窗空白只收起链接表单，父笔记继续保留未保存的正文。
+  await links.click({ position: { x: 8, y: 8 } });
+  await expect(links).toHaveCount(0);
+  await expect(linkTool).toBeFocused();
+  await expectUnchangedDraft(beforeLinkOutside);
+  await linkTool.click();
+  await links.getByRole("button", { name: "从节点资源选择", exact: true }).click();
+  await links.getByRole("combobox", { name: "节点资源", exact: true }).selectOption({ label: resource.title });
+  await linkText.fill("来源资料");
+  await addLink.click();
+  await expect(editor.locator(savedLink).filter({ hasText: "来源资料" })).toHaveAttribute("data-ink-note-link", resource.url);
+  await expect(editor).toBeFocused();
+  await page.keyboard.press("End");
+  await page.keyboard.press("Enter");
+
+  await linkTool.click();
+  await links.getByRole("button", { name: "手动输入", exact: true }).click();
+  await linkText.fill("手动参考");
+  await linkUrl.fill("mailto:fixture@example.test");
+  await addLink.click();
+  await expect(links.getByRole("alert")).toHaveText("链接地址无效，请检查或修改链接。");
+  await expect(editor.locator(savedLink)).toHaveCount(1);
+  await linkUrl.fill(manualUrl);
+  await addLink.click();
+  await expect(editor.locator(savedLink).filter({ hasText: "手动参考" })).toHaveAttribute("data-ink-note-link", manualUrl);
+  await expect(editor).toBeFocused();
+  await page.keyboard.press("End");
+  await page.keyboard.press("Enter");
+
+  // 同一次剪贴板提供两种格式时，只从正文纯文本解释受支持的 Markdown。
+  await editor.evaluate(element => {
+    const clipboard = new DataTransfer();
+    clipboard.setData("text/plain", "**粘贴的重点**");
+    clipboard.setData("text/html", '<img src="data:,fixture" alt="不接受原始标记">');
+    element.dispatchEvent(new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData: clipboard }));
+  });
+  await expect(editor.locator("strong")).toHaveText("粘贴的重点");
+  await expect(editor.locator("img")).toHaveCount(0);
+  await page.keyboard.press("End");
+  await page.keyboard.press("Enter");
+
+  await toolbar.getByRole("button", { name: "插入表格", exact: true }).click();
+  const table = editor.getByRole("table");
+  await table.getByRole("columnheader").first().click();
+  await page.keyboard.insertText("项目");
+  await table.getByRole("cell").first().click();
+  await page.keyboard.insertText("复习");
+  const rowCount = await table.getByRole("row").count() + 1;
+  const columnCount = await table.getByRole("columnheader").count() + 1;
+  await toolbar.getByRole("button", { name: "在下方插入行", exact: true }).click();
+  await toolbar.getByRole("button", { name: "在右侧插入列", exact: true }).click();
+  await expect(table.getByRole("row")).toHaveCount(rowCount);
+  await expect(table.getByRole("columnheader")).toHaveCount(columnCount);
+  // 删除表头后首个剩余数据行成为新表头；保存时不为 GFM 凭空补回空行。
+  await table.getByRole("columnheader").first().click();
+  await toolbar.getByRole("button", { name: "删除行", exact: true }).click();
+  await expect(table.getByRole("row")).toHaveCount(rowCount - 1);
+  await expect(table.getByRole("columnheader").first()).toHaveText("复习");
+  await newNote.getByRole("button", { name: "完成", exact: true }).click();
+  await expect(newNote).toHaveCount(0);
+  const savedMarkdown = async (): Promise<string | undefined> => (await readStoredWorkspace(page))?.documents
+    .find(document => document.id === graph.id)?.nodes[0]?.notes?.[0]?.markdown;
+  await expect.poll(savedMarkdown).toContain(manualUrl);
+  const markdown = await savedMarkdown();
+  expect(markdown).toContain("## 学习记录");
+  expect(markdown).toContain(resource.url);
+  expect(markdown).toContain("  return 1;");
+  expect(markdown).not.toContain("mailto:");
+
+  // 删除来源资源再打开，已插入的 URL 快照和可编辑结构都仍存在。
+  await page.getByRole("tab", { name: "资源", exact: true }).click();
+  const resourceCard = page.locator(`[data-ink-resource="${resource.id}"]`);
+  await resourceCard.click({ button: "right" });
+  await page.getByRole("menuitem", { name: "删除资源", exact: true }).click();
+  await expect(resourceCard).toHaveCount(0);
+  await expect.poll(async () => (await readStoredWorkspace(page))?.documents.find(document => document.id === graph.id)
+    ?.nodes[0]?.resources.some(item => item.id === resource.id)).toBe(false);
+  await notesTab.click();
+  await page.locator("[data-ink-note-open]").click();
+  const dialog = page.getByRole("dialog", { name: "笔记", exact: true });
+  const reopened = dialog.getByRole("textbox", { name: "正文", exact: true });
+  await expect(reopened.getByRole("heading", { name: "学习记录", level: 2 })).toBeVisible();
+  await expect(reopened.locator("ol > li")).toHaveText(["第一步", "第二步"]);
+  await expect(reopened.locator("pre")).toHaveText(codeText);
+  await expect(reopened.getByRole("row")).toHaveCount(rowCount - 1);
+  await expect(reopened.getByRole("columnheader")).toHaveCount(columnCount);
+  await expect(reopened.getByRole("columnheader").first()).toHaveText("复习");
+  await expect(reopened.locator("strong")).toHaveText("粘贴的重点");
+  const resourceLink = reopened.getByRole("link", { name: "来源资料", exact: true });
+  const manualLink = reopened.getByRole("link", { name: "手动参考", exact: true });
+  const openCalls = () => page.evaluate(() => window.__WAYFINDER_E2E__.openCalls());
+  for (const [anchor, original] of [[resourceLink, resource.url], [manualLink, manualUrl]] as const) {
+    await expect(anchor).toHaveAttribute("data-ink-note-link", original);
+    await expect(anchor).toHaveAttribute("href", new URL(original).href);
+    await expect(anchor).toHaveAttribute("target", "_blank");
+    await expect(anchor).toHaveAttribute("rel", "noopener noreferrer");
+  }
+  expect(await openCalls()).toEqual([]);
+  const beforeLinkOpen = await readStoredWorkspace(page);
+
+  const resourceOpen = [new URL(resource.url).href, "_blank", "noopener,noreferrer"];
+  const manualOpen = [new URL(manualUrl).href, "_blank", "noopener,noreferrer"];
+  await reopened.focus();
+  await expect(reopened).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(resourceLink).toBeFocused();
+  await page.keyboard.press("Enter");
+  expect(await openCalls()).toEqual([resourceOpen]);
+  await manualLink.click();
+  expect(await openCalls()).toEqual([resourceOpen, manualOpen]);
+  // 隔离模式下的空窗口句柄不代表打开失败，更不能据此判定目标页面失效。
+  await expect(dialog.getByRole("alert")).toHaveCount(0);
+
+  await page.evaluate(() => {
+    const fixtureOpen = window.open;
+    window.open = (...args: Parameters<typeof window.open>) => {
+      window.open = fixtureOpen;
+      fixtureOpen(...args);
+      throw new Error("夹具模拟浏览器拒绝打开");
+    };
+  });
+  await manualLink.click();
+  await expect(dialog.getByRole("alert")).toHaveText("浏览器无法打开链接。请重试或检查网址是否已变更。");
+  expect(await openCalls()).toEqual([resourceOpen, manualOpen, manualOpen]);
+  await manualLink.click();
+  await expect(dialog.getByRole("alert")).toHaveCount(0);
+  expect(await openCalls()).toEqual([resourceOpen, manualOpen, manualOpen, manualOpen]);
+
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  expect(await readStoredWorkspace(page)).toEqual(beforeLinkOpen);
+  expect(await readFixtureSnapshots(page)).toHaveLength(0);
+  expect(unexpectedNavigations).toEqual([]);
+});
+
+test("访客窄屏下替换节点资源后，笔记及原链接仍可操作", async ({ page }) => {
+  await page.setViewportSize({ width: 375, height: 780 });
+  const graph = await openInkWorkspace(page);
+  const original = graph.nodes[0], resource = original?.resources[0];
+  if (original === undefined || resource === undefined) throw new Error("缺少节点资源夹具");
+  const title = "重搜前的个人笔记";
+  const node = page.locator(`[data-ink-node="${original.id}"]`).getByRole("heading");
+  const notesTab = page.getByRole("tab", { name: "笔记", exact: true });
+  const finish = (editor: Locator) => editor.getByRole("button", { name: "完成", exact: true });
+  const storedNode = async () => (await readStoredWorkspace(page))?.documents
+    .find(document => document.id === graph.id)?.nodes.find(item => item.id === original.id);
+  const withinViewport = (element: Element) => {
+    const { left, right } = element.getBoundingClientRect();
+    return left >= -1 && right <= window.innerWidth + 1 && element.scrollWidth <= element.clientWidth + 1;
+  };
+  await expect(page.getByRole("button", { name: "登录", exact: true })).toBeVisible();
+  await node.click();
+  await notesTab.click();
+  await page.getByRole("button", { name: "新建笔记", exact: true }).click();
+  const draft = page.getByRole("dialog", { name: "新建笔记", exact: true });
+  await expect(finish(draft)).toBeInViewport({ ratio: 1 });
+  expect(await draft.evaluate(element => getComputedStyle(element).transitionDuration)).toBe("0s");
+  await draft.getByRole("textbox", { name: "标题", exact: true }).fill(title);
+  await draft.getByRole("button", { name: "链接", exact: true }).click();
+  const linkForm = page.getByRole("dialog", { name: "插入链接", exact: true });
+  await linkForm.getByRole("button", { name: "从节点资源选择", exact: true }).click();
+  await linkForm.getByRole("combobox", { name: "节点资源", exact: true }).selectOption({ label: resource.title });
+  await linkForm.getByRole("button", { name: "插入链接", exact: true }).click();
+  await finish(draft).click();
+  await expect(draft).toHaveCount(0);
+  const notes = (await storedNode())?.notes;
+  expect(notes).toEqual([{ id: expect.any(String), title, description: "", markdown: `[${resource.title}](${resource.url})` }]);
+  await page.getByRole("button", { name: "收起资源", exact: true }).click();
+
+  // 真实预览与应用替换走假检索的完整流；只有资源换成新结果，不能连带改写笔记。
+  await openInkNodeMenu(page, original.id);
+  await page.getByRole("menuitem", { name: "重新搜索此节点", exact: true }).click();
+  await expect.poll(() => readFixtureSnapshots(page)).toMatchObject([{ nodeSearch: { node: { id: original.id } } }]);
+  await emitFixtureEvents(page, 0, createInkMotionEvents().map((_event, index) => index));
+  await page.evaluate(() => window.__WAYFINDER_E2E__.close(0));
+  const preview = page.getByRole("dialog", { name: "重搜预览", exact: true });
+  await preview.getByRole("button", { name: "应用替换", exact: true }).click();
+  await expect(preview).toHaveCount(0);
+  await expect.poll(async () => (await storedNode())?.resources[0]?.url).toBe("https://node-0.example.com/resource-0");
+  expect((await storedNode())?.resources.map(item => item.url)).not.toContain(resource.url);
+  expect((await storedNode())?.notes).toEqual(notes);
+
+  // 节点菜单已选中目标；预览退场后窄屏侧栏会遮住图节点，直接使用笔记标签。
+  await notesTab.click();
+  const notesPanel = page.getByRole("tabpanel", { name: "笔记", exact: true });
+  expect(await notesPanel.evaluate(withinViewport)).toBe(true);
+  await notesPanel.getByRole("button", { name: title, exact: true }).click();
+  const reopened = page.getByRole("dialog", { name: "笔记", exact: true });
+  await expect(reopened.getByRole("link", { name: resource.title, exact: true })).toHaveAttribute("href", resource.url);
+  expect(await reopened.locator(".ink-note-dialog__contents").evaluate(withinViewport)).toBe(true);
+  await expect(finish(reopened)).toBeInViewport({ ratio: 1 });
+  await finish(reopened).click();
+  await expect(reopened).toHaveCount(0);
+  expect(await readFixtureSnapshots(page)).toHaveLength(1);
+  expect(await page.evaluate(() => window.__WAYFINDER_E2E__.openCalls())).toHaveLength(0);
+});
+
+test("笔记首次落盘失败后保留原草稿，显式重试只留下一个撤销事件", async ({ page }) => {
+  const title = "首次落盘失败的笔记", description = "失败后保留这段说明", content = "原始笔记正文，重试时必须保留";
+  await page.addInitScript(noteTitle => {
+    const put = IDBObjectStore.prototype.put;
+    let pendingFailure = true;
+    // 只中止第一次包含此笔记的真实 IndexedDB 事务，允许初始化和原快照重试正常完成。
+    IDBObjectStore.prototype.put = function (value: unknown, key?: IDBValidKey): IDBRequest<IDBValidKey> {
+      const request = put.call(this, value, key);
+      if (pendingFailure && this.name === "workspace" && key === "current" && JSON.stringify(value).includes(noteTitle)) {
+        pendingFailure = false;
+        this.transaction.abort();
+      }
+      return request;
+    };
+  }, title);
+  const graph = await openInkWorkspace(page);
+  await page.locator('[data-ink-node="workspace-node-0"]').getByRole("heading").click();
+  await page.getByRole("tab", { name: "笔记", exact: true }).click();
+  await page.locator("[data-ink-note-add]").click();
+  const note = page.getByRole("dialog", { name: "新建笔记", exact: true });
+  const titleField = note.getByRole("textbox", { name: "标题", exact: true });
+  const descriptionField = note.getByRole("textbox", { name: "说明", exact: true });
+  const body = note.getByRole("textbox", { name: "正文", exact: true });
+  await titleField.fill(title);
+  await descriptionField.fill(description);
+  await body.fill(content);
+  await note.getByRole("button", { name: "完成", exact: true }).click();
+
+  const storedNotes = async () => (await readStoredWorkspace(page))?.documents.find(document => document.id === graph.id)?.nodes[0]?.notes ?? [];
+  await expect(note.getByRole("alert")).toContainText("笔记未保存");
+  await expect(titleField).toHaveValue(title);
+  await expect(descriptionField).toHaveValue(description);
+  await expect(body).toHaveText(content);
+  await expect(titleField).not.toBeEditable();
+  await expect(descriptionField).not.toBeEditable();
+  await expect(body).not.toBeEditable();
+  expect(await storedNotes()).toEqual([]);
+
+  await titleField.click();
+  await page.keyboard.insertText("不得加入本次重试");
+  await expect(titleField).toHaveValue(title);
+  await note.getByRole("button", { name: "重试保存", exact: true }).click();
+  await expect(note).toHaveCount(0);
+  await expect.poll(storedNotes).toEqual([{ id: expect.any(String), title, description, markdown: content }]);
+  await openInkUndo(page);
+  const events = page.getByRole("region", { name: "撤销记录", exact: true }).locator("[data-ink-undo-event]");
+  await expect(events).toHaveCount(1);
+  await expect(events.getByRole("button", { name: `撤销：新建笔记 ${title}`, exact: true })).toBeVisible();
+  expect(await readFixtureSnapshots(page)).toHaveLength(0);
+});
+
 /** 节点移动仅保存最新位置，关系仍由真实锚点拉线和右键菜单修改。 */
 test("正式入口移动不入撤销、连线编辑与布局持久化保持原能力", async ({ page }) => {
   const pageErrors: string[] = [], warnings: string[] = [];

@@ -18,6 +18,11 @@
 .ink-group-form input, .ink-group-form textarea, .ink-group-form select, .ink-group-actions input { width: 100%; min-width: 0; padding: 9px 12px; border: 1px solid #ffffffa6; border-radius: 12px; background: #ffffff66; color: #242420; font: inherit; }
 .ink-group-form textarea { min-height: 64px; resize: vertical; }
 .ink-group-form small { flex: 1 0 100%; color: #62625d; line-height: 1.6; font-size: 11px; }
+.ink-group-copy-notes { flex-basis: 100%; display: grid; gap: 3px; min-width: 0; margin-top: 8px; }
+.ink-group-copy-notes label { display: flex; align-items: center; gap: 7px; min-height: 24px; font-size: 12px; }
+.ink-group-copy-notes input[type="checkbox"] { width: 15px; height: 15px; padding: 0; }
+.ink-group-copy-notes small { color: #62625d; font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
+@media (pointer: coarse) { .ink-group-copy-notes label { min-height: 44px; } }
 .ink-group-workspace { margin-top: 18px; }
 /* 组内页不再叠放列表；昵称门禁只提供前往统一设置的轻提示。 */
 .ink-group-nickname-hint { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; color: #62625d; font-size: 12px; }
