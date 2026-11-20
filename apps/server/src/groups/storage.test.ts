@@ -5,7 +5,7 @@
 import { createHash } from "node:crypto";
 import type { PoolConnection } from "mysql2/promise";
 import { describe, expect, it, vi } from "vitest";
-import { EditableGraphSchema, GroupGraphActionSchema } from "@wayfinder/contracts";
+import { EditableGraphSchema } from "@wayfinder/contracts";
 import { createGraphHistory, storeGraphHistory } from "@wayfinder/contracts/graph-history";
 import { AccountDatabase, databaseConfigFromUrl, databaseOperation } from "../accounts/database.js";
 import { GroupAccessError } from "./errors.js";
@@ -37,9 +37,10 @@ const sourceDocument = () => EditableGraphSchema.parse({
 });
 
 /** 只替换 SQL 执行层，双向复制仍经过实际版本校验、历史重放、写入和回执逻辑。 */
-function copyFixture() {
+function copyFixture({ sharedNotes = true } = {}) {
   const graphKey = (id: string): string => `g_${createHash("sha256").update(id).digest("hex")}`;
-  const source = sourceDocument(), groupSource = { ...source, id: "shared-source" };
+  const source = sourceDocument(), groupSource = { ...structuredClone(source), id: "shared-source" };
+  if (!sharedNotes) for (const node of groupSource.nodes) delete node.notes;
   const group = { groupId: "fixture_group", ownerUserId: "owner", name: "学习组", description: "", revision: 1 };
   const members = new Set(["owner", "member"]);
   const record = { revision: 1, status: "active", originalIndex: null };
@@ -205,14 +206,35 @@ describe("小组存储适配与事务错误", () => {
     } finally { await f.cleanup(); }
   });
 
-  it("共享协议允许已有笔记的修改和删除，拒绝直接新建与伪造操作种类", () => {
-    const document = sourceDocument();
-    const context = { groupId: "fixture_group", mutationId: "client-edit" };
-    const edit = { ...context, action: "edit", graphId: document.id, expectedRevision: 1,
-      before: document, after: document, kind: "note.edit", subject: "" };
-    expect(GroupGraphActionSchema.safeParse(edit).success).toBe(true);
-    expect(GroupGraphActionSchema.safeParse({ ...edit, kind: "note.delete" }).success).toBe(true);
-    expect(GroupGraphActionSchema.safeParse({ ...edit, kind: "note.add" }).success).toBe(false);
-    expect(GroupGraphActionSchema.safeParse({ ...context, action: "create", document }).success).toBe(false);
+  it("普通组员新增首条，旧基线并发新增保留两条，本人撤销和回执按动作隔离", async () => {
+    const f = copyFixture({ sharedNotes: false }), sourceRow = f.personalRows.get(f.personalKey);
+    const before = f.groupSource;
+    const memberNote = { ...note, id: "member-note" }, ownerNote = { ...note, id: "owner-note" };
+    const add = (content: typeof note, mutationId: string) => ({ action: "edit" as const, kind: "note.add" as const,
+      groupId: f.groupId, graphId: before.id, expectedRevision: 1, before, mutationId, subject: content.title,
+      after: { ...before, nodes: before.nodes.map(node => ({ ...node, notes: [content] })) } });
+    const memberAdd = add(memberNote, "member-add");
+    try {
+      await expect(f.storage.write("outsider", memberAdd, operation())).rejects.toMatchObject({ code: "GROUP_FORBIDDEN" });
+      expect(await f.storage.receipt("outsider", memberAdd.mutationId, operation())).toMatchObject({ applied: false });
+      const stored = await f.storage.write("member", memberAdd, operation());
+      expect(stored.workspace.graphs[0]?.document.nodes[0]?.notes).toEqual([memberNote]);
+      const converged = await f.storage.write("owner", add(ownerNote, "owner-add"), operation());
+      const graph = converged.workspace.graphs[0];
+      if (graph === undefined || graph.history.events[0] === undefined) throw new Error("缺少新增笔记事件");
+      expect(graph.document.nodes[0]?.notes).toEqual([memberNote, ownerNote]);
+      expect(graph.history.events.map(event => [event.actorUserId, event.kind])).toEqual([["member", "note.add"], ["owner", "note.add"]]);
+      await expect(f.storage.write("owner", add(memberNote, "reused-note-id"), operation())).rejects.toMatchObject({ code: "GROUP_CONFLICT" });
+      expect(await f.storage.receipt("owner", "reused-note-id", operation())).toMatchObject({ applied: false });
+      expect(await f.storage.write("member", memberAdd, operation())).toEqual(converged);
+      expect(await f.storage.receipt("member", memberAdd.mutationId, operation())).toMatchObject({ applied: true, graphId: before.id });
+      expect(await f.storage.receipt("owner", memberAdd.mutationId, operation())).toMatchObject({ applied: false });
+      const undo = { action: "undo" as const, groupId: f.groupId, graphId: before.id, expectedRevision: graph.revision,
+        eventId: graph.history.events[0].id, mutationId: "undo-added-note" };
+      await expect(f.storage.write("owner", undo, operation())).rejects.toMatchObject({ code: "GROUP_FORBIDDEN" });
+      const undone = await f.storage.write("member", undo, operation());
+      expect(undone.workspace.graphs[0]?.document.nodes[0]?.notes).toEqual([ownerNote]);
+      expect(f.personalRows.get(f.personalKey)).toBe(sourceRow);
+    } finally { await f.cleanup(); }
   });
 });

@@ -126,6 +126,41 @@ describe("共享图确定性差异合并", () => {
       changed(regenerated, copy => { copy.nodes[0]!.noteGeneration = "forged"; }))).toEqual(regenerated);
   });
 
+  it("在缺省笔记集合的节点新增首条，并发新增不同笔记保留全部内容及后续节点字段", () => {
+    const before = graph();
+    const first = changed(before, copy => { copy.nodes[0]!.notes = [note("first")]; });
+    const second = changed(before, copy => { copy.nodes[0]!.notes = [note("second")]; });
+    expect(mergeGroupEdit(before, before, first, "note.add")).toEqual(first);
+    const current = changed(first, copy => { copy.nodes[0]!.resources.push(resource("extra", undefined, 2)); });
+    const merged = mergeGroupEdit(current, before, second, "note.add");
+    expect(merged.nodes[0]?.notes).toEqual([note("first"), note("second")]);
+    expect(merged.nodes[0]?.resources).toEqual(current.nodes[0]?.resources);
+    expect(merged.nodes[1]).toEqual(current.nodes[1]);
+    expect(before.nodes[0]?.notes).toBeUndefined();
+    rejected(() => mergeGroupEdit(current, before, first, "note.add"), "GROUP_CONFLICT");
+    const regenerated = changed(before, copy => { copy.nodes[0]!.noteGeneration = "new-generation"; });
+    rejected(() => mergeGroupEdit(regenerated, before, second, "note.add"), "GROUP_CONFLICT");
+    const deleted = changed(before, copy => { copy.nodes.shift(); delete copy.positions.n1; });
+    rejected(() => mergeGroupEdit(deleted, before, second, "note.add"), "GROUP_CONFLICT");
+  });
+
+  it("一条显式新增只能添加到原有节点，拒绝夹带资源、跨节点搬迁及空白记录", () => {
+    const before = changed(graph(), copy => { copy.nodes[0]!.notes = [note("original")]; });
+    const added = changed(before, copy => { copy.nodes[1]!.notes = [note("second")]; });
+    expect(mergeGroupEdit(before, before, added, "note.add")).toEqual(added);
+    rejected(() => mergeGroupEdit(before, before, added, "note.edit"), "GROUP_CONSTRAINT");
+    rejected(() => mergeGroupEdit(before, before, added, "resource.add"), "GROUP_CONSTRAINT");
+    const wrongScope = [
+      changed(before, copy => { copy.nodes[0]!.notes = []; copy.nodes[1]!.notes = [note("original")]; }),
+      changed(added, copy => { copy.nodes[1]!.notes!.push(note("third")); }),
+      changed(added, copy => { copy.nodes[0]!.resources.push(resource("extra", undefined, 2)); }),
+      changed(added, copy => { copy.nodes[1]!.notes = [{ id: "blank", title: " ", description: "", markdown: "\n" }]; }),
+      changed(before, copy => { copy.nodes.push({ ...copy.nodes[1]!, id: "n3", notes: [note("new-node-note")] }); }),
+      before,
+    ];
+    for (const after of wrongScope) rejected(() => mergeGroupEdit(before, before, after, "note.add"), "GROUP_CONSTRAINT");
+  });
+
   it("普通组图新建、未授权笔记标识与跨节点搬迁均不能引入组内笔记", () => {
     const before = changed(graph(), copy => { copy.nodes[0]!.notes = [note("a")]; });
     const injected = changed(before, copy => { copy.nodes[0]!.notes!.push(note("forged")); });

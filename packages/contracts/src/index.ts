@@ -1560,7 +1560,7 @@ const groupGraphTargetFields = { ...groupTargetFields, graphId: cloudGraphIdSche
 export const GroupGraphActionSchema = z.discriminatedUnion("action", [
   z.strictObject({ action: z.literal("create"), ...groupTargetFields, document: EditableGraphSchema }),
   z.strictObject({ action: z.literal("edit"), ...groupGraphTargetFields, before: EditableGraphSchema, after: EditableGraphSchema,
-    kind: WorkspaceHistoryKindSchema.exclude(["graph.search", "node.search", "note.add"]), subject: z.string() }),
+    kind: WorkspaceHistoryKindSchema.exclude(["graph.search", "node.search"]), subject: z.string() }),
   // 搜索正文必须与服务端完成收据绑定，不能利用普通整图编辑绕过可信来源与预览版本检查。
   z.strictObject({ action: z.literal("applySearch"), ...groupGraphTargetFields, receipt: GroupSearchReceiptSchema,
     result: ResultGraphSchema, mode: z.enum(["append", "replace"]), positions: EditableGraphSchema.shape.positions.optional(),
@@ -1573,7 +1573,7 @@ export const GroupGraphActionSchema = z.discriminatedUnion("action", [
     includeNotes: z.boolean().optional() }),
   z.strictObject({ action: z.literal("copyOut"), ...groupGraphTargetFields, includeNotes: z.boolean().optional() }),
 ]).superRefine((value, context) => {
-  // 笔记通过显式复制进入组图；普通新建组图不能直接附带笔记。
+  // 新建组图与在已有节点上新建笔记是独立动作；直接创建图时不能夹带笔记。
   if (value.action === "create" && value.document.nodes.some(node => (node.notes?.length ?? 0) > 0)) {
     context.addIssue({ code: "custom", message: "新建组图不能直接携带笔记" });
   }

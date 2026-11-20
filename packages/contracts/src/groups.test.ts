@@ -83,6 +83,19 @@ describe("D12 管理与图动作", () => {
     }
   });
 
+  it("允许在已有组图节点新增笔记，直接新建组图仍不能附带笔记或冒用作者", () => {
+    const before = EditableGraphSchema.parse({ ...document, nodes: [{ id: "node", title: "节点", description: "", nodeType: "primary",
+      layer: 0, status: "empty", resources: [], warnings: [] }] });
+    const note = { id: "new-note", title: "学习笔记", description: "", markdown: "任意保留的正文" };
+    const after = { ...before, nodes: before.nodes.map(node => ({ ...node, notes: [note] })) };
+    const target = { groupId: group.groupId, mutationId: "add-note" };
+    const input = { ...target, action: "edit", graphId: before.id, expectedRevision: 1, before, after, kind: "note.add", subject: note.title };
+    expect(GroupGraphActionSchema.parse(input)).toMatchObject({ action: "edit", kind: "note.add", after });
+    expect(GroupGraphActionSchema.safeParse({ ...input, actorUserId: "owner" }).success).toBe(false);
+    expect(GroupGraphActionSchema.safeParse({ ...target, action: "create", document: after }).success).toBe(false);
+    expect(GroupGraphActionSchema.safeParse({ ...target, action: "create", document: before }).success).toBe(true);
+  });
+
   it("手工动作不能提交搜索来源或范围；小组搜索目标与收据严格校验", () => {
     const edit = { action: "edit", groupId: group.groupId, mutationId: "edit", graphId: document.id, expectedRevision: 1,
       before: document, after: document, kind: "graph.update", subject: "修改" };

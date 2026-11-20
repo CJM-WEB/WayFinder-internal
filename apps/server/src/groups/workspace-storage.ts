@@ -207,7 +207,7 @@ export function createGroupWorkspaceStorage(database: AccountDatabase, options: 
             const sameVersion = input.expectedRevision === current.revision, matchesBefore = sameGraphContent(input.before, current.document);
             // 普通编辑只合并手工变化；搜索scope及来源只能由下面已验证收据的applySearch产生。
             if (sameVersion && !matchesBefore) throw new GroupAccessError("GROUP_CONFLICT");
-            const merged = mergeGroupEdit(current.document, input.before, input.after);
+            const merged = mergeGroupEdit(current.document, input.before, input.after, input.kind);
             const document = EditableGraphSchema.parse({ ...merged, createdAt: current.document.createdAt, updatedAt: now() });
             if (!sameGraphContent(current.document, document)) {
               const history = appendGroupHistory(current.history, current.document, document, { id: randomUUID(), occurredAt: document.updatedAt,

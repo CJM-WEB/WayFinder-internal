@@ -71,6 +71,8 @@ export async function installGroupFixture(page: Page, options: { nickname?: stri
     revision: 1, status: "active", originalIndex: null }], activeOrder: [privateDocument.id], deletedIds: [] };
   const requests: Array<{ path: string; body: unknown; proof: string | undefined }> = [];
   const receipts = new Map<string, GroupGraphReceiptResponse>();
+  const noteReceiptReads: string[] = [];
+  let dropNoteAddAcknowledgement = false, unconfirmedNoteAdd: string | null = null;
   let rejectedEdits = 0;
   let heldManagement: { action: "leave" | "dissolve"; started: () => void; released: Promise<void> } | undefined;
   let serial = 0;
@@ -159,6 +161,10 @@ export async function installGroupFixture(page: Page, options: { nickname?: stri
     }
     if (url.pathname === "/api/group-receipt") {
       const mutationId = url.searchParams.get("mutationId") ?? "";
+      if (mutationId === unconfirmedNoteAdd) {
+        noteReceiptReads.push(mutationId);
+        if (noteReceiptReads.length === 1) return route.abort("failed");
+      }
       return route.fulfill({ json: receipts.get(mutationId) ?? { mutationId, applied: false, groupId: null, graphId: null, personalGraphId: null } });
     }
     if (url.pathname !== "/api/groups" && url.pathname !== "/api/group-workspace") return route.fulfill({ status: 503, json: { code: "GROUP_UNAVAILABLE" } });
@@ -220,10 +226,16 @@ export async function installGroupFixture(page: Page, options: { nickname?: stri
     }
     if (action.action !== "copyOut") { remote.workspace.revision++; remote.details.group.revision = remote.workspace.revision; }
     receipts.set(action.mutationId, { mutationId: action.mutationId, applied: true, groupId: action.groupId, graphId: appliedGraphId, personalGraphId: personalGraph?.document.id ?? null });
+    if (dropNoteAddAcknowledgement && action.action === "edit" && action.kind === "note.add") {
+      // 权威快照先到达浏览器，只丢写确认和原操作的首次收据。
+      dropNoteAddAcknowledgement = false; unconfirmedNoteAdd = action.mutationId;
+      await publish(); return route.abort("failed");
+    }
     await publish(); return route.fulfill({ json: { workspace: remote.workspace, ...(personalGraph === undefined ? {} : { personalGraph }) } });
   });
   await page.emulateMedia({ reducedMotion: "reduce" });
-  return { groups, personal, requests,
+  return { groups, personal, requests, noteReceiptReads,
+    loseNextNoteAddAcknowledgement: () => { dropNoteAddAcknowledgement = true; },
     rejectNextEdit: () => { rejectedEdits++; },
     holdManagement(action: "leave" | "dissolve") {
       let started: () => void = () => {}, release: () => void = () => {};
@@ -238,6 +250,15 @@ export async function installGroupFixture(page: Page, options: { nickname?: stri
       const remote = groups[FIXTURE_GROUP]; if (!remote) throw new Error("固定小组缺失");
       const record = remote.workspace.graphs[0]; if (!record) throw new Error("固定图缺失");
       remote.workspace.graphs[0] = append(record, { ...record.document, nodes: record.document.nodes.map((node, index) => index === 0 ? { ...node, title } : node) }, OTHER_USER, title);
+      remote.workspace.revision++; remote.details.group.revision = remote.workspace.revision; await publish();
+    },
+    async replaceNodeGeneration(groupId: string, nodeId: string) {
+      const remote = groups[groupId], source = remote?.workspace.graphs[0];
+      if (remote === undefined || source === undefined || !source.document.nodes.some(node => node.id === nodeId)) throw new Error("固定节点缺失");
+      // 模拟重生成后复用节点 ID 的权威快照，旧编辑器只能按原代际识别自己的草稿。
+      const after = EditableGraphSchema.parse({ ...source.document, nodes: source.document.nodes.map(node =>
+        node.id === nodeId ? { ...node, noteGeneration: nextId() } : node) });
+      remote.workspace.graphs[0] = append(source, after, OTHER_USER, "替换节点", "graph.update");
       remote.workspace.revision++; remote.details.group.revision = remote.workspace.revision; await publish();
     },
   };

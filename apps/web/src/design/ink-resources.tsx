@@ -220,11 +220,12 @@ export default function InkResources({ graphId, node, language, visible, editabl
   const generation = node !== null && "noteGeneration" in node ? node.noteGeneration : undefined;
   const requested = useMemo<Selection | null>(() => !visible || graphId === null || node === null ? null
     : { owner: JSON.stringify([contextKey, graphId, node.id, generation]), contextKey, node,
-      canCreateNote: editable && contextWritable && !groupMode }, [visible, contextKey, graphId, node, generation, editable, contextWritable, groupMode]);
+      canCreateNote: editable && contextWritable }, [visible, contextKey, graphId, node, generation, editable, contextWritable]);
   useEffect(() => { moveCapture.current = null; }, [contextKey, graphId, node?.id]);
   const desired = useRef(requested);
   const panel = useRef<HTMLElement>(null);
   const noteAdd = useRef<HTMLButtonElement>(null);
+  const newNoteReturnFocus = useRef<string | null>(null);
   const tabsId = useId();
   const [display, setDisplay] = useState<Display | null>(() => requested === null ? null : { ...requested, phase: reduced ? "visible" : "preparing" });
   const [selection, setSelection] = useState<{ owner: string; tab: PanelTab } | null>(null);
@@ -237,13 +238,12 @@ export default function InkResources({ graphId, node, language, visible, editabl
   const sameOwner = visible && owner !== undefined && requested?.owner === owner;
   const interactive = sameOwner && display?.phase === "visible";
   const noteWritable = editable && contextWritable;
-  const noteCreatable = noteWritable && !groupMode;
   const activeEditor = sameOwner && editor?.owner === owner &&
     (editor.session.isNew || notes.some(note => note.id === editor.session.note.id)) ? editor : null;
   let recovery: InkNoteRecovery | undefined;
   // 只有本编辑器提交的组笔记动作可在遮罩内重试，复用原收据及冲突合并，不产生第二条写入。
   if (groupMode && activeEditor !== null && failedAction?.action.action === "edit" &&
-    failedAction.action.kind === "note.edit" && failedAction.action.graphId === graphId) {
+    failedAction.action.kind === (activeEditor.session.isNew ? "note.add" : "note.edit") && failedAction.action.graphId === graphId) {
     const pending = failedAction.action;
     const noteId = activeEditor.session.note.id;
     const readNote = (document: typeof pending.before) => document.nodes.find(target => target.id === activeEditor.nodeId)
@@ -272,6 +272,7 @@ export default function InkResources({ graphId, node, language, visible, editabl
   }
   // 回程先恢复位置，再恢复菜单与键盘交互；新笔记不能打断旧卡的归位。
   const panelInteractive = interactive && activeEditor === null && returning === null;
+  const newNoteTransferred = activeEditor?.session.isNew === true || returning?.owner === owner && returning?.session.isNew === true;
   const chooseTab = (next: PanelTab): void => {
     if (owner === undefined || next === tab) return;
     onTabChange?.();
@@ -279,7 +280,7 @@ export default function InkResources({ graphId, node, language, visible, editabl
   };
 
   const openEditor = (note: EditableNote | null, origin: HTMLElement, returnFocus: HTMLElement | null): void => {
-    if (!panelInteractive || owner === undefined || node === null || (note === null && !noteCreatable)) return;
+    if (!panelInteractive || owner === undefined || node === null || (note === null && !noteWritable)) return;
     const rect = origin.getBoundingClientRect();
     setSelection({ owner, tab: "notes" });
     setEditor({ owner, generation, nodeId: node.id, capture: edit.captureEdit(), session: {
@@ -294,6 +295,15 @@ export default function InkResources({ graphId, node, language, visible, editabl
     if (editor !== null && activeEditor === null) setEditor(null);
     if (returning !== null && returning.owner !== display?.owner) setReturning(null);
   }, [selection, display?.owner, editor, activeEditor, returning]);
+  useLayoutEffect(() => {
+    if (newNoteReturnFocus.current === null) return;
+    if (newNoteReturnFocus.current !== requested?.owner) { newNoteReturnFocus.current = null; return; }
+    // 收据恢复与回程结束可能隔一帧；只向同一节点重新启用后的当前按钮归还焦点。
+    if (panelInteractive && noteWritable && display?.canCreateNote && noteAdd.current !== null) {
+      newNoteReturnFocus.current = null;
+      noteAdd.current.focus({ preventScroll: true });
+    }
+  }, [requested?.owner, panelInteractive, noteWritable, display?.canCreateNote]);
   useEffect(() => {
     if (noteRequest === null) return;
     if (!visible || noteRequest.graphId !== graphId || noteRequest.nodeId !== node?.id ||
@@ -303,7 +313,7 @@ export default function InkResources({ graphId, node, language, visible, editabl
     }
     if (!interactive) return;
     const anchor = tab === "notes" ? noteAdd.current : panel.current?.querySelector<HTMLElement>(".ink-resources__header");
-    if (anchor != null) openEditor(null, anchor, noteAdd.current);
+    if (anchor != null) openEditor(null, anchor, null);
     onNoteRequestHandled?.();
   }, [noteRequest, interactive, visible, graphId, node?.id, generation, contextKey, tab]);
 
@@ -389,15 +399,15 @@ export default function InkResources({ graphId, node, language, visible, editabl
     {notesEnabled ? <div className="ink-resources__mode ink-notes" data-kind="notes" role="tabpanel"
       id={`${tabsId}-panel-notes`} aria-labelledby={`${tabsId}-notes`} inert={tab !== "notes"} aria-hidden={tab !== "notes"}
       onContextMenu={event => {
-        if (!panelInteractive || !noteCreatable || onNoteContext === undefined) return;
+        if (!panelInteractive || !noteWritable || onNoteContext === undefined) return;
         event.preventDefault(); event.stopPropagation();
         onNoteContext(null, { x: event.clientX, y: event.clientY });
       }}>
-      {/* 退场沿用已呈现的权限快照，交互门禁仍即时关闭，避免按钮在动画开始前卸载。 */}
-      {display.canCreateNote ? <button type="button" className="ink-resources__item ink-resources__more ink-notes__add" ref={noteAdd} data-ink-note-add
-        data-note-transferred={(activeEditor?.session.isNew || returning?.owner === owner && returning?.session.isNew) || undefined}
-        style={itemStyle(1, 2)} disabled={!panelInteractive || !noteCreatable}
-        onClick={event => openEditor(null, event.currentTarget, event.currentTarget)}>{labels.add}</button> : null}
+      {/* 保存或短暂断线不卸载借出的来源按钮，回程才能把焦点归还同一入口。 */}
+      {display.canCreateNote || newNoteTransferred ? <button type="button" className="ink-resources__item ink-resources__more ink-notes__add" ref={noteAdd} data-ink-note-add
+        data-note-transferred={newNoteTransferred || undefined}
+        style={itemStyle(1, 2)} disabled={!panelInteractive || !noteWritable}
+        onClick={event => openEditor(null, event.currentTarget, null)}>{labels.add}</button> : null}
       {notes.length === 0 ? <p className="ink-resources__item ink-resources__empty" style={itemStyle(2, 3)} role="status">{labels.empty}</p> :
         <div className="ink-resources__list" role="list" aria-label={labels.tab}>
           {notes.map(note => <article className="ink-resources__item ink-resources__card ink-notes__card" role="listitem"
@@ -427,7 +437,10 @@ export default function InkResources({ graphId, node, language, visible, editabl
   <InkNoteDialog key={contextKey} session={activeEditor?.session ?? null} language={language} writable={noteWritable}
     {...(recovery === undefined ? {} : { recovery })}
     resources={display !== null && "resources" in display.node ? display.node.resources : []}
-    onClose={() => { setReturning(activeEditor); setEditor(null); }} onReturn={() => setReturning(null)}
+    onClose={() => { setReturning(activeEditor); setEditor(null); }} onReturn={() => {
+      if (returning?.session.isNew) newNoteReturnFocus.current = returning.owner;
+      setReturning(null);
+    }}
     onSave={async (session, saved) => {
       if (activeEditor?.session !== session || !noteWritable) return false;
       const retrying = workspacePersistenceStore.getState().error === "save";
@@ -436,9 +449,9 @@ export default function InkResources({ graphId, node, language, visible, editabl
         if (target === undefined || target.noteGeneration !== activeEditor.generation) throw new Error("笔记目标已失效");
         const { id, ...fields } = saved;
         const exists = target.notes?.some(note => note.id === id) ?? false;
-        // 本地写入失败时编辑仍在内存中；以同一笔记 ID 重试，不重复新建或记录同值历史。
-        if (exists) return updateNote(graph, target.id, id, fields);
-        if (!session.isNew || groupMode) throw new Error("笔记目标已失效");
+        // 个人落盘失败后可重试内存同一草稿；组内创建确认丢失则只按原操作收据恢复。
+        if (exists && (!groupMode || !session.isNew)) return updateNote(graph, target.id, id, fields);
+        if (!session.isNew || exists) throw new Error("笔记目标已失效");
         return addNote(graph, target.id, fields, id);
       });
       if (!accepted || workspaceContextStore.getState().contextKey !== contextKey) return false;

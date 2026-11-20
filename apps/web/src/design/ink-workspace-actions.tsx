@@ -155,9 +155,11 @@ export default function InkWorkspaceActions({ target, language, enabled, allowCr
     if (!interactive || !menu.open || !noteWritable || onCreateNote === undefined || (held?.kind !== "node" && held?.kind !== "notes")) return;
     const state = workspaceStore.getState();
     const latest = state.documents.find(document => document.id === held.graphId)?.nodes.find(item => item.id === held.nodeId);
+    const latestContext = workspaceContextStore.getState();
     // 菜单留存期间全图替换可重用节点标识；只有原代际仍存在才把新建交给笔记面板。
     if (state.currentId !== held.graphId || latest === undefined || latest.noteGeneration !== held.noteGeneration
-      || workspaceContextStore.getState().contextKey !== contextKey || workspaceContextStore.getState().kind !== "personal") return;
+      || latestContext.contextKey !== contextKey
+      || latestContext.kind === "group" && (!latestContext.writable || latestContext.busy || latestContext.failedAction !== null)) return;
     onClose();
     onCreateNote(held.nodeId);
   };
@@ -291,7 +293,7 @@ export default function InkWorkspaceActions({ target, language, enabled, allowCr
       </> : held.kind === "node" ? <>
         {option(messages.editor.editNode, () => openDialog("node.edit"), !writable || node === undefined)}
         {option(messages.editor.addResource, () => openDialog("resource.add"), !writable || node === undefined)}
-        {groupMode || onCreateNote === undefined ? null : option(messages.notes.add, createNote, !noteWritable)}
+        {onCreateNote === undefined ? null : option(messages.notes.add, createNote, !noteWritable)}
         {option(messages.research.startNode, () => startResearch(held.nodeId), !writable || (groupMode ? groupResearching : researching) || node === undefined)}
         <div className="ink-workspace-menu__label">{messages.searchEngine.nodeLabel}</div>
         {SearchEngineSchema.options.map(engine => <div key={engine}>{option(messages.searchEngine.labels[engine], () => runAction(document => ({

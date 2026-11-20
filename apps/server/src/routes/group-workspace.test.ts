@@ -114,6 +114,28 @@ describe("小组图HTTP边界", () => {
     } finally { await f.server.close(); }
   });
 
+  it("直接新增组笔记复用在线连线、会话归属和成员拒绝，只有成功提交才广播", async () => {
+    const f = fixture();
+    const before = EditableGraphSchema.parse({ ...document, nodes: [{ id: "node", title: "节点", description: "", nodeType: "primary",
+      layer: 0, status: "empty", resources: [], warnings: [] }] });
+    const after = { ...before, nodes: before.nodes.map(node => ({ ...node, notes: [{ id: "note-1", title: "组笔记", description: "", markdown: "正文" }] })) };
+    const input = { action: "edit", groupId, graphId: document.id, expectedRevision: 1, mutationId: "fixture-note-add",
+      before, after, kind: "note.add", subject: "组笔记" };
+    const submit = (requestHeaders: Record<string, string> = headers) => f.server.inject({ method: "POST", url: "/api/group-workspace", headers: requestHeaders, payload: input });
+    try {
+      const offline = await submit({ ...headers, [GROUP_CONNECTION_HEADER]: "closed" });
+      expect(offline.statusCode).toBe(503); expect(offline.json()).toEqual({ code: "GROUP_OFFLINE" });
+      f.getIdentity.mockResolvedValueOnce(identity).mockResolvedValueOnce({ ...identity, sessionId: "new_session" });
+      expect((await submit()).statusCode).toBe(401);
+      expect(f.write).not.toHaveBeenCalled(); expect(f.notifyGroup).not.toHaveBeenCalled();
+      f.write.mockRejectedValueOnce(new GroupAccessError("GROUP_FORBIDDEN"));
+      expect((await submit()).statusCode).toBe(403); expect(f.notifyGroup).not.toHaveBeenCalled();
+      expect((await submit()).statusCode).toBe(200);
+      expect(f.write).toHaveBeenLastCalledWith(identity.userId, input, expect.anything(), identity.sessionId);
+      expect(f.notifyGroup).toHaveBeenCalledExactlyOnceWith(groupId);
+    } finally { await f.server.close(); }
+  });
+
   it("收据只按本人操作标识查询，不借此读取源组内容", async () => {
     const f = fixture();
     try {

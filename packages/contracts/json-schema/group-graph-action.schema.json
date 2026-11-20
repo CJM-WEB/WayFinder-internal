@@ -1987,6 +1987,7 @@
             "edge.edit",
             "edge.delete",
             "engine.change",
+            "note.add",
             "note.edit",
             "note.delete"
           ]

@@ -495,13 +495,13 @@ export async function checkGroupCollaboration() {
 
     stage = "NOTE_EDIT_LOST_ACK";
     // 成员的正文更新真实落库，只丢写响应和同一操作的首次收据。创建者不刷新就收到提交后的快照。
-    let noteMutation;
+    let noteMutation, noteKind = "note.edit";
     const noteReceiptReads = [];
     const dropNoteAcknowledgement = async route => {
       const request = route.request();
       if (request.method() !== "POST" || noteMutation !== undefined) { await route.fallback(); return; }
       const parsed = GroupGraphActionSchema.safeParse(request.postDataJSON());
-      if (!parsed.success || parsed.data.action !== "edit" || parsed.data.kind !== "note.edit" || parsed.data.graphId !== sharedGraphId) {
+      if (!parsed.success || parsed.data.action !== "edit" || parsed.data.kind !== noteKind || parsed.data.graphId !== sharedGraphId) {
         await route.fallback(); return;
       }
       noteMutation = parsed.data.mutationId;
@@ -570,6 +570,54 @@ export async function checkGroupCollaboration() {
     assert.deepEqual(await findPersonalCopy(), privateWithNote);
     assert.deepEqual(providers.calls, callsBeforeNotes);
     console.info("GROUP_BROWSER_NOTE_COPY_RECEIPT_ISOLATION_OK");
+
+    stage = "GROUP_NOTE_ADD_LOST_ACK";
+    // 空组图直接新建，丢失写响应与首次收据后保留草稿；实时副本先到也不能再次提交。
+    noteKind = "note.add"; noteMutation = undefined; noteReceiptReads.length = 0;
+    await b.context().route(graphWritePath, dropNoteAcknowledgement);
+    await b.context().route(graphReceiptPath, observeNoteReceipt);
+    const beforeGroupNoteAdd = requests.length;
+    await b.locator("[data-ink-note-add]").click();
+    const groupNewNote = b.getByRole("dialog", { name: "新建笔记", exact: true });
+    const groupNote = { title: "组员直接新建的笔记", description: "小组原生共享说明", markdown: "无需个人图复制，当前组员直接记录" };
+    await groupNewNote.getByRole("textbox", { name: "标题", exact: true }).fill(groupNote.title);
+    await groupNewNote.getByRole("textbox", { name: "说明", exact: true }).fill(groupNote.description);
+    await groupNewNote.getByRole("textbox", { name: "正文", exact: true }).fill(groupNote.markdown);
+    await groupNewNote.getByRole("button", { name: "完成", exact: true }).click();
+    await expect(groupNewNote.getByRole("button", { name: "核对上次结果", exact: true })).toBeEnabled();
+    await expect(groupNewNote.getByRole("textbox", { name: "正文", exact: true })).toHaveText(groupNote.markdown);
+    assert(noteMutation); assert.deepEqual(noteReceiptReads, [noteMutation]);
+    const createdInGroup = await liveRecord(a, users[0].userId, groupId, sharedGraphId);
+    const directNote = createdInGroup.document.nodes[0]?.notes?.[0]; assert(directNote);
+    assert.deepEqual({ title: directNote.title, description: directNote.description, markdown: directNote.markdown }, groupNote);
+    const directCard = a.locator(`[data-ink-note="${directNote.id}"]`);
+    await expect(directCard).toContainText(groupNote.description);
+    await directCard.locator("[data-ink-note-open]").click();
+    await expect(observedNote.getByRole("textbox", { name: "正文", exact: true })).toHaveText(groupNote.markdown);
+    await a.keyboard.press("Escape"); await expect(observedNote).toBeHidden();
+
+    stage = "GROUP_NOTE_ADD_RECEIPT_RECONCILE";
+    const [addReceiptResponse] = await Promise.all([b.waitForResponse(response => {
+      const url = new URL(response.url());
+      return response.request().method() === "GET" && url.pathname === "/api/group-receipt" && url.searchParams.get("mutationId") === noteMutation;
+    }), groupNewNote.getByRole("button", { name: "核对上次结果", exact: true }).click()]);
+    await expect(groupNewNote).toBeHidden();
+    assert.deepEqual(noteReceiptReads, [noteMutation, noteMutation]);
+    const noteAdds = requests.slice(beforeGroupNoteAdd).filter(action => action.action === "edit" && action.kind === "note.add");
+    assert.equal(noteAdds.length, 1); assert.equal(noteAdds[0].mutationId, noteMutation);
+    assert.equal(addReceiptResponse.status(), 200);
+    assert.equal(GroupGraphReceiptResponseSchema.parse(await addReceiptResponse.json()).applied, true);
+    await b.context().unroute(graphWritePath, dropNoteAcknowledgement);
+    await b.context().unroute(graphReceiptPath, observeNoteReceipt);
+    const confirmedGroupNote = await liveRecord(a, users[0].userId, groupId, sharedGraphId);
+    assert.deepEqual(confirmedGroupNote.document.nodes[0]?.notes, [directNote]);
+    assert.deepEqual(confirmedGroupNote.history.events.map(event => [event.kind, event.actorUserId]), [
+      ["note.edit", users[1].userId], ["note.delete", users[1].userId], ["note.add", users[1].userId],
+    ]);
+    assert.deepEqual(confirmedGroupNote.document.nodes[0]?.resources, copiedWithNote.document.nodes[0]?.resources);
+    assert.deepEqual(await findPersonalCopy(), privateWithNote);
+    assert.deepEqual(providers.calls, callsBeforeNotes);
+    console.info("GROUP_BROWSER_DIRECT_NOTE_ADD_RECEIPT_ISOLATION_OK");
 
     stage = "LEAVE_CONTRIBUTION";
     await selectGraph(b, QUERY);

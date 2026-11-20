@@ -3,6 +3,7 @@
  * 重点覆盖用户入口、当前归属、可见权限及断网门禁；数据库竞态与搜索质量不在此重复实现。
  */
 import { expect, test, type Page } from "@playwright/test";
+import { GroupGraphActionSchema } from "@wayfinder/contracts";
 import { FIXTURE_GROUP, FIXTURE_USER, INVITATION, MEMBER_GROUP, fixturePageErrors, installGroupFixture } from "./support/group-fixture.js";
 
 /** 所有旅程均拒绝未捕获页面异常，防止异步写失败被DOM表面成功掩盖。 */
@@ -275,6 +276,95 @@ test("组内与个人复制只带内容布局，退出组上下文恢复个人�
   await expect(page.getByRole("region", { name: "搜索历史", exact: true })).toContainText("个人源图已改名");
   await expect.poll(async () => (await fixture.streamStats()).active).toBe(0);
   expect(JSON.stringify(fixture.requests)).not.toContain("fixture-group-llm");
+});
+
+test("普通组员直接在空节点新建笔记，断流和丢确认恢复后可编辑、删除及本人撤销", async ({ page }) => {
+  const fixture = await installGroupFixture(page);
+  await enter(page);
+  await openGroup(page, MEMBER_GROUP);
+  await selectGraph(page);
+  const remote = fixture.groups[MEMBER_GROUP]!;
+  const record = () => remote.workspace.graphs[0]!;
+  const groupActions = () => fixture.requests.filter(request => request.path === "/api/group-workspace")
+    .map(request => GroupGraphActionSchema.parse(request.body));
+  expect(remote.details.group.ownerUserId).not.toBe(FIXTURE_USER);
+  expect(record().document.nodes[0]?.notes).toBeUndefined();
+
+  const title = "普通成员直接新建的笔记", markdown = "断线恢复前写下的组内正文";
+  const notesTab = page.getByRole("tab", { name: "笔记", exact: true });
+  const notesPanel = page.getByRole("tabpanel", { name: "笔记", exact: true });
+  const newButton = notesPanel.getByRole("button", { name: "新建笔记", exact: true });
+  await page.locator("[data-ink-node=fixture-node]").getByRole("heading").click();
+  await notesTab.click();
+  await expect(newButton).toBeEnabled();
+  await notesPanel.getByRole("status").click({ button: "right" });
+  await page.getByRole("menuitem", { name: "新建笔记", exact: true }).click();
+  const draft = page.getByRole("dialog", { name: "新建笔记", exact: true });
+  await draft.getByRole("textbox", { name: "标题", exact: true }).fill(title);
+  const draftBody = draft.getByRole("textbox", { name: "正文", exact: true });
+  await draftBody.fill(markdown);
+
+  // 连接断开期间只保留草稿；恢复后实际提交一次，再丢写确认及第一次收据。
+  await fixture.disconnect();
+  await expect(draftBody).not.toBeEditable();
+  await draft.getByRole("button", { name: "完成", exact: true }).click();
+  await expect(draft.getByRole("alert")).toContainText("草稿已保留");
+  await expect(draftBody).toHaveText(markdown);
+  expect(groupActions()).toHaveLength(0);
+  expect(record().document.nodes[0]?.notes).toBeUndefined();
+
+  fixture.loseNextNoteAddAcknowledgement();
+  await fixture.reconnect();
+  await expect(page.locator(".ink-group-status")).toHaveAttribute("title", /已连接/);
+  await draft.getByRole("button", { name: "重试保存", exact: true }).click();
+  const reconcile = draft.getByRole("button", { name: "核对上次结果", exact: true });
+  await expect(reconcile).toBeEnabled();
+  await expect(draftBody).toHaveText(markdown);
+  const added = record().document.nodes[0]?.notes?.[0];
+  if (added === undefined) throw new Error("固定组图尚未收到共享笔记");
+  expect(added).toEqual({ id: expect.any(String), title, description: "", markdown });
+  const submitted = groupActions()[0];
+  expect(submitted).toMatchObject({ action: "edit", kind: "note.add", groupId: MEMBER_GROUP, graphId: record().document.id });
+  expect(fixture.noteReceiptReads).toEqual([submitted?.mutationId]);
+  await reconcile.click();
+  await expect(draft).toHaveCount(0);
+  await expect(newButton).toBeFocused();
+  expect(groupActions()).toHaveLength(1);
+  expect(fixture.noteReceiptReads).toEqual([submitted?.mutationId, submitted?.mutationId]);
+  expect(record().document.nodes[0]?.notes).toEqual([added]);
+
+  const card = notesPanel.locator(`[data-ink-note="${added.id}"]`);
+  await card.locator("[data-ink-note-open]").click();
+  const editor = page.getByRole("dialog", { name: "笔记", exact: true });
+  const editedMarkdown = "普通成员保存更新后的组内正文";
+  await editor.getByRole("textbox", { name: "正文", exact: true }).fill(editedMarkdown);
+  await editor.getByRole("button", { name: "完成", exact: true }).click();
+  await expect(editor).toHaveCount(0);
+  const edited = { ...added, markdown: editedMarkdown };
+  expect(record().document.nodes[0]?.notes).toEqual([edited]);
+  await card.click({ button: "right" });
+  await page.getByRole("menuitem", { name: "删除笔记", exact: true }).click();
+  await expect(card).toHaveCount(0);
+  expect(record().history.events.filter(event => event.kind.startsWith("note.")).map(event => [event.kind, event.actorUserId]))
+    .toEqual([["note.add", FIXTURE_USER], ["note.edit", FIXTURE_USER], ["note.delete", FIXTURE_USER]]);
+  await page.locator(".ink-study__history-dock").hover();
+  await page.getByRole("button", { name: "撤销", exact: true }).click();
+  const undo = page.getByRole("region", { name: "撤销记录", exact: true });
+  await undo.getByRole("button", { name: `撤销：删除笔记 · ${remote.details.group.name} ${title}`, exact: true }).click();
+  await expect.poll(() => record().document.nodes[0]?.notes).toEqual([edited]);
+  await undo.press("Escape");
+
+  // 从节点菜单开启另一份草稿；权威快照复用节点 ID 但换代后，旧草稿不能进入新节点。
+  const second = page.locator("[data-ink-node=fixture-node-2]").getByRole("heading");
+  await second.click({ button: "right" });
+  await page.getByRole("menuitem", { name: "新建笔记", exact: true }).click();
+  await draft.getByRole("textbox", { name: "标题", exact: true }).fill("不应写入再生节点的草稿");
+  const beforeReplacement = groupActions().length;
+  await fixture.replaceNodeGeneration(MEMBER_GROUP, "fixture-node-2");
+  await expect(draft).toHaveCount(0);
+  expect(groupActions()).toHaveLength(beforeReplacement);
+  expect(record().document.nodes[1]?.notes).toBeUndefined();
+  expect(fixture.personal.graphs[0]?.document.nodes[0]?.notes).toBeUndefined();
 });
 
 test("个人与组图双向默认排除笔记，勾选后复制当前内容且改组内副本不回写个人源图", async ({ page }) => {

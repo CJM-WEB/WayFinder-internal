@@ -3,8 +3,8 @@
  * 同字段冲突拒绝；实体按稳定ID定位，排序作为所属集合的一个字段，派生序位不单独冲突。
  * URL与人工来源在服务端规范化，最终图再通过去重、端点、状态与DAG硬约束。
  */
-import { canonicalizeHttpUrl, EditableGraphSchema, type EditableGraph, type EditableNode, type EditableResource } from "@wayfinder/contracts";
-import { applyGraphDifference } from "@wayfinder/contracts/graph-history";
+import { canonicalizeHttpUrl, EditableGraphSchema, type EditableGraph, type EditableNode, type EditableResource, type WorkspaceHistoryKind } from "@wayfinder/contracts";
+import { applyGraphDifference, sameGraphContent } from "@wayfinder/contracts/graph-history";
 import { GroupAccessError } from "./errors.js";
 
 const same = (first: unknown, second: unknown): boolean => JSON.stringify(first) === JSON.stringify(second);
@@ -57,17 +57,37 @@ function manualResource(previous: EditableResource | undefined, incoming: Editab
     ? { ...presentation, origin: "manual", sourceType: "user_added" }
     : { ...previous, ...presentation };
 }
-function normalizedAfter(before: EditableGraph, after: EditableGraph): EditableGraph {
+/** 新建笔记只允许一次新增。剥去新笔记后必须还原基线，禁止借此删除、搬迁或夹带其他修改。 */
+function assertSingleNoteAddition(before: EditableGraph, after: EditableGraph): void {
+  const touched = after.nodes.filter(node => !same(before.nodes.find(old => old.id === node.id)?.notes, node.notes));
+  const node = touched[0], previous = before.nodes.find(old => old.id === node?.id);
+  if (touched.length !== 1 || node === undefined || previous === undefined) throw new GroupAccessError("GROUP_CONSTRAINT");
+  const existing = new Set(previous.notes?.map(note => note.id));
+  const notes = node.notes ?? [];
+  const added = notes.filter(note => !existing.has(note.id));
+  const note = added[0];
+  if (added.length !== 1 || note === undefined || ![note.title, note.description, note.markdown].some(value => value.trim() !== "")) {
+    throw new GroupAccessError("GROUP_CONSTRAINT");
+  }
+  const restored = { ...node };
+  if (previous.notes === undefined) delete restored.notes;
+  else restored.notes = notes.filter(item => item.id !== note.id);
+  if (!sameGraphContent(before, { ...after, nodes: after.nodes.map(item => item.id === node.id ? restored : item) })) {
+    throw new GroupAccessError("GROUP_CONSTRAINT");
+  }
+}
+
+function normalizedAfter(before: EditableGraph, after: EditableGraph, kind?: WorkspaceHistoryKind): EditableGraph {
   const nodes = after.nodes.map(input => {
     const old = before.nodes.find(value => value.id === input.id);
     // 搜索计划同来源元数据一样只能由可信搜索应用建立；手工字段变化不能伪造一次检索。
     const node = { ...input };
     if (old?.searchPlan === undefined) delete node.searchPlan;
     else node.searchPlan = old.searchPlan;
-    // 节点代际只由真实整图替换建立。普通组编辑可改删该节点已有笔记，但不能凭手工载荷引入副本。
+    // 节点代际只由真实整图替换建立。只有显式新增动作才允许在已有节点引入新的笔记标识。
     if (old?.noteGeneration === undefined) delete node.noteGeneration;
     else node.noteGeneration = old.noteGeneration;
-    if (node.notes?.length) {
+    if (node.notes?.length && (kind !== "note.add" || old === undefined)) {
       const existing = new Set(old?.notes?.map(note => note.id));
       if (node.notes.some(note => !existing.has(note.id))) throw new GroupAccessError("GROUP_CONSTRAINT");
     }
@@ -89,6 +109,7 @@ function normalizedAfter(before: EditableGraph, after: EditableGraph): EditableG
   else content.analysis = before.analysis;
   const parsed = EditableGraphSchema.safeParse(content);
   if (!parsed.success) throw new GroupAccessError("GROUP_CONSTRAINT");
+  if (kind === "note.add") assertSingleNoteAddition(before, parsed.data);
   return parsed.data;
 }
 const nodeComparable = (node: EditableNode): unknown => ({ ...omit(node, nodeDerived), resources: node.resources.map(resource => omit(resource, ["rank"])) });
@@ -112,9 +133,9 @@ export function normalizeGroupCreate(document: EditableGraph): EditableGraph {
   return normalizedAfter(baseline, manual);
 }
 
-export function mergeGroupEdit(current: EditableGraph, before: EditableGraph, inputAfter: EditableGraph): EditableGraph {
+export function mergeGroupEdit(current: EditableGraph, before: EditableGraph, inputAfter: EditableGraph, kind?: WorkspaceHistoryKind): EditableGraph {
   if (current.id !== before.id || current.id !== inputAfter.id) throw new GroupAccessError("GROUP_CONFLICT");
-  const after = normalizedAfter(before, inputAfter);
+  const after = normalizedAfter(before, inputAfter, kind);
   fields(current, before, after, ["id", "createdAt", "updatedAt", "nodes", "edges", "positions"]);
   entities(current.nodes, before.nodes, after.nodes, (present, old, incoming) => {
     fields(present, old, incoming, ["resources", "notes", ...nodeDerived]);
